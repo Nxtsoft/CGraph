@@ -122,12 +122,28 @@ std::string add_symbol_node(
     return {};
   }
 
+  const auto location = source_location(node);
   auto id = make_id(context.source_file + ":" + label);
+  // A label names a symbol, so two symbols in one file can legitimately share
+  // one: an overload set (`to_json` five times over), a constructor sharing its
+  // class's name, or `operator=` for both copy and move. Their ids would collide
+  // and merge_fragments would keep only the first, silently losing the rest --
+  // and a lost symbol is worse than an awkward one, because an agent asking
+  // where a function lives gets one of five answers with no hint the other four
+  // exist. Disambiguate with the declaration's start line, which is stable for a
+  // given file so the id stays deterministic. Only a colliding symbol pays; the
+  // common case keeps the plain `file:label` id.
+  const auto collides = [&](const std::string& candidate) {
+    return std::ranges::any_of(fragment.nodes, [&](const Node& existing) { return existing.id == candidate; });
+  };
+  if (collides(id)) {
+    id = make_id(context.source_file + ":" + label + ":" + std::to_string(location.start_line));
+  }
   fragment.nodes.push_back(Node{
       .id = id,
       .label = std::move(label),
       .source_file = context.source_file,
-      .source_location = source_location(node),
+      .source_location = location,
       .kind = std::string(kind),
       .confidence = Confidence::Extracted,
   });

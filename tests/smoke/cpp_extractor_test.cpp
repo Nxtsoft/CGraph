@@ -136,6 +136,26 @@ int main() {
   // per file all labelled the same never grouped anything, and a class parent
   // makes add_containment_edge label every member a `method`, turning the
   // namespace into a god node that dominates centrality and shortest paths.
+  // A C/C++ label must name its symbol, never carry the declaration text. Each
+  // line here is a shape that previously produced an unusable label -- or no node
+  // at all -- and so kept a bare callee name at a call site from matching.
+  write_file(root / "labels.cpp",
+             "#include <mutex>\n"
+             "std::mutex& ref_return() { static std::mutex m; return m; }\n"
+             "int* ptr_return(int x) { return nullptr; }\n"
+             "struct Holder {\n"
+             "  Holder(int a) {}\n"
+             "  ~Holder() {}\n"
+             "  bool operator==(const Holder& other) const { return true; }\n"
+             "};\n"
+             "template <typename T, typename U>\n"
+             "T templated(T a, U b) { return a; }\n"
+             "int multi_line(\n"
+             "    int alpha,\n"
+             "    int beta) { return alpha; }\n"
+             "int overloaded(int a) { return a; }\n"
+             "int overloaded(double a) { return 0; }\n"
+             "int caller(int q) { return ptr_return(q) != nullptr ? multi_line(q, q) : overloaded(q); }\n");
   write_file(root / "scoped.cpp",
              "namespace demo {\n"
              "int scoped_helper(int x) { return x; }\n"
@@ -161,14 +181,44 @@ int main() {
   check(has_edge(graph, "Service", "Mixin", "inherits"), "inherits same-file Mixin");
 
   // references: a free function's parameter type and a class data-member type,
-  // both resolved to the project type declared in the included header.
-  check(has_edge(graph, "handle(const Payload& p, Service& s)", "Payload", "references"),
+  // both resolved to the project type declared in the included header. The
+  // source label is the bare name: a C/C++ label names its symbol, it is not the
+  // declaration text (this assertion used to read
+  // "handle(const Payload& p, Service& s)", which is exactly the shape that kept
+  // a bare callee name at a call site from ever matching a declaration).
+  check(has_edge(graph, "handle", "Payload", "references"),
         "free-function parameter reference -> Payload");
   check(has_edge(graph, "Service", "Payload", "references"), "field reference -> Payload");
 
   // defines: a data member becomes a field node owned by its type.
   check(has_node(graph, "data", "field"), "data member node");
   check(has_edge(graph, "Service", "data", "defines"), "defines Service -> data");
+
+  // Labels name symbols. Every shape below used to leak declaration text into
+  // the label (or, for the destructor, produce no node at all).
+  check(has_node(graph, "ref_return", "function"), "reference return is named, not '& ref_return()'");
+  check(has_node(graph, "ptr_return", "function"), "pointer return is named");
+  check(has_node(graph, "operator==", "function"), "operator overload is named");
+  check(has_node(graph, "templated", "function"), "templated function is named");
+  check(has_node(graph, "multi_line", "function"), "multi-line signature is named");
+  check(has_node(graph, "~Holder", "function"), "destructor is named");
+  // A constructor shares its class's name, so the two must stay distinct nodes
+  // rather than colliding on one id.
+  check(has_node(graph, "Holder", "class"), "class node");
+  check(has_node(graph, "Holder", "function"), "constructor node survives the name clash with its class");
+  // An overload set is several symbols, not one: collapsing it deletes real code
+  // and leaves an agent one of N answers with no hint the others exist.
+  {
+    int overloads = 0;
+    for (const auto& node : graph.nodes) {
+      overloads += (node.kind == "function" && node.label == "overloaded") ? 1 : 0;
+    }
+    check(overloads == 2, "both overloads survive as distinct nodes");
+  }
+  // And the point of all of it: a call to a function that takes arguments now
+  // resolves. Before, only a zero-argument callee could ever match.
+  check(has_edge(graph, "caller", "ptr_return", "CALLS"), "call to a parameterized function resolves");
+  check(has_edge(graph, "caller", "multi_line", "CALLS"), "call to a multi-line-signature function resolves");
 
   // A namespace is structure, not a type: no class node, no `method` edge, and
   // its members attach to their file with `contains` instead.

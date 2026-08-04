@@ -64,4 +64,4 @@ nodes 1432  links 1870
 
 == path routing (300 random function pairs, seed 7) ==
   connected pairs                      263
-  ... routed via a namespace node      243  (92%)
+  ... routed via a namespace node      245  (93%)

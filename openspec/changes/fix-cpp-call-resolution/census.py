@@ -81,7 +81,20 @@ def main() -> int:
         e for e in cpp_calls
         if re.search(r"\(\s*\)\s*$", nodes.get(e["target"], {}).get("label", ""))
     ]
-    sig = [n for n in cpp_fns if "(" in n.get("label", "")]
+    # `operator()` legitimately contains parentheses as part of its name, so a
+    # bare "(" test would report it as signature-bearing. Strip a leading
+    # operator name before looking for a parameter list.
+    def carries_signature(label):
+        if label.startswith("operator"):
+            label = label[len("operator"):].lstrip()
+            for symbol in ("()", "[]", "->", "==", "!=", "<=", ">=", "&&", "||", "++", "--",
+                           "+", "-", "*", "/", "%", "<", ">", "=", "!", "~", "^", "&", "|", ","):
+                if label.startswith(symbol):
+                    label = label[len(symbol):]
+                    break
+        return "(" in label
+
+    sig = [n for n in cpp_fns if carries_signature(n.get("label", ""))]
     print("== function connectivity ==")
     print(f"  function nodes                       {len(fns)}")
     print(f"  ... with NO incoming CALLS           {len(fns)-len(set(n['id'] for n in fns) & incoming)}")

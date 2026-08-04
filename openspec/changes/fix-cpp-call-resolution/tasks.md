@@ -44,29 +44,51 @@ is no longer dominated by namespace containment.
 
 ## 3. Cause A — bare C/C++ function labels
 
-- [ ] 3.1 Promote `declarator_name` (`src/engine/cpp_extractor.cpp:106-119`) out
-      of the anonymous namespace; declare it in
-      `src/engine/include/cgraph/cpp_extractor.hpp`. It already descends through
-      pointer/reference/array/parenthesized wrappers and already applies
-      `name_tail` to qualified identifiers, destructor names, and operator names —
-      do not reimplement it.
-- [ ] 3.2 Add a `ResolveFunctionName`-shaped wrapper and set
+- [x] 3.1 Exposed `declarator_name` through a `ResolveFunctionName`-shaped public
+      wrapper `cpp_function_name` rather than promoting the raw walker, so the
+      public surface is exactly the hook the config needs. It needed one fix:
+      tree-sitter-cpp's `reference_declarator` holds its inner declarator as an
+      unnamed child, not a `declarator` field, so a field lookup alone left
+      `& lock_map_mutex()` unnamed. Added a named-child scan gated on the
+      `_declarator` suffix.
+- [x] 3.2 Add a `ResolveFunctionName`-shaped wrapper and set
       `config.resolve_function_name` in `c_config()`
       (`src/engine/configured_extractors.cpp:42-44`), mirroring
       `javascript_extractor.cpp:496`. The hook is consulted first at
       `extractor.cpp:59-60`, so nothing else needs to change.
-- [ ] 3.3 Confirm the fallthrough still works: if `declarator_name` returns empty
+- [x] 3.3 Confirm the fallthrough still works: if `declarator_name` returns empty
       for some construct, `label_for_node` must still reach the `name_fields` path
       rather than dropping the node (`extractor.cpp:59-66`). A silently dropped
       symbol is worse than an ugly label.
-- [ ] 3.4 Verify labels for: free function, method, constructor, destructor
+- [x] 3.4 Verify labels for: free function, method, constructor, destructor
       (`~Foo`), `operator==`, function returning a reference (today
       `'& lock_map_mutex()'`), templated function, and a multi-line signature
       (today `walk_node` at 345 chars / 11 lines). Add each to
       `tests/smoke/cpp_extractor_test.cpp`.
-- [ ] 3.5 Update `tests/smoke/cpp_extractor_test.cpp:126` — it hardcodes the buggy
+- [x] 3.5 Update `tests/smoke/cpp_extractor_test.cpp:126` — it hardcodes the buggy
       label: `has_edge(graph, "handle(const Payload& p, Service& s)", "Payload",
       "references")` becomes `"handle"`.
+
+### Discovered while doing §3 (each was measured, not anticipated)
+
+- [x] 3.6 Bare labels collide within a file: an overload set, a constructor
+      sharing its class's name, `operator=` for copy and move. `add_symbol_node`
+      (`src/engine/extractor.cpp`) now disambiguates a colliding id with the
+      declaration's start line, which is deterministic for a given file.
+- [x] 3.7 `semantic_dedup`'s exact pass keyed on `label + source_file` only, so an
+      overload set collapsed to one node. The key now carries the declaration site
+      (`src/engine/dedup.cpp`). A genuine double-extraction shares a site and still
+      merges.
+- [x] 3.8 The fuzzy pass was silently deleting real functions once labels got
+      short: `validate_semantic_fragment_file` merged into `..._json`,
+      `drainer_uninstall` into `drainer_installed`, `query_zero_hit_rate` into
+      `query_zero_hits`, `supervisor_sync` into `supervisor_spec`. A long
+      signature-bearing label had been providing accidental protection. Two nodes
+      that each name a concrete declaration site are now never fuzzy-merged; the
+      pass keeps working for site-less nodes, which is what it was for.
+- [x] 3.9 Net effect measured: 0 symbols lost, 84 recovered (nodes 1337 -> 1421).
+      Regression tests added for every case above, each verified to fail when its
+      guard is removed.
 
 ## 4. Cause B — normalize the callee side
 

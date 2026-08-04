@@ -115,6 +115,20 @@ void collect_type_refs(const TSNode& node, std::string_view source, bool generic
   if (const auto inner = ts_node_child_by_field_name(node, "declarator", 10); !ts_node_is_null(inner)) {
     return declarator_name(inner, source);
   }
+  // Not every declarator wrapper exposes its inner declarator as a `declarator`
+  // field -- tree-sitter-cpp's reference_declarator is `seq('&', _declarator)`
+  // with an unnamed child -- so a field lookup alone leaves a reference-returning
+  // function unnamed (the label stayed `& lock_map_mutex()`). Scan named children
+  // for the first that yields a name. Gated on the `_declarator` suffix so this
+  // never wanders out of the declarator subtree and into a function body.
+  if (type.ends_with("_declarator")) {
+    const std::uint32_t count = ts_node_named_child_count(node);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      if (auto name = declarator_name(ts_node_named_child(node, index), source); !name.empty()) {
+        return name;
+      }
+    }
+  }
   return {};
 }
 
@@ -139,6 +153,10 @@ void collect_type_refs(const TSNode& node, std::string_view source, bool generic
 }
 
 }  // namespace
+
+std::string cpp_function_name(const TSNode& node, const ExtractionContext& context) {
+  return declarator_name(node, context.source);
+}
 
 void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
   if (std::string_view(ts_node_type(node)) != "preproc_include") {

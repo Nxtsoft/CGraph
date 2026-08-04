@@ -42,6 +42,11 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   config.import_handler = cpp_import_handler;
   config.relation_handler = cpp_relation_handler;
   config.extra_walk = cpp_field_walk;
+  // A `function_definition` has no `name` field, so without this the label would
+  // be the declarator's raw text -- the whole declaration, signature included --
+  // and a bare callee name at a call site could never match it. See
+  // cpp_extractor.hpp.
+  config.resolve_function_name = cpp_function_name;
   return config;
 }
 
