@@ -141,7 +141,9 @@ def main() -> int:
     fn_ids = sorted(n["id"] for n in fns)
     rng = random.Random(7)
     pairs = [(rng.choice(fn_ids), rng.choice(fn_ids)) for _ in range(300)]
-    conn = via = 0
+    file_ids = {n["id"] for n in graph["nodes"] if n.get("type") == "file"}
+    call_pairs = {(e["source"], e["target"]) for e in calls} | {(e["target"], e["source"]) for e in calls}
+    conn = via = via_file = with_call = 0
     for a, b in pairs:
         if a == b:
             continue
@@ -166,9 +168,21 @@ def main() -> int:
             u = prev[u]
         if any(x in ns_ids for x in path[1:-1]):
             via += 1
+        if any(x in file_ids for x in path[1:-1]):
+            via_file += 1
+        if any((path[i], path[i + 1]) in call_pairs for i in range(len(path) - 1)):
+            with_call += 1
     print("== path routing (300 random function pairs, seed 7) ==")
     print(f"  connected pairs                      {conn}")
+    # NOTE: "via a namespace node" is necessarily 0% once no namespace node exists,
+    # so on its own it measures the absence of a deleted node rather than any
+    # improvement. The two successor metrics below are the ones that stay
+    # meaningful across the change: how often a path is pure containment (a file
+    # node standing in for a real relationship), and how often it names an actual
+    # call. Report all three together or none of them.
     print(f"  ... routed via a namespace node      {via}  ({100*via//max(1,conn)}%)")
+    print(f"  ... routed via a file node           {via_file}  ({100*via_file//max(1,conn)}%)")
+    print(f"  ... containing at least one CALLS    {with_call}  ({100*with_call//max(1,conn)}%)")
     return 0
 
 

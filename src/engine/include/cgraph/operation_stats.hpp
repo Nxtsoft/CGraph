@@ -52,6 +52,9 @@ struct CallResolution {
   std::size_t total = 0;
   std::size_t resolved_same_file = 0;
   std::size_t resolved_project_unique = 0;
+  // A same-file overload set: resolved to the first declaration and graded
+  // INFERRED, because which overload a call means needs types we do not have.
+  std::size_t resolved_overload_first = 0;
   std::size_t dropped_unknown = 0;    // nothing callable bears the name
   std::size_t dropped_ambiguous = 0;  // more than one candidate does
   std::size_t dropped_self = 0;       // resolved to the caller itself
@@ -59,7 +62,7 @@ struct CallResolution {
   [[nodiscard]] bool balances() const {
     return resolved_same_file + resolved_project_unique + dropped_unknown + dropped_ambiguous +
                dropped_self ==
-           total;
+           total;  // resolved_overload_first is a subset of resolved_same_file
   }
 
   [[nodiscard]] double resolved_rate() const {

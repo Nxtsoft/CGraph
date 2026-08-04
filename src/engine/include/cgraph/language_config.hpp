@@ -77,12 +77,18 @@ struct LanguageConfig {
   std::vector<std::string> call_member_node_types;
   std::string call_member_field;
   // Scope-resolution separator for a qualified callee (`cgraph::run_one_shot()`
-  // -> `run_one_shot`). When non-empty, a callee label is reduced to the text
-  // after its last occurrence. A qualified call is NOT a member call: the name is
-  // fully determined, so it stays eligible for project-wide resolution, unlike
-  // `obj.method()` whose receiver type is unknown. Reduction is done on the label
-  // rather than by a field lookup because a qualified identifier nests
-  // (`a::b::c`), so one lookup would still leave a qualified name behind.
+  // -> `run_one_shot`), and the callee node types it may be applied to. A
+  // qualified call is NOT a member call: the name is fully determined, so it
+  // stays eligible for project-wide resolution, unlike `obj.method()` whose
+  // receiver type is unknown.
+  //
+  // The reduction is a string operation, so it MUST be gated on the callee's
+  // grammar node type. Applied to arbitrary callee text it corrupts anything else
+  // containing the separator: a template instantiation `wrapper<zoo::Beast>`
+  // reduces to `Beast>`, which make_id normalizes to `Beast` -- fabricating a call
+  // to an unrelated struct while losing the real call to `wrapper`. Only a node
+  // type listed here is reduced; everything else is taken verbatim.
+  std::vector<std::string> call_qualified_node_types;
   std::string call_scope_separator;
   ImportHandler import_handler;
   ResolveFunctionName resolve_function_name;

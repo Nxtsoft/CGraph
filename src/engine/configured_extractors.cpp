@@ -46,6 +46,11 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       // unknown and a project-wide name match would be a guess.
       .call_member_node_types = {"field_expression"},
       .call_member_field = "field",
+      // Only a genuine qualified identifier is tail-reduced. Notably NOT
+      // `template_function`, whose text (`wrapper<zoo::Beast>`) also contains
+      // `::`; reducing that fabricates a call to `Beast` and loses the call to
+      // `wrapper`.
+      .call_qualified_node_types = {"qualified_identifier"},
       .call_scope_separator = "::",
   };
   // `#include` -> imports, struct members -> defines, member/param/return types

@@ -169,6 +169,21 @@ int main() {
              "int callee_user(ns::Svc& s, ns::Svc* p) {\n"
              "  return ns::free_fn(1) + s.method(2) + p->method(3);\n"
              "}\n");
+  // A template instantiation's callee text also contains `::`, so a blind tail
+  // reduction turns `wrapper<zoo::Beast>` into `Beast>` -- which make_id
+  // normalizes to `Beast`, inventing a call to an unrelated struct. And a LEADING
+  // `::` is explicit global scope, so `::stat(...)` must not resolve to a local
+  // struct of that name.
+  write_file(root / "qualify.cpp",
+             "namespace zoo { struct Beast { int n; }; }\n"
+             "template <typename T> int wrapper(int a) { return a; }\n"
+             "int only_real_call(int a) { return a; }\n"
+             "struct stat_local { int st; };\n"
+             "int probe(const char* p) { return ::stat_local_probe(p); }\n"
+             "int drive() { return wrapper<zoo::Beast>(1) + only_real_call(2); }\n");
+  // Three overloads can share ONE line, so a single id retry is not enough.
+  write_file(root / "sameline.cpp",
+             "int triple(int a) { return a; } int triple(double a) { return 0; } int triple(char a) { return 1; }\n");
   // A member call must stay scoped to its own file: the receiver type is unknown,
   // so matching a same-named method in another file would invent an edge.
   write_file(root / "elsewhere.cpp",
@@ -241,6 +256,27 @@ int main() {
   // resolves. Before, only a zero-argument callee could ever match.
   check(has_edge(graph, "caller", "ptr_return", "CALLS"), "call to a parameterized function resolves");
   check(has_edge(graph, "caller", "multi_line", "CALLS"), "call to a multi-line-signature function resolves");
+  // An overloaded name cannot be disambiguated without types, but dropping every
+  // call to it would be a regression: before labels became bare names the overload
+  // set collapsed onto one node and the call resolved. It now resolves to the first
+  // declaration, graded INFERRED.
+  check(has_edge(graph, "caller", "overloaded", "CALLS"), "a call to an overloaded name still resolves");
+
+  // A template callee is never tail-reduced, so no phantom call to the struct.
+  check(!has_edge(graph, "drive", "Beast", "CALLS"),
+        "template instantiation does not fabricate a call to its type argument");
+  check(has_edge(graph, "drive", "only_real_call", "CALLS"), "the real call beside it still resolves");
+  // Explicit global scope stays global: it must not bind to a same-named local.
+  check(!has_edge(graph, "probe", "stat_local", "CALLS"),
+        "a ::global call does not resolve to a same-named local symbol");
+  // Three same-line overloads are three nodes, not one.
+  {
+    int triples = 0;
+    for (const auto& node : graph.nodes) {
+      triples += (node.kind == "function" && node.label == "triple") ? 1 : 0;
+    }
+    check(triples == 3, "three overloads sharing one line survive as three nodes");
+  }
 
   // The callee side is keyed on its name too.
   check(has_edge(graph, "callee_user", "free_fn", "CALLS"), "qualified call ns::free_fn resolves");

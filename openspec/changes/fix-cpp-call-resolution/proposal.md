@@ -25,9 +25,16 @@ Four independent causes, all confirmed by measurement:
 
 **C. The project-wide index has no kind filter.** The per-file table filters candidates to callable kinds, but `label_index` indexes every node and the project-wide lookup filters nothing. Of 120 `CALLS` edges, 12 target `field` nodes — `unix_endpoint_is_live` "calls" a struct field named `connect` because it invokes the `::connect` syscall. Fixing A widens the key space, which would multiply these, so C is a precondition rather than a cleanup.
 
-**D. A namespace is classified as a class.** `cpp_config()` pushes `namespace_definition` into `class_node_types`. Ids are per-file, so every file containing `namespace cgraph { }` mints its own `cgraph` "class", and `add_containment_edge` labels its children `method`. Measured: 96 of 214 class nodes (44%) are labelled `cgraph`; 416 of 449 `method` edges (92%) originate at one; the highest-degree node in the entire graph is `class 'cgraph'` at degree 45 with `centrality: 1.0, god_node: true`; and over 300 random function pairs, 243 of 266 connected pairs (91%) route their shortest path through a namespace-as-class node. This also corrupts the centrality ranking that orders `query` results.
+**D. A namespace is classified as a class.** `cpp_config()` pushes `namespace_definition` into `class_node_types`. Ids are per-file, so every file containing `namespace cgraph { }` mints its own `cgraph` "class", and `add_containment_edge` labels its children `method`. Measured: 96 of 214 class nodes (44%) are labelled `cgraph`, and 416 of 449 `method` edges (92%) originate at one -- so the `method` relation was mostly noise, and 96 nodes grouped nothing (being per-file, they could not group across files).
 
-This is also the retrieval ceiling. `research/ceiling-diagnostic/results.md` found 0% of missed context is disconnected and 100% is 3-7 hops away: relevant code is far because the edges that would make it near do not exist, and the paths that do exist detour through a namespace god node.
+**Correction, found in review.** An earlier draft of this proposal also claimed Cause D removes a god node and fixes shortest paths. Both claims were wrong and are withdrawn:
+
+- *God node.* `class 'cgraph'` was indeed rank 1 at degree 45, but degree centrality is normalized by max degree (`analysis.cpp:241`) and excludes only memory nodes (`:219`, `:266`), so some node is always centrality 1.0. Measured after the fix, rank 1 is `file 'engine/daemon_ops.cpp'` at degree **49** -- a *higher* degree. The god node relocated; it was not removed. Whether a file node should be eligible for god-node ranking at all is a real question and is deliberately **not** decided here.
+- *Path quality.* The census metric asked whether a shortest path crosses a *namespace* node, which is necessarily 0% once no namespace node exists. It measured the absence of the deleted node, not an improvement. The genuine path improvement comes from Causes A/B/C adding 1,032 call edges, not from D.
+
+What Cause D is actually worth: 96 duplicate nodes and 416 mislabeled `method` edges gone, and the `method` relation restored to meaning "a class owns this member".
+
+This is plausibly also the retrieval ceiling. `research/ceiling-diagnostic/results.md` found 0% of missed context is disconnected and 100% is 3-7 hops away, which is what an edgeless symbol layer produces: relevant code is far because the edges that would make it near do not exist. That connection is a hypothesis, not a result -- see "Retrieval effect is unmeasured" below for why this change cannot test it.
 
 Two adjacent defects on the same agent-facing surface:
 
@@ -39,12 +46,11 @@ Two adjacent defects on the same agent-facing surface:
 
 - Install `resolve_function_name` for C and C++ so a function label is the symbol's name, reusing the existing `declarator_name` helper, which already descends pointer/reference/array/parenthesized wrappers and already reduces qualified identifiers, destructor names, and operator names to their tail.
 - Give C and C++ the member-call configuration Go and C# already have, and reduce a qualified-identifier callee to its tail, so `obj.method()`, `ptr->method()`, and `ns::free_function()` resolve.
-- Restrict project-wide call resolution to callable kinds, excluding `field` while keeping `function` and `class`, because `Foo()` is a genuine constructor call in Python and JavaScript.
-- Stop classifying a C++ `namespace_definition` as a class; emit namespace containment as `contains` rather than `method`, and exclude namespace nodes from degree centrality and god-node ranking.
+- Restrict project-wide call resolution to the same callable kinds the per-file table admits -- `function`, `class`, `type`, `variable` -- excluding `field`. The defect is that the project-wide tier had no filter at all, so the fix is to make the two tiers agree, not to invent a narrower rule.
+- Stop classifying a C++ `namespace_definition` as a class. No namespace node is emitted at all, so members attach to their file with `contains` and no namespace-parented `method` edge exists.
 - Report a partition of raw call outcomes in `BuildStats` and `stats.json`, so the resolution rate is measurable from a committed artifact rather than requiring an instrumented build.
-- Report the true serialized cost of a `context` bundle as `tokens_used`, never exceed the requested budget, and mark entries whose snippet could not be read in every packing mode.
 - Add a `release` preset, build and test it in CI, and point the documented build at it.
-- Re-pin the retrieval-quality gate, whose baselines were orphaned by a fixture rewrite and now tolerate a 57% recall regression.
+- Non-goals, each moved or deferred deliberately: the `context` token-budget fix and the retrieval-gate re-pin (both moved to `openspec/changes/honest-context-budget/`, because enforcing the budget erases the knapsack's measured advantage and that needs its own review); adding a file-node exclusion to god-node ranking (a real question this change surfaced but does not decide); regenerating the retrieval fixture.
 - Non-goals: gating `write_layout` off the daemon path, building a snapshot index for the read ops, reviving Kotlin extraction, fixing Python import orphans or the five missing import handlers, JSX component edges, wiring `peer_is_authorized` into the accept path, packaging, and the MCP specification catch-up.
 
 ## Impact

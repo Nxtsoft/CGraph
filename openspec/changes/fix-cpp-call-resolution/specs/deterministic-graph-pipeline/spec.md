@@ -33,10 +33,25 @@ A call site's callee key SHALL be the callee's name, normalized the same way as 
 - **THEN** a `CALLS` edge exists to that method node
 - **AND** the call is never matched project-wide
 
-#### Scenario: An overloaded name resolves to nothing and is counted
-- **GIVEN** two declarations in scope share the name `write_text`
+#### Scenario: A qualified callee is reduced only when it is genuinely qualified
+- **GIVEN** a call `wrapper<zoo::Beast>(1)` whose callee is a template instantiation
+- **THEN** no `CALLS` edge to `Beast` is emitted
+- **AND** an explicitly global `::symbol(...)` call does not resolve to a same-named local symbol
+
+#### Scenario: A same-file overload set resolves to its first declaration
+- **GIVEN** two declarations in one file share the name `add`
+- **WHEN** a call to `add` in that file is resolved
+- **THEN** a `CALLS` edge to the first declaration is emitted with `INFERRED` confidence
+- **AND** `resolved_overload_first` is incremented
+
+#### Scenario: A project-wide ambiguous name resolves to nothing and is counted
+- **GIVEN** two files each declare `write_text` and neither is the caller's file
 - **WHEN** a call to `write_text` is resolved
 - **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
+
+#### Scenario: Overloads sharing one line remain distinct nodes
+- **GIVEN** three declarations of `triple` on a single line
+- **THEN** the graph holds three distinct `triple` nodes
 
 ### Requirement: A call target must be callable
 Project-wide call resolution SHALL only consider candidates whose kind can be invoked, and that set SHALL be the same one the per-file table admits: `function`, `class`, `type`, and `variable`. `class` is eligible because `Foo()` is a constructor call in Python and JavaScript, and `type`/`variable` because a module-level binding can hold a callable. A `field` node SHALL NOT be the target of a `CALLS` edge.
@@ -50,24 +65,30 @@ The two resolution tiers SHALL agree on what counts as a symbol. The defect bein
 - **AND** the call is counted in `dropped_unknown`
 
 ### Requirement: A namespace is not a class
-A C++ `namespace_definition` SHALL NOT produce a `class` node. Containment from a namespace to its members SHALL use the `contains` relation, never `method`. A namespace node SHALL be excluded from degree-centrality computation and god-node ranking, on the same footing as session-memory nodes.
+A C++ `namespace_definition` SHALL NOT produce a node of kind `class`, and SHALL NOT parent its members. Its members attach to the enclosing scope -- in practice the file -- so a namespace never contributes a `method` edge.
 
-#### Scenario: Namespace membership does not dominate a path answer
-- **GIVEN** two functions in different files, both inside `namespace cgraph`
-- **AND** a real call chain connects them
-- **WHEN** `path` is asked for a route between them
-- **THEN** the returned path follows the call chain rather than consisting solely of shared namespace containment
+Ids are per-file, so a namespace-as-class minted one node per file all bearing the same label, grouping nothing across files while making every member read as a method of a type.
 
-#### Scenario: A namespace is never the highest-centrality node
-- **WHEN** centrality is computed over a C++ project
-- **THEN** no namespace node is ranked a god node
+#### Scenario: A namespace produces no class node
+- **WHEN** the pipeline extracts a file containing `namespace demo { int helper(int x); }`
+- **THEN** no node of kind `class` labelled `demo` exists
 
-#### Scenario: Namespace containment is not a method edge
+#### Scenario: A namespace member attaches to its file
 - **WHEN** a namespace contains a free function
-- **THEN** the containment edge relation is `contains`
+- **THEN** the function has an incoming `contains` edge from its file node
+- **AND** it has no incoming `method` edge
+
+#### Scenario: A real class still owns its methods
+- **WHEN** a class declares a method inline
+- **THEN** the containment edge relation is still `method`
+
+#### Scenario: No symbol is lost when the namespace node disappears
+- **WHEN** a project's namespaces stop producing nodes
+- **THEN** the count of function, class, field, import and variable nodes is unchanged
+- **AND** no member is left without an incoming containment edge
 
 ### Requirement: Call resolution is measurable from a committed artifact
-`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `dropped_unknown`, `dropped_ambiguous`, and `dropped_self`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`.
+`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `dropped_unknown`, `dropped_ambiguous`, and `dropped_self`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`. `resolved_overload_first` SHALL also be reported as a subset of `resolved_same_file`.
 
 #### Scenario: The resolution rate is readable without instrumenting a build
 - **WHEN** `cgraph --root PATH --out DIR` completes

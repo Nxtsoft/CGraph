@@ -314,6 +314,10 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   // empty id marks a label that is declared more than once in the file, so it
   // resolves to no single target.
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;
+  // "<source_file>\n<normalized label>" -> the id of the FIRST declaration bearing
+  // that name in that file. Consulted only for an overload set, where the per-file
+  // slot has been cleared as ambiguous.
+  std::unordered_map<std::string, std::string> overload_first_declaration;
   // Cache make_id(source_file) per distinct source path. The confidence grading
   // below re-normalizes caller/callee file paths per raw call (hundreds of
   // thousands of calls over a few thousand distinct files); memoizing keeps the
@@ -330,7 +334,11 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       continue;
     }
     auto& by_label = local_by_file[node.source_file];
-    const auto [slot, inserted] = by_label.emplace(make_id(node.label), node.id);
+    const auto label_key = make_id(node.label);
+    // Remember the first declaration of each name per file, so an overload set can
+    // still resolve to something concrete rather than dropping every call to it.
+    overload_first_declaration.try_emplace(node.source_file + "\n" + label_key, node.id);
+    const auto [slot, inserted] = by_label.emplace(label_key, node.id);
     if (!inserted && slot->second != node.id) {
       slot->second.clear();  // ambiguous within the file
     }
@@ -409,8 +417,23 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     if (const auto file = local_by_file.find(caller_file); file != local_by_file.end()) {
       if (const auto slot = file->second.find(key); slot != file->second.end()) {
         target_id = slot->second;
-        // An empty slot marks a name declared more than once in the file, so it
-        // resolves to no single target -- ambiguous, not unknown.
+        if (target_id.empty()) {
+          // An empty slot marks an overload set: several declarations in this file
+          // share the name. Which one a call means cannot be known without types,
+          // so resolve to the first declaration and grade the edge INFERRED.
+          //
+          // Dropping instead would be a regression. Before labels became bare
+          // names, an overload set collapsed onto one node and the call resolved,
+          // so `add(int)` / `add(String)` in one Java class had working call
+          // edges; making the overloads distinct nodes must not take those away.
+          // Overloading is idiomatic in Java, C#, Kotlin, Scala, Groovy and C++.
+          if (const auto first = overload_first_declaration.find(caller_file + "\n" + key);
+              first != overload_first_declaration.end()) {
+            target_id = first->second;
+            confidence = Confidence::Inferred;
+            ++tally.resolved_overload_first;
+          }
+        }
         if (target_id.empty()) {
           ++tally.dropped_ambiguous;
           continue;

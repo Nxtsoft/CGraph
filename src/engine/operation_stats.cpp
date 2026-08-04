@@ -119,6 +119,7 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
            {"total", stats.calls.total},
            {"resolved_same_file", stats.calls.resolved_same_file},
            {"resolved_project_unique", stats.calls.resolved_project_unique},
+           {"resolved_overload_first", stats.calls.resolved_overload_first},
            {"dropped_unknown", stats.calls.dropped_unknown},
            {"dropped_ambiguous", stats.calls.dropped_ambiguous},
            {"dropped_self", stats.calls.dropped_self},

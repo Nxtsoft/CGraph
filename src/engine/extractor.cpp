@@ -137,7 +137,16 @@ std::string add_symbol_node(
     return std::ranges::any_of(fragment.nodes, [&](const Node& existing) { return existing.id == candidate; });
   };
   if (collides(id)) {
-    id = make_id(context.source_file + ":" + label + ":" + std::to_string(location.start_line));
+    // The line alone is not always enough: three overloads can share one line
+    // (`int f(int); int f(double); int f(char);`), and a single retry would
+    // recompute the same suffixed id for the third, which merge_fragments then
+    // discards -- reintroducing exactly the silent loss this guard exists to
+    // prevent. Add the column, then a counter, until the id is free.
+    const auto base = context.source_file + ":" + label + ":" + std::to_string(location.start_line);
+    id = make_id(base + ":" + std::to_string(location.start_column));
+    for (std::size_t nth = 2; collides(id); ++nth) {
+      id = make_id(base + ":" + std::to_string(location.start_column) + ":" + std::to_string(nth));
+    }
   }
   fragment.nodes.push_back(Node{
       .id = id,
@@ -158,6 +167,7 @@ void add_raw_call(
     std::vector<RawCall>& raw_calls) {
   std::string label;
   bool is_member_call = false;
+  bool callee_is_qualified = false;
   if (const auto child = first_child_by_fields(node, config.call_accessor_fields); child.has_value()) {
     // A member/property access target (`obj.method()`): record only the bare
     // property name and flag it, so resolution can keep it to the caller's own
@@ -176,6 +186,8 @@ void add_raw_call(
     }
     if (!is_member_call) {
       label = node_text(*child, context.source);
+      callee_is_qualified =
+          std::ranges::find(config.call_qualified_node_types, child_type) != config.call_qualified_node_types.end();
     }
   } else {
     label = node_text(node, context.source);
@@ -189,8 +201,21 @@ void add_raw_call(
   // `run_one_shot` and matches the declaration. Left as a non-member call: the
   // name is fully determined by the qualification, so project-wide resolution is
   // sound here in a way it is not for `obj.method()`.
-  if (!config.call_scope_separator.empty() && !is_member_call) {
-    if (const auto pos = label.rfind(config.call_scope_separator); pos != std::string::npos) {
+  //
+  // Gated on the callee's grammar node type, never applied to arbitrary text: a
+  // template instantiation `wrapper<zoo::Beast>` also contains the separator, and
+  // reducing it yields `Beast>` which make_id normalizes to `Beast` -- inventing a
+  // call to an unrelated struct and losing the real one.
+  if (callee_is_qualified && !config.call_scope_separator.empty()) {
+    const auto pos = label.rfind(config.call_scope_separator);
+    if (pos == 0) {
+      // A leading separator is explicit GLOBAL scope (`::stat(...)`, `::connect(...)`).
+      // Those name a platform symbol, not a project one, so the qualification must
+      // be preserved: reducing it lets a syscall resolve to a same-named local
+      // struct or function and report a false dependent.
+      return;
+    }
+    if (pos != std::string::npos) {
       label = label.substr(pos + config.call_scope_separator.size());
     }
   }
