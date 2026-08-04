@@ -1,0 +1,178 @@
+# Tasks
+
+Prerequisite `/opsx:archive verified-graph-freshness` is already done (commit `b7eba6f`).
+
+## 1. Baseline first — this is the before-number
+
+- [ ] 1.1 Add a `release` configure/build/test preset to `CMakePresets.json`
+      (inherit `default`, `CMAKE_BUILD_TYPE=Release`). Add `release` to the CI
+      matrix at `.github/workflows/ci.yml:18`. Point the README build steps
+      (`README.md:131`) at it.
+- [ ] 1.2 Record in `docs/benchmark-report.md`: one-shot wall and per-phase
+      `phase_ms` for Debug vs Release, and that `graph.json` is byte-identical
+      between them. (Measured while planning: 449 ms -> 123 ms, byte-identical.)
+- [ ] 1.3 Capture the pre-change graph baseline, with commands, into the change
+      dir: `CALLS` edge count; call-target kind histogram; function nodes with no
+      incoming `CALLS`; function nodes with zero call/ref/import edge; count of
+      `class` nodes labelled `cgraph`; share of `method` edges originating at one;
+      top-10 nodes by degree; and the share of 300 random connected function pairs
+      whose shortest path crosses a namespace-as-class node.
+
+## 2. Cause D first — remove the god node (smallest change, clears the noise)
+
+Doing D before A/B means the call-edge numbers are measured against a graph that
+is no longer dominated by namespace containment.
+
+- [ ] 2.1 Remove `namespace_definition` from `class_node_types` in `cpp_config()`
+      (`src/engine/configured_extractors.cpp:54`).
+- [ ] 2.2 Decide and record: drop namespace nodes entirely, or give them a
+      distinct kind (e.g. `module`) that `add_containment_edge`
+      (`src/engine/extractor.cpp:195`) maps to `contains`, never `method`.
+      Prefer the distinct kind — namespace grouping is real structure; calling it
+      a class is what was wrong.
+- [ ] 2.3 If namespace nodes are kept, exclude them from centrality and god-node
+      ranking in `src/engine/analysis.cpp` (guard alongside the existing memory-node
+      guards at `:219`, `:254`, `:266-267`).
+- [ ] 2.4 Re-run §1.3. Expect: 96 fewer `class` nodes, ~416 `method` edges
+      reclassified or gone, `class 'cgraph'` off the top-degree list, and the
+      91% path-through-namespace share collapsing.
+- [ ] 2.5 Update `tests/smoke/cpp_extractor_test.cpp` and
+      `tests/smoke/extractor_goldens_test.cpp` for the reclassification.
+
+## 3. Cause A — bare C/C++ function labels
+
+- [ ] 3.1 Promote `declarator_name` (`src/engine/cpp_extractor.cpp:106-119`) out
+      of the anonymous namespace; declare it in
+      `src/engine/include/cgraph/cpp_extractor.hpp`. It already descends through
+      pointer/reference/array/parenthesized wrappers and already applies
+      `name_tail` to qualified identifiers, destructor names, and operator names —
+      do not reimplement it.
+- [ ] 3.2 Add a `ResolveFunctionName`-shaped wrapper and set
+      `config.resolve_function_name` in `c_config()`
+      (`src/engine/configured_extractors.cpp:42-44`), mirroring
+      `javascript_extractor.cpp:496`. The hook is consulted first at
+      `extractor.cpp:59-60`, so nothing else needs to change.
+- [ ] 3.3 Confirm the fallthrough still works: if `declarator_name` returns empty
+      for some construct, `label_for_node` must still reach the `name_fields` path
+      rather than dropping the node (`extractor.cpp:59-66`). A silently dropped
+      symbol is worse than an ugly label.
+- [ ] 3.4 Verify labels for: free function, method, constructor, destructor
+      (`~Foo`), `operator==`, function returning a reference (today
+      `'& lock_map_mutex()'`), templated function, and a multi-line signature
+      (today `walk_node` at 345 chars / 11 lines). Add each to
+      `tests/smoke/cpp_extractor_test.cpp`.
+- [ ] 3.5 Update `tests/smoke/cpp_extractor_test.cpp:126` — it hardcodes the buggy
+      label: `has_edge(graph, "handle(const Payload& p, Service& s)", "Payload",
+      "references")` becomes `"handle"`.
+
+## 4. Cause B — normalize the callee side
+
+- [ ] 4.1 Add `.call_member_node_types = {"field_expression"}` and
+      `.call_member_field = "field"` to `c_config()`, modelled on `go_config()`
+      (`:205-206`) and `csharp_config()` (`:90-91`).
+- [ ] 4.2 Confirm against the vendored tree-sitter-cpp grammar that both `obj.f()`
+      and `ptr->f()` yield `field_expression` with a `field` child. If `->` uses a
+      different node type, add it — do not assume.
+- [ ] 4.3 Apply `name_tail` to a `qualified_identifier` callee in `add_raw_call`
+      (`src/engine/extractor.cpp:161-163`) so `cgraph::run_one_shot` records
+      `run_one_shot`.
+- [ ] 4.4 Assert member calls set `is_member_call` (`extractor.cpp:150-153`) and
+      so stay excluded from project-wide matching (`graph_builder.cpp:396`). A
+      member call escaping to project-wide matching would invent edges.
+- [ ] 4.5 Golden case: a struct with a method, called via `.` and via `->` from
+      the same file, plus a `ns::free_function()` call, all produce `CALLS` edges.
+
+## 5. Cause C — a call target must be callable
+
+- [ ] 5.1 Apply the per-file kind filter (`graph_builder.cpp:309`) to
+      `label_index` (`:61-67`) or to the project-wide lookup. Exclude `field`;
+      keep `function` and `class`.
+- [ ] 5.2 Enumerate every edge this deletes — expected: the 12 `field`-targeting
+      edges measured today (`unix_endpoint_is_live -> connect`,
+      `request_over_unix_socket -> connect`, and so on). Justify each in the PR. A
+      removal outside that set is a defect.
+
+## 6. Make call resolution measurable
+
+- [ ] 6.1 Add to `BuildStats` (`src/engine/include/cgraph/operation_stats.hpp:47-67`):
+      `raw_calls_total`, `resolved_same_file`, `resolved_project_unique`,
+      `dropped_unknown`, `dropped_ambiguous`, `dropped_self`.
+- [ ] 6.2 Populate at each resolve and `continue` site in `resolve_raw_calls`
+      (`src/engine/graph_builder.cpp:383-416`); serialize in
+      `src/engine/operation_stats.cpp` so they reach `stats.json`. Assert the
+      partition sums to `raw_calls_total`.
+- [ ] 6.3 `bench/run.sh:30-31` records `phase_ms` and the new counters, not just
+      `node_count`/`edge_count`.
+
+## 7. Prove the graph got better, not just bigger
+
+- [ ] 7.1 Re-run every §1.3 measurement. Report before/after for each.
+- [ ] 7.2 `ctest --preset default` green (64 tests) and `ctest --preset sanitizers`
+      green. Golden diffs must reduce to: label changes from §3, the §5.2
+      enumerated removals, the §2 reclassification, and added edges. Anything else
+      is a defect.
+- [ ] 7.3 **The acceptance test.** All five must return real callers, not
+      markdown: `impact` on `merge_fragments` names `pipeline.cpp` and
+      `incremental_update.cpp`; `impact` on `run_one_shot` names `cli/main.cpp`
+      and `semantic_orchestration.cpp`; find-callers on `handle_daemon_request`,
+      `make_id`, and `publish_graph_snapshot` return non-empty. Quote the output.
+- [ ] 7.4 `path {"source":"handle_daemon_request","target":"publish_graph_snapshot"}`
+      routes through `mutate_graph_snapshot` (`daemon_ops.cpp:1728-1732`), not
+      through `namespace cgraph`.
+- [ ] 7.5 Re-measure daemon read latency — baseline taken while planning was
+      `status` 17 ms, `query` 19 ms, `context` 32 ms at 4k, 115 ms at 8k, including
+      client spawn. A denser graph makes every full-scan read op more expensive; if
+      this regresses materially, the snapshot index moves up the backlog.
+
+## 8. Decide and document the id migration
+
+- [ ] 8.1 State in the proposal and PR that C/C++ node ids change, and that
+      persisted incremental indexes rebuild once.
+- [ ] 8.2 Decide the fate of existing `graph_remember` checkpoints, whose
+      `concerns` edges point at old C/C++ ids. Recommended: accept the orphaning —
+      there is no release tag or packaged distribution yet — and say so explicitly.
+      If not acceptable, this needs its own migration change first.
+- [ ] 8.3 Verify a daemon running against a stale persisted index recovers rather
+      than serving a half-migrated graph: start on the old index, confirm the
+      rebuild path, confirm `freshness.verified` and `content_root` are correct
+      afterwards.
+
+## 9. Make the context budget honest
+
+- [ ] 9.1 Keep `weight[i]` as slice cost for knapsack ranking
+      (`src/engine/daemon_ops.cpp:314-319`) — the comment at `:309-313` records
+      why. After backtracking (`:1060-1075`), compute each selected entry's true
+      serialized cost as greedy already does (`:1129`).
+- [ ] 9.2 Drop selected entries in ascending value order until the true total fits;
+      count them into the existing `omitted` field.
+- [ ] 9.3 Report the true total as `tokens_used` (`:1097`) and assert the
+      serialized `included` array never exceeds `budget`.
+- [ ] 9.4 Mark snippet-less knapsack entries with `snippet_omitted`, matching
+      greedy (`:1142`).
+- [ ] 9.5 Cover in `tests/smoke/daemon_ops_test.cpp`: across several budgets,
+      `estimate_tokens(response["included"].dump()) <= budget`, and `tokens_used`
+      within tolerance of the measured size. Include a 1k budget to confirm the
+      focal entry is never dropped.
+
+## 10. Restore the retrieval gate's teeth
+
+- [ ] 10.1 Re-measure recall at 2k/4k/8k on
+      `tests/fixtures/pack_context_parity/` after §2–§9 land.
+- [ ] 10.2 Re-pin `tests/smoke/retrieval_quality_test.cpp:111` to the measured
+      values, keeping `kTol = 0.03`. Record in the comment which commit the numbers
+      came from, so the next fixture rewrite cannot silently orphan them again —
+      that is what `d5030c1` did.
+- [ ] 10.3 Confirm the gate goes red on a deliberate regression (force
+      `gather="fixed"`), then revert.
+
+## 11. Report
+
+- [ ] 11.1 PR body carries before/after for: `CALLS` count, call-target kind
+      histogram, function nodes with no incoming call, namespace-as-class counts,
+      path-through-namespace share, the resolution counters, Debug-vs-Release
+      timing, and the `graph_context` overshoot ratio at a 3000-token budget. Per
+      CLAUDE.md, benchmarks belong in the PR description.
+- [ ] 11.2 Quote the §7.3 acceptance output verbatim.
+- [ ] 11.3 Say plainly whether retrieval recall moved. If it did not, the
+      hypothesis that the 3–7-hop misses are missing-call-edge misses is wrong, and
+      that belongs in `research/` as a finding.
