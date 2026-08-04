@@ -35,6 +35,18 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       .name_fields = {"name", "declarator"},
       .body_fields = {"body"},
       .call_accessor_fields = {"function"},
+      // `obj.method()`, `ptr->method()`, and `obj.*pm()` are all `field_expression`
+      // in the C and C++ grammars, with the bare name in the `field` field -- so
+      // one entry covers every member-call spelling. Go and C# already declared
+      // their equivalents (`selector_expression`/`field`,
+      // `member_access_expression`/`name`); C and C++ declared neither, so
+      // add_raw_call fell through to the verbatim receiver expression and recorded
+      // `state.stats.record` as the callee name, which matched nothing. A member
+      // call stays scoped to the caller's own file, because the receiver type is
+      // unknown and a project-wide name match would be a guess.
+      .call_member_node_types = {"field_expression"},
+      .call_member_field = "field",
+      .call_scope_separator = "::",
   };
   // `#include` -> imports, struct members -> defines, member/param/return types
   // -> references. cpp_relation_handler also emits inherits, which is a no-op for

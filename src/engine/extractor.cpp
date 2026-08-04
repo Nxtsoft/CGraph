@@ -185,6 +185,19 @@ void add_raw_call(
     return;
   }
 
+  // Reduce a qualified callee to its tail, so `cgraph::run_one_shot(...)` keys on
+  // `run_one_shot` and matches the declaration. Left as a non-member call: the
+  // name is fully determined by the qualification, so project-wide resolution is
+  // sound here in a way it is not for `obj.method()`.
+  if (!config.call_scope_separator.empty() && !is_member_call) {
+    if (const auto pos = label.rfind(config.call_scope_separator); pos != std::string::npos) {
+      label = label.substr(pos + config.call_scope_separator.size());
+    }
+  }
+  if (label.empty()) {
+    return;
+  }
+
   raw_calls.push_back(RawCall{
       .caller_id = caller_id,
       .callee_label = std::move(label),

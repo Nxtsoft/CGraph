@@ -92,19 +92,24 @@ is no longer dominated by namespace containment.
 
 ## 4. Cause B — normalize the callee side
 
-- [ ] 4.1 Add `.call_member_node_types = {"field_expression"}` and
+- [x] 4.1 Add `.call_member_node_types = {"field_expression"}` and
       `.call_member_field = "field"` to `c_config()`, modelled on `go_config()`
       (`:205-206`) and `csharp_config()` (`:90-91`).
-- [ ] 4.2 Confirm against the vendored tree-sitter-cpp grammar that both `obj.f()`
-      and `ptr->f()` yield `field_expression` with a `field` child. If `->` uses a
-      different node type, add it — do not assume.
-- [ ] 4.3 Apply `name_tail` to a `qualified_identifier` callee in `add_raw_call`
-      (`src/engine/extractor.cpp:161-163`) so `cgraph::run_one_shot` records
-      `run_one_shot`.
-- [ ] 4.4 Assert member calls set `is_member_call` (`extractor.cpp:150-153`) and
+- [x] 4.2 Verified in the vendored grammar, not assumed: `field_expression` is
+      `field('operator', choice('.', '.*', '->'))` with `field('field', ...)`
+      (`vendor/tree-sitter/grammars/cpp/grammar.js:1119`, and the C grammar at
+      `:1202`), so one entry covers `.`, `->`, and `.*`.
+- [x] 4.3 Added `LanguageConfig::call_scope_separator` (`"::"` for C/C++) and
+      reduce a non-member callee label to its tail in `add_raw_call`. Done on the
+      label rather than by a field lookup because `qualified_identifier` NESTS in
+      tree-sitter-cpp (`field('name', choice(..., $.qualified_identifier, ...))`),
+      so a single lookup would still leave a qualified name behind. A qualified
+      call stays a NON-member call, because the qualification determines the name
+      and project-wide resolution is sound -- unlike `obj.method()`.
+- [x] 4.4 Assert member calls set `is_member_call` (`extractor.cpp:150-153`) and
       so stay excluded from project-wide matching (`graph_builder.cpp:396`). A
       member call escaping to project-wide matching would invent edges.
-- [ ] 4.5 Golden case: a struct with a method, called via `.` and via `->` from
+- [x] 4.5 Golden case: a struct with a method, called via `.` and via `->` from
       the same file, plus a `ns::free_function()` call, all produce `CALLS` edges.
 
 ## 5. Cause C — a call target must be callable
