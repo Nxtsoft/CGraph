@@ -127,10 +127,11 @@ is no longer dominated by namespace containment.
 
 ## 6. Make call resolution measurable
 
-- [ ] 6.1 Add to `BuildStats` (`src/engine/include/cgraph/operation_stats.hpp:47-67`):
-      `raw_calls_total`, `resolved_same_file`, `resolved_project_unique`,
-      `dropped_unknown`, `dropped_ambiguous`, `dropped_self`.
-- [ ] 6.2 Populate at each resolve and `continue` site in `resolve_raw_calls`
+- [x] 6.1 Added a `CallResolution` struct in
+      `src/engine/include/cgraph/operation_stats.hpp` (embedded in `BuildStats` as
+      `calls`) with `total` plus the five outcomes, a `balances()` invariant, and
+      `resolved_rate()`. `resolve_raw_calls` takes an optional out-param.
+- [x] 6.2 Populate at each resolve and `continue` site in `resolve_raw_calls`
       (`src/engine/graph_builder.cpp:383-416`); serialize in
       `src/engine/operation_stats.cpp` so they reach `stats.json`. Assert the
       partition sums to `raw_calls_total`.

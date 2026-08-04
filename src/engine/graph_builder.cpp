@@ -299,7 +299,8 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
   std::erase_if(graph.nodes, [&removed](const Node& node) { return removed.contains(node.id); });
 }
 
-void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls) {
+void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
+                       CallResolution* outcomes) {
   const auto index = label_index(graph);
   std::unordered_set<std::string> node_ids;
   std::unordered_map<std::string, std::string> source_file_by_id;
@@ -380,6 +381,7 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     seen_edges.insert(edge_key(edge));
   }
 
+  CallResolution tally;
   for (const auto& raw_call : raw_calls) {
     if (raw_call.callee_label.empty() || is_builtin_global(raw_call.callee_label)) {
       continue;
@@ -390,16 +392,27 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     if (raw_call.caller_id.empty() || !node_ids.contains(raw_call.caller_id)) {
       continue;
     }
+    // Counted from here: a call with a real caller and a callee name that is not a
+    // language built-in is a call this resolver is answerable for.
+    ++tally.total;
     const auto& key = callee_key_for(raw_call.callee_label);
     const auto& caller_file = source_file_by_id[raw_call.caller_id];
 
     std::string target_id;
     auto confidence = Confidence::Extracted;
+    bool same_file_hit = false;
 
     // 1. A symbol declared in the caller's own file (local helper, sibling fn).
     if (const auto file = local_by_file.find(caller_file); file != local_by_file.end()) {
       if (const auto slot = file->second.find(key); slot != file->second.end()) {
         target_id = slot->second;
+        // An empty slot marks a name declared more than once in the file, so it
+        // resolves to no single target -- ambiguous, not unknown.
+        if (target_id.empty()) {
+          ++tally.dropped_ambiguous;
+          continue;
+        }
+        same_file_hit = true;
       }
     }
 
@@ -411,7 +424,12 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     //    name, so it stays scoped to the caller's own file (handled above).
     if (target_id.empty() && !raw_call.is_member_call) {
       const auto targets = index.find(key);
-      if (targets == index.end() || targets->second.size() != 1) {
+      if (targets == index.end()) {
+        ++tally.dropped_unknown;
+        continue;
+      }
+      if (targets->second.size() != 1) {
+        ++tally.dropped_ambiguous;
         continue;
       }
       target_id = targets->second.front();
@@ -427,9 +445,17 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
       confidence = has_import_evidence ? Confidence::Extracted : Confidence::Inferred;
     }
 
-    if (target_id.empty() || target_id == raw_call.caller_id) {
-      continue;  // unresolved or self-edge
+    if (target_id.empty()) {
+      // A member call that missed its own file: the receiver type is unknown, so
+      // the project-wide tier deliberately does not apply.
+      ++tally.dropped_unknown;
+      continue;
     }
+    if (target_id == raw_call.caller_id) {
+      ++tally.dropped_self;
+      continue;
+    }
+    ++(same_file_hit ? tally.resolved_same_file : tally.resolved_project_unique);
     Edge edge{
         .source = raw_call.caller_id,
         .target = target_id,
@@ -439,6 +465,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     if (seen_edges.insert(edge_key(edge)).second) {
       graph.edges.push_back(std::move(edge));
     }
+  }
+  if (outcomes != nullptr) {
+    *outcomes = tally;
   }
 }
 

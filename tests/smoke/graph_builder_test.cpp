@@ -112,7 +112,28 @@ int test_call_scoping() {
       {.caller_id = caller, .callee_label = "Ctor", .source_file = "/p/a.ts"},
   };
   cgraph::resolve_imports(graph);
-  cgraph::resolve_raw_calls(graph, calls);
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  // Every call site this resolver is answerable for lands in exactly one outcome.
+  // Without this, a future resolution path could be added without being counted
+  // and the reported rate would quietly stop meaning anything.
+  if (!outcomes.balances()) {
+    return 1;
+  }
+  // The fixture's seven counted calls: localHelper (same file), helper and Ctor
+  // (project-unique), orphan (project-unique, unimported), dup (ambiguous),
+  // connect (a field, so not callable -> unknown). `Map` is a built-in and is
+  // never counted.
+  if (outcomes.total != 6) {
+    return 1;
+  }
+  if (outcomes.resolved_same_file != 1 || outcomes.resolved_project_unique != 3) {
+    return 1;
+  }
+  if (outcomes.dropped_ambiguous != 1 || outcomes.dropped_unknown != 1) {
+    return 1;
+  }
 
   // Same-file declaration resolves with EXTRACTED confidence.
   if (edge_confidence(graph, caller, local_helper, "CALLS") != cgraph::Confidence::Extracted) {
