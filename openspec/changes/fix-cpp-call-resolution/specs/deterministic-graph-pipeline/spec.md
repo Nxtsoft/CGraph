@@ -39,7 +39,9 @@ A call site's callee key SHALL be the callee's name, normalized the same way as 
 - **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
 
 ### Requirement: A call target must be callable
-Project-wide call resolution SHALL only consider candidates whose kind can be invoked: `function` and `class`. `class` remains eligible because `Foo()` is a constructor call in Python and JavaScript. A `field` node SHALL NOT be the target of a `CALLS` edge.
+Project-wide call resolution SHALL only consider candidates whose kind can be invoked, and that set SHALL be the same one the per-file table admits: `function`, `class`, `type`, and `variable`. `class` is eligible because `Foo()` is a constructor call in Python and JavaScript, and `type`/`variable` because a module-level binding can hold a callable. A `field` node SHALL NOT be the target of a `CALLS` edge.
+
+The two resolution tiers SHALL agree on what counts as a symbol. The defect being corrected is that the project-wide tier applied no kind filter at all, not that it applied a different one.
 
 #### Scenario: A syscall name colliding with a struct field emits no edge
 - **GIVEN** a struct declares a field named `connect`

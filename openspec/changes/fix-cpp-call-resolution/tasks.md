@@ -114,9 +114,14 @@ is no longer dominated by namespace containment.
 
 ## 5. Cause C — a call target must be callable
 
-- [x] 5.1 Apply the per-file kind filter (`graph_builder.cpp:309`) to
-      `label_index` (`:61-67`) or to the project-wide lookup. Exclude `field`;
-      keep `function` and `class`.
+- [x] 5.1 Applied the per-file kind filter to `label_index`, admitting exactly the
+      set the per-file table admits -- `function`, `class`, `type`, `variable` --
+      and excluding `field`. A first pass narrowed it to `function`/`class` only;
+      self-review caught that as a gratuitous behavior change beyond the defect
+      (the project-wide tier had NO filter, not a different one). Verified
+      behaviour-neutral on this repo: 1154 CALLS and 0 field targets either way,
+      because no `type`/`variable` call target exists here -- but the wider set is
+      what keeps the two tiers consistent for other repos.
 - [x] 5.2 By the time this landed, Causes A and B had already re-resolved most of
       the original 12 to real functions, leaving 5 field-targeting edges:
       `unix_endpoint_is_live -> connect`, `request_over_unix_socket -> connect`,

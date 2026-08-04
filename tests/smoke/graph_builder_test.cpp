@@ -88,6 +88,8 @@ int test_call_scoping() {
   const auto field_named_connect = cgraph::make_id("/p/f.ts:connect");
   // A class IS a callable target: `Ctor()` is a constructor call.
   const auto ctor_class = cgraph::make_id("/p/g.ts:Ctor");
+  // ...and so is a module-level binding that holds a callable.
+  const auto callable_binding = cgraph::make_id("/p/h.ts:boundCallable");
 
   cgraph::GraphSnapshot graph;
   graph.nodes.push_back({.id = a_file, .label = "a.ts", .source_file = "/p/a.ts", .kind = "file"});
@@ -99,6 +101,7 @@ int test_call_scoping() {
   graph.nodes.push_back({.id = dup_two, .label = "dup", .source_file = "/p/e.ts", .kind = "function"});
   graph.nodes.push_back({.id = field_named_connect, .label = "connect", .source_file = "/p/f.ts", .kind = "field"});
   graph.nodes.push_back({.id = ctor_class, .label = "Ctor", .source_file = "/p/g.ts", .kind = "class"});
+  graph.nodes.push_back({.id = callable_binding, .label = "boundCallable", .source_file = "/p/h.ts", .kind = "variable"});
   // a.ts imports `helper` -> the resolved call to it should be EXTRACTED.
   graph.edges.push_back({.source = a_file, .target = imported_helper, .relation = "imports"});
 
@@ -110,6 +113,7 @@ int test_call_scoping() {
       {.caller_id = caller, .callee_label = "Map", .source_file = "/p/a.ts"},
       {.caller_id = caller, .callee_label = "connect", .source_file = "/p/a.ts"},
       {.caller_id = caller, .callee_label = "Ctor", .source_file = "/p/a.ts"},
+      {.caller_id = caller, .callee_label = "boundCallable", .source_file = "/p/a.ts"},
   };
   cgraph::resolve_imports(graph);
   cgraph::CallResolution outcomes;
@@ -121,14 +125,14 @@ int test_call_scoping() {
   if (!outcomes.balances()) {
     return 1;
   }
-  // The fixture's seven counted calls: localHelper (same file), helper and Ctor
-  // (project-unique), orphan (project-unique, unimported), dup (ambiguous),
-  // connect (a field, so not callable -> unknown). `Map` is a built-in and is
-  // never counted.
-  if (outcomes.total != 6) {
+  // The fixture's counted calls: localHelper (same file); helper, Ctor,
+  // boundCallable and orphan (project-unique, the last unimported); dup
+  // (ambiguous); connect (a field, so not callable -> unknown). `Map` is a
+  // built-in and is never counted.
+  if (outcomes.total != 7) {
     return 1;
   }
-  if (outcomes.resolved_same_file != 1 || outcomes.resolved_project_unique != 3) {
+  if (outcomes.resolved_same_file != 1 || outcomes.resolved_project_unique != 4) {
     return 1;
   }
   if (outcomes.dropped_ambiguous != 1 || outcomes.dropped_unknown != 1) {
@@ -158,9 +162,14 @@ int test_call_scoping() {
   if (has_edge(graph, caller, field_named_connect, "CALLS")) {
     return 1;
   }
-  // A CLASS is callable, because `Ctor()` is a constructor call.
+  // A CLASS is callable, because `Ctor()` is a constructor call. The eligible set
+  // is the same one the per-file table admits (function/class/type/variable), so
+  // the two resolution tiers agree on what a symbol is; only `field` is excluded.
   if (!has_edge(graph, caller, ctor_class, "CALLS")) {
     return 1;
+  }
+  if (!has_edge(graph, caller, callable_binding, "CALLS")) {
+    return 1;  // a module-level binding can hold a callable
   }
   // A built-in global (`Map`) is never wired to a project node, even though no
   // project node named Map exists here — the call is simply dropped.

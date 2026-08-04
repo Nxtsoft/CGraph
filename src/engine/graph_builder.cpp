@@ -58,12 +58,15 @@ constexpr std::string_view kCallRelation = "CALLS";
   return names.contains(label);
 }
 
-// True when a node's kind can be the target of a call. `class` stays eligible
-// because `Foo()` is a genuine constructor call in Python and JavaScript, so a
-// class-targeting CALLS edge there is correct. A `field` never is: a struct
-// member named `connect` is not what `::connect(...)` invokes.
+// True when a node's kind can be the target of a call. This is deliberately the
+// SAME set the per-file table admits (see resolve_raw_calls), so the two
+// resolution tiers agree on what a symbol is; the project-wide tier had no filter
+// at all, which is the defect. `class` is eligible because `Foo()` is a genuine
+// constructor call in Python and JavaScript, and `type`/`variable` because a
+// module-level binding can hold a callable. A `field` is not: a struct member
+// named `connect` is not what `::connect(...)` invokes.
 [[nodiscard]] bool is_callable_kind(std::string_view kind) {
-  return kind == "function" || kind == "class";
+  return kind == "function" || kind == "class" || kind == "type" || kind == "variable";
 }
 
 // Index for project-wide call resolution. The per-file table filters candidates
