@@ -173,45 +173,27 @@ is no longer dominated by namespace containment.
       rebuild path, confirm `freshness.verified` and `content_root` are correct
       afterwards.
 
-## 9. Make the context budget honest
+## 9-10. Context budget and gate re-pin — MOVED OUT
 
-- [ ] 9.1 Keep `weight[i]` as slice cost for knapsack ranking
-      (`src/engine/daemon_ops.cpp:314-319`) — the comment at `:309-313` records
-      why. After backtracking (`:1060-1075`), compute each selected entry's true
-      serialized cost as greedy already does (`:1129`).
-- [ ] 9.2 Drop selected entries in ascending value order until the true total fits;
-      count them into the existing `omitted` field.
-- [ ] 9.3 Report the true total as `tokens_used` (`:1097`) and assert the
-      serialized `included` array never exceeds `budget`.
-- [ ] 9.4 Mark snippet-less knapsack entries with `snippet_omitted`, matching
-      greedy (`:1142`).
-- [ ] 9.5 Cover in `tests/smoke/daemon_ops_test.cpp`: across several budgets,
-      `estimate_tokens(response["included"].dump()) <= budget`, and `tokens_used`
-      within tolerance of the measured size. Include a 1k budget to confirm the
-      focal entry is never dropped.
+Implemented and measured, then deliberately moved to its own change: enforcing the
+stated budget erases the knapsack's advantage over greedy, because the advantage was
+the overshoot. On the frozen fixture at 2k/4k/8k, knapsack goes 0.590/0.641/0.660
+(over-packing) -> 0.445/0.532/0.624 (honest), against greedy's 0.462/0.544/0.620.
+The two packers were never compared at the same real cost.
 
-## 10. Restore the retrieval gate's teeth (packer scope only)
+Re-pinning two committed gates to make an extraction PR pass would have buried that.
+See `openspec/changes/honest-context-budget/` (proposal, tasks, delta spec, and
+`reference-implementation.patch`) and `research/honest-context-budget/results.md`.
 
-Both gates read the FROZEN fixture, not a live build
-(`retrieval_quality_test.cpp:36-37`, `pack_context_parity_test.cpp:54-57`), so this
-section is about the packer and §9, not about the extraction work. See `design.md`
-for why regenerating the fixture would make before/after incomparable.
-
-- [ ] 10.1 Re-measure recall at 2k/4k/8k on
-      `tests/fixtures/pack_context_parity/` after §9 lands.
-- [ ] 10.2 Re-pin `tests/smoke/retrieval_quality_test.cpp:111` to the measured
-      values, keeping `kTol = 0.03`. The current pins (0.224/0.315/0.383) were
-      orphaned by the fixture rewrite in `d5030c1`; live is ~0.454/0.468/0.468, so
-      at 2k the gate fires only below 0.194 and tolerates a 57% regression. Record
-      the source commit in the comment so the next fixture rewrite cannot silently
-      orphan them again.
-- [ ] 10.3 Confirm the gate goes red on a deliberate regression (force
-      `gather="fixed"`), then revert.
-- [ ] 10.4 Do NOT regenerate the fixture in this change, and do NOT claim a recall
-      improvement from §2-§5. The eval labels are signature-bearing node ids that
-      this change rewrites; regenerating both halves yields a different graph and
-      different labels, so the number would not be comparable. Report the retrieval
-      effect as unmeasured, with that reason.
+- [x] 9.1 Budget fix implemented and verified against a live daemon at budgets
+      500-8000: overshoot 6.1x -> within budget at every size, every returned entry
+      carrying a snippet. Preserved as a reviewable patch.
+- [x] 9.2 Measured the consequence and wrote it up rather than absorbing it.
+- [x] 9.3 Filed `honest-context-budget` with the decisions the follow-up owes:
+      whether a snippet-less row counts as retrieved context, and whether knapsack
+      should stay the default.
+- [x] 10.1 The stale `retrieval_quality_test` pins move with it -- they need
+      re-pinning regardless of the packer outcome, and belong in the same change.
 
 ## 11. Report
 
