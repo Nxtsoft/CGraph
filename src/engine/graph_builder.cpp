@@ -58,9 +58,27 @@ constexpr std::string_view kCallRelation = "CALLS";
   return names.contains(label);
 }
 
+// True when a node's kind can be the target of a call. `class` stays eligible
+// because `Foo()` is a genuine constructor call in Python and JavaScript, so a
+// class-targeting CALLS edge there is correct. A `field` never is: a struct
+// member named `connect` is not what `::connect(...)` invokes.
+[[nodiscard]] bool is_callable_kind(std::string_view kind) {
+  return kind == "function" || kind == "class";
+}
+
+// Index for project-wide call resolution. The per-file table filters candidates
+// to declared symbol kinds; this one filters to *callable* kinds, which is
+// stricter and is what a call target has to be. Without it a call resolved to
+// whatever unique node happened to share the name -- measured on this repo, 12 of
+// 122 CALLS edges pointed at a struct field, so `impact` reported false
+// dependents (`unix_endpoint_is_live` "called" a field named `connect` because it
+// invokes the ::connect syscall).
 [[nodiscard]] std::unordered_map<std::string, std::vector<std::string>> label_index(const GraphSnapshot& graph) {
   std::unordered_map<std::string, std::vector<std::string>> index;
   for (const auto& node : graph.nodes) {
+    if (!is_callable_kind(node.kind)) {
+      continue;
+    }
     index[make_id(node.label)].push_back(node.id);
   }
   return index;
@@ -292,7 +310,6 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
   // empty id marks a label that is declared more than once in the file, so it
   // resolves to no single target.
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;
-  std::unordered_map<std::string, std::string> label_by_id;
   // Cache make_id(source_file) per distinct source path. The confidence grading
   // below re-normalizes caller/callee file paths per raw call (hundreds of
   // thousands of calls over a few thousand distinct files); memoizing keeps the
@@ -301,7 +318,6 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
   for (const auto& node : graph.nodes) {
     node_ids.insert(node.id);
     source_file_by_id.emplace(node.id, node.source_file);
-    label_by_id.emplace(node.id, node.label);
     if (node.source_file.empty()) {
       continue;
     }

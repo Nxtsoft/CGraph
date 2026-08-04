@@ -114,13 +114,16 @@ is no longer dominated by namespace containment.
 
 ## 5. Cause C — a call target must be callable
 
-- [ ] 5.1 Apply the per-file kind filter (`graph_builder.cpp:309`) to
+- [x] 5.1 Apply the per-file kind filter (`graph_builder.cpp:309`) to
       `label_index` (`:61-67`) or to the project-wide lookup. Exclude `field`;
       keep `function` and `class`.
-- [ ] 5.2 Enumerate every edge this deletes — expected: the 12 `field`-targeting
-      edges measured today (`unix_endpoint_is_live -> connect`,
-      `request_over_unix_socket -> connect`, and so on). Justify each in the PR. A
-      removal outside that set is a defect.
+- [x] 5.2 By the time this landed, Causes A and B had already re-resolved most of
+      the original 12 to real functions, leaving 5 field-targeting edges:
+      `unix_endpoint_is_live -> connect`, `request_over_unix_socket -> connect`,
+      `raw_connect -> connect` (all three invoke the ::connect syscall),
+      `status -> enrichment_state`, and `remember_checkpoint -> count`. All 5 are
+      gone; 4 of those callee names now resolve to the real function instead, so
+      total CALLS moved 1155 -> 1154 while field targets went 5 -> 0.
 
 ## 6. Make call resolution measurable
 
