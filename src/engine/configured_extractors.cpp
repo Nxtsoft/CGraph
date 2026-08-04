@@ -46,12 +46,10 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       // unknown and a project-wide name match would be a guess.
       .call_member_node_types = {"field_expression"},
       .call_member_field = "field",
-      // Only a genuine qualified identifier is tail-reduced. Notably NOT
-      // `template_function`, whose text (`wrapper<zoo::Beast>`) also contains
-      // `::`; reducing that fabricates a call to `Beast` and loses the call to
-      // `wrapper`.
-      .call_qualified_node_types = {"qualified_identifier"},
-      .call_scope_separator = "::",
+      .resolve_callee_name = cpp_callee_name,
+      // Grammar-driven callee naming. A text rule cannot do this job: `::` shows up
+      // in nine distinct callee node types, and `ns::make<zoo::Beast>` reduced at
+      // its last `::` yields `Beast>` -- a fabricated call to an unrelated struct.
   };
   // `#include` -> imports, struct members -> defines, member/param/return types
   // -> references. cpp_relation_handler also emits inherits, which is a no-op for
@@ -239,6 +237,7 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
       // receiver/package is not resolved by a project-wide name guess).
       .call_member_node_types = {"selector_expression"},
       .call_member_field = "field",
+      .resolve_callee_name = cpp_callee_name,
   };
   config.import_handler = go_import_handler;
   return config;

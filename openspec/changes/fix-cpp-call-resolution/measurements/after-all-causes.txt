@@ -1,38 +1,38 @@
-nodes 1436  links 2855
+nodes 1437  links 2858
 
 == node kinds ==
-  function     714
-  field        393
+  function     716
+  field        392
   file         171
   class        123
   import       33
   variable     2
 
 == edge relations ==
-  CALLS          1164
-  contains       801
-  defines        393
+  CALLS          1166
+  contains       803
+  defines        392
   imports        316
   references     143
   method         38
 
 == call edges ==
-  total CALLS                1164
-  sourced from a C/C++ file  1118
-  target kinds: {'function': 1161, 'class': 3}
+  total CALLS                1166
+  sourced from a C/C++ file  1120
+  target kinds: {'function': 1163, 'class': 3}
   targeting a field node     0   <- Cause C
 
 == function connectivity ==
-  function nodes                       714
-  ... with NO incoming CALLS           135
+  function nodes                       716
+  ... with NO incoming CALLS           136
   ... with NO call/ref/import edge     37  (5%)
-  mean semantic degree                 3.44
+  mean semantic degree                 3.43
 
 == Cause A signal ==
-  C/C++ function nodes                 669
+  C/C++ function nodes                 671
   ... whose label carries a signature  0  (0%)
   ... zero-argument                    5  (0%)
-  C/C++ -> C/C++ function CALLS edges  1118
+  C/C++ -> C/C++ function CALLS edges  1120
   ... targeting a zero-arg function    0  (0%)
   (a zero-arg share far above the population share means only accidental matches resolve)
   longest C/C++ label                  45 chars, 1 lines
@@ -51,7 +51,7 @@ nodes 1436  links 2855
   deg   32  function  'handle_daemon_request'
 
 == path routing (300 random function pairs, seed 7) ==
-  connected pairs                      268
+  connected pairs                      266
   ... routed via a namespace node      0  (0%)
-  ... routed via a file node           151  (56%)
-  ... containing at least one CALLS    196  (73%)
+  ... routed via a file node           161  (60%)
+  ... containing at least one CALLS    177  (66%)

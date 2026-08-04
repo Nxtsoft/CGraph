@@ -16,7 +16,11 @@ A function, method, or field node's `label` SHALL be the symbol's name, not its 
 - **THEN** the existing name-field path still supplies a label and no node is dropped
 
 ### Requirement: Call sites are keyed on the callee name
-A call site's callee key SHALL be the callee's name, normalized the same way as a declaration label: the tail of a qualified identifier, and the property name of a member access. Resolution order SHALL remain a symbol declared in the caller's own file, then a project-wide symbol whose name is unique. The exactly-one-candidate rule SHALL continue to govern the project-wide tier. A member call SHALL remain scoped to the caller's own file, because the receiver type is unknown. Confidence grading is unchanged: `EXTRACTED` when the caller's file imports the resolved symbol or its module, `INFERRED` when it is only a name match.
+A call site's callee key SHALL be the callee's name, resolved through the grammar: the leaf name reached by descending a qualified identifier's `name` field (which nests to arbitrary depth), a template function's or template method's `name`, and the property name of a member access.
+
+Resolution SHALL NOT be performed by reducing the callee's text at a scope separator. `::` legitimately appears in nine distinct callee node types, so no text rule distinguishes them: `ns::make<zoo::Beast>` reduced at its last `::` yields `Beast>`, which normalizes to `Beast` and fabricates a call to an unrelated struct while losing the real one.
+
+A callee that names explicitly global scope (a qualified identifier with no scope, `::stat(...)`) SHALL resolve to nothing: it names a platform symbol, not a project one. Resolution order SHALL remain a symbol declared in the caller's own file, then a project-wide symbol whose name is unique. The exactly-one-candidate rule SHALL continue to govern the project-wide tier. A member call SHALL remain scoped to the caller's own file, because the receiver type is unknown. Confidence grading is unchanged: `EXTRACTED` when the caller's file imports the resolved symbol or its module, `INFERRED` when it is only a name match.
 
 #### Scenario: A cross-file call to a parameterized function resolves
 - **GIVEN** `graph_builder.cpp` declares `merge_fragments`
@@ -33,10 +37,14 @@ A call site's callee key SHALL be the callee's name, normalized the same way as 
 - **THEN** a `CALLS` edge exists to that method node
 - **AND** the call is never matched project-wide
 
-#### Scenario: A qualified callee is reduced only when it is genuinely qualified
-- **GIVEN** a call `wrapper<zoo::Beast>(1)` whose callee is a template instantiation
+#### Scenario: A template argument is never mistaken for the callee
+- **GIVEN** calls `wrapper<zoo::Beast>(1)` and `ns::made<zoo::Beast>(2)`
 - **THEN** no `CALLS` edge to `Beast` is emitted
-- **AND** an explicitly global `::symbol(...)` call does not resolve to a same-named local symbol
+- **AND** edges to `wrapper` and `made` are emitted
+
+#### Scenario: An explicitly global callee resolves to nothing
+- **WHEN** a function calls `::stat_local_probe(p)` and a local symbol of that name exists
+- **THEN** no `CALLS` edge to the local symbol is emitted
 
 #### Scenario: A same-file overload set resolves to its first declaration
 - **GIVEN** two declarations in one file share the name `add`

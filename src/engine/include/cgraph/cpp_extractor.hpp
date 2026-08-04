@@ -29,6 +29,14 @@ namespace cgraph {
 // instance), which leaves label_for_node's existing name-field path in charge.
 void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment);
 [[nodiscard]] std::string cpp_function_name(const TSNode& node, const ExtractionContext& context);
+
+// cpp_callee_name is the `resolve_callee_name` hook for the C family: the leaf
+// name of a call's callee, reached through the grammar. `::` legitimately appears
+// in nine distinct callee node types, so reducing the callee TEXT at a separator
+// misfires -- `ns::make<zoo::Beast>` becomes `Beast>` (then `Beast`), fabricating
+// a call to an unrelated struct. Returns empty for an explicitly global callee
+// (`::stat(...)`), which names a platform symbol rather than a project one.
+[[nodiscard]] std::string cpp_callee_name(const TSNode& node, const ExtractionContext& context);
 void cpp_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id, std::vector<RawRelation>& out);
 void cpp_field_walk(const TSNode& node, const ExtractionContext& context, Fragment& fragment, std::vector<RawCall>& raw_calls);
 

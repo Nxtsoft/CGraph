@@ -110,10 +110,11 @@ int main() {
   guard.nodes.push_back(cgraph::Node{.id = "c3", .label = "three_up", .source_file = "cols.cpp",
                                      .source_location = cgraph::SourceLocation{.start_line = 7, .start_column = 62},
                                      .kind = "function"});
-  // Enrichment nodes carry NO source_file and NO source_location, so the exact
-  // pass skips them entirely and the fuzzy pass is their only merge path. Two
-  // concepts with one label are one idea and must still merge, or enrichment could
-  // never be deduplicated again.
+  // A `concept` carries NO source_file and NO source_location, so the exact pass
+  // skips it entirely and the fuzzy pass is its only merge path. Two concepts with
+  // one label are one idea and must still merge. (`document` and `media` are NOT
+  // like this -- they do carry a source_file -- so they are governed by the
+  // from-a-file branch instead.)
   guard.nodes.push_back(cgraph::Node{.id = "k1", .label = "OpenSpec Change Lifecycle", .kind = "concept"});
   guard.nodes.push_back(cgraph::Node{.id = "k2", .label = "OpenSpec Change Lifecycle", .kind = "concept"});
   // ...but a site-less concept must never absorb a sited code symbol, because

@@ -335,11 +335,25 @@ void semantic_dedup_impl(
         // same-named-but-distinct symbols in different files and, since labels
         // became bare names, overload sets within one file.
         //
-        // Nodes with NO source_file are the opposite case. An enrichment `concept`
-        // or `document` never enters the exact pass at all, so the fuzzy pass is its
-        // ONLY merge path. Two concepts with one label really are one idea, and
-        // refusing them here would mean enrichment could never be deduplicated
-        // again -- a regression against graphs already on disk.
+        // Nodes with NO source_file are the opposite case: they never enter the
+        // exact pass, so the fuzzy pass is their only merge path. Two such nodes
+        // with one label really are one idea, and refusing them would mean they
+        // could never be deduplicated again.
+        //
+        // In practice that is `concept` only. `document` and `media` DO carry a
+        // source_file (measured: 230/230 and 4/4 on this repo's enriched graph) --
+        // integrations/skills/cgraph-enrich/SKILL.md tells hosts to set it -- they
+        // just carry no source_location. So they take the `left_from_source` branch
+        // above, and identical-label documents are correctly kept apart.
+        //
+        // KNOWN, PRE-EXISTING, NOT FIXED HERE: because documents have no
+        // source_location, the site check below cannot fire for them, so two
+        // SIMILAR document labels in different files still merge -- a proposal, its
+        // tasks and its design collapsing into one node (44 documents and 144 edges
+        // lost per build, identical on HEAD~1). Filed as its own change; fixing it
+        // needs a decision about whether enrichment kinds should fuzzy-merge across
+        // files at all, which the cross-file `PaymentService` parity case says code
+        // symbols should.
         if (left_label == right_label && left_from_source) {
           continue;
         }

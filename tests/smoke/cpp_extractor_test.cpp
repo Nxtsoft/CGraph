@@ -176,11 +176,18 @@ int main() {
   // struct of that name.
   write_file(root / "qualify.cpp",
              "namespace zoo { struct Beast { int n; }; }\n"
+             "namespace ns {\n"
+             "  template <typename T> int made(int a) { return a; }\n"
+             "  int plain(int a) { return a; }\n"
+             "}\n"
              "template <typename T> int wrapper(int a) { return a; }\n"
              "int only_real_call(int a) { return a; }\n"
              "struct stat_local { int st; };\n"
              "int probe(const char* p) { return ::stat_local_probe(p); }\n"
-             "int drive() { return wrapper<zoo::Beast>(1) + only_real_call(2); }\n");
+             "int drive() {\n"
+             "  return wrapper<zoo::Beast>(1) + ns::made<zoo::Beast>(2)\n"
+             "       + ns::plain(3) + only_real_call(4);\n"
+             "}\n");
   // Three overloads can share ONE line, so a single id retry is not enough.
   write_file(root / "sameline.cpp",
              "int triple(int a) { return a; } int triple(double a) { return 0; } int triple(char a) { return 1; }\n");
@@ -263,8 +270,14 @@ int main() {
   check(has_edge(graph, "caller", "overloaded", "CALLS"), "a call to an overloaded name still resolves");
 
   // A template callee is never tail-reduced, so no phantom call to the struct.
+  // `::` appears in nine distinct callee node types, so no text rule can name a
+  // callee. `ns::made<zoo::Beast>` reduced at its last `::` yields `Beast>`, which
+  // make_id turns into `Beast` -- a fabricated call to an unrelated struct.
   check(!has_edge(graph, "drive", "Beast", "CALLS"),
-        "template instantiation does not fabricate a call to its type argument");
+        "a qualified template callee does not fabricate a call to its type argument");
+  check(has_edge(graph, "drive", "wrapper", "CALLS"), "an unqualified template callee resolves");
+  check(has_edge(graph, "drive", "made", "CALLS"), "a qualified template callee resolves to its leaf name");
+  check(has_edge(graph, "drive", "plain", "CALLS"), "a plain qualified callee resolves");
   check(has_edge(graph, "drive", "only_real_call", "CALLS"), "the real call beside it still resolves");
   // Explicit global scope stays global: it must not bind to a same-named local.
   check(!has_edge(graph, "probe", "stat_local", "CALLS"),

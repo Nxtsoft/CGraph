@@ -167,7 +167,7 @@ void add_raw_call(
     std::vector<RawCall>& raw_calls) {
   std::string label;
   bool is_member_call = false;
-  bool callee_is_qualified = false;
+  bool callee_resolver_ran = false;
   if (const auto child = first_child_by_fields(node, config.call_accessor_fields); child.has_value()) {
     // A member/property access target (`obj.method()`): record only the bare
     // property name and flag it, so resolution can keep it to the caller's own
@@ -185,9 +185,15 @@ void add_raw_call(
       }
     }
     if (!is_member_call) {
-      label = node_text(*child, context.source);
-      callee_is_qualified =
-          std::ranges::find(config.call_qualified_node_types, child_type) != config.call_qualified_node_types.end();
+      // A language-supplied resolver walks the grammar to the callee's leaf name;
+      // it may also refuse the call (returning empty) for a callee that names
+      // something outside the project, such as an explicitly global `::symbol`.
+      if (config.resolve_callee_name) {
+        label = config.resolve_callee_name(*child, context);
+        callee_resolver_ran = true;
+      } else {
+        label = node_text(*child, context.source);
+      }
     }
   } else {
     label = node_text(node, context.source);
@@ -197,31 +203,11 @@ void add_raw_call(
     return;
   }
 
-  // Reduce a qualified callee to its tail, so `cgraph::run_one_shot(...)` keys on
-  // `run_one_shot` and matches the declaration. Left as a non-member call: the
-  // name is fully determined by the qualification, so project-wide resolution is
-  // sound here in a way it is not for `obj.method()`.
-  //
-  // Gated on the callee's grammar node type, never applied to arbitrary text: a
-  // template instantiation `wrapper<zoo::Beast>` also contains the separator, and
-  // reducing it yields `Beast>` which make_id normalizes to `Beast` -- inventing a
-  // call to an unrelated struct and losing the real one.
-  if (callee_is_qualified && !config.call_scope_separator.empty()) {
-    const auto pos = label.rfind(config.call_scope_separator);
-    if (pos == 0) {
-      // A leading separator is explicit GLOBAL scope (`::stat(...)`, `::connect(...)`).
-      // Those name a platform symbol, not a project one, so the qualification must
-      // be preserved: reducing it lets a syscall resolve to a same-named local
-      // struct or function and report a false dependent.
-      return;
-    }
-    if (pos != std::string::npos) {
-      label = label.substr(pos + config.call_scope_separator.size());
-    }
-  }
+  // An empty label after the resolver ran is a deliberate refusal, not a miss.
   if (label.empty()) {
     return;
   }
+  (void)callee_resolver_ran;
 
   raw_calls.push_back(RawCall{
       .caller_id = caller_id,

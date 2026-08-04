@@ -45,6 +45,7 @@ struct ExtractionContext {
 
 using ImportHandler = std::function<void(const TSNode&, const ExtractionContext&, Fragment&)>;
 using ResolveFunctionName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
+using ResolveCalleeName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
 using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, Fragment&, std::vector<RawCall>&)>;
 // Invoked for each class/interface node (with its already-assigned node id) to
 // emit heritage and member type-reference facts.
@@ -76,20 +77,18 @@ struct LanguageConfig {
   // the call is recorded as a member call carrying just the property name.
   std::vector<std::string> call_member_node_types;
   std::string call_member_field;
-  // Scope-resolution separator for a qualified callee (`cgraph::run_one_shot()`
-  // -> `run_one_shot`), and the callee node types it may be applied to. A
-  // qualified call is NOT a member call: the name is fully determined, so it
-  // stays eligible for project-wide resolution, unlike `obj.method()` whose
-  // receiver type is unknown.
+  // Resolves a non-member callee to its leaf name through the grammar
+  // (`cgraph::run_one_shot()` -> `run_one_shot`). A qualified call is NOT a member
+  // call: the name is fully determined by the qualification, so it stays eligible
+  // for project-wide resolution, unlike `obj.method()` whose receiver type is
+  // unknown.
   //
-  // The reduction is a string operation, so it MUST be gated on the callee's
-  // grammar node type. Applied to arbitrary callee text it corrupts anything else
-  // containing the separator: a template instantiation `wrapper<zoo::Beast>`
-  // reduces to `Beast>`, which make_id normalizes to `Beast` -- fabricating a call
-  // to an unrelated struct while losing the real call to `wrapper`. Only a node
-  // type listed here is reduced; everything else is taken verbatim.
-  std::vector<std::string> call_qualified_node_types;
-  std::string call_scope_separator;
+  // This is a resolver rather than a string rule because `::` legitimately appears
+  // in nine distinct callee node types, and reducing the callee's TEXT at a
+  // separator corrupts several of them: `ns::make<zoo::Beast>` becomes `Beast>`,
+  // which make_id normalizes to `Beast` -- fabricating a call to an unrelated
+  // struct while losing the real call. Returning empty drops the call.
+  ResolveCalleeName resolve_callee_name;
   ImportHandler import_handler;
   ResolveFunctionName resolve_function_name;
   ExtraWalk extra_walk;
