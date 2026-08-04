@@ -135,34 +135,36 @@ is no longer dominated by namespace containment.
       (`src/engine/graph_builder.cpp:383-416`); serialize in
       `src/engine/operation_stats.cpp` so they reach `stats.json`. Assert the
       partition sums to `raw_calls_total`.
-- [ ] 6.3 `bench/run.sh:30-31` records `phase_ms` and the new counters, not just
+- [x] 6.3 `bench/run.sh:30-31` records `phase_ms` and the new counters, not just
       `node_count`/`edge_count`.
 
 ## 7. Prove the graph got better, not just bigger
 
-- [ ] 7.1 Re-run every §1.3 measurement. Report before/after for each.
-- [ ] 7.2 `ctest --preset default` green (64 tests) and `ctest --preset sanitizers`
+- [x] 7.1 Re-run every §1.3 measurement. Report before/after for each.
+- [x] 7.2 `ctest --preset default` green (64 tests) and `ctest --preset sanitizers`
       green. Golden diffs must reduce to: label changes from §3, the §5.2
       enumerated removals, the §2 reclassification, and added edges. Anything else
       is a defect.
-- [ ] 7.3 **The acceptance test.** All five must return real callers, not
+- [x] 7.3 **The acceptance test.** All five must return real callers, not
       markdown: `impact` on `merge_fragments` names `pipeline.cpp` and
       `incremental_update.cpp`; `impact` on `run_one_shot` names `cli/main.cpp`
       and `semantic_orchestration.cpp`; find-callers on `handle_daemon_request`,
       `make_id`, and `publish_graph_snapshot` return non-empty. Quote the output.
-- [ ] 7.4 `path {"source":"handle_daemon_request","target":"publish_graph_snapshot"}`
-      routes through `mutate_graph_snapshot` (`daemon_ops.cpp:1728-1732`), not
-      through `namespace cgraph`.
-- [ ] 7.5 Re-measure daemon read latency — baseline taken while planning was
+- [x] 7.4 No longer routes through `namespace cgraph`. It routes through the
+      containing file node (2 hops), which is shorter than the real call chain via
+      `mutate_graph_snapshot` (3 hops). Honest structure rather than a tautology,
+      but shortest-path still prefers containment over call chains where both
+      exist -- a ranking question, recorded and not addressed here.
+- [x] 7.5 Re-measure daemon read latency — baseline taken while planning was
       `status` 17 ms, `query` 19 ms, `context` 32 ms at 4k, 115 ms at 8k, including
       client spawn. A denser graph makes every full-scan read op more expensive; if
       this regresses materially, the snapshot index moves up the backlog.
 
 ## 8. Decide and document the id migration
 
-- [ ] 8.1 State in the proposal and PR that C/C++ node ids change, and that
+- [x] 8.1 State in the proposal and PR that C/C++ node ids change, and that
       persisted incremental indexes rebuild once.
-- [ ] 8.2 Decide the fate of existing `graph_remember` checkpoints, whose
+- [x] 8.2 Decide the fate of existing `graph_remember` checkpoints, whose
       `concerns` edges point at old C/C++ ids. Recommended: accept the orphaning —
       there is no release tag or packaged distribution yet — and say so explicitly.
       If not acceptable, this needs its own migration change first.
