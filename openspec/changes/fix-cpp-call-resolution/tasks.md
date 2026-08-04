@@ -23,20 +23,24 @@ Prerequisite `/opsx:archive verified-graph-freshness` is already done (commit `b
 Doing D before A/B means the call-edge numbers are measured against a graph that
 is no longer dominated by namespace containment.
 
-- [ ] 2.1 Remove `namespace_definition` from `class_node_types` in `cpp_config()`
+- [x] 2.1 Remove `namespace_definition` from `class_node_types` in `cpp_config()`
       (`src/engine/configured_extractors.cpp:54`). Nothing else references it —
       it is the only occurrence in `src/` or `tests/`.
-- [ ] 2.2 No new kind and no `analysis.cpp` guard are needed: with no namespace
+- [x] 2.2 No new kind and no `analysis.cpp` guard are needed: with no namespace
       node emitted, `label_for_node`'s documented skip path applies
       (`extractor.cpp:69-77`) and members attach to their file with `contains`.
       Decision and rationale recorded in `design.md` Open Questions.
-- [ ] 2.3 Re-census. Expect: 96 fewer `class` nodes, ~416 `method` edges become
+- [x] 2.3 Re-census. Expect: 96 fewer `class` nodes, ~416 `method` edges become
       `contains` on the file node, `class 'cgraph'` off the top-degree list, and
       the 91% path-through-namespace share collapsing.
-- [ ] 2.4 Confirm no symbol was lost: the function/class/field node count must not
+- [x] 2.4 Confirm no symbol was lost: the function/class/field node count must not
       drop. Losing a symbol to the skip path would be a defect.
-- [ ] 2.5 Update `tests/smoke/cpp_extractor_test.cpp` and
-      `tests/smoke/extractor_goldens_test.cpp` for the reclassification.
+- [x] 2.5 No golden update was needed -- nothing asserted on namespace nodes, and
+      all 64 tests stayed green. Added a regression test instead
+      (`tests/smoke/cpp_extractor_test.cpp`): a namespace emits no class node, its
+      members attach to their file with `contains`, and a real class still owns its
+      methods with `method`. Verified the test fails on all three when
+      `namespace_definition` is put back.
 
 ## 3. Cause A — bare C/C++ function labels
 

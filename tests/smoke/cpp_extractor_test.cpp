@@ -64,6 +64,36 @@ void write_file(const fs::path& path, std::string contents) {
   return false;
 }
 
+// True when the node whose label starts with `target_prefix` has an incoming
+// edge of `relation` from a node of `source_kind`. Prefix + kind matching keeps
+// the assertion independent of whether a C++ label carries its signature, so it
+// holds both before and after the label change.
+[[nodiscard]] bool has_incoming_from_kind(const cgraph::GraphSnapshot& graph,
+                                          const std::string& target_prefix,
+                                          const std::string& source_kind,
+                                          const std::string& relation) {
+  for (const auto& edge : graph.edges) {
+    if (edge.relation != relation) {
+      continue;
+    }
+    const cgraph::Node* s = nullptr;
+    const cgraph::Node* t = nullptr;
+    for (const auto& node : graph.nodes) {
+      if (node.id == edge.source) {
+        s = &node;
+      }
+      if (node.id == edge.target) {
+        t = &node;
+      }
+    }
+    if (s != nullptr && t != nullptr && s->kind == source_kind &&
+        t->label.rfind(target_prefix, 0) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 [[nodiscard]] bool has_node(const cgraph::GraphSnapshot& graph, const std::string& label, const std::string& kind) {
   for (const auto& node : graph.nodes) {
     if (node.label == label && node.kind == kind) {
@@ -102,6 +132,15 @@ int main() {
              "};\n"
              "\n"
              "int handle(const Payload& p, Service& s) { return p.value; }\n");
+  // A namespace must not become a class node: ids are per-file, so one such node
+  // per file all labelled the same never grouped anything, and a class parent
+  // makes add_containment_edge label every member a `method`, turning the
+  // namespace into a god node that dominates centrality and shortest paths.
+  write_file(root / "scoped.cpp",
+             "namespace demo {\n"
+             "int scoped_helper(int x) { return x; }\n"
+             "struct Holder { int field_value; };\n"
+             "}  // namespace demo\n");
 
   const auto graph = cgraph::run_one_shot(root).graph;
 
@@ -130,6 +169,16 @@ int main() {
   // defines: a data member becomes a field node owned by its type.
   check(has_node(graph, "data", "field"), "data member node");
   check(has_edge(graph, "Service", "data", "defines"), "defines Service -> data");
+
+  // A namespace is structure, not a type: no class node, no `method` edge, and
+  // its members attach to their file with `contains` instead.
+  check(!has_node(graph, "demo", "class"), "namespace is not a class node");
+  check(has_incoming_from_kind(graph, "scoped_helper", "file", "contains"),
+        "namespace member attaches to its file with contains");
+  check(!has_incoming_from_kind(graph, "scoped_helper", "class", "method"),
+        "no method edge into a namespace member");
+  // A real class still owns its methods with `method`, so the fix is targeted.
+  check(has_incoming_from_kind(graph, "run", "class", "method"), "class still owns its method");
 
   // The header's std-free types resolve; nothing dangles.
   for (const auto& edge : graph.edges) {

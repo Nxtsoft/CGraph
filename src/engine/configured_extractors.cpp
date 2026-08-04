@@ -51,7 +51,20 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   config.grammar_name = "tree-sitter-cpp";
   config.extensions = {".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"};
   config.class_node_types.push_back("class_specifier");
-  config.class_node_types.push_back("namespace_definition");
+  // `namespace_definition` is deliberately NOT a class node. Node ids are
+  // per-file, so `namespace cgraph { }` in N files minted N separate "class"
+  // nodes all labelled `cgraph` -- it never grouped anything across files, which
+  // is the only thing a namespace node could have been for. Worse, a class
+  // parent makes add_containment_edge label every member a `method`, so on this
+  // repo 96 of 214 class nodes were one namespace, 416 of 449 `method` edges
+  // originated at one, it was the highest-degree node in the entire graph
+  // (degree 45, centrality 1.0, god_node), and 92% of connected function pairs
+  // routed their shortest path through it -- making `path` answer "both are in
+  // namespace cgraph" instead of naming the real call chain.
+  //
+  // With no node emitted, label_for_node's documented skip path applies: the
+  // enclosing scope stays the file node and members attach to it with
+  // `contains`. No symbol is lost.
   return config;
 }
 
