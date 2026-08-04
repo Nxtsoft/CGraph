@@ -128,10 +128,10 @@ Plus structured/regex extraction for Apex, Delphi form/source, MSBuild/XML proje
 git clone --recurse-submodules https://github.com/taylor009/CGraph.git && cd CGraph
 git clone https://github.com/microsoft/vcpkg .vcpkg && ./.vcpkg/bootstrap-vcpkg.sh
 export VCPKG_ROOT="$PWD/.vcpkg"
-cmake --preset default && cmake --build --preset default
+cmake --preset release && cmake --build --preset release
 
 # build a graph of this repo, then open the interactive viewer
-build/default/src/cli/cgraph --root . --out cgraph-out
+build/release/src/cli/cgraph --root . --out cgraph-out
 open cgraph-out/graph.html
 ```
 
@@ -170,20 +170,20 @@ export VCPKG_ROOT="$PWD/.vcpkg"
 ### 3. Configure, build, verify
 
 ```sh
-cmake --preset default
-cmake --build --preset default            # first build compiles vcpkg deps — several minutes
-ctest --preset default                    # smoke suite
-build/default/src/cli/cgraph --root . --out cgraph-out
+cmake --preset release
+cmake --build --preset release            # first build compiles vcpkg deps — several minutes
+ctest --preset release                    # smoke suite
+build/release/src/cli/cgraph --root . --out cgraph-out
 ```
 
-Binaries land at `build/default/src/{cli/cgraph, daemon/graphd, client/cgraph-client, mcp/cgraph-mcp}`.
+Binaries land at `build/release/src/{cli/cgraph, daemon/graphd, client/cgraph-client, mcp/cgraph-mcp}`.
 
 ### 4. (Optional) Put binaries on PATH
 
 ```sh
 mkdir -p ~/.local/bin
 for b in cli/cgraph daemon/graphd client/cgraph-client mcp/cgraph-mcp; do
-  ln -sf "$PWD/build/default/src/$b" ~/.local/bin/
+  ln -sf "$PWD/build/release/src/$b" ~/.local/bin/
 done
 ```
 
@@ -192,6 +192,7 @@ done
 ### Development builds
 
 ```sh
+cmake --preset default    && cmake --build --preset default    && ctest --preset default       # Debug, no -O
 cmake --preset sanitizers && cmake --build --preset sanitizers && ctest --preset sanitizers  # ASan/UBSan
 cmake --preset fuzzers    && cmake --build --preset fuzzers    && ctest --preset fuzzers      # libFuzzer
 ```
@@ -229,8 +230,8 @@ Claude Code sets `CLAUDE_PROJECT_DIR` per session, so a single registration work
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/default/src/daemon/graphd
+  -- /abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp \
+     --daemon /abs/path/to/CGraph/build/release/src/daemon/graphd
 ```
 
 Or commit a project-scoped `.mcp.json` at the repo root to share it with collaborators:
@@ -239,8 +240,8 @@ Or commit a project-scoped `.mcp.json` at the repo root to share it with collabo
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp",
-      "args": ["--daemon", "/abs/path/to/CGraph/build/default/src/daemon/graphd"]
+      "command": "/abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp",
+      "args": ["--daemon", "/abs/path/to/CGraph/build/release/src/daemon/graphd"]
     }
   }
 }
@@ -254,16 +255,16 @@ Codex does not set `CLAUDE_PROJECT_DIR`, so the server falls back to the working
 
 ```sh
 codex mcp add cgraph \
-  -- /abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/default/src/daemon/graphd
+  -- /abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp \
+     --daemon /abs/path/to/CGraph/build/release/src/daemon/graphd
 ```
 
 …or edit `~/.codex/config.toml` directly (add `"--root", "/abs/path/to/your/project"` to `args` to pin a project regardless of working directory):
 
 ```toml
 [mcp_servers.cgraph]
-command = "/abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp"
-args = ["--daemon", "/abs/path/to/CGraph/build/default/src/daemon/graphd"]
+command = "/abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp"
+args = ["--daemon", "/abs/path/to/CGraph/build/release/src/daemon/graphd"]
 ```
 
 Restart Codex and run `/mcp` in the TUI to confirm.
@@ -274,8 +275,8 @@ Any MCP client that launches a stdio command works — add a server entry with t
 
 ```sh
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  | build/default/src/mcp/cgraph-mcp --root . \
-      --daemon build/default/src/daemon/graphd
+  | build/release/src/mcp/cgraph-mcp --root . \
+      --daemon build/release/src/daemon/graphd
 ```
 
 </details>
@@ -297,17 +298,17 @@ Defaults: `--root .`, `--out cgraph-out`, `--drop` → CGraph's semantic drop di
 
 ```sh
 # Build deterministic exports.
-build/default/src/cli/cgraph --root /path/to/project --out /tmp/cgraph-out
+build/release/src/cli/cgraph --root /path/to/project --out /tmp/cgraph-out
 # Create a semantic chunk plan for host enrichment.
-build/default/src/cli/cgraph enrich-plan --root /path/to/project --out /tmp/cgraph-out
+build/release/src/cli/cgraph enrich-plan --root /path/to/project --out /tmp/cgraph-out
 # Ingest host-written chunk_NN.json fragments and re-export the graph.
-build/default/src/cli/cgraph enrich-ingest --root /path/to/project --out /tmp/cgraph-out
+build/release/src/cli/cgraph enrich-ingest --root /path/to/project --out /tmp/cgraph-out
 ```
 
 ### Daemon & thin client
 
 ```sh
-build/default/src/daemon/graphd --root /path/to/project
+build/release/src/daemon/graphd --root /path/to/project
 ```
 
 The daemon watches the project tree while it runs: source edits fold into the graph incrementally within a couple of seconds (a large batch, e.g. a branch switch, collapses into one full rescan), and incremental state re-persists to `cgraph-out/` in the background and on shutdown. `--no-watch` disables this.
@@ -323,12 +324,12 @@ graphd --version
 Use the thin client (responses are JSON; `status` includes process metadata, node/edge counts, cache hit rate, and enrichment state):
 
 ```sh
-build/default/src/client/cgraph-client --root /path/to/project status
-build/default/src/client/cgraph-client --root /path/to/project query '{"q":"Parser"}'
-build/default/src/client/cgraph-client --root /path/to/project explain '{"id":"Parser"}'
-build/default/src/client/cgraph-client --root /path/to/project path '{"source":"A","target":"B"}'
-build/default/src/client/cgraph-client --root /path/to/project update '{"path":"."}'
-build/default/src/client/cgraph-client --root /path/to/project shutdown
+build/release/src/client/cgraph-client --root /path/to/project status
+build/release/src/client/cgraph-client --root /path/to/project query '{"q":"Parser"}'
+build/release/src/client/cgraph-client --root /path/to/project explain '{"id":"Parser"}'
+build/release/src/client/cgraph-client --root /path/to/project path '{"source":"A","target":"B"}'
+build/release/src/client/cgraph-client --root /path/to/project update '{"path":"."}'
+build/release/src/client/cgraph-client --root /path/to/project shutdown
 ```
 
 ### MCP server
@@ -354,7 +355,7 @@ integrations/hooks/cgraph-hook.sh query '{"q":"GraphSnapshot"}'
 Useful environment variables: `CGRAPH_CLIENT` (client executable), `CGRAPH_PROJECT_ROOT` (project root), `CGRAPH_DAEMON` (daemon path), `CGRAPH_INTERVAL_SECONDS` (always-on interval, default `30`), `CGRAPH_REFRESH_ON_START` (`0` to skip the initial update), `CGRAPH_ONCE` (`1` to run one status check and exit). Run the always-on reference loop:
 
 ```sh
-CGRAPH_CLIENT=build/default/src/client/cgraph-client \
+CGRAPH_CLIENT=build/release/src/client/cgraph-client \
 CGRAPH_PROJECT_ROOT=/path/to/project \
 integrations/always-on/cgraph-always-on.sh
 ```

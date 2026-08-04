@@ -13,6 +13,15 @@
       }
     },
     {
+      "name": "release",
+      "displayName": "Release (optimized)",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
       "name": "sanitizers",
       "displayName": "ASan/UBSan",
       "inherits": "default",
@@ -39,6 +48,10 @@
       "configurePreset": "default"
     },
     {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
       "name": "sanitizers",
       "configurePreset": "sanitizers"
     },
@@ -51,6 +64,13 @@
     {
       "name": "default",
       "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
       "output": {
         "outputOnFailure": true
       }

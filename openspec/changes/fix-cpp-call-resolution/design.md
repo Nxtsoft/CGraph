@@ -53,6 +53,21 @@ Cause D lands first. It is the smallest change and it removes the structural noi
 
 Dropping namespace nodes entirely would lose real structure. Instead a namespace gets its own kind, and `add_containment_edge` maps it to `contains` rather than `method`. Exclusion from centrality and god-node ranking follows the pattern already established for session-memory nodes at `analysis.cpp:219`, `:254`, and `:266-267`.
 
+### The retrieval gates cannot measure this change, and that is left honest
+
+Both retrieval gates read a frozen fixture, not a live build — `retrieval_quality_test.cpp:36-37` and `pack_context_parity_test.cpp:56-57` load `tests/fixtures/pack_context_parity/{graph.json,queries.jsonl}`, and `pack_context_parity_test.cpp:54` states the intent outright: "NOT the mutable cgraph-out/graph.json -- so the gate is drift-immune".
+
+Two consequences, both accepted rather than worked around:
+
+1. **This change cannot break them.** The frozen graph is unaffected by any extraction change, so both gates keep measuring the packer on a stable graph. That is exactly their job.
+2. **This change cannot be credited by them either.** A call-graph improvement is invisible to a gate that reads a pre-change graph.
+
+Regenerating the fixture is not the answer. The eval labels are node ids — `queries.jsonl` grades rows against ids like `..._daemon_ops_cpp_status_const_daemonstate_state_const_graphsnapshot_graph`, which are signature-bearing and which this change rewrites. Regenerating both halves through `scripts/bootstrap_eval.py` would produce a *different graph and different labels*, so the resulting recall number would not be comparable to the pre-change one. The repo's own research discipline names this trap: absolute metrics are only comparable within the same graph.
+
+So: the recall effect of the call-graph fix is reported as **unmeasured**, with the reason stated. The gate re-pin (task 10) is still done, but it is scoped to what it actually covers — the packer and the budget change — and it is independent of the extraction work.
+
+If the retrieval effect needs measuring later, it wants its own change: regenerate the eval pair on the post-fix graph, then compare packer variants *within* that graph.
+
 ### The knapsack keeps its ranking weight
 
 `daemon_ops.cpp:309-313` records why the knapsack weighs the capped source slice and not the serialized JSON entry: including the overhead flattens the weight spread and degenerates the knapsack toward greedy. That reasoning is sound and the weight is left alone. The defect is only that the same number is then reported as `tokens_used`. So the selected set is re-costed at true serialized size after backtracking — the way the greedy path already does at `:1129` — and lowest-value entries are dropped until it fits.
@@ -79,4 +94,4 @@ This also resolves the composition problem without a separate rule. Today 65% of
 ## Open Questions
 
 - Should existing `graph_remember` checkpoints be migrated rather than orphaned? Recommendation is to accept the orphaning, since there is no release tag or packaged distribution. If not acceptable, a checkpoint-migration change must land first.
-- Should the namespace node keep a distinct kind (`module`) or be dropped entirely? Recommendation is the distinct kind, decided and recorded during task 2.
+- ~~Should the namespace node keep a distinct kind (`module`) or be dropped entirely?~~ **Resolved: dropped entirely.** Node ids are per-file, so a `namespace cgraph { }` block in 96 files mints 96 separate nodes all labelled `cgraph` — it never grouped anything across files, which is the only thing a namespace node could have been for. The file node already anchors containment, and `label_for_node` already documents the skip path: when no node is emitted "the enclosing scope is unchanged, and the construct's members are still walked and attached to the real scope that contains it" (`extractor.cpp:69-77`). So removing `namespace_definition` from `class_node_types` needs no new config field, no new kind, and no centrality guard in `analysis.cpp` — there is no node left to guard. Members attach directly to their file with `contains`.

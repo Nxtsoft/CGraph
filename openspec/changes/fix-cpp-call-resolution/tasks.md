@@ -24,18 +24,17 @@ Doing D before A/B means the call-edge numbers are measured against a graph that
 is no longer dominated by namespace containment.
 
 - [ ] 2.1 Remove `namespace_definition` from `class_node_types` in `cpp_config()`
-      (`src/engine/configured_extractors.cpp:54`).
-- [ ] 2.2 Decide and record: drop namespace nodes entirely, or give them a
-      distinct kind (e.g. `module`) that `add_containment_edge`
-      (`src/engine/extractor.cpp:195`) maps to `contains`, never `method`.
-      Prefer the distinct kind — namespace grouping is real structure; calling it
-      a class is what was wrong.
-- [ ] 2.3 If namespace nodes are kept, exclude them from centrality and god-node
-      ranking in `src/engine/analysis.cpp` (guard alongside the existing memory-node
-      guards at `:219`, `:254`, `:266-267`).
-- [ ] 2.4 Re-run §1.3. Expect: 96 fewer `class` nodes, ~416 `method` edges
-      reclassified or gone, `class 'cgraph'` off the top-degree list, and the
-      91% path-through-namespace share collapsing.
+      (`src/engine/configured_extractors.cpp:54`). Nothing else references it —
+      it is the only occurrence in `src/` or `tests/`.
+- [ ] 2.2 No new kind and no `analysis.cpp` guard are needed: with no namespace
+      node emitted, `label_for_node`'s documented skip path applies
+      (`extractor.cpp:69-77`) and members attach to their file with `contains`.
+      Decision and rationale recorded in `design.md` Open Questions.
+- [ ] 2.3 Re-census. Expect: 96 fewer `class` nodes, ~416 `method` edges become
+      `contains` on the file node, `class 'cgraph'` off the top-degree list, and
+      the 91% path-through-namespace share collapsing.
+- [ ] 2.4 Confirm no symbol was lost: the function/class/field node count must not
+      drop. Losing a symbol to the skip path would be a defect.
 - [ ] 2.5 Update `tests/smoke/cpp_extractor_test.cpp` and
       `tests/smoke/extractor_goldens_test.cpp` for the reclassification.
 
@@ -154,16 +153,28 @@ is no longer dominated by namespace containment.
       within tolerance of the measured size. Include a 1k budget to confirm the
       focal entry is never dropped.
 
-## 10. Restore the retrieval gate's teeth
+## 10. Restore the retrieval gate's teeth (packer scope only)
+
+Both gates read the FROZEN fixture, not a live build
+(`retrieval_quality_test.cpp:36-37`, `pack_context_parity_test.cpp:54-57`), so this
+section is about the packer and §9, not about the extraction work. See `design.md`
+for why regenerating the fixture would make before/after incomparable.
 
 - [ ] 10.1 Re-measure recall at 2k/4k/8k on
-      `tests/fixtures/pack_context_parity/` after §2–§9 land.
+      `tests/fixtures/pack_context_parity/` after §9 lands.
 - [ ] 10.2 Re-pin `tests/smoke/retrieval_quality_test.cpp:111` to the measured
-      values, keeping `kTol = 0.03`. Record in the comment which commit the numbers
-      came from, so the next fixture rewrite cannot silently orphan them again —
-      that is what `d5030c1` did.
+      values, keeping `kTol = 0.03`. The current pins (0.224/0.315/0.383) were
+      orphaned by the fixture rewrite in `d5030c1`; live is ~0.454/0.468/0.468, so
+      at 2k the gate fires only below 0.194 and tolerates a 57% regression. Record
+      the source commit in the comment so the next fixture rewrite cannot silently
+      orphan them again.
 - [ ] 10.3 Confirm the gate goes red on a deliberate regression (force
       `gather="fixed"`), then revert.
+- [ ] 10.4 Do NOT regenerate the fixture in this change, and do NOT claim a recall
+      improvement from §2-§5. The eval labels are signature-bearing node ids that
+      this change rewrites; regenerating both halves yields a different graph and
+      different labels, so the number would not be comparable. Report the retrieval
+      effect as unmeasured, with that reason.
 
 ## 11. Report
 
@@ -173,6 +184,9 @@ is no longer dominated by namespace containment.
       timing, and the `graph_context` overshoot ratio at a 3000-token budget. Per
       CLAUDE.md, benchmarks belong in the PR description.
 - [ ] 11.2 Quote the §7.3 acceptance output verbatim.
-- [ ] 11.3 Say plainly whether retrieval recall moved. If it did not, the
-      hypothesis that the 3–7-hop misses are missing-call-edge misses is wrong, and
-      that belongs in `research/` as a finding.
+- [ ] 11.3 State that the retrieval effect of the call-graph fix is UNMEASURED,
+      and why: both gates read a frozen pre-change graph, and regenerating the eval
+      pair would rewrite the very node ids the labels are keyed on. Testing the
+      "3-7-hop misses are missing-call-edge misses" hypothesis needs its own change
+      that regenerates the eval pair and compares packer variants within the new
+      graph.
