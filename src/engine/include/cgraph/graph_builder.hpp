@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cgraph/extractor.hpp"
+#include "cgraph/operation_stats.hpp"
 #include "cgraph/tsconfig_aliases.hpp"
 #include "cgraph/types.hpp"
 
@@ -26,7 +27,12 @@ void merge_fragment(GraphSnapshot& graph, const Fragment& fragment);
 // imports.
 void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases = {});
 
-void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls);
+// Resolves raw call sites into CALLS edges. When `outcomes` is non-null it
+// receives a per-outcome tally of every call site seen, so the resolution rate is
+// readable from a committed artifact instead of having to be inferred from the
+// edges that happened to survive.
+void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
+                       CallResolution* outcomes = nullptr);
 
 // Resolves type/heritage facts (inherits/implements/references) onto real graph
 // edges. Each target type name is resolved against the source file's imports

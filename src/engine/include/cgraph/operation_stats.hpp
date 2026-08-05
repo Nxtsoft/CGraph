@@ -42,6 +42,36 @@ class ScopedTimer {
   StatsClock::time_point start_;
 };
 
+// What became of each call site the extractors saw. An unresolved call is
+// dropped and leaves no trace in the graph, so without this the resolution rate
+// is unmeasurable from anything committed -- which is how a ~98% drop rate for
+// C/C++ went unnoticed for months. The five outcomes partition `total`, and
+// `balances()` asserts that they do, so a future resolution path cannot be added
+// without being counted.
+struct CallResolution {
+  std::size_t total = 0;
+  std::size_t resolved_same_file = 0;
+  std::size_t resolved_project_unique = 0;
+  // A same-file overload set: resolved to the first declaration and graded
+  // INFERRED, because which overload a call means needs types we do not have.
+  std::size_t resolved_overload_first = 0;
+  std::size_t dropped_unknown = 0;    // nothing callable bears the name
+  std::size_t dropped_ambiguous = 0;  // more than one candidate does
+  std::size_t dropped_self = 0;       // resolved to the caller itself
+
+  [[nodiscard]] bool balances() const {
+    return resolved_same_file + resolved_project_unique + dropped_unknown + dropped_ambiguous +
+               dropped_self ==
+           total;  // resolved_overload_first is a subset of resolved_same_file
+  }
+
+  [[nodiscard]] double resolved_rate() const {
+    return total == 0 ? 0.0
+                      : static_cast<double>(resolved_same_file + resolved_project_unique) /
+                            static_cast<double>(total);
+  }
+};
+
 // Per-phase timings and counters for one deterministic (re)build. Populated by
 // run_one_shot and the daemon rescan.
 struct BuildStats {
@@ -56,6 +86,7 @@ struct BuildStats {
   std::size_t files_cache_hit = 0;  // reused from a warm index
   std::size_t nodes = 0;
   std::size_t edges = 0;
+  CallResolution calls;
   // Detected files no registered extractor handles, per language name. Empty
   // when coverage is total; nonzero means part of the tree is invisible to the
   // graph (fail-loud, so a coverage hole never hides in a per-file warning).

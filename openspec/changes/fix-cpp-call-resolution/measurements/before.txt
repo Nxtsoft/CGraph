@@ -1,0 +1,67 @@
+nodes 1432  links 1870
+
+== node kinds ==
+  function     660
+  field        353
+  class        214
+  file         171
+  import       32
+  variable     2
+
+== edge relations ==
+  contains       463
+  method         449
+  defines        382
+  imports        315
+  references     139
+  CALLS          122
+
+== call edges ==
+  total CALLS                122
+  sourced from a C/C++ file  77
+  target kinds: {'function': 102, 'class': 8, 'field': 12}
+  targeting a field node     12   <- Cause C
+     'unix_endpoint_is_live(const std::filesystem:' -> 'connect'
+     'request_over_unix_socket(const std::filesyst' -> 'connect'
+     'full_stat_index_rescan(\n    DaemonState& sta' -> 'cache_hit_rate'
+     'build_stats_json(const BuildStats& stats)' -> 'cache_hit_rate'
+     'run_one_shot(const std::filesystem::path& ro' -> 'cache_hit_rate'
+     'handle_mcp_request(const nlohmann::json& req' -> 'response'
+     'raw_connect(const std::filesystem::path& soc' -> 'connect'
+     'main()' -> 'expect'
+     'main()' -> 'expect'
+     'main()' -> 'expect'
+     'main()' -> 'cache_hit_rate'
+     'main()' -> 'expect'
+
+== function connectivity ==
+  function nodes                       660
+  ... with NO incoming CALLS           584
+  ... with NO call/ref/import edge     441  (66%)
+  mean semantic degree                 0.54
+
+== Cause A signal ==
+  C/C++ function nodes                 617
+  ... whose label carries a signature  617  (100%)
+  ... zero-argument                    108  (17%)
+  C/C++ -> C/C++ function CALLS edges  60
+  ... targeting a zero-arg function    60  (100%)
+  (a zero-arg share far above the population share means only accidental matches resolve)
+  longest C/C++ label                  345 chars, 11 lines
+
+== Cause D: namespace as class ==
+  class nodes                          214
+  ... labelled exactly 'cgraph'        96  (44%)
+  method edges                         449
+  ... originating at one of them       416
+
+== top-degree nodes ==
+  deg   45  class     'cgraph'
+  deg   36  file      'cli/main.cpp'
+  deg   33  class     'DaemonState'
+  deg   29  file      'scripts/bootstrap_eval.py'
+  deg   24  file      'cgraph/daemon_ops.hpp'
+
+== path routing (300 random function pairs, seed 7) ==
+  connected pairs                      263
+  ... routed via a namespace node      245  (93%)

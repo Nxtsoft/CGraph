@@ -1,0 +1,145 @@
+--- src/engine/daemon_ops.cpp	2026-08-04 11:07:30
++++ /private/tmp/claude-501/-Users-taylorgagne-tools-cgraph/dab2b80a-9310-46bc-ae20-1ede796ea6ff/scratchpad/mine/daemon_ops.cpp	2026-08-04 11:05:48
+@@ -1042,7 +1042,6 @@
+     const std::size_t capacity = std::min({raw_capacity, total_weight, kMaxKnapsackCapacity});
+ 
+     std::vector<const Node*> chosen;
+-    std::size_t used = focal_cost;
+     if (capacity > 0 && !candidates.empty()) {
+       const std::size_t n = candidates.size();
+       // dp[i][c] = max total value using the first i candidates within weight c.
+@@ -1065,7 +1064,6 @@
+       for (std::size_t i = n; i-- > 0;) {
+         if (dp[i + 1][c] != dp[i][c]) {
+           chosen.push_back(candidates[i]);
+-          used += weight[i];
+           c -= weight[i];
+         }
+       }
+@@ -1081,20 +1079,83 @@
+       return lhs->label < rhs->label;
+     });
+ 
+-    auto included = nlohmann::json::array();
+-    for (const auto* node : chosen) {
++    // Render each selected entry, then re-cost the selection at its TRUE
++    // serialized size and drop the least valuable until it actually fits.
++    //
++    // The DP above deliberately weighs the capped source slice and not the
++    // serialized entry (see slice_token_cost) -- including the JSON overhead
++    // flattens the weight spread and degenerates the knapsack toward greedy. That
++    // is sound for *ranking*. The defect was reporting the same number as
++    // `tokens_used`: an entry that resolved no snippet weighed a few tokens while
++    // still shipping a ~200-byte mangled id and an absolute path, so the packer
++    // believed it was nearly free. Measured on this repo, a budget of 3000
++    // returned 73,590 bytes (~18,397 tokens) while reporting `tokens_used: 2999`
++    // -- and an MCP client refused the response outright as over its token cap, so
++    // the agent got nothing at all from its primary context tool.
++    struct Selected {
++      nlohmann::json entry;
++      std::size_t cost = 0;
++      double value = 0.0;
++      std::size_t order = 0;
++    };
++    std::unordered_map<std::string, double> value_by_id;
++    for (std::size_t i = 0; i < candidates.size(); ++i) {
++      value_by_id[candidates[i]->id] = value[i];
++    }
++    std::vector<Selected> selected;
++    selected.reserve(chosen.size());
++    for (std::size_t i = 0; i < chosen.size(); ++i) {
++      const auto* node = chosen[i];
+       auto full = with_source(node_brief(*node), *node);
+       full["depth"] = reached[node->id].depth;
+       if (const auto& via = reached[node->id].via; !via.empty()) {
+         full["via"] = via;
+       }
+-      included.push_back(std::move(full));
++      // Mark a failed snippet read in every packing mode, matching the greedy
++      // path, so a caller can tell a deliberate summary row from a missing one.
++      if (!full.contains("snippet")) {
++        full["snippet_omitted"] = true;
++      }
++      const auto cost = estimate_tokens(full.dump());
++      selected.push_back(Selected{std::move(full), cost, value_by_id[node->id], i});
+     }
+-    const std::size_t omitted = candidates.size() - chosen.size();
++
++    // The focal entry is charged first and is never dropped, so a small budget
++    // still answers with the symbol the caller asked about.
++    const std::size_t focus_cost = estimate_tokens(focus.dump());
++    // Order by ascending value once, so shedding always takes the least useful row
++    // next, then measure the ARRAY rather than summing per-entry costs. Summing
++    // misses the array's own framing (brackets, separators) and overshot a 3000
++    // budget by a token; measuring what is actually returned makes the ceiling
++    // exact by construction.
++    std::ranges::sort(selected,
++                      [](const Selected& lhs, const Selected& rhs) { return lhs.value < rhs.value; });
++    const auto serialized_cost = [&](std::size_t skip) {
++      auto array = nlohmann::json::array();
++      for (std::size_t i = skip; i < selected.size(); ++i) {
++        array.push_back(selected[i].entry);
++      }
++      return focus_cost + estimate_tokens(array.dump());
++    };
++    std::size_t dropped_over_budget = 0;
++    while (dropped_over_budget < selected.size() && serialized_cost(dropped_over_budget) > budget) {
++      ++dropped_over_budget;
++    }
++    selected.erase(selected.begin(), selected.begin() + static_cast<std::ptrdiff_t>(dropped_over_budget));
++    // Restore the nearest-first emit order the value sort disturbed.
++    std::ranges::sort(selected,
++                      [](const Selected& lhs, const Selected& rhs) { return lhs.order < rhs.order; });
++
++    auto included = nlohmann::json::array();
++    for (auto& item : selected) {
++      included.push_back(std::move(item.entry));
++    }
++    const std::size_t true_used = focus_cost + estimate_tokens(included.dump());
++    const std::size_t omitted = candidates.size() - chosen.size() + dropped_over_budget;
+     nlohmann::json result{
+         {"focus", std::move(focus)},
+         {"budget", budget},
+-        {"tokens_used", used},
++        {"tokens_used", true_used},
+         {"packing", "knapsack"},
+         {"gather", adaptive ? "adaptive" : "fixed"},
+         {"included", std::move(included)},
+--- tests/smoke/daemon_ops_test.cpp	2026-08-04 11:07:30
++++ /private/tmp/claude-501/-Users-taylorgagne-tools-cgraph/dab2b80a-9310-46bc-ae20-1ede796ea6ff/scratchpad/mine/daemon_ops_test.cpp	2026-08-04 11:05:48
+@@ -380,6 +380,35 @@
+     return 1;
+   }
+ 
++  // The default (knapsack) path must report the TRUE serialized cost of what it
++  // returns, and `included` must never exceed the budget. Before, the reported
++  // number came from the DP's slice-cost weights, which deliberately exclude
++  // per-entry JSON overhead: an entry that resolved no snippet weighed a few
++  // tokens while still shipping a mangled id and an absolute path, so a 3000-token
++  // budget shipped ~18,397 tokens while reporting 2999 and an MCP client refused
++  // the response outright.
++  for (const auto budget : {50U, 200U, 1000U, 5000U}) {
++    const auto packed = cgraph::handle_daemon_request(
++        state, cgraph::make_request("context", {{"id", "a"}, {"budget", budget}}));
++    const auto& pctx = packed["result"];
++    const auto measured = (pctx["included"].dump().size() + 3) / 4;
++    if (measured > budget) {
++      return 1;  // the budget is a ceiling on what is actually returned
++    }
++    // Reported cost tracks the measured payload (it also charges the focal entry,
++    // which is never dropped, so it may exceed the budget when the focus alone
++    // does not fit -- but it must never under-report the array).
++    if (pctx.value("tokens_used", 0U) < measured) {
++      return 1;
++    }
++    // An entry whose snippet could not be read is marked in every packing mode.
++    for (const auto& item : pctx["included"]) {
++      if (!item.contains("snippet") && !item.value("snippet_omitted", false)) {
++        return 1;
++      }
++    }
++  }
++
+   // A budget too small for any neighbor still returns the focal node and flags
+   // truncation rather than dropping everything.
+   const auto tight = cgraph::handle_daemon_request(

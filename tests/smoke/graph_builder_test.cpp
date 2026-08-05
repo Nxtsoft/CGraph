@@ -83,6 +83,13 @@ int test_call_scoping() {
   const auto orphan = cgraph::make_id("/p/c.ts:orphan");
   const auto dup_one = cgraph::make_id("/p/d.ts:dup");
   const auto dup_two = cgraph::make_id("/p/e.ts:dup");
+  // A field is the only node in the project bearing this name, so a name-only
+  // index would resolve a call to it. A field is not callable.
+  const auto field_named_connect = cgraph::make_id("/p/f.ts:connect");
+  // A class IS a callable target: `Ctor()` is a constructor call.
+  const auto ctor_class = cgraph::make_id("/p/g.ts:Ctor");
+  // ...and so is a module-level binding that holds a callable.
+  const auto callable_binding = cgraph::make_id("/p/h.ts:boundCallable");
 
   cgraph::GraphSnapshot graph;
   graph.nodes.push_back({.id = a_file, .label = "a.ts", .source_file = "/p/a.ts", .kind = "file"});
@@ -92,6 +99,9 @@ int test_call_scoping() {
   graph.nodes.push_back({.id = orphan, .label = "orphan", .source_file = "/p/c.ts", .kind = "function"});
   graph.nodes.push_back({.id = dup_one, .label = "dup", .source_file = "/p/d.ts", .kind = "function"});
   graph.nodes.push_back({.id = dup_two, .label = "dup", .source_file = "/p/e.ts", .kind = "function"});
+  graph.nodes.push_back({.id = field_named_connect, .label = "connect", .source_file = "/p/f.ts", .kind = "field"});
+  graph.nodes.push_back({.id = ctor_class, .label = "Ctor", .source_file = "/p/g.ts", .kind = "class"});
+  graph.nodes.push_back({.id = callable_binding, .label = "boundCallable", .source_file = "/p/h.ts", .kind = "variable"});
   // a.ts imports `helper` -> the resolved call to it should be EXTRACTED.
   graph.edges.push_back({.source = a_file, .target = imported_helper, .relation = "imports"});
 
@@ -101,9 +111,33 @@ int test_call_scoping() {
       {.caller_id = caller, .callee_label = "orphan", .source_file = "/p/a.ts"},
       {.caller_id = caller, .callee_label = "dup", .source_file = "/p/a.ts"},
       {.caller_id = caller, .callee_label = "Map", .source_file = "/p/a.ts"},
+      {.caller_id = caller, .callee_label = "connect", .source_file = "/p/a.ts"},
+      {.caller_id = caller, .callee_label = "Ctor", .source_file = "/p/a.ts"},
+      {.caller_id = caller, .callee_label = "boundCallable", .source_file = "/p/a.ts"},
   };
   cgraph::resolve_imports(graph);
-  cgraph::resolve_raw_calls(graph, calls);
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  // Every call site this resolver is answerable for lands in exactly one outcome.
+  // Without this, a future resolution path could be added without being counted
+  // and the reported rate would quietly stop meaning anything.
+  if (!outcomes.balances()) {
+    return 1;
+  }
+  // The fixture's counted calls: localHelper (same file); helper, Ctor,
+  // boundCallable and orphan (project-unique, the last unimported); dup
+  // (ambiguous); connect (a field, so not callable -> unknown). `Map` is a
+  // built-in and is never counted.
+  if (outcomes.total != 7) {
+    return 1;
+  }
+  if (outcomes.resolved_same_file != 1 || outcomes.resolved_project_unique != 4) {
+    return 1;
+  }
+  if (outcomes.dropped_ambiguous != 1 || outcomes.dropped_unknown != 1) {
+    return 1;
+  }
 
   // Same-file declaration resolves with EXTRACTED confidence.
   if (edge_confidence(graph, caller, local_helper, "CALLS") != cgraph::Confidence::Extracted) {
@@ -120,6 +154,22 @@ int test_call_scoping() {
   // Ambiguous name (two declarations) resolves to nothing.
   if (has_edge(graph, caller, dup_one, "CALLS") || has_edge(graph, caller, dup_two, "CALLS")) {
     return 1;
+  }
+  // A call target must be callable. A uniquely-named FIELD is not: on the real
+  // repo this is how `unix_endpoint_is_live` came to "call" a struct member named
+  // `connect` while actually invoking the ::connect syscall, which then showed up
+  // as a false dependent in `impact`.
+  if (has_edge(graph, caller, field_named_connect, "CALLS")) {
+    return 1;
+  }
+  // A CLASS is callable, because `Ctor()` is a constructor call. The eligible set
+  // is the same one the per-file table admits (function/class/type/variable), so
+  // the two resolution tiers agree on what a symbol is; only `field` is excluded.
+  if (!has_edge(graph, caller, ctor_class, "CALLS")) {
+    return 1;
+  }
+  if (!has_edge(graph, caller, callable_binding, "CALLS")) {
+    return 1;  // a module-level binding can hold a callable
   }
   // A built-in global (`Map`) is never wired to a project node, even though no
   // project node named Map exists here — the call is simply dropped.

@@ -75,6 +75,54 @@ int main() {
   // Two same-label declarations in ONE file are a genuine duplicate and merge.
   guard.nodes.push_back(cgraph::Node{.id = "d1", .label = "ConfigLoader", .source_file = "dup.tsx", .kind = "function"});
   guard.nodes.push_back(cgraph::Node{.id = "d2", .label = "ConfigLoader", .source_file = "dup.tsx", .kind = "function"});
+  // A node that names a concrete declaration site is a concrete symbol, and a
+  // similar label is not evidence that two of them are one thing. These four
+  // pairs each score above the 0.92 threshold and are each two different
+  // functions; all were measured merging away on this repo once C/C++ labels
+  // became bare names, which removed the accidental protection a long
+  // signature-bearing label used to provide.
+  const auto at = [](std::string id, std::string label, std::string file, std::uint32_t line) {
+    return cgraph::Node{.id = std::move(id),
+                        .label = std::move(label),
+                        .source_file = std::move(file),
+                        .source_location = cgraph::SourceLocation{.start_line = line, .end_line = line},
+                        .kind = "function"};
+  };
+  guard.nodes.push_back(at("s1", "validate_semantic_fragment_json", "validation.cpp", 9));
+  guard.nodes.push_back(at("s2", "validate_semantic_fragment_file", "validation.cpp", 15));
+  guard.nodes.push_back(at("s3", "drainer_installed", "drainer.cpp", 92));
+  guard.nodes.push_back(at("s4", "drainer_uninstall", "drainer.cpp", 105));
+  guard.nodes.push_back(at("s5", "supervisor_spec", "supervisor.cpp", 30));
+  guard.nodes.push_back(at("s6", "supervisor_sync", "supervisor.cpp", 161));
+  // Cross-file counts too: a declaration site is a file AND a line.
+  guard.nodes.push_back(at("s7", "query_zero_hits", "stats.hpp", 144));
+  guard.nodes.push_back(at("s8", "query_zero_hit_rate", "stats.cpp", 90));
+  // A genuine double-extraction of one symbol shares its site and still merges.
+  guard.nodes.push_back(at("s9", "same_site_twice", "twice.cpp", 12));
+  guard.nodes.push_back(at("s10", "same_site_twice", "twice.cpp", 12));
+  // Three overloads can share a LINE, so the site is line AND column.
+  guard.nodes.push_back(cgraph::Node{.id = "c1", .label = "three_up", .source_file = "cols.cpp",
+                                     .source_location = cgraph::SourceLocation{.start_line = 7, .start_column = 0},
+                                     .kind = "function"});
+  guard.nodes.push_back(cgraph::Node{.id = "c2", .label = "three_up", .source_file = "cols.cpp",
+                                     .source_location = cgraph::SourceLocation{.start_line = 7, .start_column = 30},
+                                     .kind = "function"});
+  guard.nodes.push_back(cgraph::Node{.id = "c3", .label = "three_up", .source_file = "cols.cpp",
+                                     .source_location = cgraph::SourceLocation{.start_line = 7, .start_column = 62},
+                                     .kind = "function"});
+  // A `concept` carries NO source_file and NO source_location, so the exact pass
+  // skips it entirely and the fuzzy pass is its only merge path. Two concepts with
+  // one label are one idea and must still merge. (`document` and `media` are NOT
+  // like this -- they do carry a source_file -- so they are governed by the
+  // from-a-file branch instead.)
+  guard.nodes.push_back(cgraph::Node{.id = "k1", .label = "OpenSpec Change Lifecycle", .kind = "concept"});
+  guard.nodes.push_back(cgraph::Node{.id = "k2", .label = "OpenSpec Change Lifecycle", .kind = "concept"});
+  // ...but a site-less concept must never absorb a sited code symbol, because
+  // unite() keeps the lower index and enrichment nodes are appended last, so the
+  // concept would be the one deleted.
+  guard.nodes.push_back(at("k3", "PaymentProcessor", "pay.cpp", 40));
+  guard.nodes.push_back(cgraph::Node{.id = "k4", .label = "PaymentProcessor", .kind = "concept"});
+
   // Two sibling files with near-identical path-tail labels are DISTINCT files
   // and must never merge (a file's identity is its path). Merging one away would
   // destroy every import/contains edge that referenced it.
@@ -106,6 +154,56 @@ int main() {
   if (helper_widgets != 2) {
     std::cerr << "cross-file identical labels were incorrectly merged\n";
     return 1;
+  }
+  // Every distinct declaration site survives; the one shared site collapses.
+  for (const char* label : {"validate_semantic_fragment_json", "validate_semantic_fragment_file",
+                            "drainer_installed", "drainer_uninstall", "supervisor_spec",
+                            "supervisor_sync", "query_zero_hits", "query_zero_hit_rate"}) {
+    std::size_t count = 0;
+    for (const auto& node : guard.nodes) {
+      count += node.label == label ? 1 : 0;
+    }
+    if (count != 1) {
+      std::cerr << "distinct declaration site was fuzzy-merged away: " << label << " (" << count << ")\n";
+      return 1;
+    }
+  }
+  {
+    std::size_t same_site = 0;
+    for (const auto& node : guard.nodes) {
+      same_site += node.label == "same_site_twice" ? 1 : 0;
+    }
+    if (same_site != 1) {
+      std::cerr << "a genuine duplicate at one site failed to merge\n";
+      return 1;
+    }
+  }
+  {
+    // Three overloads sharing a line survive, because the site carries the column.
+    std::size_t three_up = 0;
+    std::size_t concepts = 0;
+    std::size_t payment_total = 0;
+    std::size_t payment_concepts = 0;
+    for (const auto& node : guard.nodes) {
+      three_up += node.label == "three_up" ? 1 : 0;
+      concepts += node.label == "OpenSpec Change Lifecycle" ? 1 : 0;
+      if (node.label == "PaymentProcessor") {
+        ++payment_total;
+        payment_concepts += node.kind == "concept" ? 1 : 0;
+      }
+    }
+    if (three_up != 3) {
+      std::cerr << "overloads sharing a line were merged (site must be line AND column): " << three_up << "\n";
+      return 1;
+    }
+    if (concepts != 1) {
+      std::cerr << "site-less enrichment concepts failed to merge: " << concepts << "\n";
+      return 1;
+    }
+    if (payment_total != 2 || payment_concepts != 1) {
+      std::cerr << "a site-less concept merged with a sited code symbol\n";
+      return 1;
+    }
   }
   if (config_loaders != 1) {
     std::cerr << "same-file duplicate labels were not merged\n";
