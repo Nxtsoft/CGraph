@@ -46,6 +46,24 @@ int main() {
     std::cerr << "FAIL: could not load " << graph_path << "\n";
     return 1;
   }
+  // Rebase the fixture's repository-relative source paths onto the real repo root,
+  // exactly as the parity gate does. Without this the gate's snippets resolve only
+  // when the CWD happens to be the repo root -- ctest runs from the build tree, so
+  // the CI run measured a snippet-free graph and the budget never bound.
+  auto portable_graph = *cgraph::read_graph_snapshot(state);
+  const fs::path repo_root = CGRAPH_REPO_ROOT;
+  for (auto& node : portable_graph.nodes) {
+    if (node.source_file.empty()) {
+      continue;
+    }
+    const fs::path source_file = node.source_file;
+    if (source_file.is_absolute()) {
+      std::cerr << "FAIL: fixture source paths must be repository-relative: " << source_file << "\n";
+      return 1;
+    }
+    node.source_file = (repo_root / source_file).lexically_normal().string();
+  }
+  cgraph::publish_graph_snapshot(state, std::move(portable_graph));
 
   struct Row {
     std::string query;
@@ -74,6 +92,10 @@ int main() {
   }
 
   // Mean grade-2 recall through the default end-to-end path: query text only.
+  // snippet_entries guards against the CWD regression this gate once had: if no
+  // returned entry ever resolves a snippet, the graph under test is snippet-free
+  // and every recall number below is measured on the wrong surface.
+  std::size_t snippet_entries = 0;
   const auto mean_recall = [&](int budget) {
     double sum = 0.0;
     for (const auto& row : rows) {
@@ -87,6 +109,9 @@ int main() {
         }
         for (const auto& entry : result.value("included", nlohmann::json::array())) {
           selected.insert(entry.value("id", std::string{}));
+          if (entry.contains("snippet")) {
+            ++snippet_entries;
+          }
         }
       }
       std::size_t hit = 0;
@@ -122,6 +147,12 @@ int main() {
     }
     std::cout << "  " << t.budget << "   " << recall << "   " << t.baseline << "   "
               << (ok ? "PASS" : "FAIL") << "\n";
+  }
+
+  if (snippet_entries == 0) {
+    std::cerr << "FAIL: no returned entry carried a snippet across any budget -- "
+                 "the graph under test is snippet-free (source paths not resolvable)\n";
+    return 1;
   }
 
   if (failures != 0) {
