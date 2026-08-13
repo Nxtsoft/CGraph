@@ -205,16 +205,15 @@ int main() {
     std::ofstream(changed_source, std::ios::binary | std::ios::trunc) << new_changed_bytes;
 
     const auto emitted_entry_tokens = [](const nlohmann::json& result) {
-      const auto entry_tokens = [](const nlohmann::json& entry) {
-        return (entry.dump().size() + 3U) / 4U;
-      };
-      std::size_t tokens = entry_tokens(result.at("focus"));
-      for (const auto& item : result.at("included")) {
-        tokens += entry_tokens(item);
-      }
-      return tokens;
+      // Mirrors the engine: the ARRAY is measured, not a per-entry sum, so the
+      // framing bytes count too.
+      return (result.at("focus").dump().size() + 3U) / 4U +
+             (result.at("included").dump().size() + 3U) / 4U;
     };
-    constexpr std::size_t kKnapsackSelectionBudget = 20;
+    // Small enough that the `changed` candidate (a ~5000-slice-token span) can
+    // never be selected, large enough that the measured response holding both
+    // small selected entries fits -- the budget is a real ceiling now.
+    constexpr std::size_t kKnapsackSelectionBudget = 400;
 
     // Knapsack selection is metadata-only: the changed candidate is too large to
     // select, so its stale bytes cannot abort the pinned response. The focus and
@@ -255,8 +254,8 @@ int main() {
         selected_only_context["result"].value("selection_tokens_used", 0U) >
             kKnapsackSelectionBudget ||
         selected_only_context["result"].value("budget_basis", std::string{}) !=
-            "estimated_source_slice_tokens" ||
-        selected_emitted_tokens <= kKnapsackSelectionBudget ||
+            "measured_serialized_tokens" ||
+        selected_emitted_tokens > kKnapsackSelectionBudget ||
         selected_ids != std::set<std::string>{"selected_distinct", "selected_same"} ||
         selected_source_hashes !=
             std::set<std::string>{cgraph::sha256_hex(selected_bytes),
@@ -309,7 +308,7 @@ int main() {
         selected_only_greedy_context["result"].value(
             "selection_tokens_used", 0U) > 500U ||
         selected_only_greedy_context["result"].value(
-            "budget_basis", std::string{}) != "projected_entry_tokens" ||
+            "budget_basis", std::string{}) != "measured_serialized_tokens" ||
         !changed_is_brief_only ||
         greedy_snippet_ids !=
             std::set<std::string>{"selected_distinct", "selected_same", "verified"} ||
@@ -638,6 +637,57 @@ int main() {
   const auto& tight_ctx = tight["result"];
   if (tight_ctx["focus"].value("label", std::string{}) != "Alpha" ||
       !tight_ctx.value("truncated", false) || !tight_ctx["included"].empty()) {
+    return 1;
+  }
+
+  // The budget is a measured ceiling in BOTH packing modes (openspec:
+  // honest-context-budget): the serialized response never exceeds it except
+  // when the never-dropped focal alone does not fit (then `included` must be
+  // empty), `tokens_used` IS the measured cost (mirroring estimate_tokens'
+  // chars/4), and every snippet-less row carries an explicit marker so a
+  // failed read is distinguishable from a structurally sourceless kind.
+  // 6000 is the shipped default budget.
+  for (const auto budget : {50U, 200U, 1000U, 5000U, 6000U}) {
+    for (const bool greedy_mode : {false, true}) {
+      auto sweep_params = nlohmann::json{{"id", "a"}, {"budget", budget}};
+      if (greedy_mode) {
+        sweep_params["gather"] = "fixed";
+        sweep_params["packing"] = "greedy";
+      }
+      const auto packed =
+          cgraph::handle_daemon_request(state, cgraph::make_request("context", sweep_params));
+      const auto& pctx = packed["result"];
+      const auto focus_tokens = (pctx["focus"].dump().size() + 3) / 4;
+      const auto array_tokens = (pctx["included"].dump().size() + 3) / 4;
+      const auto measured = focus_tokens + array_tokens;
+      if (measured > budget && !pctx["included"].empty()) {
+        return 1;  // ceiling: over budget only when the focal alone cannot fit
+      }
+      if (pctx.value("tokens_used", 0U) != measured) {
+        return 1;  // the report is the measured cost, never an estimate
+      }
+      for (const auto& item : pctx["included"]) {
+        if (!item.contains("snippet") && !item.value("snippet_omitted", false) &&
+            !item.value("snippet_unavailable", false)) {
+          return 1;  // every snippet-less row is explicitly marked
+        }
+      }
+    }
+  }
+
+  // Hostile parameters must yield error frames, never an uncaught throw that
+  // kills the resident daemon (a mistyped param reached graphd verbatim via
+  // MCP), and a negative budget floors at zero instead of wrapping unsigned.
+  const auto mistyped = cgraph::handle_daemon_request(
+      state, cgraph::make_request("context", {{"id", "a"}, {"packing", 7}}));
+  if (mistyped.value("ok", true) || mistyped.value("error", std::string{}).empty()) {
+    return 1;
+  }
+  const auto negative = cgraph::handle_daemon_request(
+      state, cgraph::make_request("context", {{"id", "a"}, {"budget", -1}}));
+  const auto& negative_ctx = negative["result"];
+  if (!negative.value("ok", false) || !negative_ctx["included"].empty() ||
+      !negative_ctx.value("truncated", false)) {
     return 1;
   }
 

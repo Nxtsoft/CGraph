@@ -5,10 +5,11 @@
 // row's grade-2 focal seed, run the C++ `context` op with packing=knapsack at k=3,
 // and compare mean packed grade-2 recall to the harness numbers.
 //
-// IMPORTANT: the engine weights the knapsack by char/4 over the capped source slice
-// (step-A "model 4" -- the load-bearing fix), so parity is asserted against the
-// MODEL-4 harness recall (0.591 / 0.625 / 0.666 at 2k/4k/8k), NOT the tiktoken
-// reference (0.541 / 0.569 / 0.614). Model 4 is the cost model the engine runs.
+// The engine weights the knapsack by char/4 over the capped source slice (step-A
+// "model 4") as its RANKING heuristic; since openspec/changes/honest-context-budget
+// the emitted response is additionally shed to a measured serialized ceiling, so
+// the gate pins the honest packer's own measured baselines (see the Target table)
+// rather than the historical over-packing harness numbers.
 //
 // The fixture is a deterministic, code-only graph (no research/ or build/ nodes)
 // committed alongside a verbatim eval snapshot, so the gate is reproducible and
@@ -26,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -129,6 +131,9 @@ int main() {
     }
   }
 
+  // Guards against measuring a snippet-free graph (e.g. unresolvable source
+  // paths): recall numbers on such a graph look like a packer regression.
+  std::size_t parity_snippet_entries = 0;
   const auto mean_recall = [&](const std::string& packing, int budget) {
     double sum = 0.0;
     int n = 0;
@@ -145,6 +150,9 @@ int main() {
       }
       for (const auto& entry : result.value("included", nlohmann::json::array())) {
         selected.insert(entry.value("id", std::string{}));
+        if (entry.contains("snippet")) {
+          ++parity_snippet_entries;
+        }
       }
       std::size_t hit = 0;
       for (const auto& id : row.grade2) {
@@ -162,28 +170,48 @@ int main() {
 
   struct Target {
     int budget;
-    double expect;  // model-4 harness recall
-    bool gated;     // 8k is neutral by design (packing ~moot once everything fits)
+    double greedy_baseline;    // measured, honest packer (see comment below)
+    double knapsack_baseline;  // measured, honest packer
+    bool gated;                // 8k is neutral by design (packing ~moot once everything fits)
   };
-  const std::vector<Target> targets = {{2000, 0.591, true}, {4000, 0.625, true}, {8000, 0.666, false}};
+  // Re-pinned for openspec/changes/honest-context-budget: the previous targets
+  // (0.591/0.625/0.666, "model-4") were measured against a knapsack that shipped
+  // ~6x its stated budget while reporting a near-perfect fit, and the old
+  // one-sided knapsack>=greedy clause was satisfiable only by that overshoot.
+  // These baselines are the honest packer's (both modes shed to a measured
+  // serialized ceiling; knapsack sheds by value density), measured on the frozen
+  // fixture at the commit introducing the ceiling. 6000 is the shipped default
+  // budget. The gate is non-regression per packer plus a symmetric packing-
+  // parity band -- neither packer may silently pull ahead or fall behind.
+  // Environment note: entry costs include the absolute source path, so both
+  // recall and the band move with checkout depth (~5 tokens per entry per 20
+  // root chars; observed 0.1695..0.2044 retrieval@6k across root lengths
+  // 31..111). These pins were measured at root length 71 (a deep worktree, the
+  // low end), so shorter real-world roots only add margin to the floors.
+  const std::vector<Target> targets = {{2000, 0.442382, 0.430765, true},
+                                       {4000, 0.515687, 0.531519, true},
+                                       {6000, 0.574093, 0.586637, true},
+                                       {8000, 0.608445, 0.606290, false}};
   constexpr double kTol = 0.03;
 
   std::cout << "pack_context knapsack parity  (N=" << rows.size() << " symbol rows, k=3)\n";
-  std::cout << "budget    greedy   knapsack   model4-target   |delta|   gate\n";
+  std::cout << "budget    greedy   knapsack   |delta|   gate\n";
   int failures = 0;
   for (const auto& t : targets) {
     const double greedy = mean_recall("greedy", t.budget);
     const double knapsack = mean_recall("knapsack", t.budget);
-    const double delta = std::fabs(knapsack - t.expect);
+    const double delta = std::fabs(knapsack - greedy);
     bool ok = true;
     if (t.gated) {
-      ok = delta <= kTol && knapsack + 1e-9 >= greedy;  // parity AND no regression vs greedy
+      ok = greedy + 1e-9 >= t.greedy_baseline - kTol &&
+           knapsack + 1e-9 >= t.knapsack_baseline - kTol &&
+           delta <= kTol;  // non-regression per packer AND two-sided parity
     }
     if (!ok) {
       ++failures;
     }
-    std::cout << "  " << t.budget << "    " << greedy << "    " << knapsack << "    " << t.expect
-              << "    " << delta << "    " << (t.gated ? (ok ? "PASS" : "FAIL") : "neutral") << "\n";
+    std::cout << "  " << t.budget << "    " << greedy << "    " << knapsack << "    "
+              << delta << "    " << (t.gated ? (ok ? "PASS" : "FAIL") : "neutral") << "\n";
   }
 
   // --- Adaptive gather revalidation (in-engine, this graph) -------------------
@@ -231,14 +259,26 @@ int main() {
 
   std::cout << "\nadaptive gather revalidation (in-engine, N=" << rows.size() << ")\n";
   std::cout << "budget   greedy@k2   adaptive   knap@k3   d(adp-k2)   cand k2/adp/k3   gate\n";
+  // Honest-ceiling re-pin: with the budget enforced, small bundles shrink for
+  // every gather mode and adaptive's 2k gain over greedy@k2 compressed from
+  // +0.117 (measured under the over-packing packer) to +0.0146. The candidate-
+  // pool advantage is unchanged (24.6 vs 41.97 at k3). Entry costs include the
+  // absolute source path, so measured gains vary with checkout depth: the 4k
+  // gain measured +0.0387 in a deep local worktree and +0.0272 on CI's short
+  // runner root. Floors sit below every observed environment while still
+  // requiring a material positive gain.
+  const std::map<int, double> kMinAdaptiveGain{{2000, 0.005}, {4000, 0.020}};
   for (const int budget : {2000, 4000}) {  // 8k neutral: the ego graph mostly fits
     const auto [r_k2, c_k2] = measure("greedy", "fixed", 2, budget);
     const auto [r_adp, c_adp] = measure("knapsack", "adaptive", 3, budget);
     const auto [r_k3, c_k3] = measure("knapsack", "fixed", 3, budget);
     const double delta = r_adp - r_k2;
-    // Material gain over the true baseline, no worse than full k3 recall, and a
-    // strictly smaller candidate pool than k3 (the recall/cost win, in-engine).
-    const bool ok = delta >= 0.03 && r_adp <= r_k3 + 0.02 && c_adp < c_k3;
+    // Positive gain over the true baseline and a strictly smaller candidate pool
+    // than k3 (the recall/cost win, in-engine). The old "no better than k3+0.02"
+    // cap assumed an unenforced budget, where the k3 superset could only help;
+    // with the measured ceiling a smaller, better-ranked pool legitimately packs
+    // more relevant entries than the superset, so the cap is gone.
+    const bool ok = delta >= kMinAdaptiveGain.at(budget) && c_adp < c_k3;
     if (!ok) {
       ++failures;
     }
@@ -246,6 +286,11 @@ int main() {
               << c_k2 << "/" << c_adp << "/" << c_k3 << "   " << (ok ? "PASS" : "FAIL") << "\n";
   }
 
+  if (parity_snippet_entries == 0) {
+    std::cerr << "FAIL: no returned entry carried a snippet across any run -- "
+                 "the graph under test is snippet-free (source paths not resolvable)\n";
+    return 1;
+  }
   if (failures != 0) {
     std::cerr << failures << " parity assertion(s) failed\n";
     return 1;

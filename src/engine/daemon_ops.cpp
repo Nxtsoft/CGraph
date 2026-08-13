@@ -62,6 +62,10 @@ constexpr std::size_t kMaxKnapsackCapacity = 50000;
   return (text.size() + 3) / 4;
 }
 
+[[nodiscard]] std::size_t estimate_tokens_for_length(std::size_t byte_length) {
+  return (byte_length + 3) / 4;
+}
+
 [[nodiscard]] nlohmann::json error_response(std::string message) {
   return nlohmann::json{{"ok", false}, {"error", std::move(message)}};
 }
@@ -333,11 +337,25 @@ constexpr std::size_t kSameFileCandidateCap = 5;
 [[nodiscard]] std::size_t emitted_entry_tokens(
     const nlohmann::json& focus,
     const nlohmann::json& included) {
-  std::size_t used = estimate_tokens(focus.dump());
-  for (const auto& entry : included) {
-    used += estimate_tokens(entry.dump());
+  // Measure the serialized ARRAY rather than summing per-entry costs: summing
+  // misses the array's own framing (brackets, separators) and was observed to
+  // overshoot a 3000 budget by a token. This is the number reported as
+  // tokens_used and tested against the budget in both packing modes.
+  return estimate_tokens(focus.dump()) + estimate_tokens(included.dump());
+}
+
+// A returned row without a snippet is marked so a caller can tell a failed
+// read from a kind that has no source extent at all (documents, concepts,
+// media). Only the former is a defect signal; the latter is a followable
+// pointer by design. The extent test mirrors read_source_snippet's guard.
+void annotate_snippet_absence(nlohmann::json& entry, const Node& node) {
+  if (entry.contains("snippet") || entry.value("snippet_omitted", false) ||
+      entry.value("snippet_unavailable", false)) {
+    return;
   }
-  return used;
+  const bool has_extent = !node.source_file.empty() && node.source_location &&
+                          node.source_location->start_line != 0;
+  entry[has_extent ? "snippet_omitted" : "snippet_unavailable"] = true;
 }
 
 [[nodiscard]] std::unordered_map<std::string, const Node*> index_nodes(const GraphSnapshot& graph) {
@@ -863,7 +881,11 @@ struct StructuralIntent {
     const GraphSnapshot& graph,
     const nlohmann::json& params,
     SnapshotSourceReader& source_reader) {
-  const auto budget = params.value("budget", kDefaultContextBudget);
+  // Read signed and clamp: a negative budget must floor at 0 (focal-only,
+  // truncated), not wrap to a practically-unbounded unsigned ceiling.
+  const auto raw_budget =
+      params.value("budget", static_cast<long long>(kDefaultContextBudget));
+  const std::size_t budget = raw_budget > 0 ? static_cast<std::size_t>(raw_budget) : 0;
   // Packing strategy: "greedy" (default ordered full/brief degradation) or
   // "knapsack" (the step-A-validated 0/1 fill). Knapsack gathers a wider ego graph
   // by default; both strategies finish candidate selection from metadata first.
@@ -1116,25 +1138,94 @@ struct StructuralIntent {
     });
 
     auto focus = with_source(node_brief(*focal), *focal, source_reader);
-    auto included = nlohmann::json::array();
-    for (const auto* node : chosen) {
+    annotate_snippet_absence(focus, *focal);
+
+    // Render each selected entry, then re-cost the selection at its TRUE
+    // serialized size and shed until it fits. The DP's slice-cost weights above
+    // are deliberately kept as the ranking heuristic -- including the JSON
+    // overhead flattens the weight spread and degenerates the knapsack toward
+    // greedy -- but the report and the budget test are measured, never
+    // estimated. Numbers and method: openspec/changes/honest-context-budget.
+    struct Selected {
+      nlohmann::json entry;
+      std::size_t bytes = 0;  // compact-serialized entry length
+      std::size_t cost = 0;   // estimate_tokens over that length
+      double value = 0.0;
+      std::size_t order = 0;
+    };
+    std::unordered_map<std::string, double> value_by_id;
+    value_by_id.reserve(candidates.size());
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+      value_by_id[candidates[i]->id] = value[i];
+    }
+    std::vector<Selected> selected;
+    selected.reserve(chosen.size());
+    for (std::size_t i = 0; i < chosen.size(); ++i) {
+      const auto* node = chosen[i];
       auto full = with_source(candidate_brief(*node), *node, source_reader);
-      included.push_back(std::move(full));
+      annotate_snippet_absence(full, *node);
+      const auto bytes = full.dump().size();
+      selected.push_back(Selected{
+          std::move(full), bytes, estimate_tokens_for_length(bytes), value_by_id[node->id], i});
+    }
+
+    // The focal entry is charged first and is never dropped: a small budget
+    // still answers with the symbol the caller asked about. Shed by ascending
+    // value DENSITY (value per serialized token) so a cheap relevant row
+    // outlives an expensive marginal one -- shedding by raw value systematically
+    // protected snippet-less depth-1 rows over depth-2 code (the four-arm
+    // comparison lives in openspec/changes/honest-context-budget).
+    const std::size_t focus_cost = estimate_tokens(focus.dump());
+    const auto density = [](const Selected& item) {
+      return item.value / static_cast<double>(std::max<std::size_t>(1, item.cost));
+    };
+    std::ranges::sort(selected, [&](const Selected& lhs, const Selected& rhs) {
+      return density(lhs) < density(rhs);
+    });
+    // O(n) exact shed: a compact JSON array serializes to
+    // 2 + sum(entry_bytes) + (k-1) bytes for k>0 entries (brackets + commas),
+    // so the measured cost of every suffix falls out of one byte total --
+    // re-dumping survivors per step (O(n^2)) regressed the context op 4x at
+    // the default budget and ~16x on sourceless-heavy graphs.
+    std::size_t suffix_bytes = 0;
+    for (const auto& item : selected) {
+      suffix_bytes += item.bytes;
+    }
+    const auto suffix_cost = [&](std::size_t kept, std::size_t bytes) {
+      const std::size_t array_len = kept > 0 ? 2 + bytes + (kept - 1) : 2;
+      return focus_cost + estimate_tokens_for_length(array_len);
+    };
+    std::size_t dropped_over_budget = 0;
+    while (dropped_over_budget < selected.size() &&
+           suffix_cost(selected.size() - dropped_over_budget, suffix_bytes) > budget) {
+      suffix_bytes -= selected[dropped_over_budget].bytes;
+      ++dropped_over_budget;
+    }
+    selected.erase(selected.begin(),
+                   selected.begin() + static_cast<std::ptrdiff_t>(dropped_over_budget));
+    // Restore the nearest-first emit order the shed sort disturbed.
+    std::ranges::sort(selected, [](const Selected& lhs, const Selected& rhs) {
+      return lhs.order < rhs.order;
+    });
+
+    auto included = nlohmann::json::array();
+    for (auto& item : selected) {
+      included.push_back(std::move(item.entry));
     }
     const auto used = emitted_entry_tokens(focus, included);
-    const std::size_t omitted = candidates.size() - chosen.size();
+    const std::size_t omitted = candidates.size() - chosen.size() + dropped_over_budget;
     nlohmann::json result{
         {"focus", std::move(focus)},
         {"budget", budget},
         {"tokens_used", used},
         {"selection_tokens_used", selection_used},
-        {"budget_basis", "estimated_source_slice_tokens"},
+        {"budget_basis", "measured_serialized_tokens"},
         {"packing", "knapsack"},
         {"gather", adaptive ? "adaptive" : "fixed"},
         {"source_files_read", source_reader.files_read()},
         {"included", std::move(included)},
         {"omitted", omitted}};
-    if (omitted > 0 || selection_used > budget) {
+    if (omitted > 0 || used > budget) {
       result["truncated"] = true;
     }
     // Adaptive reach summary: did the relevance gate actually expand the third hop,
@@ -1181,11 +1272,43 @@ struct StructuralIntent {
   // All full/brief/omitted decisions above are metadata-only. Only the focal and
   // entries selected for full emission reach SnapshotSourceReader.
   auto focus = with_source(node_brief(*focal), *focal, source_reader);
+  annotate_snippet_absence(focus, *focal);
   auto included = nlohmann::json::array();
   for (auto& item : planned) {
-    included.push_back(item.materialize
-                           ? with_source(std::move(item.entry), *item.node, source_reader)
-                           : std::move(item.entry));
+    auto entry = item.materialize
+                     ? with_source(std::move(item.entry), *item.node, source_reader)
+                     : std::move(item.entry);
+    annotate_snippet_absence(entry, *item.node);
+    included.push_back(std::move(entry));
+  }
+  // The projection above is a plan; the ceiling is measured. Greedy's insertion
+  // order is its priority order (depth, then centrality), so it sheds from the
+  // end -- positionally, unlike the knapsack's density order; a shed FULL row
+  // can therefore outrank a surviving earlier BRIEF row, which is the
+  // documented cost of keeping greedy's ordering byte-stable. O(n) via prefix
+  // byte sums (see the knapsack shed above for the arithmetic).
+  {
+    const std::size_t greedy_focus_cost = estimate_tokens(focus.dump());
+    std::vector<std::size_t> entry_bytes;
+    entry_bytes.reserve(included.size());
+    std::size_t total_bytes = 0;
+    for (const auto& item : included) {
+      entry_bytes.push_back(item.dump().size());
+      total_bytes += entry_bytes.back();
+    }
+    std::size_t kept = included.size();
+    while (kept > 0) {
+      const std::size_t array_len = 2 + total_bytes + (kept - 1);
+      if (greedy_focus_cost + estimate_tokens_for_length(array_len) <= budget) {
+        break;
+      }
+      --kept;
+      total_bytes -= entry_bytes[kept];
+    }
+    while (included.size() > kept) {
+      included.erase(included.end() - 1);
+      ++omitted;
+    }
   }
   const auto used = emitted_entry_tokens(focus, included);
 
@@ -1194,13 +1317,13 @@ struct StructuralIntent {
       {"budget", budget},
       {"tokens_used", used},
       {"selection_tokens_used", projected_used},
-      {"budget_basis", "projected_entry_tokens"},
+      {"budget_basis", "measured_serialized_tokens"},
       {"packing", "greedy"},
       {"gather", "fixed"},
       {"source_files_read", source_reader.files_read()},
       {"included", std::move(included)},
       {"omitted", omitted}};
-  if (omitted > 0 || projected_used > budget) {
+  if (omitted > 0 || used > budget) {
     result["truncated"] = true;
   }
   return result;
@@ -1889,6 +2012,10 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
       // The response is assembled request-locally, so discarding it here makes
       // a failed pinned read atomic: no verified prefix or graph result escapes.
       response = error_response(error.what());
+    } catch (const nlohmann::json::exception& error) {
+      // A mistyped parameter (e.g. {"packing": 7}) must yield an error frame,
+      // not an uncaught throw that kills the resident daemon for every caller.
+      response = error_response(std::string{"invalid request parameter: "} + error.what());
     }
   }
   // A context call served with gather="adaptive" is counted distinctly so the
