@@ -111,6 +111,21 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
       {"node_count", stats.nodes},
       {"edge_count", stats.edges},
       {"unextracted", stats.unextracted},
+      // An unresolved call leaves no trace in the graph, so the resolution rate
+      // has to be reported or it cannot be known. The five outcomes partition
+      // `total`.
+      {"call_resolution",
+       {
+           {"total", stats.calls.total},
+           {"resolved_same_file", stats.calls.resolved_same_file},
+           {"resolved_project_unique", stats.calls.resolved_project_unique},
+           {"resolved_overload_first", stats.calls.resolved_overload_first},
+           {"dropped_unknown", stats.calls.dropped_unknown},
+           {"dropped_ambiguous", stats.calls.dropped_ambiguous},
+           {"dropped_self", stats.calls.dropped_self},
+           {"resolved_rate", stats.calls.resolved_rate()},
+           {"balances", stats.calls.balances()},
+       }},
   };
   // Modeled, labeled, and omitted when it cannot be honestly formed.
   if (const auto saved = modeled_cache_saved_ms(stats.files_cache_hit, stats.files_extracted, stats.extract_ms)) {

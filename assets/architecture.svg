@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-label="CGraph architecture">
+  <defs>
+    <style>.m{font-family:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace}.s{font-family:-apple-system,'Segoe UI',Inter,sans-serif}</style>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L8 4.5 L0 9 z" fill="#6ea8fe"/></marker>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L8 4.5 L0 9 z" fill="#59d499"/></marker>
+  </defs>
+  <rect width="1200" height="420" rx="18" fill="#0b0e14" stroke="#243049"/>
+  <text x="40" y="46" class="m" font-size="14" fill="#8a93a6" letter-spacing="2">ARCHITECTURE</text>
+
+  <!-- source -->
+  <rect x="40" y="80" width="150" height="90" rx="12" fill="#111624" stroke="#243049"/>
+  <text x="115" y="118" class="s" font-size="15" fill="#e6ecf5" text-anchor="middle">source tree</text>
+  <text x="115" y="140" class="m" font-size="11" fill="#8a93a6" text-anchor="middle">.ts .py .go</text>
+  <text x="115" y="156" class="m" font-size="11" fill="#8a93a6" text-anchor="middle">.rs .java …</text>
+
+  <!-- extract pipeline -->
+  <path d="M190 125 L236 125" stroke="#6ea8fe" fill="none" marker-end="url(#a)"/>
+  <rect x="236" y="72" width="220" height="106" rx="12" fill="#0f1626" stroke="#6ea8fe"/>
+  <text x="346" y="100" class="s" font-size="15" fill="#6ea8fe" text-anchor="middle">deterministic extract</text>
+  <text x="346" y="124" class="m" font-size="11" fill="#8a93a6" text-anchor="middle">tree-sitter · .gitignore-aware</text>
+  <text x="346" y="142" class="m" font-size="11" fill="#8a93a6" text-anchor="middle">imports · calls · inheritance</text>
+  <text x="346" y="160" class="m" font-size="11" fill="#8a93a6" text-anchor="middle">communities · centrality (igraph)</text>
+
+  <!-- graph -->
+  <path d="M456 125 L502 125" stroke="#6ea8fe" fill="none" marker-end="url(#a)"/>
+  <circle cx="560" cy="125" r="52" fill="#0e1a18" stroke="#59d499"/>
+  <g stroke="#2c4a3e" stroke-width="1.4"><line x1="540" y1="105" x2="580" y2="120"/><line x1="580" y1="120" x2="555" y2="150"/><line x1="580" y1="120" x2="592" y2="108"/></g>
+  <circle cx="540" cy="105" r="6" fill="#59d499"/><circle cx="580" cy="120" r="8" fill="#6ea8fe"/><circle cx="555" cy="150" r="5" fill="#f5c451"/><circle cx="592" cy="108" r="5" fill="#b07aa1"/>
+  <text x="560" y="200" class="s" font-size="14" fill="#59d499" text-anchor="middle">knowledge graph</text>
+
+  <!-- three consumers -->
+  <path d="M612 100 L720 72" stroke="#59d499" fill="none" marker-end="url(#ag)"/>
+  <path d="M614 125 L720 165" stroke="#59d499" fill="none" marker-end="url(#ag)"/>
+  <path d="M600 168 L720 258" stroke="#59d499" fill="none" marker-end="url(#ag)"/>
+
+  <rect x="726" y="52" width="440" height="70" rx="12" fill="#111624" stroke="#243049"/>
+  <text x="748" y="82" class="m" font-size="14" fill="#e6ecf5">cgraph</text><text x="748" y="102" class="s" font-size="12" fill="#8a93a6">one-shot scan → disk exports (json · html · svg · md · cypher)</text>
+
+  <rect x="726" y="150" width="440" height="70" rx="12" fill="#111624" stroke="#243049"/>
+  <text x="748" y="180" class="m" font-size="14" fill="#e6ecf5">graphd  +  cgraph-client</text><text x="748" y="200" class="s" font-size="12" fill="#8a93a6">resident daemon · warm ~10ms queries · live file-watch</text>
+
+  <rect x="726" y="248" width="440" height="70" rx="12" fill="#0f1626" stroke="#6ea8fe"/>
+  <text x="748" y="278" class="m" font-size="14" fill="#6ea8fe">cgraph-mcp</text><text x="748" y="298" class="s" font-size="12" fill="#8a93a6">MCP server → Claude / Codex navigate by graph, not grep</text>
+
+  <text x="40" y="392" class="s" font-size="13" fill="#8a93a6">Deterministic extraction, fragment validation, and local graph mutation live in the engine — hosts own model choice and semantic enrichment.</text>
+</svg>

@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 430" role="img" aria-label="CGraph performance">
+  <defs><style>.m{font-family:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace}.s{font-family:-apple-system,'Segoe UI',Inter,sans-serif}</style></defs>
+  <rect width="1200" height="430" rx="18" fill="#0b0e14" stroke="#243049"/>
+  <text x="40" y="46" class="m" font-size="14" fill="#8a93a6" letter-spacing="2">PERFORMANCE</text>
+  <text x="40" y="78" class="s" font-size="20" fill="#e6ecf5">Interactive graph viewer — time to settle vs. node count</text>
+
+  <!-- axes -->
+  <line x1="90" y1="110" x2="90" y2="330" stroke="#243049"/>
+  <line x1="90" y1="330" x2="1150" y2="330" stroke="#243049"/>
+  <g class="m" font-size="11" fill="#8a93a6">
+    <text x="80" y="334" text-anchor="end">0s</text>
+    <text x="80" y="242" text-anchor="end">18s</text>
+    <text x="80" y="118" text-anchor="end">36s</text>
+  </g>
+
+  <!-- groups: 1k, 5k, 10k -->
+  <!-- baseline bars (red) scaled: 2.3/14.9/35.2 s over 220px per 36s -->
+  <g>
+    <!-- 1k -->
+    <rect x="180" y="316" width="70" height="14" rx="3" fill="#ff6b6b"/><text x="215" y="308" class="m" font-size="12" fill="#ff9b9b" text-anchor="middle">2.3s</text>
+    <rect x="260" y="330" width="70" height="0.001" fill="#59d499"/><rect x="260" y="326" width="70" height="4" rx="2" fill="#59d499"/><text x="295" y="318" class="m" font-size="12" fill="#7fe3b0" text-anchor="middle">0ms</text>
+    <text x="255" y="356" class="s" font-size="13" fill="#8a93a6" text-anchor="middle">1k nodes</text>
+  </g>
+  <g>
+    <!-- 5k -->
+    <rect x="470" y="239" width="70" height="91" rx="3" fill="#ff6b6b"/><text x="505" y="231" class="m" font-size="12" fill="#ff9b9b" text-anchor="middle">14.9s</text>
+    <rect x="550" y="326" width="70" height="4" rx="2" fill="#59d499"/><text x="585" y="318" class="m" font-size="12" fill="#7fe3b0" text-anchor="middle">0ms</text>
+    <text x="545" y="356" class="s" font-size="13" fill="#8a93a6" text-anchor="middle">5k nodes</text>
+  </g>
+  <g>
+    <!-- 10k -->
+    <rect x="760" y="115" width="70" height="215" rx="3" fill="#ff6b6b"/><text x="795" y="107" class="m" font-size="12" fill="#ff9b9b" text-anchor="middle">35.2s</text>
+    <rect x="840" y="326" width="70" height="4" rx="2" fill="#59d499"/><text x="875" y="318" class="m" font-size="12" fill="#7fe3b0" text-anchor="middle">0ms</text>
+    <text x="835" y="356" class="s" font-size="13" fill="#8a93a6" text-anchor="middle">10k nodes</text>
+  </g>
+
+  <!-- legend -->
+  <g class="s" font-size="12.5">
+    <rect x="952" y="118" width="13" height="13" rx="3" fill="#ff6b6b"/><text x="972" y="129" fill="#e6ecf5">before — client O(N²) sim</text>
+    <rect x="952" y="142" width="13" height="13" rx="3" fill="#59d499"/><text x="972" y="153" fill="#e6ecf5">after — precomputed layout</text>
+  </g>
+  <text x="952" y="196" class="m" font-size="25" fill="#59d499" font-weight="700">35s → 0ms</text>
+  <text x="952" y="218" class="s" font-size="12.5" fill="#8a93a6">cool-down eliminated</text>
+  <text x="952" y="254" class="m" font-size="21" fill="#8ec5ff" font-weight="700">20–34× cheaper</text>
+  <text x="952" y="276" class="s" font-size="12.5" fill="#8a93a6">repaints (viewport culling)</text>
+
+  <text x="40" y="404" class="s" font-size="12" fill="#8a93a6">Measured on synthetic graphs in headless Chromium (physics disabled, canvas pixels read). Dependency-free — no JS libraries in the emitted HTML.</text>
+</svg>

@@ -47,6 +47,17 @@ grep/read calls that burn context.
   a budget (e.g. `4000`) and it returns the focal symbol's source plus its
   neighborhood's source, ranked and trimmed to fit. Read that instead of opening
   files one by one. It reports `omitted` / `truncated` if more existed.
+- `graph_context` has two **gather** modes. The default (`gather:"fixed"`) packs
+  the whole k-hop neighborhood. When you have a task in hand, pass
+  `gather:"adaptive"` **together with a `query`** — it keeps the full 2-hop core
+  but expands the third hop only along query-relevant nodes. On the retrieval
+  eval that lifted grade-2 recall by **+0.057 for +13% candidate tokens**, versus
+  the **+96%** a full 3-hop gather costs. The relevance gate is a no-op without a
+  query, so never send `adaptive` without one. The response echoes
+  `gather:"adaptive"`, `packing:"knapsack"`, and a `reach` summary
+  (`{candidates, expanded_past_core, gated_at_core}` — `expanded_past_core: 0`
+  means nothing relevant lay past the 2-hop core, so it collapsed to it). Raise
+  or lower `gather_theta` to tighten or loosen the relevance threshold.
 - `graph_impact` with `dependents` is the safety check before changing a
   signature or deleting a symbol: it lists everything that would be affected,
   by depth.
@@ -78,6 +89,27 @@ startup or for non-source seam graphs, `freshness.verified` can be `false`. The
 daemon keeps source-backed snapshots current through automatic file watching.
 Use synchronization and a pin when you need proof that the graph matches specific
 source content.
+
+## Session memory (survive /compact and /clear)
+
+The daemon and `graph.json` live **outside your context window**, so a checkpoint
+written before a `/compact` or `/clear` is still recall-able afterward. Use this
+to carry the task thread across a context reset instead of losing it.
+
+- `graph_remember {title, body, touches?, tags?}` — write one checkpoint. `body`
+  is a **distilled** markdown summary of what you did and what's next; `touches`
+  lists the code symbols (ids or bare names) the work concerns, so recall can link
+  back to them. Persist only the distilled outcome — **never** raw tool output,
+  DOM snapshots, or chain-of-thought.
+- `graph_recall {query?, limit?}` — return recent checkpoints newest-first, each
+  with its body and briefs of the code it touched. After a `/clear`, recall first
+  (~KB payload) to restore the thread, then `graph_context` on a linked symbol to
+  reload just-enough source.
+
+The discipline is **distill → checkpoint → clear → recall**. Checkpoints are
+inert to code analysis (they never shift query/impact/context rankings) and
+survive daemon restart, incremental edits, and full rescans — the sidecars under
+`cgraph-out/memory/` are the durable source of truth.
 
 ## Practicalities
 

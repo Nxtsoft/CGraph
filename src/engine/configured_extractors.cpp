@@ -11,6 +11,7 @@ namespace {
 
 extern "C" const TSLanguage* tree_sitter_c();
 extern "C" const TSLanguage* tree_sitter_cpp();
+extern "C" const TSLanguage* tree_sitter_c_sharp();
 extern "C" const TSLanguage* tree_sitter_go();
 extern "C" const TSLanguage* tree_sitter_groovy();
 extern "C" const TSLanguage* tree_sitter_java();
@@ -34,6 +35,21 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       .name_fields = {"name", "declarator"},
       .body_fields = {"body"},
       .call_accessor_fields = {"function"},
+      // `obj.method()`, `ptr->method()`, and `obj.*pm()` are all `field_expression`
+      // in the C and C++ grammars, with the bare name in the `field` field -- so
+      // one entry covers every member-call spelling. Go and C# already declared
+      // their equivalents (`selector_expression`/`field`,
+      // `member_access_expression`/`name`); C and C++ declared neither, so
+      // add_raw_call fell through to the verbatim receiver expression and recorded
+      // `state.stats.record` as the callee name, which matched nothing. A member
+      // call stays scoped to the caller's own file, because the receiver type is
+      // unknown and a project-wide name match would be a guess.
+      .call_member_node_types = {"field_expression"},
+      .call_member_field = "field",
+      .resolve_callee_name = cpp_callee_name,
+      // Grammar-driven callee naming. A text rule cannot do this job: `::` shows up
+      // in nine distinct callee node types, and `ns::make<zoo::Beast>` reduced at
+      // its last `::` yields `Beast>` -- a fabricated call to an unrelated struct.
   };
   // `#include` -> imports, struct members -> defines, member/param/return types
   // -> references. cpp_relation_handler also emits inherits, which is a no-op for
@@ -41,6 +57,11 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   config.import_handler = cpp_import_handler;
   config.relation_handler = cpp_relation_handler;
   config.extra_walk = cpp_field_walk;
+  // A `function_definition` has no `name` field, so without this the label would
+  // be the declarator's raw text -- the whole declaration, signature included --
+  // and a bare callee name at a call site could never match it. See
+  // cpp_extractor.hpp.
+  config.resolve_function_name = cpp_function_name;
   return config;
 }
 
@@ -50,7 +71,20 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   config.grammar_name = "tree-sitter-cpp";
   config.extensions = {".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"};
   config.class_node_types.push_back("class_specifier");
-  config.class_node_types.push_back("namespace_definition");
+  // `namespace_definition` is deliberately NOT a class node. Node ids are
+  // per-file, so `namespace cgraph { }` in N files minted N separate "class"
+  // nodes all labelled `cgraph` -- it never grouped anything across files, which
+  // is the only thing a namespace node could have been for. Worse, a class
+  // parent makes add_containment_edge label every member a `method`, so on this
+  // repo 96 of 214 class nodes were one namespace, 416 of 449 `method` edges
+  // originated at one, it was the highest-degree node in the entire graph
+  // (degree 45, centrality 1.0, god_node), and 92% of connected function pairs
+  // routed their shortest path through it -- making `path` answer "both are in
+  // namespace cgraph" instead of naming the real call chain.
+  //
+  // With no node emitted, label_for_node's documented skip path applies: the
+  // enclosing scope stays the file node and members attach to it with
+  // `contains`. No symbol is lost.
   return config;
 }
 
@@ -66,6 +100,28 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       .name_fields = {"name"},
       .body_fields = {"body"},
       .call_accessor_fields = {"name"},
+  };
+}
+
+[[nodiscard]] LanguageConfig csharp_config() {
+  return LanguageConfig{
+      .name = "csharp",
+      .grammar_name = "tree-sitter-c-sharp",
+      .extensions = {".cs"},
+      .class_node_types = {"class_declaration", "interface_declaration", "struct_declaration",
+                           "enum_declaration", "record_declaration", "namespace_declaration"},
+      .function_node_types = {"method_declaration", "constructor_declaration",
+                              "local_function_statement"},
+      .import_node_types = {"using_directive"},
+      .call_node_types = {"invocation_expression", "object_creation_expression"},
+      .name_fields = {"name"},
+      .body_fields = {"body"},
+      .call_accessor_fields = {"function"},
+      // `obj.Method()` / `Type.Static()` targets are member_access_expressions;
+      // record the bare member name as a same-file member call, mirroring Go's
+      // selector_expression handling (the receiver/type is not name-guessed).
+      .call_member_node_types = {"member_access_expression"},
+      .call_member_field = "name",
   };
 }
 
@@ -181,6 +237,7 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
       // receiver/package is not resolved by a project-wide name guess).
       .call_member_node_types = {"selector_expression"},
       .call_member_field = "field",
+      .resolve_callee_name = cpp_callee_name,
   };
   config.import_handler = go_import_handler;
   return config;
@@ -209,6 +266,8 @@ const TSLanguage* tree_sitter_language_for(DetectedLanguage language) {
       return tree_sitter_c();
     case DetectedLanguage::Cpp:
       return tree_sitter_cpp();
+    case DetectedLanguage::CSharp:
+      return tree_sitter_c_sharp();
     case DetectedLanguage::Go:
       return tree_sitter_go();
     case DetectedLanguage::Groovy:
@@ -240,6 +299,8 @@ std::optional<LanguageConfig> config_for_language(DetectedLanguage language) {
       return c_config();
     case DetectedLanguage::Cpp:
       return cpp_config();
+    case DetectedLanguage::CSharp:
+      return csharp_config();
     case DetectedLanguage::Go:
       return go_config();
     case DetectedLanguage::Groovy:

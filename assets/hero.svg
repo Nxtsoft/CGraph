@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-label="CGraph — a native C++ code-graph engine">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0e14"/><stop offset="1" stop-color="#0e1424"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8ec5ff"/><stop offset="1" stop-color="#6ea8fe"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#6ea8fe" stop-opacity="0.18"/><stop offset="1" stop-color="#6ea8fe" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .w{font-family:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace}
+      .s{font-family:-apple-system,'Segoe UI',Inter,Roboto,sans-serif}
+    </style>
+  </defs>
+  <rect width="1200" height="360" rx="20" fill="url(#bg)"/>
+  <rect width="1200" height="360" rx="20" fill="url(#glow)"/>
+  <rect x="1" y="1" width="1198" height="358" rx="19" fill="none" stroke="#243049"/>
+
+  <!-- graph motif (right) -->
+  <g stroke="#2c3a58" stroke-width="1.6" opacity="0.9">
+    <line x1="880" y1="90" x2="980" y2="150"/><line x1="980" y1="150" x2="900" y2="230"/>
+    <line x1="980" y1="150" x2="1080" y2="120"/><line x1="1080" y1="120" x2="1120" y2="210"/>
+    <line x1="900" y1="230" x2="1000" y2="285"/><line x1="1000" y1="285" x2="1120" y2="210"/>
+    <line x1="880" y1="90" x2="820" y2="185"/><line x1="820" y1="185" x2="900" y2="230"/>
+    <line x1="980" y1="150" x2="1000" y2="285"/>
+  </g>
+  <g>
+    <circle cx="880" cy="90" r="10" fill="#59d499"/><circle cx="980" cy="150" r="16" fill="#6ea8fe"/>
+    <circle cx="900" cy="230" r="9" fill="#f5c451"/><circle cx="1080" cy="120" r="11" fill="#b07aa1"/>
+    <circle cx="1120" cy="210" r="8" fill="#5ad6c0"/><circle cx="1000" cy="285" r="10" fill="#6ea8fe"/>
+    <circle cx="820" cy="185" r="8" fill="#ff8fa3"/>
+  </g>
+
+  <!-- wordmark (left) -->
+  <text x="80" y="150" class="w" font-size="72" font-weight="700" fill="url(#ink)">CGraph</text>
+  <text x="82" y="200" class="s" font-size="25" fill="#e6ecf5">Your codebase as a queryable knowledge graph.</text>
+  <text x="82" y="236" class="s" font-size="17" fill="#8a93a6">Native C++ · tree-sitter · deterministic · daemon + MCP for AI agents</text>
+
+  <!-- chips -->
+  <g class="w" font-size="13">
+    <rect x="82" y="270" width="132" height="30" rx="15" fill="#111624" stroke="#243049"/><text x="148" y="290" text-anchor="middle" fill="#8ec5ff">~10ms queries</text>
+    <rect x="226" y="270" width="150" height="30" rx="15" fill="#111624" stroke="#243049"/><text x="301" y="290" text-anchor="middle" fill="#59d499">13+ languages</text>
+    <rect x="388" y="270" width="176" height="30" rx="15" fill="#111624" stroke="#243049"/><text x="476" y="290" text-anchor="middle" fill="#f5c451">10k nodes in ~2s</text>
+  </g>
+</svg>

@@ -1,0 +1,28 @@
+{
+  "cache_hit_rate": 0.0,
+  "call_resolution": {
+    "balances": true,
+    "dropped_ambiguous": 60,
+    "dropped_self": 15,
+    "dropped_unknown": 5294,
+    "resolved_project_unique": 1163,
+    "resolved_rate": 0.32260913449407014,
+    "resolved_same_file": 1394,
+    "total": 7926
+  },
+  "edge_count": 2843,
+  "files_cache_hit": 0,
+  "files_extracted": 171,
+  "files_total": 171,
+  "node_count": 1434,
+  "phase_ms": {
+    "analyze_ms": 0.965875,
+    "communities_ms": 63.196958,
+    "dedup_ms": 9.976208,
+    "extract_ms": 43.496083,
+    "merge_ms": 1.704541,
+    "resolve_ms": 12.442625
+  },
+  "total_ms": 131.78229000000002,
+  "unextracted": {}
+}

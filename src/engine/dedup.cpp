@@ -230,13 +230,31 @@ void semantic_dedup_impl(
       continue;
     }
 
-    // Pass 1: exact-label merge, restricted to one source file. Two files that
-    // declare the same name ("Props", "index", "handler") are distinct symbols
-    // and must never collapse, so the dedup key carries the source file. Nodes
-    // with no source file cannot be proven to be the same symbol, so they are
-    // left untouched. This runs for every node, not just high-entropy ones.
+    // Pass 1: exact-label merge, restricted to one source file AND one
+    // declaration site. Two files that declare the same name ("Props", "index",
+    // "handler") are distinct symbols and must never collapse, so the dedup key
+    // carries the source file. Nodes with no source file cannot be proven to be
+    // the same symbol, so they are left untouched. This runs for every node, not
+    // just high-entropy ones.
+    //
+    // The key also carries the start line, because a label names a symbol and one
+    // file can legitimately declare a name more than once: an overload set
+    // (`to_json` five times over), a constructor sharing its class's name, or
+    // `operator=` for both copy and move. Those are distinct symbols at distinct
+    // sites, and collapsing them deletes real code from the graph -- an agent
+    // asking where `to_json` lives would get one of five answers with no hint the
+    // others exist. A genuine double-extraction of the same symbol still shares a
+    // line and still merges. (Before labels were reduced to bare names an
+    // overload set was accidentally kept apart by its signature; the file-only
+    // key silently depended on that.)
     if (!node.source_file.empty() && (full_graph || in_scope(node))) {
-      const auto exact_key = normalized + "\n" + node.source_file;
+      // Line AND column: three overloads can share one line, and a line-only key
+      // would collapse them again after add_symbol_node went to the trouble of
+      // giving each a distinct id.
+      const auto site = node.source_location ? std::to_string(node.source_location->start_line) + ":" +
+                                                   std::to_string(node.source_location->start_column)
+                                             : std::string{};
+      const auto exact_key = normalized + "\n" + node.source_file + "\n" + site;
       if (const auto existing = exact.find(exact_key); existing != exact.end()) {
         groups.unite(existing->second, index);
       } else {
@@ -292,11 +310,72 @@ void semantic_dedup_impl(
         if (fuzzy_merge_blocked(left_label, right_label, similarity)) {
           continue;
         }
-        // Identical labels in different files are same-named-but-distinct
-        // symbols (the exact pass already merged any same-file duplicates), so
-        // a cross-file identical pair must not merge.
-        if (left_label == right_label &&
-            graph.nodes[left].source_file != graph.nodes[right].source_file) {
+        const auto& left_node = graph.nodes[left];
+        const auto& right_node = graph.nodes[right];
+        const bool left_sited = left_node.source_location.has_value();
+        const bool right_sited = right_node.source_location.has_value();
+        // The exact pass only sees nodes with a non-empty source_file, so that flag
+        // -- not the presence of a location -- is what decides which pass owns a
+        // node's identity.
+        const bool left_from_source = !left_node.source_file.empty();
+        const bool right_from_source = !right_node.source_file.empty();
+
+        // A node extracted from a file and one that was not are different species:
+        // a code symbol and an enrichment concept. Never fuzzy-merge across that
+        // line -- unite() keeps the lower index and enrichment nodes are appended
+        // last, so such a merge silently deletes the concept.
+        if (left_from_source != right_from_source) {
+          continue;
+        }
+
+        // Identical labels, when both nodes came from a file: the exact pass owns
+        // that decision, keying on source file and declaration site. Two such nodes
+        // are the same symbol only if they share both, so the fuzzy pass -- which
+        // has no evidence the exact pass lacks -- must not unite them. That covers
+        // same-named-but-distinct symbols in different files and, since labels
+        // became bare names, overload sets within one file.
+        //
+        // Nodes with NO source_file are the opposite case: they never enter the
+        // exact pass, so the fuzzy pass is their only merge path. Two such nodes
+        // with one label really are one idea, and refusing them would mean they
+        // could never be deduplicated again.
+        //
+        // In practice that is `concept` only. `document` and `media` DO carry a
+        // source_file (measured: 230/230 and 4/4 on this repo's enriched graph) --
+        // integrations/skills/cgraph-enrich/SKILL.md tells hosts to set it -- they
+        // just carry no source_location. So they take the `left_from_source` branch
+        // above, and identical-label documents are correctly kept apart.
+        //
+        // KNOWN, PRE-EXISTING, NOT FIXED HERE: because documents have no
+        // source_location, the site check below cannot fire for them, so two
+        // SIMILAR document labels in different files still merge -- a proposal, its
+        // tasks and its design collapsing into one node (44 documents and 144 edges
+        // lost per build, identical on HEAD~1). Filed as its own change; fixing it
+        // needs a decision about whether enrichment kinds should fuzzy-merge across
+        // files at all, which the cross-file `PaymentService` parity case says code
+        // symbols should.
+        if (left_label == right_label && left_from_source) {
+          continue;
+        }
+        // Two nodes that each name a concrete declaration site are distinct
+        // symbols, and a similar label is not evidence otherwise. Fuzzy matching
+        // earns its keep on nodes with no site -- an enrichment concept where
+        // "Auth flow" and "Authentication flow" really are one idea -- not on
+        // code, where `validate_semantic_fragment_file` and
+        // `validate_semantic_fragment_json` differ by one word and are different
+        // functions.
+        //
+        // This guard was latent before labels became bare names: a
+        // signature-bearing label was long and distinctive enough that two
+        // neighbours rarely crossed the 0.92 threshold. Shortening labels removed
+        // that accidental protection and the pass began deleting real functions
+        // (measured on this repo: supervisor_sync into supervisor_spec,
+        // drainer_uninstall into drainer_installed, query_zero_hit_rate into
+        // query_zero_hits).
+        if (left_sited && right_sited &&
+            (left_node.source_file != right_node.source_file ||
+             left_node.source_location->start_line != right_node.source_location->start_line ||
+             left_node.source_location->start_column != right_node.source_location->start_column)) {
           continue;
         }
         groups.unite(left, right);

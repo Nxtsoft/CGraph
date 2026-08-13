@@ -71,7 +71,7 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
     ScopedTimer timer(&result.stats.resolve_ms);
     const auto aliases = load_path_aliases(root);
     resolve_imports(result.graph, aliases);
-    resolve_raw_calls(result.graph, raw_calls);
+    resolve_raw_calls(result.graph, raw_calls, &result.stats.calls);
     resolve_raw_relations(result.graph, raw_relations);
   }
   {

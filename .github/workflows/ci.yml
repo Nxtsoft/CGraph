@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        preset: [default, sanitizers]
+        preset: [default, release, sanitizers]
 
     steps:
       - uses: actions/checkout@v4

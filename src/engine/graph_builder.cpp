@@ -58,9 +58,30 @@ constexpr std::string_view kCallRelation = "CALLS";
   return names.contains(label);
 }
 
+// True when a node's kind can be the target of a call. This is deliberately the
+// SAME set the per-file table admits (see resolve_raw_calls), so the two
+// resolution tiers agree on what a symbol is; the project-wide tier had no filter
+// at all, which is the defect. `class` is eligible because `Foo()` is a genuine
+// constructor call in Python and JavaScript, and `type`/`variable` because a
+// module-level binding can hold a callable. A `field` is not: a struct member
+// named `connect` is not what `::connect(...)` invokes.
+[[nodiscard]] bool is_callable_kind(std::string_view kind) {
+  return kind == "function" || kind == "class" || kind == "type" || kind == "variable";
+}
+
+// Index for project-wide call resolution. The per-file table filters candidates
+// to declared symbol kinds; this one filters to *callable* kinds, which is
+// stricter and is what a call target has to be. Without it a call resolved to
+// whatever unique node happened to share the name -- measured on this repo, 12 of
+// 122 CALLS edges pointed at a struct field, so `impact` reported false
+// dependents (`unix_endpoint_is_live` "called" a field named `connect` because it
+// invokes the ::connect syscall).
 [[nodiscard]] std::unordered_map<std::string, std::vector<std::string>> label_index(const GraphSnapshot& graph) {
   std::unordered_map<std::string, std::vector<std::string>> index;
   for (const auto& node : graph.nodes) {
+    if (!is_callable_kind(node.kind)) {
+      continue;
+    }
     index[make_id(node.label)].push_back(node.id);
   }
   return index;
@@ -281,7 +302,8 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
   std::erase_if(graph.nodes, [&removed](const Node& node) { return removed.contains(node.id); });
 }
 
-void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls) {
+void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
+                       CallResolution* outcomes) {
   const auto index = label_index(graph);
   std::unordered_set<std::string> node_ids;
   std::unordered_map<std::string, std::string> source_file_by_id;
@@ -292,7 +314,10 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
   // empty id marks a label that is declared more than once in the file, so it
   // resolves to no single target.
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;
-  std::unordered_map<std::string, std::string> label_by_id;
+  // "<source_file>\n<normalized label>" -> the id of the FIRST declaration bearing
+  // that name in that file. Consulted only for an overload set, where the per-file
+  // slot has been cleared as ambiguous.
+  std::unordered_map<std::string, std::string> overload_first_declaration;
   // Cache make_id(source_file) per distinct source path. The confidence grading
   // below re-normalizes caller/callee file paths per raw call (hundreds of
   // thousands of calls over a few thousand distinct files); memoizing keeps the
@@ -301,7 +326,6 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
   for (const auto& node : graph.nodes) {
     node_ids.insert(node.id);
     source_file_by_id.emplace(node.id, node.source_file);
-    label_by_id.emplace(node.id, node.label);
     if (node.source_file.empty()) {
       continue;
     }
@@ -310,7 +334,11 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
       continue;
     }
     auto& by_label = local_by_file[node.source_file];
-    const auto [slot, inserted] = by_label.emplace(make_id(node.label), node.id);
+    const auto label_key = make_id(node.label);
+    // Remember the first declaration of each name per file, so an overload set can
+    // still resolve to something concrete rather than dropping every call to it.
+    overload_first_declaration.try_emplace(node.source_file + "\n" + label_key, node.id);
+    const auto [slot, inserted] = by_label.emplace(label_key, node.id);
     if (!inserted && slot->second != node.id) {
       slot->second.clear();  // ambiguous within the file
     }
@@ -364,6 +392,7 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     seen_edges.insert(edge_key(edge));
   }
 
+  CallResolution tally;
   for (const auto& raw_call : raw_calls) {
     if (raw_call.callee_label.empty() || is_builtin_global(raw_call.callee_label)) {
       continue;
@@ -374,16 +403,42 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     if (raw_call.caller_id.empty() || !node_ids.contains(raw_call.caller_id)) {
       continue;
     }
+    // Counted from here: a call with a real caller and a callee name that is not a
+    // language built-in is a call this resolver is answerable for.
+    ++tally.total;
     const auto& key = callee_key_for(raw_call.callee_label);
     const auto& caller_file = source_file_by_id[raw_call.caller_id];
 
     std::string target_id;
     auto confidence = Confidence::Extracted;
+    bool same_file_hit = false;
 
     // 1. A symbol declared in the caller's own file (local helper, sibling fn).
     if (const auto file = local_by_file.find(caller_file); file != local_by_file.end()) {
       if (const auto slot = file->second.find(key); slot != file->second.end()) {
         target_id = slot->second;
+        if (target_id.empty()) {
+          // An empty slot marks an overload set: several declarations in this file
+          // share the name. Which one a call means cannot be known without types,
+          // so resolve to the first declaration and grade the edge INFERRED.
+          //
+          // Dropping instead would be a regression. Before labels became bare
+          // names, an overload set collapsed onto one node and the call resolved,
+          // so `add(int)` / `add(String)` in one Java class had working call
+          // edges; making the overloads distinct nodes must not take those away.
+          // Overloading is idiomatic in Java, C#, Kotlin, Scala, Groovy and C++.
+          if (const auto first = overload_first_declaration.find(caller_file + "\n" + key);
+              first != overload_first_declaration.end()) {
+            target_id = first->second;
+            confidence = Confidence::Inferred;
+            ++tally.resolved_overload_first;
+          }
+        }
+        if (target_id.empty()) {
+          ++tally.dropped_ambiguous;
+          continue;
+        }
+        same_file_hit = true;
       }
     }
 
@@ -395,7 +450,12 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     //    name, so it stays scoped to the caller's own file (handled above).
     if (target_id.empty() && !raw_call.is_member_call) {
       const auto targets = index.find(key);
-      if (targets == index.end() || targets->second.size() != 1) {
+      if (targets == index.end()) {
+        ++tally.dropped_unknown;
+        continue;
+      }
+      if (targets->second.size() != 1) {
+        ++tally.dropped_ambiguous;
         continue;
       }
       target_id = targets->second.front();
@@ -411,9 +471,17 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
       confidence = has_import_evidence ? Confidence::Extracted : Confidence::Inferred;
     }
 
-    if (target_id.empty() || target_id == raw_call.caller_id) {
-      continue;  // unresolved or self-edge
+    if (target_id.empty()) {
+      // A member call that missed its own file: the receiver type is unknown, so
+      // the project-wide tier deliberately does not apply.
+      ++tally.dropped_unknown;
+      continue;
     }
+    if (target_id == raw_call.caller_id) {
+      ++tally.dropped_self;
+      continue;
+    }
+    ++(same_file_hit ? tally.resolved_same_file : tally.resolved_project_unique);
     Edge edge{
         .source = raw_call.caller_id,
         .target = target_id,
@@ -423,6 +491,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls)
     if (seen_edges.insert(edge_key(edge)).second) {
       graph.edges.push_back(std::move(edge));
     }
+  }
+  if (outcomes != nullptr) {
+    *outcomes = tally;
   }
 }
 

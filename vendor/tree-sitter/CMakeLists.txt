@@ -3,6 +3,8 @@ add_library(cgraph_tree_sitter STATIC
   grammars/c/src/parser.c
   grammars/cpp/src/parser.c
   grammars/cpp/src/scanner.c
+  grammars/csharp/src/parser.c
+  grammars/csharp/src/scanner.c
   grammars/go/src/parser.c
   grammars/groovy/src/parser.c
   grammars/java/src/parser.c
@@ -30,6 +32,7 @@ target_include_directories(cgraph_tree_sitter
     "${CMAKE_CURRENT_SOURCE_DIR}/core/lib/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/grammars/c/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/grammars/cpp/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/grammars/csharp/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/grammars/go/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/grammars/groovy/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/grammars/java/src"

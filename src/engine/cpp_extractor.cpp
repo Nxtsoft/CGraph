@@ -115,6 +115,20 @@ void collect_type_refs(const TSNode& node, std::string_view source, bool generic
   if (const auto inner = ts_node_child_by_field_name(node, "declarator", 10); !ts_node_is_null(inner)) {
     return declarator_name(inner, source);
   }
+  // Not every declarator wrapper exposes its inner declarator as a `declarator`
+  // field -- tree-sitter-cpp's reference_declarator is `seq('&', _declarator)`
+  // with an unnamed child -- so a field lookup alone leaves a reference-returning
+  // function unnamed (the label stayed `& lock_map_mutex()`). Scan named children
+  // for the first that yields a name. Gated on the `_declarator` suffix so this
+  // never wanders out of the declarator subtree and into a function body.
+  if (type.ends_with("_declarator")) {
+    const std::uint32_t count = ts_node_named_child_count(node);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      if (auto name = declarator_name(ts_node_named_child(node, index), source); !name.empty()) {
+        return name;
+      }
+    }
+  }
   return {};
 }
 
@@ -139,6 +153,69 @@ void collect_type_refs(const TSNode& node, std::string_view source, bool generic
 }
 
 }  // namespace
+
+std::string cpp_function_name(const TSNode& node, const ExtractionContext& context) {
+  return declarator_name(node, context.source);
+}
+
+namespace {
+
+// The leaf name of a call's callee, reached through the grammar rather than by
+// string surgery.
+//
+// A previous version reduced the callee's TEXT at its last `::`. That is unsafe
+// in both directions on real C++: `ns::make<zoo::Beast>` reduces to `Beast>`
+// (make_id then drops the `>`), fabricating a call to an unrelated struct and
+// losing the call to `make`; and `Outer<zoo::Beast>::make` split at the FIRST
+// `::` yields the nonsense scope `Outer<zoo`. `::` legitimately appears in nine
+// distinct callee node types, so no text rule can tell them apart.
+//
+// Shapes handled, all verified against the vendored grammar:
+//   qualified_identifier -> descend `name` (right-nested, arbitrary depth)
+//   template_function    -> its `name` identifier      (`make<T>`  -> `make`)
+//   template_method      -> its `name` field_identifier (`tmpl<T>` -> `tmpl`)
+//   dependent_name       -> skip the bare `template` token, descend the child
+//   terminals            -> identifier / field_identifier / type_identifier /
+//                           operator_name / destructor_name
+[[nodiscard]] std::string callee_leaf_name(const TSNode& node, std::string_view source, int depth) {
+  if (ts_node_is_null(node) || depth > 24) {
+    return {};
+  }
+  const std::string_view type = ts_node_type(node);
+  if (type == "identifier" || type == "field_identifier" || type == "type_identifier" ||
+      type == "operator_name" || type == "destructor_name") {
+    return std::string(node_text(node, source));
+  }
+  if (type == "qualified_identifier") {
+    // No `scope` child means explicit GLOBAL scope (`::stat(...)`): a platform
+    // symbol, not a project one. Refuse it, so it cannot bind to a same-named
+    // local and report a false dependent.
+    if (ts_node_is_null(ts_node_child_by_field_name(node, "scope", 5))) {
+      return {};
+    }
+    return callee_leaf_name(ts_node_child_by_field_name(node, "name", 4), source, depth + 1);
+  }
+  if (type == "template_function" || type == "template_method") {
+    return callee_leaf_name(ts_node_child_by_field_name(node, "name", 4), source, depth + 1);
+  }
+  if (type == "dependent_name") {
+    // `template f<X>` -- the `template` keyword is a bare anonymous child, so walk
+    // the named children instead of looking for a field.
+    const std::uint32_t count = ts_node_named_child_count(node);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      if (auto name = callee_leaf_name(ts_node_named_child(node, index), source, depth + 1); !name.empty()) {
+        return name;
+      }
+    }
+  }
+  return {};
+}
+
+}  // namespace
+
+std::string cpp_callee_name(const TSNode& node, const ExtractionContext& context) {
+  return callee_leaf_name(node, context.source, 0);
+}
 
 void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
   if (std::string_view(ts_node_type(node)) != "preproc_include") {

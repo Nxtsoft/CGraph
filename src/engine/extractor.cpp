@@ -122,12 +122,37 @@ std::string add_symbol_node(
     return {};
   }
 
+  const auto location = source_location(node);
   auto id = make_id(context.source_file + ":" + label);
+  // A label names a symbol, so two symbols in one file can legitimately share
+  // one: an overload set (`to_json` five times over), a constructor sharing its
+  // class's name, or `operator=` for both copy and move. Their ids would collide
+  // and merge_fragments would keep only the first, silently losing the rest --
+  // and a lost symbol is worse than an awkward one, because an agent asking
+  // where a function lives gets one of five answers with no hint the other four
+  // exist. Disambiguate with the declaration's start line, which is stable for a
+  // given file so the id stays deterministic. Only a colliding symbol pays; the
+  // common case keeps the plain `file:label` id.
+  const auto collides = [&](const std::string& candidate) {
+    return std::ranges::any_of(fragment.nodes, [&](const Node& existing) { return existing.id == candidate; });
+  };
+  if (collides(id)) {
+    // The line alone is not always enough: three overloads can share one line
+    // (`int f(int); int f(double); int f(char);`), and a single retry would
+    // recompute the same suffixed id for the third, which merge_fragments then
+    // discards -- reintroducing exactly the silent loss this guard exists to
+    // prevent. Add the column, then a counter, until the id is free.
+    const auto base = context.source_file + ":" + label + ":" + std::to_string(location.start_line);
+    id = make_id(base + ":" + std::to_string(location.start_column));
+    for (std::size_t nth = 2; collides(id); ++nth) {
+      id = make_id(base + ":" + std::to_string(location.start_column) + ":" + std::to_string(nth));
+    }
+  }
   fragment.nodes.push_back(Node{
       .id = id,
       .label = std::move(label),
       .source_file = context.source_file,
-      .source_location = source_location(node),
+      .source_location = location,
       .kind = std::string(kind),
       .confidence = Confidence::Extracted,
   });
@@ -142,6 +167,7 @@ void add_raw_call(
     std::vector<RawCall>& raw_calls) {
   std::string label;
   bool is_member_call = false;
+  bool callee_resolver_ran = false;
   if (const auto child = first_child_by_fields(node, config.call_accessor_fields); child.has_value()) {
     // A member/property access target (`obj.method()`): record only the bare
     // property name and flag it, so resolution can keep it to the caller's own
@@ -159,7 +185,15 @@ void add_raw_call(
       }
     }
     if (!is_member_call) {
-      label = node_text(*child, context.source);
+      // A language-supplied resolver walks the grammar to the callee's leaf name;
+      // it may also refuse the call (returning empty) for a callee that names
+      // something outside the project, such as an explicitly global `::symbol`.
+      if (config.resolve_callee_name) {
+        label = config.resolve_callee_name(*child, context);
+        callee_resolver_ran = true;
+      } else {
+        label = node_text(*child, context.source);
+      }
     }
   } else {
     label = node_text(node, context.source);
@@ -168,6 +202,12 @@ void add_raw_call(
   if (label.empty()) {
     return;
   }
+
+  // An empty label after the resolver ran is a deliberate refusal, not a miss.
+  if (label.empty()) {
+    return;
+  }
+  (void)callee_resolver_ran;
 
   raw_calls.push_back(RawCall{
       .caller_id = caller_id,

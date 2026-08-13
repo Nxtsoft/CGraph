@@ -34,3 +34,6 @@
 [submodule "vendor/tree-sitter/grammars/typescript"]
 	path = vendor/tree-sitter/grammars/typescript
 	url = https://github.com/tree-sitter/tree-sitter-typescript.git
+[submodule "vendor/tree-sitter/grammars/csharp"]
+	path = vendor/tree-sitter/grammars/csharp
+	url = https://github.com/tree-sitter/tree-sitter-c-sharp.git

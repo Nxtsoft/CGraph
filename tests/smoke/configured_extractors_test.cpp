@@ -21,6 +21,59 @@ bool fail(std::string_view message) {
   return false;
 }
 
+// The C# config drives the generic walker: namespace/class declarations,
+// methods, a plain call, and a member call (obj.Method) recorded same-file so
+// resolution never guesses across files.
+bool check_csharp_extraction() {
+  constexpr std::string_view source =
+      "using System;\n"
+      "using App.Services;\n"
+      "\n"
+      "namespace Demo\n"
+      "{\n"
+      "    public class Service\n"
+      "    {\n"
+      "        public void Run()\n"
+      "        {\n"
+      "            Helper();\n"
+      "            Console.WriteLine(\"up\");\n"
+      "        }\n"
+      "        private void Helper() { }\n"
+      "    }\n"
+      "}\n";
+
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::CSharp,
+      cgraph::ExtractionContext{.source_file = "Demo/Service.cs", .source = source});
+  if (!result.has_value()) {
+    return fail("csharp extraction returned no result");
+  }
+  if (find_node(*result, "Service", "class") == nullptr) {
+    return fail("missing class node Service");
+  }
+  if (find_node(*result, "Run", "function") == nullptr) {
+    return fail("missing method node Run");
+  }
+  if (find_node(*result, "Helper", "function") == nullptr) {
+    return fail("missing method node Helper");
+  }
+  const auto plain_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "Helper" && !call.is_member_call;
+  });
+  if (plain_call == result->raw_calls.end()) {
+    return fail("missing plain raw call to Helper");
+  }
+  // Console.WriteLine: a member_access call carries the bare member name, flagged
+  // member so resolution never guesses the receiver/type across files.
+  const auto member_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "WriteLine" && call.is_member_call;
+  });
+  if (member_call == result->raw_calls.end()) {
+    return fail("missing member raw call to WriteLine");
+  }
+  return true;
+}
+
 // The Go config drives the generic walker end to end: named types, functions,
 // pointer-receiver methods, quoted imports (module stub + imports edge), plain
 // calls, and selector calls recorded as same-file member calls.
@@ -102,11 +155,11 @@ bool check_go_extraction() {
 bool check_coverage_registry() {
   if (!cgraph::has_registered_extractor(cgraph::DetectedLanguage::Go) ||
       !cgraph::has_registered_extractor(cgraph::DetectedLanguage::Python) ||
-      !cgraph::has_registered_extractor(cgraph::DetectedLanguage::Sql)) {
+      !cgraph::has_registered_extractor(cgraph::DetectedLanguage::Sql) ||
+      !cgraph::has_registered_extractor(cgraph::DetectedLanguage::CSharp)) {
     return fail("has_registered_extractor false for a supported language");
   }
-  if (cgraph::has_registered_extractor(cgraph::DetectedLanguage::CSharp) ||
-      cgraph::has_registered_extractor(cgraph::DetectedLanguage::PhpBlade) ||
+  if (cgraph::has_registered_extractor(cgraph::DetectedLanguage::PhpBlade) ||
       cgraph::has_registered_extractor(cgraph::DetectedLanguage::Unknown)) {
     return fail("has_registered_extractor true for an unsupported language");
   }
@@ -114,12 +167,14 @@ bool check_coverage_registry() {
   const std::vector<cgraph::DetectedFile> files = {
       {.path = "a.go", .language = cgraph::DetectedLanguage::Go},
       {.path = "b.cs", .language = cgraph::DetectedLanguage::CSharp},
-      {.path = "c.cs", .language = cgraph::DetectedLanguage::CSharp},
       {.path = "view.blade.php", .language = cgraph::DetectedLanguage::PhpBlade},
+      {.path = "layout.blade.php", .language = cgraph::DetectedLanguage::PhpBlade},
       {.path = "junk", .language = cgraph::DetectedLanguage::Unknown},
   };
   const auto counts = cgraph::unextracted_counts(files);
-  if (counts.size() != 2 || counts.at("csharp") != 2 || counts.at("php-blade") != 1) {
+  // C# is now extracted, so it must not appear in the unextracted tally; the two
+  // Blade files (still unsupported) are the only ones counted.
+  if (counts.size() != 1 || counts.at("php-blade") != 2 || counts.contains("csharp")) {
     return fail("unextracted_counts mismatch");
   }
   return true;
@@ -131,6 +186,7 @@ int main() {
   const auto languages = {
       cgraph::DetectedLanguage::C,
       cgraph::DetectedLanguage::Cpp,
+      cgraph::DetectedLanguage::CSharp,
       cgraph::DetectedLanguage::Go,
       cgraph::DetectedLanguage::Groovy,
       cgraph::DetectedLanguage::Java,
@@ -162,6 +218,9 @@ int main() {
 
   if (!check_go_extraction()) {
     return 2;
+  }
+  if (!check_csharp_extraction()) {
+    return 4;
   }
   if (!check_coverage_registry()) {
     return 3;

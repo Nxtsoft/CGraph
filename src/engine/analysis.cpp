@@ -3,6 +3,7 @@
 #include <igraph/igraph.h>
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
 #include <memory>
 #include <numeric>
@@ -92,6 +93,54 @@ void write_membership(GraphSnapshot& snapshot, const igraph_vector_int_t& member
   }
 }
 
+// Compute a 2D layout on the SAME igraph object built for community detection
+// (no second graph) and stamp each node's x/y into its properties. The browser
+// viewer uses these as final positions, so it renders a near-static graph
+// instead of running an O(N^2) force simulation on every page open. Vertex
+// index i in the layout matrix maps directly to snapshot.nodes[i] because
+// make_igraph assigns vertex indices by node position.
+//
+// Scalable-layout choice: DRL (Distributed Recursive Layout) for large graphs
+// where a Fruchterman-Reingold pass would be prohibitively slow, FR for smaller
+// graphs where it yields a cleaner, more spread result.
+void write_layout(GraphSnapshot& snapshot, const igraph_t& graph) {
+  igraph_matrix_t coords;
+  if (igraph_matrix_init(&coords, 0, 0) != IGRAPH_SUCCESS) {
+    return;
+  }
+
+  constexpr std::size_t kDrlThreshold = 2000;
+  igraph_error_t error = IGRAPH_FAILURE;
+  if (snapshot.nodes.size() >= kDrlThreshold) {
+    igraph_layout_drl_options_t options;
+    if (igraph_layout_drl_options_init(&options, IGRAPH_LAYOUT_DRL_DEFAULT) == IGRAPH_SUCCESS) {
+      error = igraph_layout_drl(&graph, &coords, /*use_seed=*/false, &options, /*weights=*/nullptr);
+    }
+  } else {
+    const auto niter = static_cast<igraph_int_t>(500);
+    const auto start_temp = static_cast<igraph_real_t>(std::sqrt(static_cast<double>(snapshot.nodes.size())));
+    error = igraph_layout_fruchterman_reingold(
+        &graph, &coords, /*use_seed=*/false, niter, start_temp, IGRAPH_LAYOUT_AUTOGRID,
+        /*weights=*/nullptr, /*minx=*/nullptr, /*maxx=*/nullptr, /*miny=*/nullptr, /*maxy=*/nullptr);
+  }
+
+  if (error == IGRAPH_SUCCESS &&
+      static_cast<std::size_t>(igraph_matrix_nrow(&coords)) == snapshot.nodes.size() &&
+      igraph_matrix_ncol(&coords) >= 2) {
+    for (std::size_t index = 0; index < snapshot.nodes.size(); ++index) {
+      const auto row = static_cast<igraph_int_t>(index);
+      std::ostringstream x_value;
+      std::ostringstream y_value;
+      x_value << std::fixed << std::setprecision(2) << MATRIX(coords, row, 0);
+      y_value << std::fixed << std::setprecision(2) << MATRIX(coords, row, 1);
+      snapshot.nodes[index].properties["x"] = x_value.str();
+      snapshot.nodes[index].properties["y"] = y_value.str();
+    }
+  }
+
+  igraph_matrix_destroy(&coords);
+}
+
 }  // namespace
 
 CommunityResult detect_communities(GraphSnapshot& graph) {
@@ -147,6 +196,9 @@ CommunityResult detect_communities(GraphSnapshot& graph) {
     result.quality = static_cast<double>(quality);
   }
   write_membership(graph, *membership);
+  // Reuse the same igraph object to compute a 2D layout, so the browser viewer
+  // renders precomputed positions instead of running a force simulation.
+  write_layout(graph, *igraph);
   return result;
 }
 

@@ -1,0 +1,59 @@
+nodes 1421  links 2533
+
+== node kinds ==
+  function     710
+  field        383
+  file         171
+  class        122
+  import       33
+  variable     2
+
+== edge relations ==
+  CALLS          858
+  contains       798
+  defines        383
+  imports        315
+  references     143
+  method         36
+
+== call edges ==
+  total CALLS                858
+  sourced from a C/C++ file  813
+  target kinds: {'function': 850, 'class': 4, 'field': 4}
+  targeting a field node     4   <- Cause C
+     'unix_endpoint_is_live' -> 'connect'
+     'status' -> 'enrichment_state'
+     'request_over_unix_socket' -> 'connect'
+     'raw_connect' -> 'connect'
+
+== function connectivity ==
+  function nodes                       710
+  ... with NO incoming CALLS           175
+  ... with NO call/ref/import edge     68  (9%)
+  mean semantic degree                 2.59
+
+== Cause A signal ==
+  C/C++ function nodes                 666
+  ... whose label carries a signature  0  (0%)
+  ... zero-argument                    5  (0%)
+  C/C++ -> C/C++ function CALLS edges  808
+  ... targeting a zero-arg function    0  (0%)
+  (a zero-arg share far above the population share means only accidental matches resolve)
+  longest C/C++ label                  45 chars, 1 lines
+
+== Cause D: namespace as class ==
+  class nodes                          122
+  ... labelled exactly 'cgraph'        0  (0%)
+  method edges                         36
+  ... originating at one of them       0
+
+== top-degree nodes ==
+  deg   49  file      'engine/daemon_ops.cpp'
+  deg   41  function  'run_daemon_server'
+  deg   37  file      'cli/main.cpp'
+  deg   33  class     'DaemonState'
+  deg   30  file      'engine/daemon_server.cpp'
+
+== path routing (300 random function pairs, seed 7) ==
+  connected pairs                      263
+  ... routed via a namespace node      0  (0%)

@@ -639,6 +639,22 @@ function seededUnit(seed) {
   return x - Math.floor(x);
 }
 
+// True when every node carries a server-precomputed x/y (igraph layout stamped
+// into node.properties by the C++ engine). When present we adopt those as final
+// positions and skip the browser force simulation entirely, so a large graph
+// renders near-instantly instead of paying an O(N^2) per-frame cool-down.
+function hasEmbeddedLayout() {
+  if (nodes.length === 0) return false;
+  for (const node of nodes) {
+    const props = node.properties;
+    if (!props) return false;
+    const x = Number(props.x);
+    const y = Number(props.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  }
+  return true;
+}
+
 function layout() {
   if (layoutReady) return;
   const box = canvas.getBoundingClientRect();
@@ -648,6 +664,18 @@ function layout() {
   const centerY = sim.height / 2;
   // Ideal edge length scales with available area per node.
   sim.k = Math.max(34, Math.sqrt((sim.width * sim.height) / Math.max(nodes.length, 1)));
+  // Precomputed layout: adopt server x/y verbatim (fitToScreen maps the layout's
+  // arbitrary coordinate scale into the viewport), then leave the simulation
+  // cold so nothing moves and settle time is effectively zero.
+  if (hasEmbeddedLayout()) {
+    for (const node of nodes) {
+      node.x = Number(node.properties.x);
+      node.y = Number(node.properties.y);
+    }
+    sim.alpha = 0;
+    layoutReady = true;
+    return;
+  }
   // Seed each community around a ring so distinct clusters start in distinct
   // regions; members land near their community anchor with seeded jitter. The
   // centroid force in simulationTick then keeps them together while edges shape
@@ -820,8 +848,33 @@ function worldPoint(screenX, screenY) {
   };
 }
 
+function viewportBounds(box) {
+  const margin = 48;
+  return {
+    left: -margin,
+    top: -margin,
+    right: box.width + margin,
+    bottom: box.height + margin
+  };
+}
+
+function visibleCircle(point, radius, bounds) {
+  return point.x + radius >= bounds.left &&
+    point.x - radius <= bounds.right &&
+    point.y + radius >= bounds.top &&
+    point.y - radius <= bounds.bottom;
+}
+
+function visibleSegment(a, b, radius, bounds) {
+  return Math.max(a.x, b.x) + radius >= bounds.left &&
+    Math.min(a.x, b.x) - radius <= bounds.right &&
+    Math.max(a.y, b.y) + radius >= bounds.top &&
+    Math.min(a.y, b.y) - radius <= bounds.bottom;
+}
+
 function draw() {
   const box = canvas.getBoundingClientRect();
+  const bounds = viewportBounds(box);
   const activeId = hoverId || selectedId;
   const highlighted = highlightIdsFor(activeId);
   ctx.clearRect(0, 0, box.width, box.height);
@@ -833,8 +886,16 @@ function draw() {
     const source = nodeById.get(link.source);
     const target = nodeById.get(link.target);
     if (!source || !target) continue;
-    const dim = nodeIsDim(source) || nodeIsDim(target);
+    const sourcePoint = screenPoint(source.x, source.y);
+    const targetPoint = screenPoint(target.x, target.y);
     const activeEdge = activeId && highlighted.has(source.id) && highlighted.has(target.id);
+    const edgeLength = Math.hypot(targetPoint.x - sourcePoint.x, targetPoint.y - sourcePoint.y);
+    if (!activeEdge && edgeLength < 0.75) continue;
+    const sourceRadius = radiusFor(source);
+    const targetRadius = radiusFor(target);
+    const edgeRadius = (Math.max(sourceRadius, targetRadius) + (activeEdge ? 9 : 7) + 2) * transform.scale;
+    if (!visibleSegment(sourcePoint, targetPoint, edgeRadius, bounds)) continue;
+    const dim = nodeIsDim(source) || nodeIsDim(target);
     // Edges inherit the source node's community color at low opacity, the same
     // "inherit from" tint vis.js gives the Graphify viewer, so clusters read as
     // cohesive colored regions instead of a uniform gray mesh.
@@ -848,11 +909,11 @@ function draw() {
     const dist = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / dist;
     const uy = dy / dist;
-    const targetR = radiusFor(target);
+    const targetR = targetRadius;
     const tipX = target.x - ux * (targetR + 1.5);
     const tipY = target.y - uy * (targetR + 1.5);
     ctx.beginPath();
-    ctx.moveTo(source.x + ux * radiusFor(source), source.y + uy * radiusFor(source));
+    ctx.moveTo(source.x + ux * sourceRadius, source.y + uy * sourceRadius);
     ctx.lineTo(tipX, tipY);
     ctx.stroke();
     // Arrowhead conveys edge direction (CALLS, IMPORTS, ...).
@@ -878,13 +939,20 @@ function draw() {
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
   for (const node of nodes) {
-    const dim = nodeIsDim(node);
     const selected = node.id === selectedId;
     const hovered = node.id === hoverId;
+    const inHighlight = activeId && highlighted.has(node.id);
+    const searchMatch = searchTerm && matchesSearch(node);
     const activeCommunity = activeId && highlighted.has(node.id) && communityFor(node) === communityFor(nodeById.get(activeId));
-    ctx.globalAlpha = dim ? 0.18 : 1;
 
     const r = radiusFor(node) + (hovered ? 2 : 0);
+    const point = screenPoint(node.x, node.y);
+    const visibleRadius = (r + (activeCommunity ? 11 : 3)) * transform.scale;
+    if (!visibleCircle(point, visibleRadius, bounds)) continue;
+    if (!selected && !hovered && !inHighlight && !searchMatch && r * transform.scale < 0.5) continue;
+
+    const dim = nodeIsDim(node);
+    ctx.globalAlpha = dim ? 0.18 : 1;
 
     if (activeCommunity) {
       ctx.beginPath();
@@ -907,11 +975,10 @@ function draw() {
     // else progressively on hover, selection, active highlight, search match,
     // or when zoomed in, so the overview stays legible but no label is ever
     // permanently hidden.
-    const inHighlight = activeId && highlighted.has(node.id);
     const zoomedIn = transform.scale >= 1.6;
     const labelled = !dim && (
       labelBudget.has(node.id) || hovered || selected || inHighlight ||
-      zoomedIn || (searchTerm && matchesSearch(node)));
+      zoomedIn || searchMatch);
     if (labelled) {
       ctx.fillStyle = palette.text;
       ctx.globalAlpha = dim ? 0.22 : 0.95;
@@ -931,6 +998,15 @@ let animationHandle = 0;
 let autoFitPending = true;
 function runSimulation() {
   if (animationHandle) cancelAnimationFrame(animationHandle);
+  // Precomputed layout (or a fully cooled sim): positions are final, so skip the
+  // O(N^2) simulationTick entirely and just fit + draw a single static frame.
+  // This is the fast path that drops large-graph settle time toward zero.
+  if (sim.alpha <= 0.02) {
+    if (autoFitPending) { fitToScreen(); autoFitPending = false; }
+    draw();
+    animationHandle = 0;
+    return;
+  }
   const tick = () => {
     // A few ticks per frame settle the layout quickly without a visible crawl.
     for (let i = 0; i < 2; ++i) simulationTick();
