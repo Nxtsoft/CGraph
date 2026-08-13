@@ -193,3 +193,32 @@ budgets the knapsack advantage survives only via density shed and only at
 4k/6k (+0.016/+0.013), is a wash at 8k, and inverts at 2k (-0.012).
 `cost_recheck.py`'s "collapses under JSON-entry cost" warning was correct in
 direction. (research/ is gitignored; this section is the durable record.)
+
+### Review round: performance, hardening, and environment findings (2026-08-12)
+
+Adversarial review measured the first shed implementation at O(n^2) (re-dumping
+survivors per shed step): context-op mean 5.63ms -> 22.13ms at the default
+budget on the parity fixture, and 45.7ms -> 717ms on a pathological
+4000-sourceless-neighbour graph -- on a daemon that serves one connection at a
+time. Replaced with exact O(n) suffix-sum arithmetic over per-entry compact
+byte lengths (a k-entry array serializes to 2 + sum(bytes) + (k-1)); results
+are byte-identical (all gate pins unchanged) and the parity gate's wall time
+dropped from 10.7s to 5.1s locally.
+
+Also from review, all fixed: a mistyped parameter (e.g. shed:1, packing:7)
+reached graphd verbatim through MCP and killed it via an uncaught
+nlohmann::json type error -- the dispatch boundary now returns an error frame
+for the whole class, the measurement-only shed hook is deleted outright
+(Decision 1 is settled), and a negative budget floors at 0 instead of wrapping
+unsigned. Both hardening behaviors are unit-tested.
+
+Environment dependence, quantified by review: entry costs include the absolute
+source path, so recall moves ~5 tokens/entry per 20 root characters
+(retrieval@6k observed 0.1695..0.2044 across root lengths 31..111, and CI's
+short runner root measured the adaptive 4k gain at +0.0272 vs +0.0387 in this
+deep worktree). The pins were measured at root length 71 -- the deep, low-recall
+end -- so real-world shorter roots only add floor margin; the adaptive gain
+floor was set to 0.020 to hold across observed environments. Greedy sheds
+positionally (its insertion order is its priority), unlike the knapsack's
+density order; a shed FULL row can outrank a surviving BRIEF row, recorded as
+the accepted cost of keeping greedy's ordering byte-stable.

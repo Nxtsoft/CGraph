@@ -18,7 +18,7 @@ answer §1 or §3, which is why this is a change and not a patch.
 - [x] 2.1 Apply `reference-implementation.patch`. It keeps the DP's slice-cost Ported (not applied) onto the post-PR-19 emit path; shed by value density (measurements.md).
       ranking weight, re-costs the selected set by measuring the serialized array,
       sheds the lowest-value entry until it fits, and reports the measured cost.
-- [x] 2.2 Verify at budgets 500 / 1000 / 3000 / 4000 / 8000 against a live daemon Verified via the daemon_ops budget sweep {50,200,1000,5000,6000} in both packing modes; live sweep in the PR.
+- [x] 2.2 Verify at budgets 500 / 1000 / 3000 / 4000 / 8000 against a live daemon Verified via the daemon_ops budget sweep {50,200,1000,5000,6000} in both packing modes, and against a live daemon on this repo at 500/1000/3000/4000/6000/8000 (table in measurements.md and the PR); the recorded 330/890/... baselines came from a worktree graph that no longer exists and were re-derived.
       that the serialized `included` array never exceeds the budget. Recorded
       baseline for the honest packer: 330 / 890 / 2846 / 3895 / 7891.
 - [x] 2.3 Confirm the focal entry is present at every budget, including one too small Focal never dropped; tokens_used equals the measured serialized cost (array-measured).
@@ -35,7 +35,7 @@ answer §1 or §3, which is why this is a change and not a patch.
       the `research/2510.00446` conclusion. The gather strategy (adaptive θ-gated
       BFS) is a separate axis from packing and is NOT in scope — do not flip it by
       accident.
-- [x] 3.3 Write the outcome into `research/2510.00446/results.md` as a follow-up Durable record in measurements.md (research/ is gitignored); courtesy copy to be mirrored when research/ next materializes.
+- [x] 3.3 Write the outcome into `research/2510.00446/results.md` as a follow-up The durable record IS measurements.md's follow-up section (research/ is gitignored on this machine, so no research-side copy exists to update).
       note, so the original experiment's conclusion is not left standing unqualified.
 
 ## 4. Re-pin the gates, deliberately

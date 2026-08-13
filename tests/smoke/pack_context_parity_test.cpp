@@ -131,6 +131,9 @@ int main() {
     }
   }
 
+  // Guards against measuring a snippet-free graph (e.g. unresolvable source
+  // paths): recall numbers on such a graph look like a packer regression.
+  std::size_t parity_snippet_entries = 0;
   const auto mean_recall = [&](const std::string& packing, int budget) {
     double sum = 0.0;
     int n = 0;
@@ -147,6 +150,9 @@ int main() {
       }
       for (const auto& entry : result.value("included", nlohmann::json::array())) {
         selected.insert(entry.value("id", std::string{}));
+        if (entry.contains("snippet")) {
+          ++parity_snippet_entries;
+        }
       }
       std::size_t hit = 0;
       for (const auto& id : row.grade2) {
@@ -177,6 +183,11 @@ int main() {
   // fixture at the commit introducing the ceiling. 6000 is the shipped default
   // budget. The gate is non-regression per packer plus a symmetric packing-
   // parity band -- neither packer may silently pull ahead or fall behind.
+  // Environment note: entry costs include the absolute source path, so both
+  // recall and the band move with checkout depth (~5 tokens per entry per 20
+  // root chars; observed 0.1695..0.2044 retrieval@6k across root lengths
+  // 31..111). These pins were measured at root length 71 (a deep worktree, the
+  // low end), so shorter real-world roots only add margin to the floors.
   const std::vector<Target> targets = {{2000, 0.442382, 0.430765, true},
                                        {4000, 0.515687, 0.531519, true},
                                        {6000, 0.574093, 0.586637, true},
@@ -275,6 +286,11 @@ int main() {
               << c_k2 << "/" << c_adp << "/" << c_k3 << "   " << (ok ? "PASS" : "FAIL") << "\n";
   }
 
+  if (parity_snippet_entries == 0) {
+    std::cerr << "FAIL: no returned entry carried a snippet across any run -- "
+                 "the graph under test is snippet-free (source paths not resolvable)\n";
+    return 1;
+  }
   if (failures != 0) {
     std::cerr << failures << " parity assertion(s) failed\n";
     return 1;

@@ -675,6 +675,22 @@ int main() {
     }
   }
 
+  // Hostile parameters must yield error frames, never an uncaught throw that
+  // kills the resident daemon (a mistyped param reached graphd verbatim via
+  // MCP), and a negative budget floors at zero instead of wrapping unsigned.
+  const auto mistyped = cgraph::handle_daemon_request(
+      state, cgraph::make_request("context", {{"id", "a"}, {"packing", 7}}));
+  if (mistyped.value("ok", true) || mistyped.value("error", std::string{}).empty()) {
+    return 1;
+  }
+  const auto negative = cgraph::handle_daemon_request(
+      state, cgraph::make_request("context", {{"id", "a"}, {"budget", -1}}));
+  const auto& negative_ctx = negative["result"];
+  if (!negative.value("ok", false) || !negative_ctx["included"].empty() ||
+      !negative_ctx.value("truncated", false)) {
+    return 1;
+  }
+
   // Query-based focal resolution picks the highest-centrality match ("a").
   const auto by_query = cgraph::handle_daemon_request(
       state, cgraph::make_request("context", {{"query", "Alpha"}, {"budget", 5000}}));
