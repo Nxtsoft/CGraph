@@ -21,4 +21,4 @@
 - [x] 3.1 Run targeted snapshot, persistence, daemon-op, semantic-cache, semantic-plan, semantic-ingest, and daemon-server tests.
 - [x] 3.2 Run the complete default test suite, sanitizer suite, graph parity/golden tests, and end-to-end retrieval gate.
 - [x] 3.3 Run a warmed pinned-context latency comparison and verify source hashing is bounded to selected distinct files with no material regression.
-- [ ] 3.4 Run OpenSpec validation, record the real-flow evidence in the PR, and ensure every task and acceptance scenario is satisfied.
+- [x] 3.4 Run OpenSpec validation, record the real-flow evidence in the PR, and ensure every task and acceptance scenario is satisfied. Closing this task surfaced three engine defects the checked suite runs had missed (serve-loop deadlock under a paused replay, non-atomic overlay publish, unreadable-source cache poisoning); all three are fixed in this change and covered by the previously-failing tests.
