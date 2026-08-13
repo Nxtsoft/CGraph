@@ -425,10 +425,6 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // written only from this snapshot, never from the fused live graph.
   GraphSnapshot deterministic_graph;
 
-  const auto restore_deterministic_graph = [&]() {
-    publish_graph_snapshot(state, deterministic_graph);
-  };
-
   const auto live_sources_for = [&](const SemanticFragmentDrop& drop,
                                     const std::unordered_map<std::size_t,
                                                              std::vector<SemanticSourceInput>>& sources) {
@@ -458,7 +454,8 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // Replays only a fragment with durable source attribution whose entire cache
   // unit is currently valid. A plan-attributed first ingest remains allowed;
   // a self-attributed live orphan never becomes restart-replayable.
-  const auto replay_drop = [&](const SemanticFragmentDrop& drop,
+  const auto replay_drop = [&](DaemonState& target,
+                               const SemanticFragmentDrop& drop,
                                const std::unordered_map<std::size_t,
                                                         std::vector<SemanticSourceInput>>& sources) {
     std::vector<SemanticSourceInput> source_inputs;
@@ -490,7 +487,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       }
     }
 
-    return ingest_semantic_fragment(state, cache, source_inputs, drop.path).merged;
+    return ingest_semantic_fragment(target, cache, source_inputs, drop.path).merged;
   };
 
   // Re-overlays every session-memory checkpoint sidecar (cgraph-out/memory/*.json).
@@ -498,11 +495,11 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // sidecars are the durable source of truth, re-merged here after every rebuild so
   // checkpoints survive restarts, incremental edits, and full rescans. merge_fragment
   // is first-occurrence-wins, so re-applying an already-present checkpoint is a no-op.
-  const auto ingest_all_memory = [&]() {
+  const auto ingest_all_memory = [&](DaemonState& target) {
     std::error_code ec;
     std::size_t applied = 0;
     if (!std::filesystem::exists(memory_dir, ec)) {
-      state.last_memory_overlay_count = 0;
+      target.last_memory_overlay_count = 0;
       return;
     }
     for (const auto& entry : std::filesystem::directory_iterator(memory_dir, ec)) {
@@ -528,7 +525,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
           overlay_hashes[source_path.lexically_normal().generic_string()] = sha256_file_hex(source_path);
         }
       }
-      mutate_graph_snapshot(state, [&](GraphSnapshot& graph) {
+      mutate_graph_snapshot(target, [&](GraphSnapshot& graph) {
         merge_fragment(graph, validation.fragment);
         for (const auto& [path, hash] : overlay_hashes) {
           graph.source_hashes[path] = hash;
@@ -536,7 +533,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       });
       ++applied;
     }
-    state.last_memory_overlay_count = applied;  // observability: size of the last re-overlay pass
+    target.last_memory_overlay_count = applied;  // observability: size of the last re-overlay pass
   };
 
   // Publish one coherent fused graph from the canonical deterministic snapshot.
@@ -570,18 +567,26 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       }
     }
 
-    restore_deterministic_graph();
+    // Stage the fused graph invisibly: seed a private state with the canonical
+    // deterministic snapshot, merge every overlay into it, and publish the
+    // result to the served state exactly once. A reader never observes a
+    // code-only or half-overlaid intermediate -- during the initial build it
+    // keeps seeing the empty/building snapshot until the fused one lands.
+    DaemonState overlay_state;
+    publish_graph_snapshot(overlay_state, deterministic_graph);
     (void)reconcile_semantic_cache(cache, deterministic_graph);
     for (const auto& drop : discover_semantic_fragment_drops(drop_dir)) {
       if (!event_paths.contains(normalize_semantic_source_path(drop.path))) {
-        (void)replay_drop(drop, sources);
+        (void)replay_drop(overlay_state, drop, sources);
       }
     }
     for (const auto& live : pending_live) {
-      (void)ingest_semantic_fragment(state, cache, live.source_inputs, live.drop.path);
+      (void)ingest_semantic_fragment(overlay_state, cache, live.source_inputs, live.drop.path);
     }
-    ingest_all_memory();
+    ingest_all_memory(overlay_state);
     write_semantic_cache(cache, cache_path);
+    publish_graph_snapshot(state, *read_graph_snapshot(overlay_state));
+    state.last_memory_overlay_count = overlay_state.last_memory_overlay_count;
   };
 
   // The daemon owns the incremental file index: startup and every `update` op
@@ -638,9 +643,15 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
 
   const auto rescan = [&]() {
     const std::scoped_lock lock(graph_mutex);
-    const auto result = full_stat_index_rescan(state, index, identity.project_root);
+    // Build into a private state so readers keep the current (or, during the
+    // initial build, the empty/building) snapshot until rebuild_final_overlay
+    // publishes the fused deterministic+overlay result in one step.
+    DaemonState scan_state;
+    const auto result = full_stat_index_rescan(scan_state, index, identity.project_root);
+    state.last_files_cache_hit = scan_state.last_files_cache_hit;
+    state.last_extract_mean_ms = scan_state.last_extract_mean_ms;
     index_hydrated.store(true);
-    deterministic_graph = *read_graph_snapshot(state);
+    deterministic_graph = *read_graph_snapshot(scan_state);
     rebuild_final_overlay();
     // Persist the code-only snapshot before
     // enrichment planning, which walks the whole project and can take seconds on
@@ -692,7 +703,6 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       }
     }
     deterministic_graph = std::move(graph);
-    restore_deterministic_graph();
     // The persisted graph does not hydrate extraction fragments, but its file
     // entries were just content-verified and remain the canonical manifest
     // source until the first full rescan. Without this cache hydration, a later
@@ -878,14 +888,19 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
 
     // Re-persist graph + manifest once incremental changes have aged past the
-    // persist interval, so a crash loses at most that window.
+    // persist interval, so a crash loses at most that window. try_to_lock: the
+    // initial build (or a long overlay replay) holds graph_mutex, and the serve
+    // loop must keep answering from the current snapshot while it runs -- a
+    // skipped persist is retried on the next loop pass.
     bool persisted_incremental = false;
     {
-      const std::scoped_lock lock(graph_mutex);
-      persisted_incremental =
-          persist_if_due(deterministic_graph, lifecycle, lifecycle_config, DaemonClock::now());
-      if (persisted_incremental) {
-        persist_manifest();
+      const std::unique_lock<std::mutex> lock(graph_mutex, std::try_to_lock);
+      if (lock.owns_lock()) {
+        persisted_incremental =
+            persist_if_due(deterministic_graph, lifecycle, lifecycle_config, DaemonClock::now());
+        if (persisted_incremental) {
+          persist_manifest();
+        }
       }
     }
     if (persisted_incremental) {
