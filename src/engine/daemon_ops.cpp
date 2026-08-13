@@ -1,9 +1,11 @@
 #include "cgraph/daemon_ops.hpp"
 
+#include "cgraph/file_cache.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/semantic_connectivity.hpp"
+#include "cgraph/snapshot_source_reader.hpp"
 
 #include <algorithm>
 #include <array>
@@ -75,12 +77,12 @@ constexpr std::size_t kMaxKnapsackCapacity = 50000;
     case DaemonOp::Explain:
     case DaemonOp::Impact:
     case DaemonOp::Context:
+    case DaemonOp::Recall:
       return true;
     case DaemonOp::Update:
     case DaemonOp::Status:
     case DaemonOp::Shutdown:
     case DaemonOp::Remember:
-    case DaemonOp::Recall:
     case DaemonOp::Count:
       return false;
   }
@@ -132,57 +134,15 @@ constexpr std::size_t kMaxKnapsackCapacity = 50000;
   return brief;
 }
 
-// Read the node's source lines [start_line, end_line] (1-based, inclusive),
-// bounded by kMaxSnippetLines/kMaxSnippetChars. Returns the text and whether it
-// was truncated; an empty text means the file or location was unavailable.
-struct Snippet {
-  std::string text;
-  bool truncated = false;
-};
-
-[[nodiscard]] Snippet read_source_snippet(const Node& node) {
-  Snippet result;
-  if (node.source_file.empty() || !node.source_location || node.source_location->start_line == 0) {
-    return result;
-  }
-  std::ifstream input(node.source_file, std::ios::binary);
-  if (!input) {
-    return result;
-  }
-
-  const auto start = node.source_location->start_line;
-  const auto end = std::max(start, node.source_location->end_line);
-  const auto last = std::min<std::uint32_t>(end, start + kMaxSnippetLines - 1);
-
-  std::string line;
-  std::uint32_t current = 0;
-  while (std::getline(input, line)) {
-    ++current;
-    if (current < start) {
-      continue;
-    }
-    if (current > last) {
-      break;
-    }
-    if (result.text.size() + line.size() + 1 > kMaxSnippetChars) {
-      result.truncated = true;
-      break;
-    }
-    if (!result.text.empty()) {
-      result.text.push_back('\n');
-    }
-    result.text += line;
-  }
-  if (end > last) {
-    result.truncated = true;
-  }
-  return result;
+// Read the node's source lines [start_line, end_line] (1-based, inclusive)
+// through the request-local exact-buffer cache.
+[[nodiscard]] SnapshotSourceSnippet read_source_snippet(
+    SnapshotSourceReader& source_reader,
+    const Node& node) {
+  return source_reader.read_snippet(node, kMaxSnippetLines, kMaxSnippetChars);
 }
 
-// Enrich a brief with the focal node's full location block and an on-disk source
-// snippet (bounded by read_source_snippet). Used wherever a single node is the
-// subject and the code itself is worth returning.
-[[nodiscard]] nlohmann::json with_source(nlohmann::json brief, const Node& node) {
+void add_source_location(nlohmann::json& brief, const Node& node) {
   if (node.source_location && node.source_location->start_line > 0) {
     brief["location"] = {
         {"start_line", node.source_location->start_line},
@@ -190,8 +150,19 @@ struct Snippet {
         {"end_line", node.source_location->end_line},
         {"end_column", node.source_location->end_column}};
   }
-  if (const auto snippet = read_source_snippet(node); !snippet.text.empty()) {
+}
+
+// Enrich a brief with the focal node's full location block and an on-disk source
+// snippet (bounded by read_source_snippet). Used wherever a single node is the
+// subject and the code itself is worth returning.
+[[nodiscard]] nlohmann::json with_source(
+    nlohmann::json brief,
+    const Node& node,
+    SnapshotSourceReader& source_reader) {
+  add_source_location(brief, node);
+  if (const auto snippet = read_source_snippet(source_reader, node); !snippet.text.empty()) {
     brief["snippet"] = snippet.text;
+    brief["source_sha256"] = snippet.source_sha256;
     if (snippet.truncated) {
       brief["snippet_truncated"] = true;
     }
@@ -306,16 +277,67 @@ constexpr std::size_t kSameFileCandidateCap = 5;
   return out;
 }
 
-// Knapsack item weight: token cost of the node's (capped) source slice only --
-// NOT estimate_tokens(json_entry.dump()). Step A (research/2510.00446) showed the
-// JSON-entry overhead (mangled id + absolute path + location keys) flattens the
-// weight spread and degenerates the knapsack toward greedy; weighting by the slice
-// cost is the load-bearing fix that recovers the win.
+// Metadata-only estimate of the node's capped source slice. Selection must finish
+// before SnapshotSourceReader touches any path: a candidate that packing omits or
+// degrades to brief-only must not be read or snapshot-verified.
+// Source locations provide exact line spans and a useful final-column bound; forty
+// characters per preceding line preserves the established char/4 budget model
+// without consulting mutable working-tree bytes.
 [[nodiscard]] std::size_t slice_token_cost(const Node& node) {
-  if (const auto snippet = read_source_snippet(node); !snippet.text.empty()) {
-    return std::max<std::size_t>(1, estimate_tokens(snippet.text));
+  if (node.source_file.empty() || !node.source_location ||
+      node.source_location->start_line == 0) {
+    return std::max<std::size_t>(1, estimate_tokens(node.label));
   }
-  return std::max<std::size_t>(1, estimate_tokens(node.label));
+
+  constexpr std::size_t kEstimatedSourceLineChars = 40;
+  const auto& location = *node.source_location;
+  const auto end_line = std::max(location.start_line, location.end_line);
+  const auto raw_line_count =
+      static_cast<std::uint64_t>(end_line) - location.start_line + 1;
+  const auto line_count = static_cast<std::size_t>(
+      std::min<std::uint64_t>(raw_line_count, kMaxSnippetLines));
+  const auto final_line_chars = raw_line_count <= kMaxSnippetLines
+                                    ? static_cast<std::size_t>(location.end_column)
+                                    : kEstimatedSourceLineChars;
+  const auto estimated_chars = std::min(
+      kMaxSnippetChars,
+      std::max(node.label.size(),
+               (line_count - 1) * kEstimatedSourceLineChars + final_line_chars));
+  return std::max<std::size_t>(1, (estimated_chars + 3) / 4);
+}
+
+// Project the serialized cost of a source-bearing entry without opening its
+// source path. A fixed/greedy candidate is materialized only after this projected
+// full entry fits; otherwise the exact brief cost decides brief-only vs omitted.
+[[nodiscard]] std::size_t projected_source_entry_token_cost(
+    nlohmann::json entry,
+    const Node& node) {
+  add_source_location(entry, node);
+  if (!node.source_file.empty() && node.source_location &&
+      node.source_location->start_line > 0) {
+    constexpr std::size_t kSha256HexChars = 64;
+    const auto estimated_snippet_chars =
+        std::min(kMaxSnippetChars, slice_token_cost(node) * 4);
+    entry["snippet"] = std::string(estimated_snippet_chars, 'x');
+    entry["source_sha256"] = std::string(kSha256HexChars, '0');
+    const auto& location = *node.source_location;
+    const auto end_line = std::max(location.start_line, location.end_line);
+    if (static_cast<std::uint64_t>(end_line) - location.start_line + 1 >
+        kMaxSnippetLines) {
+      entry["snippet_truncated"] = true;
+    }
+  }
+  return estimate_tokens(entry.dump());
+}
+
+[[nodiscard]] std::size_t emitted_entry_tokens(
+    const nlohmann::json& focus,
+    const nlohmann::json& included) {
+  std::size_t used = estimate_tokens(focus.dump());
+  for (const auto& entry : included) {
+    used += estimate_tokens(entry.dump());
+  }
+  return used;
 }
 
 [[nodiscard]] std::unordered_map<std::string, const Node*> index_nodes(const GraphSnapshot& graph) {
@@ -585,7 +607,10 @@ struct StructuralIntent {
   return std::nullopt;
 }
 
-[[nodiscard]] nlohmann::json query_graph(const GraphSnapshot& graph, const nlohmann::json& params) {
+[[nodiscard]] nlohmann::json query_graph(
+    const GraphSnapshot& graph,
+    const nlohmann::json& params,
+    SnapshotSourceReader& source_reader) {
   const auto needle = params.value("q", params.value("query", std::string{}));
   const auto by_id = index_nodes(graph);
   const auto limit = params.value("limit", kDefaultQueryLimit);
@@ -655,7 +680,7 @@ struct StructuralIntent {
     }
     if (exact_count == 1) {
       auto nodes = nlohmann::json::array();
-      nodes.push_back(node_brief(*only));
+      nodes.push_back(with_source(node_brief(*only), *only, source_reader));
       return {
           {"route", "entity"},
           {"nodes", std::move(nodes)},
@@ -834,11 +859,14 @@ struct StructuralIntent {
 // brief-only entry (so the agent still learns the symbol exists and where);
 // anything that no longer fits is counted in `omitted`. The focal node is always
 // included with its snippet, even if it alone exceeds the budget.
-[[nodiscard]] nlohmann::json pack_context(const GraphSnapshot& graph, const nlohmann::json& params) {
+[[nodiscard]] nlohmann::json pack_context(
+    const GraphSnapshot& graph,
+    const nlohmann::json& params,
+    SnapshotSourceReader& source_reader) {
   const auto budget = params.value("budget", kDefaultContextBudget);
-  // Packing strategy: "greedy" (default, historical behavior) or "knapsack" (the
-  // step-A-validated 0/1 knapsack fill). Knapsack gathers a wider ego graph by
-  // default. The flag is the rollback boundary: greedy is untouched.
+  // Packing strategy: "greedy" (default ordered full/brief degradation) or
+  // "knapsack" (the step-A-validated 0/1 fill). Knapsack gathers a wider ego graph
+  // by default; both strategies finish candidate selection from metadata first.
   const auto packing = params.value("packing", std::string{"greedy"});
   // Adaptive relevance-gated gather (the default; pass gather="fixed" to opt out):
   // keeps the full 2-hop core but expands past depth 1 only along query-relevant
@@ -1009,14 +1037,20 @@ struct StructuralIntent {
     return lhs->label < rhs->label;
   });
 
-  // The focal node always leads, with its snippet.
-  auto focus = with_source(node_brief(*focal), *focal);
+  const auto candidate_brief = [&](const Node& node) {
+    auto brief = node_brief(node);
+    brief["depth"] = reached[node.id].depth;
+    if (const auto& via = reached[node.id].via; !via.empty()) {
+      brief["via"] = via;
+    }
+    return brief;
+  };
 
   // Knapsack packing path (flag-gated; greedy below is the default and unchanged).
-  // 0/1 knapsack over candidates: weight = source-slice token cost (the load-bearing
-  // step-A fix), value = relevance (nearer hops + query-term overlap). The focal is
-  // always included; the knapsack fills the remaining budget. No brief-degradation
-  // here -- selection is whole-or-nothing, matching the validated harness.
+  // 0/1 knapsack over candidates: weight = metadata-estimated source-slice token
+  // cost, value = relevance (nearer hops + query-term overlap). The focal is always
+  // included; the knapsack fills the remaining budget. No source path is touched
+  // until backtracking has produced the final whole-or-nothing selection.
   if (use_knapsack) {
     std::vector<std::size_t> weight(candidates.size());
     std::vector<double> value(candidates.size());
@@ -1042,7 +1076,7 @@ struct StructuralIntent {
     const std::size_t capacity = std::min({raw_capacity, total_weight, kMaxKnapsackCapacity});
 
     std::vector<const Node*> chosen;
-    std::size_t used = focal_cost;
+    std::size_t selection_used = focal_cost;
     if (capacity > 0 && !candidates.empty()) {
       const std::size_t n = candidates.size();
       // dp[i][c] = max total value using the first i candidates within weight c.
@@ -1065,7 +1099,7 @@ struct StructuralIntent {
       for (std::size_t i = n; i-- > 0;) {
         if (dp[i + 1][c] != dp[i][c]) {
           chosen.push_back(candidates[i]);
-          used += weight[i];
+          selection_used += weight[i];
           c -= weight[i];
         }
       }
@@ -1081,25 +1115,26 @@ struct StructuralIntent {
       return lhs->label < rhs->label;
     });
 
+    auto focus = with_source(node_brief(*focal), *focal, source_reader);
     auto included = nlohmann::json::array();
     for (const auto* node : chosen) {
-      auto full = with_source(node_brief(*node), *node);
-      full["depth"] = reached[node->id].depth;
-      if (const auto& via = reached[node->id].via; !via.empty()) {
-        full["via"] = via;
-      }
+      auto full = with_source(candidate_brief(*node), *node, source_reader);
       included.push_back(std::move(full));
     }
+    const auto used = emitted_entry_tokens(focus, included);
     const std::size_t omitted = candidates.size() - chosen.size();
     nlohmann::json result{
         {"focus", std::move(focus)},
         {"budget", budget},
         {"tokens_used", used},
+        {"selection_tokens_used", selection_used},
+        {"budget_basis", "estimated_source_slice_tokens"},
         {"packing", "knapsack"},
         {"gather", adaptive ? "adaptive" : "fixed"},
+        {"source_files_read", source_reader.files_read()},
         {"included", std::move(included)},
         {"omitted", omitted}};
-    if (omitted > 0) {
+    if (omitted > 0 || selection_used > budget) {
       result["truncated"] = true;
     }
     // Adaptive reach summary: did the relevance gate actually expand the third hop,
@@ -1113,57 +1148,68 @@ struct StructuralIntent {
     return result;
   }
 
-  std::size_t used = estimate_tokens(focus.dump());
-
-  auto included = nlohmann::json::array();
+  struct PlannedEntry {
+    const Node* node = nullptr;
+    nlohmann::json entry;
+    bool materialize = false;
+  };
+  std::vector<PlannedEntry> planned;
+  planned.reserve(candidates.size());
+  std::size_t projected_used =
+      projected_source_entry_token_cost(node_brief(*focal), *focal);
   std::size_t omitted = 0;
   for (const auto* node : candidates) {
-    const auto depth = reached[node->id].depth;
-    const auto& via = reached[node->id].via;
-
-    auto full = with_source(node_brief(*node), *node);
-    full["depth"] = depth;
-    if (!via.empty()) {
-      full["via"] = via;
-    }
-    const auto full_cost = estimate_tokens(full.dump());
-    if (used + full_cost <= budget) {
-      used += full_cost;
-      included.push_back(std::move(full));
+    auto brief = candidate_brief(*node);
+    const auto full_cost = projected_source_entry_token_cost(brief, *node);
+    if (projected_used <= budget && full_cost <= budget - projected_used) {
+      projected_used += full_cost;
+      planned.push_back({node, std::move(brief), true});
       continue;
     }
 
     // Full snippet overflows: keep a brief-only entry if it still fits.
-    auto brief = node_brief(*node);
-    brief["depth"] = depth;
-    if (!via.empty()) {
-      brief["via"] = via;
-    }
     brief["snippet_omitted"] = true;
     const auto brief_cost = estimate_tokens(brief.dump());
-    if (used + brief_cost <= budget) {
-      used += brief_cost;
-      included.push_back(std::move(brief));
+    if (projected_used <= budget && brief_cost <= budget - projected_used) {
+      projected_used += brief_cost;
+      planned.push_back({node, std::move(brief), false});
     } else {
       ++omitted;
     }
   }
 
+  // All full/brief/omitted decisions above are metadata-only. Only the focal and
+  // entries selected for full emission reach SnapshotSourceReader.
+  auto focus = with_source(node_brief(*focal), *focal, source_reader);
+  auto included = nlohmann::json::array();
+  for (auto& item : planned) {
+    included.push_back(item.materialize
+                           ? with_source(std::move(item.entry), *item.node, source_reader)
+                           : std::move(item.entry));
+  }
+  const auto used = emitted_entry_tokens(focus, included);
+
   nlohmann::json result{
       {"focus", std::move(focus)},
       {"budget", budget},
       {"tokens_used", used},
+      {"selection_tokens_used", projected_used},
+      {"budget_basis", "projected_entry_tokens"},
       {"packing", "greedy"},
       {"gather", "fixed"},
+      {"source_files_read", source_reader.files_read()},
       {"included", std::move(included)},
       {"omitted", omitted}};
-  if (omitted > 0 || used > budget) {
+  if (omitted > 0 || projected_used > budget) {
     result["truncated"] = true;
   }
   return result;
 }
 
-[[nodiscard]] nlohmann::json explain_node(const GraphSnapshot& graph, const nlohmann::json& params) {
+[[nodiscard]] nlohmann::json explain_node(
+    const GraphSnapshot& graph,
+    const nlohmann::json& params,
+    SnapshotSourceReader& source_reader) {
   const auto id = params.value("id", std::string{});
   // "in" keeps only edges into the node (callers/importers), "out" only edges
   // it points at (callees/imports); default is both.
@@ -1229,7 +1275,7 @@ struct StructuralIntent {
   for (auto& neighbor : neighbors) {
     entries.push_back(std::move(neighbor.entry));
   }
-  auto result = with_source(node_brief(*node), *node);
+  auto result = with_source(node_brief(*node), *node, source_reader);
   result["neighbor_count"] = neighbor_count;
   result["neighbors"] = std::move(entries);
   if (truncated) {
@@ -1603,15 +1649,21 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
   // so the checkpoint survives restarts, incremental edits, and full rescans -- the
   // live snapshot node below is only the immediate, in-session copy.
   const auto sidecar = std::filesystem::path(path).replace_extension(".json");
+  const auto sidecar_contents = to_json(fragment).dump(2) + '\n';
   {
     std::ofstream out(sidecar, std::ios::binary);
     if (!out) {
       return error_response("failed to write checkpoint sidecar: " + sidecar.generic_string());
     }
-    out << to_json(fragment).dump(2) << '\n';
+    out << sidecar_contents;
   }
 
-  mutate_graph_snapshot(state, [&](GraphSnapshot& current) { merge_fragment(current, fragment); });
+  mutate_graph_snapshot(state, [&](GraphSnapshot& current) {
+    merge_fragment(current, fragment);
+    current.source_hashes[path.lexically_normal().generic_string()] = sha256_hex(content);
+    current.source_hashes[sidecar.lexically_normal().generic_string()] =
+        sha256_hex(sidecar_contents);
+  });
   state.last_remember_at = ts;  // observability: recency of the last checkpoint write
 
   return ok_response({
@@ -1625,7 +1677,10 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
   });
 }
 
-[[nodiscard]] nlohmann::json recall_checkpoints(const GraphSnapshot& graph, const nlohmann::json& params) {
+[[nodiscard]] nlohmann::json recall_checkpoints(
+    const GraphSnapshot& graph,
+    const nlohmann::json& params,
+    SnapshotSourceReader& source_reader) {
   const auto query = ascii_lower(params.value("query", params.value("q", std::string{})));
   const auto limit = params.value("limit", std::size_t{10});
 
@@ -1643,7 +1698,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
       // write the summary there), so the filter must search it too. Read only when
       // title/tags already missed, bounded by the same caps as the returned snippet.
       if (!hit) {
-        hit = contains_ci(read_source_snippet(node).text, query);
+        hit = contains_ci(read_source_snippet(source_reader, node).text, query);
       }
       if (!hit) {
         continue;
@@ -1684,7 +1739,8 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
 
   auto items = nlohmann::json::array();
   for (const auto* checkpoint : checkpoints) {
-    auto entry = with_source(node_brief(*checkpoint), *checkpoint);  // body snippet from source_file
+    auto entry = with_source(
+        node_brief(*checkpoint), *checkpoint, source_reader);  // body snippet from source_file
     entry["created_at"] = created_at(checkpoint);
     if (const auto tags = checkpoint->properties.find("tags"); tags != checkpoint->properties.end()) {
       entry["tags"] = tags->second;
@@ -1758,64 +1814,73 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
   bool zero_hit = false;
   std::string query_route;  // the query op's resolved route, for adoption telemetry
   nlohmann::json response;
+  SnapshotSourceReader source_reader(graph->source_hashes, params.contains("expected_content_root"));
   {
     ScopedTimer timer(&latency_ms);
-    switch (*known_op) {
-      case DaemonOp::Query: {
-        auto result = query_graph(*graph, params);
-        zero_hit = result.value("total", std::size_t{0}) == 0;
-        query_route = result.value("route", std::string{});
-        response = ok_response(decorate_freshness(annotate_build_state(std::move(result), *graph), *graph));
-        break;
+    try {
+      switch (*known_op) {
+        case DaemonOp::Query: {
+          auto result = query_graph(*graph, params, source_reader);
+          zero_hit = result.value("total", std::size_t{0}) == 0;
+          query_route = result.value("route", std::string{});
+          response = ok_response(decorate_freshness(annotate_build_state(std::move(result), *graph), *graph));
+          break;
+        }
+        case DaemonOp::Path:
+          response = ok_response(decorate_freshness(annotate_build_state(shortest_path(*graph, params), *graph), *graph));
+          break;
+        case DaemonOp::Explain:
+          response = ok_response(decorate_freshness(
+              annotate_build_state(explain_node(*graph, params, source_reader), *graph), *graph));
+          break;
+        case DaemonOp::Impact:
+          response = ok_response(decorate_freshness(annotate_build_state(impact_radius(*graph, params), *graph), *graph));
+          break;
+        case DaemonOp::Context: {
+          auto result = pack_context(*graph, params, source_reader);
+          // Zero-hit for context = the focal node did not resolve (the id/query
+          // matched nothing). A resolved focus is useful context even if a tight
+          // budget left no neighbors room, so focal-only is NOT a zero hit.
+          zero_hit = result.value("focus", nlohmann::json()).is_null();
+          response = ok_response(decorate_freshness(annotate_build_state(std::move(result), *graph), *graph));
+          break;
+        }
+        case DaemonOp::Update:
+          response = state.update_handler ? ok_response(state.update_handler(params))
+                                          : ok_response({{"accepted", true}});
+          break;
+        case DaemonOp::Status:
+          response = ok_response(status(state, *graph));
+          break;
+        case DaemonOp::Shutdown:
+          state.shutdown_requested = true;
+          response = ok_response({{"shutdown", true}});
+          break;
+        case DaemonOp::Remember:
+          // remember_checkpoint returns a full ok/error envelope (it can reject a
+          // disabled daemon, oversize body, or path escape), so it is not wrapped.
+          response = remember_checkpoint(state, params);
+          break;
+        case DaemonOp::Recall: {
+          auto result = recall_checkpoints(*graph, params, source_reader);
+          zero_hit = result.value("total", std::size_t{0}) == 0;
+          // Recency for the status memory block: wall clock read once at this op
+          // boundary (the monotonic latency substrate is untouched).
+          state.last_recall_at = std::to_string(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::system_clock::now().time_since_epoch())
+                  .count());
+          response = ok_response(decorate_freshness(
+              annotate_build_state(std::move(result), *graph), *graph));
+          break;
+        }
+        case DaemonOp::Count:
+          break;  // unreachable: daemon_op_from_string never yields Count
       }
-      case DaemonOp::Path:
-        response = ok_response(decorate_freshness(annotate_build_state(shortest_path(*graph, params), *graph), *graph));
-        break;
-      case DaemonOp::Explain:
-        response = ok_response(decorate_freshness(annotate_build_state(explain_node(*graph, params), *graph), *graph));
-        break;
-      case DaemonOp::Impact:
-        response = ok_response(decorate_freshness(annotate_build_state(impact_radius(*graph, params), *graph), *graph));
-        break;
-      case DaemonOp::Context: {
-        auto result = pack_context(*graph, params);
-        // Zero-hit for context = the focal node did not resolve (the id/query
-        // matched nothing). A resolved focus is useful context even if a tight
-        // budget left no neighbors room, so focal-only is NOT a zero hit.
-        zero_hit = result.value("focus", nlohmann::json()).is_null();
-        response = ok_response(decorate_freshness(annotate_build_state(std::move(result), *graph), *graph));
-        break;
-      }
-      case DaemonOp::Update:
-        response = state.update_handler ? ok_response(state.update_handler(params))
-                                        : ok_response({{"accepted", true}});
-        break;
-      case DaemonOp::Status:
-        response = ok_response(status(state, *graph));
-        break;
-      case DaemonOp::Shutdown:
-        state.shutdown_requested = true;
-        response = ok_response({{"shutdown", true}});
-        break;
-      case DaemonOp::Remember:
-        // remember_checkpoint returns a full ok/error envelope (it can reject a
-        // disabled daemon, oversize body, or path escape), so it is not wrapped.
-        response = remember_checkpoint(state, params);
-        break;
-      case DaemonOp::Recall: {
-        auto result = recall_checkpoints(*graph, params);
-        zero_hit = result.value("total", std::size_t{0}) == 0;
-        // Recency for the status memory block: wall clock read once at this op
-        // boundary (the monotonic latency substrate is untouched).
-        state.last_recall_at = std::to_string(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count());
-        response = ok_response(annotate_build_state(std::move(result), *graph));
-        break;
-      }
-      case DaemonOp::Count:
-        break;  // unreachable: daemon_op_from_string never yields Count
+    } catch (const SourceSnapshotMismatch& error) {
+      // The response is assembled request-locally, so discarding it here makes
+      // a failed pinned read atomic: no verified prefix or graph result escapes.
+      response = error_response(error.what());
     }
   }
   // A context call served with gather="adaptive" is counted distinctly so the

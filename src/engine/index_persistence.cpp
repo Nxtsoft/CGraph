@@ -25,7 +25,7 @@ namespace {
 // golden/parity tests catch an *unintended* output change; bumping this key on an
 // *intended* one is an author/reviewer responsibility, like any on-disk schema
 // version.
-constexpr const char* kIndexVersionKey = "cgraph-index-v1:logic-3";
+constexpr const char* kIndexVersionKey = "cgraph-index-v1:logic-4";
 
 [[nodiscard]] std::string normalized_key(const std::filesystem::path& path) {
   return path.lexically_normal().generic_string();

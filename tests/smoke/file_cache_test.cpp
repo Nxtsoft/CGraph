@@ -1,12 +1,31 @@
 #include "cgraph/file_cache.hpp"
 #include "cgraph/content_root.hpp"
 
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(__APPLE__) || defined(__unix__)
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+#if defined(__SANITIZE_ADDRESS__)
+#define CGRAPH_FILE_CACHE_TEST_ASAN 1
+#elif defined(__clang__)
+#if __has_feature(address_sanitizer)
+#define CGRAPH_FILE_CACHE_TEST_ASAN 1
+#endif
+#endif
+#ifndef CGRAPH_FILE_CACHE_TEST_ASAN
+#define CGRAPH_FILE_CACHE_TEST_ASAN 0
+#endif
 
 namespace {
 
@@ -15,6 +34,16 @@ void write_file(const std::filesystem::path& path, std::string contents) {
   std::ofstream output(path);
   output << contents;
 }
+
+#if defined(__APPLE__) || defined(__unix__)
+[[nodiscard]] std::uint64_t max_resident_bytes(const rusage& usage) {
+#if defined(__APPLE__)
+  return static_cast<std::uint64_t>(usage.ru_maxrss);
+#else
+  return static_cast<std::uint64_t>(usage.ru_maxrss) * 1024U;
+#endif
+}
+#endif
 
 }  // namespace
 
@@ -27,6 +56,112 @@ int main() {
   if (cgraph::sha256_hex("abc") != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") {
     return 1;
   }
+  if (cgraph::sha256_hex(
+          "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") !=
+      "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") {
+    return 1;
+  }
+
+  const auto empty_path = root / "empty.bin";
+  write_file(empty_path, {});
+  if (cgraph::sha256_file_hex(empty_path) !=
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") {
+    return 1;
+  }
+
+  const auto missing_path = root / "missing.bin";
+  if (!cgraph::sha256_file_hex(missing_path).empty()) {
+    return 1;
+  }
+
+  const auto directory_path = root / "directory";
+  std::filesystem::create_directories(directory_path);
+  if (!cgraph::sha256_file_hex(directory_path).empty()) {
+    return 1;
+  }
+
+#if defined(__APPLE__) || defined(__unix__)
+  const auto unreadable_path = root / "src" / "unreadable.py";
+  write_file(unreadable_path, "class Unreadable:\n    pass\n");
+  std::error_code permission_error;
+  std::filesystem::permissions(
+      unreadable_path,
+      std::filesystem::perms::none,
+      std::filesystem::perm_options::replace,
+      permission_error);
+  if (permission_error) {
+    return 1;
+  }
+  const auto failed_digest = cgraph::sha256_file_hex(unreadable_path);
+  const auto unreadable = cgraph::classify_cached_file(
+      unreadable_path, std::nullopt, cgraph::CacheValidation::Content);
+  std::filesystem::permissions(
+      unreadable_path,
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+      std::filesystem::perm_options::replace,
+      permission_error);
+  if (permission_error || !failed_digest.empty() || !unreadable.hash_computed ||
+      unreadable.current.has_value()) {
+    return 1;
+  }
+#endif
+
+  // A million-plus-one repeated bytes crosses both SHA-256 block boundaries
+  // and file-reader chunks, then finalizes a partial block while streaming.
+  const auto streaming_path = root / "million-a.bin";
+  write_file(streaming_path, std::string(1'000'001, 'a'));
+  if (cgraph::sha256_file_hex(streaming_path) !=
+      "9710f0882e9694259bf237c37b53b170f63b30b2addce6d498107ab6e4f9c3a5") {
+    return 1;
+  }
+
+#if (defined(__APPLE__) || defined(__unix__)) && !CGRAPH_FILE_CACHE_TEST_ASAN
+  // Hashing a 32 MiB real file may add only a bounded working set. Comparing
+  // forked-child peaks subtracts the already-loaded test process and catches
+  // implementations that retain/copy the complete input.
+  const auto fixed_memory_path = root / "fixed-memory.bin";
+  {
+    std::ofstream output(fixed_memory_path, std::ios::binary);
+    const std::array<char, 64U * 1024U> zeros{};
+    for (std::size_t index = 0; index < 512U; ++index) {
+      output.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    }
+  }
+
+  rusage baseline_usage{};
+  int baseline_status = 0;
+  const auto baseline_child = ::fork();
+  if (baseline_child == 0) {
+    ::_exit(0);
+  }
+  if (baseline_child < 0 ||
+      ::wait4(baseline_child, &baseline_status, 0, &baseline_usage) < 0 ||
+      !WIFEXITED(baseline_status) || WEXITSTATUS(baseline_status) != 0) {
+    return 1;
+  }
+
+  rusage hash_usage{};
+  int hash_status = 0;
+  const auto hash_child = ::fork();
+  if (hash_child == 0) {
+    const auto digest = cgraph::sha256_file_hex(fixed_memory_path);
+    ::_exit(
+        digest == "83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302"
+            ? 0
+            : 1);
+  }
+  if (hash_child < 0 ||
+      ::wait4(hash_child, &hash_status, 0, &hash_usage) < 0 ||
+      !WIFEXITED(hash_status) || WEXITSTATUS(hash_status) != 0) {
+    return 1;
+  }
+
+  constexpr std::uint64_t kMaximumHashWorkingSet = 8U * 1024U * 1024U;
+  if (max_resident_bytes(hash_usage) >
+      max_resident_bytes(baseline_usage) + kMaximumHashWorkingSet) {
+    return 1;
+  }
+#endif
 
   write_file(path, "print('hello')\n");
   const auto fresh = cgraph::classify_cached_file(path, std::nullopt);

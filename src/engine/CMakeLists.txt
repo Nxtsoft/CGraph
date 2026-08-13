@@ -43,6 +43,7 @@ add_library(cgraph_engine STATIC
   semantic_ingest.cpp
   semantic_orchestration.cpp
   skills_install.cpp
+  snapshot_source_reader.cpp
   tsconfig_aliases.cpp)
 
 add_library(cgraph::engine ALIAS cgraph_engine)

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <thread>
 
@@ -17,6 +18,11 @@ namespace {
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream(path, std::ios::binary) << contents;
+}
+
+std::string read_file(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
 std::optional<nlohmann::json> request_with_retry(const std::filesystem::path& socket_path, const nlohmann::json& req) {
@@ -84,15 +90,23 @@ int main() {
   const auto manifest_path = root / "cgraph-out" / "index-manifest.json";
 
   bool ok = true;
+  const auto expect = [&](bool condition, const char* message) {
+    if (!condition) {
+      std::cerr << "FAIL: " << message << '\n';
+      ok = false;
+    }
+  };
 
   // First run builds the graph and must persist graph.json + the manifest.
   const auto nodes_first = run_until_built(root, socket_path, 2);
-  ok = ok && nodes_first >= 2;
-  ok = ok && fs::exists(graph_path) && fs::exists(manifest_path);
+  expect(nodes_first >= 2, "first run built the graph");
+  expect(fs::exists(graph_path) && fs::exists(manifest_path),
+         "first run persisted graph and manifest");
   const auto persisted_manifest = cgraph::read_index_manifest(manifest_path);
-  ok = ok && persisted_manifest.has_value() &&
-       persisted_manifest->content_root.algorithm == "sha256-merkle-v1" &&
-       persisted_manifest->content_root.sha256.size() == 64;
+  expect(persisted_manifest.has_value() &&
+             persisted_manifest->content_root.algorithm == "sha256-merkle-v1" &&
+             persisted_manifest->content_root.sha256.size() == 64,
+         "manifest contains a valid Merkle root");
   const auto persisted_root = persisted_manifest ? persisted_manifest->content_root.sha256 : std::string{};
 
   // Tamper the persisted graph with a sentinel, then restart over the unchanged
@@ -111,32 +125,36 @@ int main() {
       found = serves_node(socket_path, "marker:tier1");
       if (!found) std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    ok = ok && found;  // Tier-1 load served the disk graph
+    expect(found, "unchanged restart served the fast-loaded sentinel");
     const auto loaded_status = request_with_retry(socket_path, cgraph::make_request("status"));
-    ok = ok && loaded_status && (*loaded_status).value("ok", false) &&
-         (*loaded_status)["result"]["freshness"].value("content_root", std::string{}) == persisted_root;
+    expect(loaded_status && (*loaded_status).value("ok", false) &&
+               (*loaded_status)["result"]["freshness"].value("content_root", std::string{}) == persisted_root,
+           "fast-loaded status retained the persisted Merkle root");
 
-    // Fast-load must hydrate the verified file cache as well as the graph. A
-    // semantic-only mutation persists graph.json and the manifest without a
-    // source rescan; the manifest must retain all verified leaves so another
-    // unchanged restart can still take the fast path.
-    std::error_code mtime_error;
-    const auto manifest_mtime = fs::last_write_time(manifest_path, mtime_error);
+    // Session memory is a live overlay backed by its sidecar. It must be visible
+    // immediately without rewriting graph.json or its deterministic manifest.
+    const auto graph_before_remember = read_file(graph_path);
+    const auto manifest_before_remember = read_file(manifest_path);
     const auto remembered = request_with_retry(
         socket_path,
         cgraph::make_request("remember", {{"title", "fast-load cache"}, {"body", "retain verified leaves"}}));
-    ok = ok && remembered && (*remembered).value("ok", false) && !mtime_error;
-    bool manifest_rewritten = false;
-    for (int attempt = 0; attempt < 100 && !manifest_rewritten; ++attempt) {
-      std::error_code current_mtime_error;
-      const auto current_mtime = fs::last_write_time(manifest_path, current_mtime_error);
-      manifest_rewritten = !current_mtime_error && current_mtime != manifest_mtime;
-      if (!manifest_rewritten) std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    const auto repersisted_manifest = cgraph::read_index_manifest(manifest_path);
-    ok = ok && manifest_rewritten && repersisted_manifest.has_value() &&
-         repersisted_manifest->files.size() == 1 &&
-         repersisted_manifest->content_root.sha256 == persisted_root;
+    const auto recalled = request_with_retry(socket_path, cgraph::make_request("recall"));
+    expect(remembered && (*remembered).value("ok", false) && recalled &&
+               (*recalled).value("ok", false) &&
+               (*recalled)["result"].value("total", 0) == 1 &&
+               (*recalled)["result"]["checkpoints"][0].value("label", std::string{}) ==
+                   "fast-load cache",
+           "session checkpoint is visible in the live overlay");
+    // A status round trip enters the next serve-loop iteration, where a wrongly
+    // dirtied deterministic snapshot would be persisted immediately (interval=0).
+    const auto after_remember = request_with_retry(socket_path, cgraph::make_request("status"));
+    const auto unchanged_manifest = cgraph::read_index_manifest(manifest_path);
+    expect(after_remember && (*after_remember).value("ok", false) &&
+               read_file(graph_path) == graph_before_remember &&
+               read_file(manifest_path) == manifest_before_remember &&
+               unchanged_manifest.has_value() && unchanged_manifest->files.size() == 1 &&
+               unchanged_manifest->content_root.sha256 == persisted_root,
+           "session checkpoint left deterministic persistence byte-for-byte unchanged");
     (void)cgraph::request_over_unix_socket(socket_path, cgraph::make_request("shutdown"));
     server.join();
     (void)rc;
@@ -160,8 +178,8 @@ int main() {
       beta_built = serves_node(socket_path, "beta");
       if (!beta_built) std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    ok = ok && beta_built;                                  // rebuilt from changed source
-    ok = ok && !serves_node(socket_path, "marker:stale");  // stale disk graph was discarded
+    expect(beta_built, "changed source rebuilt the graph");
+    expect(!serves_node(socket_path, "marker:stale"), "changed source discarded the stale disk graph");
     (void)cgraph::request_over_unix_socket(socket_path, cgraph::make_request("shutdown"));
     server.join();
     (void)rc;

@@ -105,6 +105,7 @@ class EnrichmentRunningScope {
     // Drop out of Running into the steady state implied by the current counts;
     // a subsequent refresh refines pending/stale, but Running never lingers.
     state_.enrichment_state = state_.enrichment_failed > 0  ? EnrichmentState::Failed
+                              : state_.enrichment_stale > 0   ? EnrichmentState::Stale
                               : state_.enrichment_pending > 0 ? EnrichmentState::Pending
                                                              : EnrichmentState::Idle;
   }

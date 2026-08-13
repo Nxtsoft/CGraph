@@ -46,6 +46,13 @@ namespace {
   }
 
   auto graph = merge_fragments(fragments);
+  graph.source_hashes.reserve(index.files.size());
+  for (const auto& key : keys) {
+    const auto& source_sha256 = index.files.at(key).source_sha256;
+    if (!source_sha256.empty()) {
+      graph.source_hashes.emplace(incremental_file_key(std::filesystem::path{key}), source_sha256);
+    }
+  }
   resolve_imports(graph, index.aliases);
   resolve_raw_calls(graph, raw_calls);
   resolve_raw_relations(graph, raw_relations);

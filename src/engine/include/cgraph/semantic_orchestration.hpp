@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cgraph/semantic_chunk_plan.hpp"
+#include "cgraph/semantic_ingest.hpp"
 #include "cgraph/types.hpp"
 
 #include <cstddef>
@@ -54,7 +55,7 @@ struct EnrichmentIngestResult {
 // Maps each chunk index to its source input paths, read from the drop dir's
 // `plan.json` manifest (empty when absent). Used to attribute an ingested
 // fragment to the document(s) it enriches when updating the content-hash cache.
-[[nodiscard]] std::unordered_map<std::size_t, std::vector<std::filesystem::path>> load_chunk_sources(
+[[nodiscard]] std::unordered_map<std::size_t, std::vector<SemanticSourceInput>> load_chunk_sources(
     const std::filesystem::path& drop_dir);
 
 }  // namespace cgraph

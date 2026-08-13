@@ -84,6 +84,11 @@ struct GraphSnapshot {
   BuildState build_state = BuildState::Empty;
   double cache_hit_rate = 0.0;
   ContentRoot content_root;
+  // Runtime-only evidence for source-backed snippets. Keys are lexically
+  // normalized generic source paths; values hash the exact buffers parsed by
+  // extraction. Exporters intentionally ignore this ledger so graph JSON and
+  // deterministic topology remain unchanged.
+  std::unordered_map<std::string, std::string> source_hashes;
 };
 
 }  // namespace cgraph

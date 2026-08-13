@@ -33,10 +33,16 @@ int main() {
   std::filesystem::create_directories(root);
 
   cgraph::DaemonState state;
-  cgraph::publish_graph_snapshot(state, sample_graph());
+  const auto deterministic = sample_graph();
+  auto fused = deterministic;
+  fused.nodes.push_back(cgraph::Node{.id = "doc:overlay", .label = "Overlay", .kind = "document"});
+  fused.nodes.push_back(cgraph::Node{.id = "memory:checkpoint", .label = "Checkpoint", .kind = "memory"});
+  fused.edges.push_back(cgraph::Edge{.source = "doc:overlay", .target = "a", .relation = "MENTIONS"});
+  fused.edges.push_back(cgraph::Edge{.source = "memory:checkpoint", .target = "a", .relation = "concerns"});
+  cgraph::publish_graph_snapshot(state, std::move(fused));
 
   const auto graph_path = root / "graph.json";
-  if (!cgraph::persist_graph_snapshot(state, graph_path)) {
+  if (!cgraph::persist_graph_snapshot(deterministic, graph_path)) {
     return 1;
   }
 
@@ -105,7 +111,7 @@ int main() {
   }
 
   cgraph::mark_graph_dirty(lifecycle, start + 1s);
-  if (cgraph::persist_if_due(state, lifecycle, config, start + 9s)) {
+  if (cgraph::persist_if_due(deterministic, lifecycle, config, start + 9s)) {
     return 1;
   }
   // Re-marking while already dirty must NOT push the deadline out: dirty_since
@@ -115,10 +121,10 @@ int main() {
   if (lifecycle.dirty_since != start + 1s) {
     return 1;
   }
-  if (!cgraph::persist_if_due(state, lifecycle, config, start + 11s) || lifecycle.graph_dirty) {
+  if (!cgraph::persist_if_due(deterministic, lifecycle, config, start + 11s) || lifecycle.graph_dirty) {
     return 1;
   }
-  if (cgraph::persist_if_due(state, lifecycle, config, start + 12s)) {
+  if (cgraph::persist_if_due(deterministic, lifecycle, config, start + 12s)) {
     return 1;
   }
   // After a persist, the next mark re-anchors dirty_since.
@@ -137,7 +143,7 @@ int main() {
   std::filesystem::create_directories(blocked_path);           // destination is a directory...
   std::ofstream(blocked_path / "keep.txt") << "last known good";  // ...and non-empty
   const auto temp_path = root / "blocked-graph.json.tmp";
-  if (cgraph::persist_graph_snapshot(state, blocked_path)) {
+  if (cgraph::persist_graph_snapshot(deterministic, blocked_path)) {
     return 1;  // must fail: cannot atomically replace a non-empty directory
   }
   if (!std::filesystem::is_directory(blocked_path) ||

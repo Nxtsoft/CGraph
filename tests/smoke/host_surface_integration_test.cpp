@@ -115,7 +115,8 @@ int main(int argc, char** argv) {
 
   state.enrichment_state = cgraph::EnrichmentState::Running;
   state.enrichment_running = plan.chunks.size();
-  const auto ingest = cgraph::ingest_semantic_fragment(state, cache, source, fragment_path);
+  const auto ingest = cgraph::ingest_semantic_fragment(
+      state, cache, {{.path = source}}, fragment_path);
   if (!ingest.merged || !ingest.cache_updated || !ingest.errors.empty()) {
     return 1;
   }

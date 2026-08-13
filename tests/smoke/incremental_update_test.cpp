@@ -37,6 +37,15 @@ bool has_source(const cgraph::GraphSnapshot& graph, const std::filesystem::path&
   return false;
 }
 
+bool has_source_hash(
+    const cgraph::GraphSnapshot& graph,
+    const std::filesystem::path& path,
+    std::string_view exact_source) {
+  const auto key = path.lexically_normal().generic_string();
+  const auto found = graph.source_hashes.find(key);
+  return found != graph.source_hashes.end() && found->second == cgraph::sha256_hex(exact_source);
+}
+
 std::unordered_set<std::string> node_labels(const cgraph::GraphSnapshot& graph) {
   std::unordered_set<std::string> labels;
   for (const auto& node : graph.nodes) {
@@ -73,8 +82,10 @@ int main() {
   cgraph::IncrementalGraphIndex index;
   index.project_root = root;
 
-  write_file(alpha, "class Alpha:\n    pass\n");
-  write_file(beta, "class Beta:\n    pass\n");
+  const std::string alpha_source = "class Alpha:\n    pass\n";
+  const std::string beta_source = "class Beta:\n    pass\n";
+  write_file(alpha, alpha_source);
+  write_file(beta, beta_source);
   cgraph::FileWatchEvent created[] = {
       {.path = alpha, .change = cgraph::FileWatchChange::Created, .kind = cgraph::WatchedFileKind::Code},
       {.path = beta, .change = cgraph::FileWatchChange::Created, .kind = cgraph::WatchedFileKind::Code},
@@ -85,10 +96,69 @@ int main() {
       !has_node_label(*graph, "Alpha") || !has_node_label(*graph, "Beta") ||
       graph->content_root.algorithm != "sha256-merkle-v1" || graph->content_root.sha256.size() != 64 ||
       graph->content_root.leaf_count != 2 ||
+      graph->source_hashes.size() != 2 || !has_source_hash(*graph, alpha, alpha_source) ||
+      !has_source_hash(*graph, beta, beta_source) ||
       !same_content_root(graph->content_root, expected_content_root(index))) {
     return 1;
   }
   const auto created_root = graph->content_root;
+
+#if defined(__APPLE__) || defined(__unix__)
+  // A source that becomes unreadable after a verified publish must not replace
+  // either the live snapshot or its incremental index with unverified state.
+  const auto verified_snapshot = graph;
+  const auto verified_project_root = index.project_root;
+  const auto verified_files_size = index.files.size();
+  const auto verified_cache_size = index.cache.size();
+  const auto alpha_key = cgraph::incremental_file_key(alpha);
+  const auto verified_alpha_source_sha256 = index.files.at(alpha_key).source_sha256;
+  const auto verified_alpha_cache_sha256 = index.cache.at(alpha_key).sha256;
+
+  std::error_code permission_error;
+  std::filesystem::permissions(
+      alpha,
+      std::filesystem::perms::none,
+      std::filesystem::perm_options::replace,
+      permission_error);
+  if (permission_error || !cgraph::sha256_file_hex(alpha).empty()) {
+    return 1;
+  }
+
+  cgraph::IncrementalUpdateResult failed_rescan;
+  cgraph::IncrementalUpdateResult failed_incremental;
+  try {
+    failed_rescan = cgraph::full_stat_index_rescan(state, index, root);
+    cgraph::FileWatchEvent unreadable_event[] = {
+        {.path = alpha,
+         .change = cgraph::FileWatchChange::Modified,
+         .kind = cgraph::WatchedFileKind::Code},
+    };
+    failed_incremental =
+        cgraph::apply_incremental_code_updates(state, index, unreadable_event);
+  } catch (...) {
+    std::filesystem::permissions(
+        alpha,
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace,
+        permission_error);
+    throw;
+  }
+  std::filesystem::permissions(
+      alpha,
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+      std::filesystem::perm_options::replace,
+      permission_error);
+  graph = cgraph::read_graph_snapshot(state);
+  if (permission_error || graph != verified_snapshot ||
+      index.project_root != verified_project_root ||
+      index.files.size() != verified_files_size ||
+      index.cache.size() != verified_cache_size ||
+      index.files.at(alpha_key).source_sha256 != verified_alpha_source_sha256 ||
+      index.cache.at(alpha_key).sha256 != verified_alpha_cache_sha256 ||
+      failed_rescan.warnings.empty() || failed_incremental.warnings.empty()) {
+    return 1;
+  }
+#endif
 
   const auto alpha_modified_at = std::filesystem::last_write_time(alpha);
   std::filesystem::last_write_time(alpha, alpha_modified_at + std::chrono::seconds(5));
@@ -101,12 +171,15 @@ int main() {
       result.files_cache_hit != 1 || result.files_removed != 0 ||
       result.neighborhood_deduped || !has_node_label(*graph, "Alpha") || !has_node_label(*graph, "Beta") ||
       graph->content_root.sha256 != created_root.sha256 ||
+      graph->source_hashes.size() != 2 || !has_source_hash(*graph, alpha, alpha_source) ||
+      !has_source_hash(*graph, beta, beta_source) ||
       !same_content_root(graph->content_root, expected_content_root(index))) {
     return 1;
   }
 
   const auto preserved_modified_at = std::filesystem::last_write_time(alpha);
-  write_file(alpha, "class Gamma:\n    pass\n");
+  const std::string gamma_source = "class Gamma:\n    pass\n";
+  write_file(alpha, gamma_source);
   std::filesystem::last_write_time(alpha, preserved_modified_at);
   cgraph::FileWatchEvent edited[] = {
       {.path = alpha, .change = cgraph::FileWatchChange::Modified, .kind = cgraph::WatchedFileKind::Code},
@@ -116,6 +189,8 @@ int main() {
   if (result.files_hashed != 1 || result.bytes_hashed == 0 || result.files_reextracted != 1 ||
       has_node_label(*graph, "Alpha") || !has_node_label(*graph, "Gamma") ||
       graph->content_root.sha256 == created_root.sha256 || graph->content_root.leaf_count != 2 ||
+      graph->source_hashes.size() != 2 || !has_source_hash(*graph, alpha, gamma_source) ||
+      !has_source_hash(*graph, beta, beta_source) ||
       !same_content_root(graph->content_root, expected_content_root(index))) {
     return 1;
   }
@@ -132,6 +207,8 @@ int main() {
       result.files_reextracted != 1 || has_source(*graph, beta) ||
       !has_source(*graph, renamed) || graph->content_root.sha256 == edited_root.sha256 ||
       graph->content_root.leaf_count != 2 ||
+      graph->source_hashes.size() != 2 || graph->source_hashes.contains(beta.lexically_normal().generic_string()) ||
+      !has_source_hash(*graph, alpha, gamma_source) || !has_source_hash(*graph, renamed, beta_source) ||
       !same_content_root(graph->content_root, expected_content_root(index))) {
     return 1;
   }
@@ -146,6 +223,23 @@ int main() {
   if (result.files_hashed != 0 || result.bytes_hashed != 0 || result.files_removed != 1 ||
       has_node_label(*graph, "Beta") || has_source(*graph, renamed) ||
       graph->content_root.sha256 == renamed_root.sha256 || graph->content_root.leaf_count != 1 ||
+      graph->source_hashes.size() != 1 || !has_source_hash(*graph, alpha, gamma_source) ||
+      graph->source_hashes.contains(renamed.lexically_normal().generic_string()) ||
+      !same_content_root(graph->content_root, expected_content_root(index))) {
+    return 1;
+  }
+
+  // A full content-verified rescan publishes the same exact extraction hashes:
+  // unchanged files retain their parsed-buffer evidence and newly detected files
+  // receive evidence from the exact buffer handed to the extractor.
+  const std::string delta_source = "class Delta:\n    pass\n";
+  write_file(beta, delta_source);
+  result = cgraph::full_stat_index_rescan(state, index, root);
+  graph = cgraph::read_graph_snapshot(state);
+  if (!result.full_rescan || !result.full_dedup_reconciled ||
+      graph->source_hashes.size() != 2 ||
+      !has_source_hash(*graph, std::filesystem::weakly_canonical(alpha), gamma_source) ||
+      !has_source_hash(*graph, std::filesystem::weakly_canonical(beta), delta_source) ||
       !same_content_root(graph->content_root, expected_content_root(index))) {
     return 1;
   }

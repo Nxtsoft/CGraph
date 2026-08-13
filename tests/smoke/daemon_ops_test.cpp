@@ -1,6 +1,7 @@
 #include "cgraph/daemon_ops.hpp"
 
 #include "cgraph/daemon_lifecycle.hpp"
+#include "cgraph/file_cache.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/protocol.hpp"
@@ -23,11 +24,12 @@ int main() {
   const auto src = fs::temp_directory_path() / "cgraph-daemon-ops-test" / "alpha.cpp";
   fs::remove_all(src.parent_path());
   fs::create_directories(src.parent_path());
-  std::ofstream(src, std::ios::binary)
-      << "// header line\n"
-      << "class Alpha {\n"
-      << "  void run();\n"
-      << "};\n";
+  const std::string source_contents =
+      "// header line\n"
+      "class Alpha {\n"
+      "  void run();\n"
+      "};\n";
+  std::ofstream(src, std::ios::binary) << source_contents;
 
   cgraph::DaemonState state;
   state.pid = 123;
@@ -67,6 +69,8 @@ int main() {
   graph.nodes.push_back(cgraph::Node{.id = "d", .label = "gamma_run(int x, bool dry)", .kind = "function"});
   graph.edges.push_back(cgraph::Edge{.source = "a", .target = "b", .relation = "CALLS"});
   graph.edges.push_back(cgraph::Edge{.source = "c", .target = "a", .relation = "CALLS"});
+  const auto source_sha256 = cgraph::sha256_hex(source_contents);
+  graph.source_hashes[src.lexically_normal().generic_string()] = source_sha256;
   cgraph::publish_graph_snapshot(state, std::move(graph));
 
   const auto status = cgraph::handle_daemon_request(state, cgraph::make_request("status"));
@@ -114,6 +118,10 @@ int main() {
       !has_pinned_freshness(pinned_context)) {
     return 201;
   }
+  if (pinned_explain["result"].value("source_sha256", std::string{}) != source_sha256 ||
+      pinned_context["result"]["focus"].value("source_sha256", std::string{}) != source_sha256) {
+    return 204;
+  }
 
   const auto stale_pin = cgraph::handle_daemon_request(
       state, cgraph::make_request("query", {{"q", "pha"}, {"expected_content_root", "stale-content-root"}}));
@@ -126,6 +134,249 @@ int main() {
       rootless_state, cgraph::make_request("query", {{"q", "anything"}, {"expected_content_root", ""}}));
   if (empty_pin.value("ok", true) || empty_pin.contains("result")) {
     return 203;
+  }
+
+  // Pinned snippet reads verify every returned source against the selected
+  // snapshot ledger. A later byte change aborts an otherwise partially-built
+  // context response; unpinned reads keep serving the current working-tree bytes.
+  {
+    const auto verified_source = src.parent_path() / "verified.cpp";
+    const auto selected_source = src.parent_path() / "selected.cpp";
+    const auto changed_source = src.parent_path() / "changed.cpp";
+    const std::string verified_bytes =
+        "void Verified() {}\n"
+        "void SelectedSame() {}\n";
+    const std::string selected_bytes = "void SelectedDistinct() {}\n";
+    const std::string old_changed_bytes = "void ChangedOld() {}\n";
+    const std::string new_changed_bytes = "void ChangedNew() {}\n";
+    std::ofstream(verified_source, std::ios::binary) << verified_bytes;
+    std::ofstream(selected_source, std::ios::binary) << selected_bytes;
+    std::ofstream(changed_source, std::ios::binary) << old_changed_bytes;
+
+    cgraph::GraphSnapshot pinned_graph;
+    pinned_graph.build_state = cgraph::BuildState::DeterministicReady;
+    pinned_graph.content_root = cgraph::ContentRoot{
+        .algorithm = "sha256-merkle-v1",
+        .sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        .leaf_count = 3,
+    };
+    const auto pinned_content_root = pinned_graph.content_root.sha256;
+    pinned_graph.nodes.push_back(cgraph::Node{
+        .id = "verified",
+        .label = "Verified",
+        .source_file = verified_source.generic_string(),
+        .source_location = cgraph::SourceLocation{.start_line = 1, .end_line = 1, .end_column = 18},
+        .kind = "function"});
+    pinned_graph.nodes.push_back(cgraph::Node{
+        .id = "selected_same",
+        .label = "SelectedSame",
+        .source_file = verified_source.generic_string(),
+        .source_location = cgraph::SourceLocation{.start_line = 2, .end_line = 2, .end_column = 22},
+        .kind = "function",
+        .properties = {{"degree_centrality", "0.300000"}}});
+    pinned_graph.nodes.push_back(cgraph::Node{
+        .id = "selected_distinct",
+        .label = "SelectedDistinct",
+        .source_file = selected_source.generic_string(),
+        .source_location = cgraph::SourceLocation{.start_line = 1, .end_line = 1, .end_column = 26},
+        .kind = "function",
+        .properties = {{"degree_centrality", "0.200000"}}});
+    pinned_graph.nodes.push_back(cgraph::Node{
+        .id = "changed",
+        .label = "Changed",
+        .source_file = changed_source.generic_string(),
+        .source_location = cgraph::SourceLocation{.start_line = 1, .end_line = 40, .end_column = 500},
+        .kind = "function"});
+    pinned_graph.edges.push_back(
+        cgraph::Edge{.source = "verified", .target = "changed", .relation = "CALLS"});
+    pinned_graph.edges.push_back(
+        cgraph::Edge{.source = "verified", .target = "selected_same", .relation = "CALLS"});
+    pinned_graph.edges.push_back(
+        cgraph::Edge{.source = "verified", .target = "selected_distinct", .relation = "CALLS"});
+    pinned_graph.source_hashes[verified_source.lexically_normal().generic_string()] =
+        cgraph::sha256_hex(verified_bytes);
+    pinned_graph.source_hashes[selected_source.lexically_normal().generic_string()] =
+        cgraph::sha256_hex(selected_bytes);
+    pinned_graph.source_hashes[changed_source.lexically_normal().generic_string()] =
+        cgraph::sha256_hex(old_changed_bytes);
+
+    cgraph::DaemonState pinned_state;
+    cgraph::publish_graph_snapshot(pinned_state, pinned_graph);
+    std::ofstream(changed_source, std::ios::binary | std::ios::trunc) << new_changed_bytes;
+
+    const auto emitted_entry_tokens = [](const nlohmann::json& result) {
+      const auto entry_tokens = [](const nlohmann::json& entry) {
+        return (entry.dump().size() + 3U) / 4U;
+      };
+      std::size_t tokens = entry_tokens(result.at("focus"));
+      for (const auto& item : result.at("included")) {
+        tokens += entry_tokens(item);
+      }
+      return tokens;
+    };
+    constexpr std::size_t kKnapsackSelectionBudget = 20;
+
+    // Knapsack selection is metadata-only: the changed candidate is too large to
+    // select, so its stale bytes cannot abort the pinned response. The focus and
+    // one included node share a file, while the other included node is distinct;
+    // the observable read count must therefore be exactly two.
+    const auto selected_only_context = cgraph::handle_daemon_request(
+        pinned_state,
+        cgraph::make_request(
+            "context",
+            {{"id", "verified"},
+             {"q", "Selected"},
+             {"budget", kKnapsackSelectionBudget},
+             {"packing", "knapsack"},
+             {"max_depth", 1},
+             {"gather", "fixed"},
+             {"expected_content_root", pinned_content_root}}));
+    std::set<std::string> selected_ids;
+    std::set<std::string> selected_source_files;
+    std::set<std::string> selected_source_hashes;
+    std::size_t selected_emitted_tokens = 0;
+    if (selected_only_context.contains("result")) {
+      selected_emitted_tokens = emitted_entry_tokens(selected_only_context["result"]);
+      const auto& selected_focus = selected_only_context["result"]["focus"];
+      selected_source_files.insert(selected_focus.value("source_file", std::string{}));
+      selected_source_hashes.insert(selected_focus.value("source_sha256", std::string{}));
+      for (const auto& item : selected_only_context["result"]["included"]) {
+        selected_ids.insert(item.value("id", std::string{}));
+        selected_source_files.insert(item.value("source_file", std::string{}));
+        selected_source_hashes.insert(item.value("source_sha256", std::string{}));
+      }
+    }
+    if (!selected_only_context.value("ok", false) ||
+        selected_source_files.size() != 2U ||
+        selected_only_context["result"].value("source_files_read", 0U) !=
+            selected_source_files.size() ||
+        selected_only_context["result"].value("tokens_used", 0U) !=
+            selected_emitted_tokens ||
+        selected_only_context["result"].value("selection_tokens_used", 0U) >
+            kKnapsackSelectionBudget ||
+        selected_only_context["result"].value("budget_basis", std::string{}) !=
+            "estimated_source_slice_tokens" ||
+        selected_emitted_tokens <= kKnapsackSelectionBudget ||
+        selected_ids != std::set<std::string>{"selected_distinct", "selected_same"} ||
+        selected_source_hashes !=
+            std::set<std::string>{cgraph::sha256_hex(selected_bytes),
+                                  cgraph::sha256_hex(verified_bytes)}) {
+      return 210;
+    }
+
+    // Fixed/greedy packing also classifies candidates from metadata first. The
+    // stale oversized candidate is returned brief-only without being verified;
+    // only the two distinct files that actually supply snippets are read.
+    const auto selected_only_greedy_context = cgraph::handle_daemon_request(
+        pinned_state,
+        cgraph::make_request(
+            "context",
+            {{"id", "verified"},
+             {"budget", 500},
+             {"packing", "greedy"},
+             {"max_depth", 1},
+             {"gather", "fixed"},
+             {"expected_content_root", pinned_content_root}}));
+    std::set<std::string> greedy_snippet_ids;
+    std::set<std::string> greedy_snippet_files;
+    std::set<std::string> greedy_source_hashes;
+    std::size_t greedy_emitted_tokens = 0;
+    bool changed_is_brief_only = false;
+    if (selected_only_greedy_context.contains("result")) {
+      greedy_emitted_tokens = emitted_entry_tokens(selected_only_greedy_context["result"]);
+      const auto observe_snippet = [&](const nlohmann::json& item) {
+        if (!item.contains("snippet")) {
+          return;
+        }
+        greedy_snippet_ids.insert(item.value("id", std::string{}));
+        greedy_snippet_files.insert(item.value("source_file", std::string{}));
+        greedy_source_hashes.insert(item.value("source_sha256", std::string{}));
+      };
+      observe_snippet(selected_only_greedy_context["result"]["focus"]);
+      for (const auto& item : selected_only_greedy_context["result"]["included"]) {
+        observe_snippet(item);
+        if (item.value("id", std::string{}) == "changed") {
+          changed_is_brief_only = item.value("snippet_omitted", false) &&
+                                  !item.contains("snippet") &&
+                                  !item.contains("source_sha256");
+        }
+      }
+    }
+    if (!selected_only_greedy_context.value("ok", false) ||
+        selected_only_greedy_context["result"].value("packing", std::string{}) != "greedy" ||
+        selected_only_greedy_context["result"].value("tokens_used", 0U) !=
+            greedy_emitted_tokens ||
+        selected_only_greedy_context["result"].value(
+            "selection_tokens_used", 0U) > 500U ||
+        selected_only_greedy_context["result"].value(
+            "budget_basis", std::string{}) != "projected_entry_tokens" ||
+        !changed_is_brief_only ||
+        greedy_snippet_ids !=
+            std::set<std::string>{"selected_distinct", "selected_same", "verified"} ||
+        greedy_snippet_files.size() != 2U ||
+        selected_only_greedy_context["result"].value("source_files_read", 0U) !=
+            greedy_snippet_files.size() ||
+        greedy_source_hashes !=
+            std::set<std::string>{cgraph::sha256_hex(selected_bytes),
+                                  cgraph::sha256_hex(verified_bytes)}) {
+      return 211;
+    }
+
+    const auto mismatched_context = cgraph::handle_daemon_request(
+        pinned_state,
+        cgraph::make_request(
+            "context",
+            {{"id", "verified"},
+             {"budget", 20000},
+             {"max_depth", 1},
+             {"gather", "fixed"},
+             {"expected_content_root", pinned_content_root}}));
+    if (mismatched_context.value("ok", true) || mismatched_context.contains("result") ||
+        mismatched_context.value("error", std::string{}).find("source-snapshot-mismatch") == std::string::npos ||
+        mismatched_context.value("error", std::string{}).find("synchronize again") == std::string::npos) {
+      return 205;
+    }
+
+    const auto mismatched_entity = cgraph::handle_daemon_request(
+        pinned_state,
+        cgraph::make_request(
+            "query", {{"q", "Changed"}, {"expected_content_root", pinned_content_root}}));
+    if (mismatched_entity.value("ok", true) || mismatched_entity.contains("result")) {
+      return 206;
+    }
+
+    const auto eventual_explain = cgraph::handle_daemon_request(
+        pinned_state, cgraph::make_request("explain", {{"id", "changed"}}));
+    if (!eventual_explain.value("ok", false) ||
+        eventual_explain["result"].value("snippet", std::string{}).find("ChangedNew") == std::string::npos ||
+        eventual_explain["result"].value("source_sha256", std::string{}) != cgraph::sha256_hex(new_changed_bytes)) {
+      return 207;
+    }
+
+    auto missing_evidence_graph = pinned_graph;
+    missing_evidence_graph.source_hashes.erase(verified_source.lexically_normal().generic_string());
+    cgraph::DaemonState missing_evidence_state;
+    cgraph::publish_graph_snapshot(missing_evidence_state, std::move(missing_evidence_graph));
+    const auto missing_evidence = cgraph::handle_daemon_request(
+        missing_evidence_state,
+        cgraph::make_request(
+            "explain", {{"id", "verified"}, {"expected_content_root", pinned_content_root}}));
+    if (missing_evidence.value("ok", true) || missing_evidence.contains("result") ||
+        missing_evidence.value("error", std::string{}).find("source-snapshot-mismatch") == std::string::npos) {
+      return 208;
+    }
+
+    fs::remove(verified_source);
+    cgraph::DaemonState missing_file_state;
+    cgraph::publish_graph_snapshot(missing_file_state, std::move(pinned_graph));
+    const auto missing_file = cgraph::handle_daemon_request(
+        missing_file_state,
+        cgraph::make_request(
+            "explain", {{"id", "verified"}, {"expected_content_root", pinned_content_root}}));
+    if (missing_file.value("ok", true) || missing_file.contains("result") ||
+        missing_file.value("error", std::string{}).find("source-snapshot-mismatch") == std::string::npos) {
+      return 209;
+    }
   }
 
   // A bare symbol name resolves against the label's leading token, so an agent
@@ -1178,13 +1429,13 @@ int main() {
     });
 
     for (int poll = 0; poll < 5000; ++poll) {
-      const auto status = cgraph::handle_daemon_request(s, cgraph::make_request("status"));
-      if (!status.value("ok", false)) {
+      const auto concurrent_status = cgraph::handle_daemon_request(s, cgraph::make_request("status"));
+      if (!concurrent_status.value("ok", false)) {
         stop.store(true);
         writer.join();
         return 86;
       }
-      const auto& result = status["result"];
+      const auto& result = concurrent_status["result"];
       // Every counter must be a readable unsigned in its writer's range -- a torn
       // read would surface as a wild value or a type error here.
       if (!result["enrichment_pending"].is_number_unsigned() || result["enrichment_pending"].get<std::size_t>() > 6 ||
