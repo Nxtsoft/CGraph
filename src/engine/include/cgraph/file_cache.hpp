@@ -14,6 +14,7 @@ enum class CacheState {
   HashHit,
   Stale,
   Deleted,
+  Unreadable,  // exists but its bytes cannot be read/hashed; carries no entry
 };
 
 enum class CacheValidation {

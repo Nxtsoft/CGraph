@@ -293,6 +293,13 @@ FileCacheClassification classify_cached_file(
   }
 
   current.sha256 = sha256_file_hex(path);
+  if (current.sha256.empty()) {
+    // The file exists but its bytes cannot be read (permissions, special file).
+    // Fail closed with no entry: an unhashable file must never enter a cache or
+    // become a content-root leaf, and a caller holding a previously verified
+    // entry keeps that instead of replacing it with unverified state.
+    return FileCacheClassification{.state = CacheState::Unreadable, .hash_computed = true};
+  }
   if (!previous.has_value()) {
     return FileCacheClassification{.state = CacheState::New, .hash_computed = true, .current = std::move(current)};
   }
