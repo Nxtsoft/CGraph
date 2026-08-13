@@ -12,16 +12,28 @@
 #include <algorithm>
 #include <filesystem>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include <sys/stat.h>
 
 namespace cgraph {
 
 std::string incremental_file_key(const std::filesystem::path& path) {
   return path.lexically_normal().generic_string();
 }
+
+namespace {
+
+[[nodiscard]] std::pair<dev_t, ino_t> file_identity(const struct ::stat& file_stat) {
+  return {file_stat.st_dev, file_stat.st_ino};
+}
+
+}  // namespace
 
 namespace {
 
@@ -129,6 +141,7 @@ IncrementalUpdateResult full_stat_index_rescan(
   };
   std::vector<Classified> classified;
   classified.reserve(detected_files.size());
+  std::optional<std::set<std::pair<dev_t, ino_t>>> indexed_identities;
   for (const auto& file : detected_files) {
     auto key = incremental_file_key(file.path);
     std::optional<FileCacheEntry> previous;
@@ -145,20 +158,28 @@ IncrementalUpdateResult full_stat_index_rescan(
         }
         // The detection walk and the indexed events can disagree on key form
         // (e.g. a symlinked root), and an unreadable file defeats string-level
-        // canonicalization -- fall back to filesystem identity.
-        for (const auto& [_, entry] : index.cache) {
-          std::error_code eq_error;
-          if (std::filesystem::equivalent(entry.path, file.path, eq_error) && !eq_error) {
-            return true;
+        // canonicalization -- fall back to filesystem identity. The (dev, ino)
+        // set is built once, lazily, so many unreadable files stat the cache
+        // one time instead of once each.
+        if (!indexed_identities.has_value()) {
+          indexed_identities.emplace();
+          for (const auto& [_, entry] : index.cache) {
+            struct ::stat entry_stat{};
+            if (::stat(entry.path.c_str(), &entry_stat) == 0) {
+              indexed_identities->insert(file_identity(entry_stat));
+            }
           }
         }
-        return false;
+        struct ::stat file_stat{};
+        return ::stat(file.path.c_str(), &file_stat) == 0 &&
+               indexed_identities->contains(file_identity(file_stat));
       }();
       if (had_verified_state) {
         // Verified state exists for these bytes; refusing the rescan is the
         // only way to keep it authoritative.
         result.warnings.push_back(
             "rescan refused, keeping last verified state: " + key);
+        result.applied = false;
         return result;
       }
       continue;  // a never-verified unreadable file is skipped, not fatal
@@ -252,9 +273,14 @@ IncrementalUpdateResult full_stat_index_rescan(
 
   // Record this build's Layer A inputs for the modeled cache-saving estimate.
   // Mean is left 0 (estimate suppressed) when nothing was extracted this build.
-  state.last_files_cache_hit = result.files_cache_hit;
-  state.last_extract_mean_ms =
-      result.files_reextracted == 0 ? 0.0 : extract_ms / static_cast<double>(result.files_reextracted);
+  // enrichment_mutex so a concurrent status read never tears them (the state
+  // here may be the served one when an overflow event escalates to a rescan).
+  {
+    const std::scoped_lock lock(state.enrichment_mutex);
+    state.last_files_cache_hit = result.files_cache_hit;
+    state.last_extract_mean_ms =
+        result.files_reextracted == 0 ? 0.0 : extract_ms / static_cast<double>(result.files_reextracted);
+  }
 
   publish_graph_snapshot(state, std::move(graph));
   return result;
@@ -267,7 +293,7 @@ IncrementalUpdateResult apply_incremental_code_updates(
     const IncrementalDedupPolicy& dedup_policy) {
   IncrementalUpdateResult result;
   std::vector<std::string> changed_sources;
-  bool applied = false;  // any index/cache mutation; nothing applied -> no republish
+  bool applied = false;  // any change that requires a republish; none -> keep the served graph
 
   for (const auto& event : events) {
     if (event.change == FileWatchChange::Overflow) {
@@ -367,6 +393,7 @@ IncrementalUpdateResult apply_incremental_code_updates(
     // Every event was skipped (e.g. unreadable sources kept at their last
     // verified state): the published graph is still authoritative, so do not
     // rebuild or republish anything.
+    result.applied = false;
     return result;
   }
 

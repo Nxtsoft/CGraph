@@ -586,7 +586,11 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     ingest_all_memory(overlay_state);
     write_semantic_cache(cache, cache_path);
     publish_graph_snapshot(state, *read_graph_snapshot(overlay_state));
-    state.last_memory_overlay_count = overlay_state.last_memory_overlay_count;
+    {
+      // enrichment_mutex so a concurrent status read never tears the counter.
+      const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+      state.last_memory_overlay_count = overlay_state.last_memory_overlay_count;
+    }
   };
 
   // The daemon owns the incremental file index: startup and every `update` op
@@ -648,18 +652,27 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     // publishes the fused deterministic+overlay result in one step.
     DaemonState scan_state;
     const auto result = full_stat_index_rescan(scan_state, index, identity.project_root);
-    state.last_files_cache_hit = scan_state.last_files_cache_hit;
-    state.last_extract_mean_ms = scan_state.last_extract_mean_ms;
-    index_hydrated.store(true);
-    deterministic_graph = *read_graph_snapshot(scan_state);
-    rebuild_final_overlay();
-    // Persist the code-only snapshot before
-    // enrichment planning, which walks the whole project and can take seconds on
-    // a large repo. The Tier-1 cache should land promptly, not behind planning.
-    persist_graph_and_manifest();
+    if (result.applied) {
+      {
+        // enrichment_mutex covers unextracted and the modeled-saving scalars so
+        // a concurrent `status` read never tears them. scan_state is private to
+        // this call, so reading it unlocked is safe.
+        const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+        state.unextracted = scan_state.unextracted;
+        state.last_files_cache_hit = scan_state.last_files_cache_hit;
+        state.last_extract_mean_ms = scan_state.last_extract_mean_ms;
+      }
+      index_hydrated.store(true);
+      deterministic_graph = *read_graph_snapshot(scan_state);
+      rebuild_final_overlay();
+      // Persist the code-only snapshot before
+      // enrichment planning, which walks the whole project and can take seconds on
+      // a large repo. The Tier-1 cache should land promptly, not behind planning.
+      persist_graph_and_manifest();
+    }
     const auto graph = read_graph_snapshot(state);
-    return nlohmann::json{
-        {"accepted", true},
+    nlohmann::json response{
+        {"accepted", result.applied},
         {"full_rescan", result.full_rescan},
         {"files_hashed", result.files_hashed},
         {"bytes_hashed", result.bytes_hashed},
@@ -670,6 +683,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         {"edge_count", graph->edges.size()},
         {"freshness", freshness_metadata(*graph)},
     };
+    if (!result.warnings.empty()) {
+      response["warnings"] = result.warnings;
+    }
+    return response;
   };
 
   // Tier-1 fast path: if the persisted manifest's version key still matches this
@@ -818,8 +835,17 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       break;
     }
 
-    // Ingest any debounced fragment drops discovered since the last tick.
-    if (const auto events = drop_watcher.poll(FileWatcherClock::now()); !events.empty()) {
+    // Ingest any debounced fragment drops discovered since the last tick. Not
+    // polled until the initial build publishes: the build thread holds
+    // graph_mutex across semantic replay (which can block on a source read), so
+    // taking it here would wedge the accept loop -- the exact hang the persist
+    // step's try_to_lock avoids. Drops that land mid-build stay pending in the
+    // watcher and are picked up on the first post-build poll; the build's own
+    // rebuild_final_overlay already discovers on-disk drops directly.
+    if (const auto events = (!options.build_graph_on_start || initial_build_done.load())
+                                ? drop_watcher.poll(FileWatcherClock::now())
+                                : std::vector<SemanticFragmentDropEvent>{};
+        !events.empty()) {
       const std::scoped_lock lock(graph_mutex);  // serialize with the build/rescan thread
       // Mark the batch in-flight so a concurrent `status` reports enrichment as
       // running; the scope clears the running count on exit and request_refresh
@@ -855,24 +881,42 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         constexpr std::size_t kFullDedupReconcileEvery = 5;
         const std::scoped_lock lock(graph_mutex);
         IncrementalUpdateResult result;
-        if (index_hydrated.load()) {
+        DaemonState hydration_state;
+        const bool hydration = !index_hydrated.load();
+        if (!hydration) {
           result = apply_incremental_code_updates(
               state, index, events, IncrementalDedupPolicy{.full_reconcile_every = kFullDedupReconcileEvery});
         } else {
           // First edit after a fast-load restart: hydrate the index with one
-          // full rescan (a per-file rebuild here would wipe the graph), then
-          // subsequent events go incremental.
-          result = full_stat_index_rescan(state, index, identity.project_root);
-          index_hydrated.store(true);
+          // full rescan (a per-file rebuild here would wipe the graph), staged
+          // like every rescan so readers never see an intermediate; subsequent
+          // events go incremental.
+          result = full_stat_index_rescan(hydration_state, index, identity.project_root);
         }
-        deterministic_graph = *read_graph_snapshot(state);
-        rebuild_final_overlay();
-        request_refresh();    // code dependencies may have requeued semantic sources
-        ++state.incremental_updates;
-        mark_graph_dirty(lifecycle, DaemonClock::now());
+        for (const auto& warning : result.warnings) {
+          std::cerr << "graphd: " << warning << '\n';
+        }
+        if (result.applied) {
+          if (hydration) {
+            {
+              const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+              state.unextracted = hydration_state.unextracted;
+              state.last_files_cache_hit = hydration_state.last_files_cache_hit;
+              state.last_extract_mean_ms = hydration_state.last_extract_mean_ms;
+            }
+            index_hydrated.store(true);
+            deterministic_graph = *read_graph_snapshot(hydration_state);
+          } else {
+            deterministic_graph = *read_graph_snapshot(state);
+          }
+          rebuild_final_overlay();
+          request_refresh();    // code dependencies may have requeued semantic sources
+          ++state.incremental_updates;
+          mark_graph_dirty(lifecycle, DaemonClock::now());
+          std::cerr << "graphd: incremental update (" << result.files_reextracted << " re-extracted, "
+                    << result.files_removed << " removed" << (result.full_rescan ? ", full rescan" : "") << ")\n";
+        }
         last_activity = FileWatcherClock::now();  // active editing keeps the daemon alive
-        std::cerr << "graphd: incremental update (" << result.files_reextracted << " re-extracted, "
-                  << result.files_removed << " removed" << (result.full_rescan ? ", full rescan" : "") << ")\n";
       }
       if (!semantic_source_events.empty()) {
         const std::scoped_lock lock(graph_mutex);

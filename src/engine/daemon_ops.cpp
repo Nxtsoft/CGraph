@@ -1424,6 +1424,9 @@ struct StructuralIntent {
   std::size_t enrichment_failed = 0;
   std::size_t enrichment_plans_run = 0;
   std::map<std::string, std::size_t> unextracted;
+  std::size_t last_files_cache_hit = 0;
+  double last_extract_mean_ms = 0.0;
+  std::size_t last_memory_overlay_count = 0;
   {
     const std::scoped_lock lock(state.enrichment_mutex);
     enrichment_state_value = state.enrichment_state;
@@ -1433,6 +1436,11 @@ struct StructuralIntent {
     enrichment_failed = state.enrichment_failed;
     enrichment_plans_run = state.enrichment_plans_run;
     unextracted = state.unextracted;
+    // Written by the build/serve threads under the same lock; snapshot here so
+    // a status read never tears them.
+    last_files_cache_hit = state.last_files_cache_hit;
+    last_extract_mean_ms = state.last_extract_mean_ms;
+    last_memory_overlay_count = state.last_memory_overlay_count;
   }
 
   nlohmann::json payload{
@@ -1457,9 +1465,9 @@ struct StructuralIntent {
   // Modeled cache saving = files_reused x mean(per-file extract time) from the
   // most recent build's Layer A timings. Omitted (never fabricated) when there
   // was no reuse or no per-file mean to model from.
-  if (state.last_files_cache_hit > 0 && state.last_extract_mean_ms > 0.0) {
+  if (last_files_cache_hit > 0 && last_extract_mean_ms > 0.0) {
     payload["cache_saved_ms_estimate"] =
-        static_cast<double>(state.last_files_cache_hit) * state.last_extract_mean_ms;
+        static_cast<double>(last_files_cache_hit) * last_extract_mean_ms;
   }
 
   // Session-memory inventory: checkpoints in the live snapshot, sidecars on disk,
@@ -1492,7 +1500,7 @@ struct StructuralIntent {
       {"recall_zero_hits", state.op_stats.recall_zero_hits},
       {"last_remember_at", state.last_remember_at},
       {"last_recall_at", state.last_recall_at},
-      {"last_overlay_count", state.last_memory_overlay_count},
+      {"last_overlay_count", last_memory_overlay_count},
   };
 
   // Semantic connectivity: how well the host-authored layer connects to code.

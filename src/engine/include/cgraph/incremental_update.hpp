@@ -44,6 +44,10 @@ struct IncrementalUpdateResult {
   bool neighborhood_deduped = false;
   bool full_dedup_reconciled = false;
   bool full_rescan = false;
+  // False when the update published nothing: a refused rescan (unreadable
+  // verified source) or an incremental batch where every event was skipped.
+  // Callers MUST NOT re-read the served snapshot or persist when false.
+  bool applied = true;
   std::vector<std::string> warnings;
 };
 

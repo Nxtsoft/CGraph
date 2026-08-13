@@ -1078,6 +1078,83 @@ int main() {
     fs::remove_all(event_root);
   }
 
+  // Coverage + refusal contract. Two regressions from review:
+  //  - a cold-start rescan builds through a staging state; its unextracted
+  //    coverage map must still reach the served status payload.
+  //  - an update that finds a verified source unreadable must refuse visibly
+  //    (accepted=false, warnings) and must NOT re-derive the deterministic
+  //    persistence snapshot from the fused live graph -- graph.json stays
+  //    overlay-free.
+  {
+    const auto cov_root = fs::temp_directory_path() / "cgraph_daemon_coverage_refusal_test";
+    const auto cov_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(cov_root));
+    fs::remove_all(cov_root);
+    fs::remove(cov_socket);
+    const auto cov_source = cov_root / "src" / "cov.py";
+    write_file(cov_source, "class Covered:\n    pass\n");
+    write_file(cov_root / "view.blade.php", "<div>{{ $x }}</div>\n");
+
+    cgraph::DaemonServerOptions cov_options;
+    cov_options.idle_timeout = std::chrono::seconds(60);
+    cov_options.build_graph_on_start = true;
+    cov_options.code_poll_interval = std::chrono::milliseconds(0);
+    cov_options.drop_poll_interval = std::chrono::milliseconds(20);
+
+    int cov_rc = -1;
+    std::thread cov_server([&] { cov_rc = cgraph::run_daemon_server(cov_root, cov_options); });
+    expect(ok, wait_for_label(cov_socket, "Covered", "Covered", true),
+           "coverage: initial build published the deterministic graph");
+
+    const auto cov_status = request_with_retry(cov_socket, cgraph::make_request("status"));
+    expect(ok,
+           cov_status && cov_status->value("ok", false) &&
+               (*cov_status)["result"].value("unextracted", nlohmann::json::object())
+                       .value("php-blade", 0) == 1,
+           "coverage: status.unextracted reports php-blade after a cold-start rescan");
+
+    // Overlay a session-memory checkpoint so the fused live graph and the
+    // deterministic persistence snapshot genuinely differ.
+    const auto remember = request_with_retry(
+        cov_socket,
+        cgraph::make_request(
+            "remember", {{"title", "coverage checkpoint"}, {"summary", "refusal regression"}}));
+    expect(ok, remember && remember->value("ok", false), "coverage: remember accepted");
+
+    expect(ok, ::chmod(cov_source.c_str(), 0) == 0, "coverage: made verified source unreadable");
+    const auto refused = request_with_retry(cov_socket, cgraph::make_request("update", {{"path", "."}}));
+    expect(ok,
+           refused && refused->value("ok", false) &&
+               !(*refused)["result"].value("accepted", true) &&
+               !(*refused)["result"].value("warnings", nlohmann::json::array()).empty(),
+           "coverage: update refused with warnings while a verified source is unreadable");
+    expect(ok, wait_for_label(cov_socket, "Covered", "Covered", true),
+           "coverage: served graph kept the last verified code after the refusal");
+
+    expect(ok, ::chmod(cov_source.c_str(), 0600) == 0, "coverage: restored source permissions");
+    const auto cov_shutdown = request_with_retry(cov_socket, cgraph::make_request("shutdown"));
+    expect(ok, cov_shutdown && cov_shutdown->value("ok", false), "coverage: shutdown accepted");
+    cov_server.join();
+    expect(ok, cov_rc == 0, "coverage: daemon exited cleanly");
+
+    std::ifstream persisted(cov_root / "cgraph-out" / "graph.json", std::ios::binary);
+    const auto persisted_graph = nlohmann::json::parse(persisted, nullptr, false);
+    bool overlay_in_persisted = !persisted_graph.is_object();
+    bool code_in_persisted = false;
+    for (const auto& node : persisted_graph.value("nodes", nlohmann::json::array())) {
+      const auto id = node.value("id", std::string{});
+      if (id.starts_with("memory:")) {
+        overlay_in_persisted = true;
+      }
+      if (node.value("label", std::string{}) == "Covered") {
+        code_in_persisted = true;
+      }
+    }
+    expect(ok, !overlay_in_persisted && code_in_persisted,
+           "coverage: graph.json stayed deterministic-only across the refused update");
+
+    fs::remove_all(cov_root);
+  }
+
   fs::remove_all(root);
   return ok ? 0 : 1;
 }
