@@ -48,6 +48,25 @@ add_library(cgraph_engine STATIC
 
 add_library(cgraph::engine ALIAS cgraph_engine)
 
+# Stamp the engine with the source revision at CONFIGURE time, so a stale
+# installed binary is identifiable from `cgraph --version`, `graph_status`,
+# and the MCP serverInfo. It refreshes on reconfigure, not per commit -- CI
+# and release builds always reconfigure. This is observability only: the
+# fast-load index key deliberately stays a hand-bumped logic version (see the
+# regression guard in tests/smoke/index_persistence_test.cpp).
+execute_process(
+  COMMAND git describe --always --dirty --tags
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE CGRAPH_GIT_DESCRIBE
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(NOT CGRAPH_GIT_DESCRIBE)
+  set(CGRAPH_GIT_DESCRIBE "unknown")
+endif()
+target_compile_definitions(cgraph_engine
+  PRIVATE
+    CGRAPH_GIT_DESCRIBE="${CGRAPH_GIT_DESCRIBE}")
+
 target_include_directories(cgraph_engine
   PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

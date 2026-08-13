@@ -675,6 +675,14 @@ int main() {
     }
   }
 
+  // status carries the build identity so a stale installed binary is
+  // detectable from the daemon surface.
+  const auto identity_status = cgraph::handle_daemon_request(state, cgraph::make_request("status"));
+  if (identity_status["result"].value("engine_version", std::string{}).empty() ||
+      identity_status["result"].value("engine_revision", std::string{}).empty()) {
+    return 1;
+  }
+
   // Hostile parameters must yield error frames, never an uncaught throw that
   // kills the resident daemon (a mistyped param reached graphd verbatim via
   // MCP), and a negative budget floors at zero instead of wrapping unsigned.
