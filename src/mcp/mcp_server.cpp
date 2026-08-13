@@ -1,5 +1,6 @@
 #include "cgraph/mcp_server.hpp"
 
+#include "cgraph/engine.hpp"
 #include "cgraph/protocol.hpp"
 
 #include <string>
@@ -218,7 +219,11 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
   }
 
   if (method == "initialize") {
-    return response(id, {{"protocolVersion", "2024-11-05"}, {"capabilities", {{"tools", nlohmann::json::object()}}}, {"serverInfo", {{"name", "cgraph-mcp"}, {"version", "0.1.0"}}}});
+    return response(id, {{"protocolVersion", "2024-11-05"}, {"capabilities", {{"tools", nlohmann::json::object()}}}, {"serverInfo",
+                          {{"name", "cgraph-mcp"},
+                           {"version",
+                            std::string{cgraph::build_info().version} + "+" +
+                                std::string{cgraph::build_info().revision}}}}});
   }
   if (method == "tools/list") {
     return response(id, {{"tools", tools()}});

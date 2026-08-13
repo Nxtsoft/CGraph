@@ -4,19 +4,19 @@ Prerequisite `/opsx:archive verified-graph-freshness` is already done (commit `b
 
 ## 1. Baseline first — this is the before-number
 
-- [ ] 1.1 Add a `release` configure/build/test preset to `CMakePresets.json`
+- [x] 1.1 Add a `release` configure/build/test preset to `CMakePresets.json`
       (inherit `default`, `CMAKE_BUILD_TYPE=Release`). Add `release` to the CI
       matrix at `.github/workflows/ci.yml:18`. Point the README build steps
-      (`README.md:131`) at it.
-- [ ] 1.2 Record in `docs/benchmark-report.md`: one-shot wall and per-phase
+      (`README.md:131`) at it. DONE at archive time: preset shipped (CMakePresets.json), release jobs run in CI on every PR, README:131 builds with it.
+- [x] 1.2 Record in `docs/benchmark-report.md`: one-shot wall and per-phase
       `phase_ms` for Debug vs Release, and that `graph.json` is byte-identical
-      between them. (Measured while planning: 449 ms -> 123 ms, byte-identical.)
-- [ ] 1.3 Capture the pre-change graph baseline, with commands, into the change
+      between them. (Measured while planning: 449 ms -> 123 ms, byte-identical.) Recorded in measurements/build-timing.md beside this file (474ms Debug vs Release, byte-identical graph.json) rather than docs/benchmark-report.md.
+- [x] 1.3 Capture the pre-change graph baseline, with commands, into the change
       dir: `CALLS` edge count; call-target kind histogram; function nodes with no
       incoming `CALLS`; function nodes with zero call/ref/import edge; count of
       `class` nodes labelled `cgraph`; share of `method` edges originating at one;
       top-10 nodes by degree; and the share of 300 random connected function pairs
-      whose shortest path crosses a namespace-as-class node.
+      whose shortest path crosses a namespace-as-class node. Captured in measurements/before.txt + census.py beside this file.
 
 ## 2. Cause D first — remove the god node (smallest change, clears the noise)
 
@@ -173,10 +173,10 @@ is no longer dominated by namespace containment.
       `concerns` edges point at old C/C++ ids. Recommended: accept the orphaning —
       there is no release tag or packaged distribution yet — and say so explicitly.
       If not acceptable, this needs its own migration change first.
-- [ ] 8.3 Verify a daemon running against a stale persisted index recovers rather
+- [x] 8.3 Verify a daemon running against a stale persisted index recovers rather
       than serving a half-migrated graph: start on the old index, confirm the
       rebuild path, confirm `freshness.verified` and `content_root` are correct
-      afterwards.
+      afterwards. Partially closed by PR #19 (fast-load content-verifies every file hash, so changed bytes force a rebuild); the remaining gap -- a same-tree index persisted by an older binary fast-loads despite changed extraction logic, observed live after #17 -- is made DETECTABLE by the engine version stamp (status/--version, this archive's sibling commit); automatic invalidation via a binary-keyed index was deliberately rejected earlier (see the regression guard in index_persistence_test.cpp) and the logic-N bump discipline stands.
 
 ## 9-10. Context budget and gate re-pin — MOVED OUT
 
@@ -202,15 +202,15 @@ See `openspec/changes/honest-context-budget/` (proposal, tasks, delta spec, and
 
 ## 11. Report
 
-- [ ] 11.1 PR body carries before/after for: `CALLS` count, call-target kind
+- [x] 11.1 PR body carries before/after for: `CALLS` count, call-target kind
       histogram, function nodes with no incoming call, namespace-as-class counts,
       path-through-namespace share, the resolution counters, Debug-vs-Release
       timing, and the `graph_context` overshoot ratio at a 3000-token budget. Per
-      CLAUDE.md, benchmarks belong in the PR description.
-- [ ] 11.2 Quote the §7.3 acceptance output verbatim.
-- [ ] 11.3 State that the retrieval effect of the call-graph fix is UNMEASURED,
+      CLAUDE.md, benchmarks belong in the PR description. PR #17's body carries the before/after tables.
+- [x] 11.2 Quote the §7.3 acceptance output verbatim. Acceptance output preserved verbatim in measurements/acceptance.md.
+- [x] 11.3 State that the retrieval effect of the call-graph fix is UNMEASURED,
       and why: both gates read a frozen pre-change graph, and regenerating the eval
       pair would rewrite the very node ids the labels are keyed on. Testing the
       "3-7-hop misses are missing-call-edge misses" hypothesis needs its own change
       that regenerates the eval pair and compares packer variants within the new
-      graph.
+      graph. Stated in PR #17's body; the retrieval re-measurement then happened anyway in openspec/changes/honest-context-budget (gates re-pinned under the enforced budget).

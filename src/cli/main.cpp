@@ -781,7 +781,7 @@ int main(int argc, char** argv) {
     const std::string first = argv[1];
     if (first == "--version") {
       const auto info = cgraph::build_info();
-      std::cout << info.name << " " << info.version << '\n';
+      std::cout << info.name << " " << info.version << " (" << info.revision << ")" << '\n';
       return 0;
     }
     if (first == "--help" || first == "-h") {
@@ -835,6 +835,6 @@ int main(int argc, char** argv) {
 
 int version_main() {
   const auto info = cgraph::build_info();
-  std::cout << info.name << " " << info.version << '\n';
+  std::cout << info.name << " " << info.version << " (" << info.revision << ")" << '\n';
   return 0;
 }

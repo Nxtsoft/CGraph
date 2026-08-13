@@ -1,5 +1,7 @@
 #include "cgraph/daemon_ops.hpp"
 
+#include "cgraph/engine.hpp"
+
 #include "cgraph/file_cache.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/graph_builder.hpp"
@@ -1566,8 +1568,11 @@ struct StructuralIntent {
     last_memory_overlay_count = state.last_memory_overlay_count;
   }
 
+  const auto info = build_info();
   nlohmann::json payload{
       {"pid", state.pid},
+      {"engine_version", std::string{info.version}},
+      {"engine_revision", std::string{info.revision}},
       {"uptime_seconds", uptime.count()},
       {"node_count", graph.nodes.size()},
       {"edge_count", graph.edges.size()},
