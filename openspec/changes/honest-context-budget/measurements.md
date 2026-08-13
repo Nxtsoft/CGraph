@@ -114,3 +114,82 @@ retrieved context is a measurement question, not an implementation one.
 `fix-cpp-call-resolution` (PR #17) does not touch `pack_context` and cannot move
 these numbers: both retrieval gates read the frozen fixture, not a live build. That
 is why this is a separate change.
+
+---
+
+## 2026-08-12 — implementation measurements and the two decisions
+
+Implemented on top of the merged `complete-verified-snapshot` change (PR #19), which
+had already made `tokens_used` an honest *report* (`emitted_entry_tokens`); this
+change makes the budget an enforced *ceiling* in both packing modes and settles the
+two owed decisions. All recall numbers below: committed frozen fixture, N=35
+symbol rows, k=3, gather=fixed unless stated.
+
+### The shed-order finding (review-sourced, confirmed)
+
+The reference patch shed by ascending raw value, which systematically protects
+cheap-looking high-value rows regardless of serialized cost. Shedding by value
+DENSITY (value per serialized token) is what shipped. Four-arm decision table at
+equal enforced budgets:
+
+| budget | greedy | knapsack, density shed | knapsack, raw-value shed |
+| --- | --- | --- | --- |
+| 2000 | 0.442382 | 0.430765 | 0.413009 |
+| 4000 | 0.515687 | 0.531519 | 0.518376 |
+| **6000 (default)** | 0.574093 | **0.586637** | 0.582446 |
+| 8000 | 0.608445 | 0.606290 | 0.611024 |
+
+### Decision 1 — default packing: knapsack STAYS
+
+Pre-registered rule: flip to greedy only if it beats the best knapsack arm by more
+than kTol (0.03) at the shipped default budget (6000). Measured: knapsack-density
+LEADS greedy at 6000 by +0.0125 (and at 4000 by +0.0158); greedy leads only at
+2000, by +0.0116 — every delta inside the 0.03 band. The proposal's "greedy at or
+above knapsack" projection was an artifact of the raw-value shed order. No default
+flip; the welded `use_knapsack = packing=="knapsack" || adaptive` line is untouched.
+
+### Decision 2 — what counts as retrieved context
+
+Snippet-less rows are now split: `snippet_omitted` (has a source extent, the read
+failed or was deliberately skipped to fit — includes greedy's brief-only rows,
+which still carry file+line and are followable) vs `snippet_unavailable`
+(structurally sourceless kinds: document/concept/media — followable pointers by
+design). A row counts as retrieved context iff it is followable (snippet, or
+location). Every entry in both committed fixtures is a code node with a location,
+so this definition changes no number above; it is recorded so the next fixture
+that mixes overlay nodes applies it. The genuinely useless row of the old packer
+(no snippet, no line, no marker) can no longer be emitted at all.
+
+### Why end-to-end recall pins dropped so hard
+
+Live probe on this repo's daemon (1551 nodes, post-PR-19 binary, budget 2000):
+the response measured ~12,700 tokens across 87 entries — 6.3x the stated budget —
+at an average of ~553 bytes (~138 tokens) per entry (absolute path, sha256, id,
+snippet). An honest 2000-token bundle holds roughly a dozen such entries, so the
+end-to-end gate re-pins from 0.224/0.315/0.383 to 0.0745/0.1198/0.1928/0.2349 at
+2k/4k/6k/8k. The old numbers were purchased with the overshoot. Callers that
+relied on the old effective payload should raise `budget`.
+
+### Gates re-shaped
+
+- `pack_context_parity_test`: the one-sided `knapsack >= greedy` clause (satisfiable
+  only by the overshoot) is now a symmetric parity band plus per-packer
+  non-regression pins at 2k/4k/6k/8k. The adaptive revalidation block's
+  `r_adp <= r_k3 + 0.02` cap assumed an unenforced budget (a superset could only
+  help); with a ceiling a smaller better-ranked pool legitimately out-packs the
+  superset, so the cap is removed and the 2k minimum gain re-pinned to the
+  measured +0.0146 (floor 0.005).
+- `retrieval_quality_test`: pins re-measured under the ceiling (provenance of the
+  old pins was already orphaned by the d5030c1 fixture rewrite).
+- Deliberate-regression probes verified both directions bite: disabling the shed
+  fails the daemon_ops budget sweep; zeroing the ranking fails parity and the
+  end-to-end gate.
+
+### research/2510.00446 follow-up note
+
+The +0.041/+0.032/+0.019 knapsack-over-greedy conclusion was measured at unequal
+real cost (greedy enforced its budget, knapsack did not). At equal enforced
+budgets the knapsack advantage survives only via density shed and only at
+4k/6k (+0.016/+0.013), is a wash at 8k, and inverts at 2k (-0.012).
+`cost_recheck.py`'s "collapses under JSON-entry cost" warning was correct in
+direction. (research/ is gitignored; this section is the durable record.)
