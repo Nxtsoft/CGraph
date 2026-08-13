@@ -12,16 +12,28 @@
 #include <algorithm>
 #include <filesystem>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include <sys/stat.h>
 
 namespace cgraph {
 
 std::string incremental_file_key(const std::filesystem::path& path) {
   return path.lexically_normal().generic_string();
 }
+
+namespace {
+
+[[nodiscard]] std::pair<dev_t, ino_t> file_identity(const struct ::stat& file_stat) {
+  return {file_stat.st_dev, file_stat.st_ino};
+}
+
+}  // namespace
 
 namespace {
 
@@ -46,6 +58,13 @@ namespace {
   }
 
   auto graph = merge_fragments(fragments);
+  graph.source_hashes.reserve(index.files.size());
+  for (const auto& key : keys) {
+    const auto& source_sha256 = index.files.at(key).source_sha256;
+    if (!source_sha256.empty()) {
+      graph.source_hashes.emplace(incremental_file_key(std::filesystem::path{key}), source_sha256);
+    }
+  }
   resolve_imports(graph, index.aliases);
   resolve_raw_calls(graph, raw_calls);
   resolve_raw_relations(graph, raw_relations);
@@ -107,9 +126,73 @@ IncrementalUpdateResult full_stat_index_rescan(
     const IncrementalDedupPolicy& dedup_policy) {
   IncrementalUpdateResult result;
   result.full_rescan = true;
-  index.project_root = std::filesystem::weakly_canonical(root);
 
   auto detected_files = detect_project_files(root);
+
+  // Phase 1 (read-only): content-verify every detected file against the
+  // existing index. Nothing is mutated here, so discovering a previously
+  // verified file that can no longer be read aborts the whole rescan
+  // transactionally: the index, the coverage map, and the published graph all
+  // keep their last verified state, and the caller learns why via warnings.
+  struct Classified {
+    DetectedFile file;
+    std::string key;
+    FileCacheClassification classification;
+  };
+  std::vector<Classified> classified;
+  classified.reserve(detected_files.size());
+  std::optional<std::set<std::pair<dev_t, ino_t>>> indexed_identities;
+  for (const auto& file : detected_files) {
+    auto key = incremental_file_key(file.path);
+    std::optional<FileCacheEntry> previous;
+    if (const auto cached = index.cache.find(key); cached != index.cache.end()) {
+      previous = cached->second;
+    }
+    auto classification =
+        classify_cached_file(file.path, std::move(previous), CacheValidation::Content);
+    if (classification.state == CacheState::Unreadable) {
+      result.warnings.push_back("source unreadable: " + key);
+      const auto had_verified_state = [&] {
+        if (index.files.contains(key) || index.cache.contains(key)) {
+          return true;
+        }
+        // The detection walk and the indexed events can disagree on key form
+        // (e.g. a symlinked root), and an unreadable file defeats string-level
+        // canonicalization -- fall back to filesystem identity. The (dev, ino)
+        // set is built once, lazily, so many unreadable files stat the cache
+        // one time instead of once each.
+        if (!indexed_identities.has_value()) {
+          indexed_identities.emplace();
+          for (const auto& [_, entry] : index.cache) {
+            struct ::stat entry_stat{};
+            if (::stat(entry.path.c_str(), &entry_stat) == 0) {
+              indexed_identities->insert(file_identity(entry_stat));
+            }
+          }
+        }
+        struct ::stat file_stat{};
+        return ::stat(file.path.c_str(), &file_stat) == 0 &&
+               indexed_identities->contains(file_identity(file_stat));
+      }();
+      if (had_verified_state) {
+        // Verified state exists for these bytes; refusing the rescan is the
+        // only way to keep it authoritative.
+        result.warnings.push_back(
+            "rescan refused, keeping last verified state: " + key);
+        result.applied = false;
+        return result;
+      }
+      continue;  // a never-verified unreadable file is skipped, not fatal
+    }
+    classified.push_back(Classified{
+        .file = file,  // detected_files stays intact for unextracted_counts below
+        .key = std::move(key),
+        .classification = std::move(classification),
+    });
+  }
+
+  // Phase 2 (commit): from here on the index is rebuilt.
+  index.project_root = std::filesystem::weakly_canonical(root);
   {
     // enrichment_mutex guards `unextracted` against a concurrent `status` read.
     const std::scoped_lock lock(state.enrichment_mutex);
@@ -117,24 +200,16 @@ IncrementalUpdateResult full_stat_index_rescan(
   }
   std::unordered_map<std::string, ExtractionResult> rescanned;
   std::unordered_map<std::string, FileCacheEntry> rescanned_cache;
-  rescanned.reserve(detected_files.size());
-  rescanned_cache.reserve(detected_files.size());
+  rescanned.reserve(classified.size());
+  rescanned_cache.reserve(classified.size());
 
-  // Content-verify every detected file against the existing index. A freshly
-  // computed hash hit whose extraction we already hold is reused as-is; only
-  // changed and new files are re-extracted. With an empty index (cold start)
-  // everything is "new" and we extract all; with a warm index we re-extract only
-  // the delta. A reused fragment is byte-identical to re-extracting it, so the
-  // merged graph is unchanged either way.
+  // A freshly computed hash hit whose extraction we already hold is reused
+  // as-is; only changed and new files are re-extracted. With an empty index
+  // (cold start) everything is "new" and we extract all; with a warm index we
+  // re-extract only the delta. A reused fragment is byte-identical to
+  // re-extracting it, so the merged graph is unchanged either way.
   std::vector<DetectedFile> to_extract;
-  for (const auto& file : detected_files) {
-    const auto key = incremental_file_key(file.path);
-    std::optional<FileCacheEntry> previous;
-    if (const auto cached = index.cache.find(key); cached != index.cache.end()) {
-      previous = cached->second;
-    }
-    const auto classification =
-        classify_cached_file(file.path, std::move(previous), CacheValidation::Content);
+  for (auto& [file, key, classification] : classified) {
     if (classification.state == CacheState::Deleted || !classification.current.has_value()) {
       continue;  // vanished between detect and classify; treat as removed
     }
@@ -151,7 +226,7 @@ IncrementalUpdateResult full_stat_index_rescan(
       continue;
     }
     rescanned_cache.emplace(key, *classification.current);
-    to_extract.push_back(file);
+    to_extract.push_back(std::move(file));
   }
 
   // Re-extract only the changed/new files, concurrently. Time the extraction so
@@ -198,9 +273,14 @@ IncrementalUpdateResult full_stat_index_rescan(
 
   // Record this build's Layer A inputs for the modeled cache-saving estimate.
   // Mean is left 0 (estimate suppressed) when nothing was extracted this build.
-  state.last_files_cache_hit = result.files_cache_hit;
-  state.last_extract_mean_ms =
-      result.files_reextracted == 0 ? 0.0 : extract_ms / static_cast<double>(result.files_reextracted);
+  // enrichment_mutex so a concurrent status read never tears them (the state
+  // here may be the served one when an overflow event escalates to a rescan).
+  {
+    const std::scoped_lock lock(state.enrichment_mutex);
+    state.last_files_cache_hit = result.files_cache_hit;
+    state.last_extract_mean_ms =
+        result.files_reextracted == 0 ? 0.0 : extract_ms / static_cast<double>(result.files_reextracted);
+  }
 
   publish_graph_snapshot(state, std::move(graph));
   return result;
@@ -213,6 +293,7 @@ IncrementalUpdateResult apply_incremental_code_updates(
     const IncrementalDedupPolicy& dedup_policy) {
   IncrementalUpdateResult result;
   std::vector<std::string> changed_sources;
+  bool applied = false;  // any change that requires a republish; none -> keep the served graph
 
   for (const auto& event : events) {
     if (event.change == FileWatchChange::Overflow) {
@@ -224,8 +305,9 @@ IncrementalUpdateResult apply_incremental_code_updates(
 
     const auto key = incremental_file_key(event.path);
     if (event.change == FileWatchChange::Deleted) {
-      index.cache.erase(key);
+      applied = index.cache.erase(key) > 0 || applied;
       if (index.files.erase(key) > 0) {
+        applied = true;
         ++result.files_removed;
         changed_sources.push_back(key);
         note_unextracted_change(state, event.path, /*added=*/false);
@@ -236,15 +318,18 @@ IncrementalUpdateResult apply_incremental_code_updates(
     const auto language = detect_language(event.path);
     if (language == DetectedLanguage::Unknown || !std::filesystem::exists(event.path)) {
       if (language == DetectedLanguage::Unknown && index.files.contains(key)) {
+        applied = true;
         changed_sources.push_back(key);
         continue;
       }
       if (!std::filesystem::exists(event.path) && index.files.contains(key)) {
+        applied = true;
         changed_sources.push_back(key);
         continue;
       }
-      index.cache.erase(key);
+      applied = index.cache.erase(key) > 0 || applied;
       if (index.files.erase(key) > 0) {
+        applied = true;
         ++result.files_removed;
         changed_sources.push_back(key);
         note_unextracted_change(state, event.path, /*added=*/false);
@@ -258,12 +343,20 @@ IncrementalUpdateResult apply_incremental_code_updates(
     }
     auto cache_classification =
         classify_cached_file(event.path, std::move(previous_cache), CacheValidation::Content);
+    if (cache_classification.state == CacheState::Unreadable) {
+      // Same contract as the full rescan: never replace the verified index,
+      // cache, or graph state for a file whose current bytes cannot be read.
+      result.warnings.push_back(
+          "source unreadable, keeping last verified state: " + key);
+      continue;
+    }
     if (cache_classification.hash_computed && cache_classification.current.has_value()) {
       ++result.files_hashed;
       result.bytes_hashed += cache_classification.current->size;
     }
     if (cache_classification.current.has_value()) {
       index.cache[key] = *cache_classification.current;
+      applied = true;
     }
     if (const auto existing = index.files.find(key);
         existing != index.files.end() && cache_classification.current.has_value() &&
@@ -291,8 +384,17 @@ IncrementalUpdateResult apply_incremental_code_updates(
       }
     }
     index.files[key] = std::move(extraction);
+    applied = true;
     ++result.files_reextracted;
     changed_sources.push_back(key);
+  }
+
+  if (!applied) {
+    // Every event was skipped (e.g. unreadable sources kept at their last
+    // verified state): the published graph is still authoritative, so do not
+    // rebuild or republish anything.
+    result.applied = false;
+    return result;
   }
 
   auto graph = rebuild_graph(index);

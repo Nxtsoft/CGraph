@@ -1,5 +1,6 @@
 #include "cgraph/operation_stats.hpp"
 #include "cgraph/pipeline.hpp"
+#include "cgraph/file_cache.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -20,9 +21,11 @@ int main() {
   std::filesystem::remove_all(root);
   std::filesystem::remove_all(out);
 
-  write_file(root / "main.py", "def main():\n    return helper()\n\ndef helper():\n    return 1\n");
-  write_file(root / "service.go",
-             "package main\n\ntype Service struct{}\n\nfunc (s *Service) Run() {\n\thelper()\n}\n\nfunc helper() {}\n");
+  constexpr const char* kPythonSource = "def main():\n    return helper()\n\ndef helper():\n    return 1\n";
+  constexpr const char* kGoSource =
+      "package main\n\ntype Service struct{}\n\nfunc (s *Service) Run() {\n\thelper()\n}\n\nfunc helper() {}\n";
+  write_file(root / "main.py", kPythonSource);
+  write_file(root / "service.go", kGoSource);
   // Detected but extractorless: must surface in the unextracted coverage map,
   // not vanish behind a per-file warning.
   write_file(root / "view.blade.php", "<div>{{ $user->name }}</div>\n");
@@ -31,6 +34,15 @@ int main() {
   if (result.file_count != 3 || result.graph.nodes.empty()) {
     std::filesystem::remove_all(root);
     return 1;
+  }
+  const auto python_hash = result.graph.source_hashes.find(
+      std::filesystem::weakly_canonical(root / "main.py").generic_string());
+  const auto go_hash = result.graph.source_hashes.find(
+      std::filesystem::weakly_canonical(root / "service.go").generic_string());
+  if (python_hash == result.graph.source_hashes.end() || python_hash->second != cgraph::sha256_hex(kPythonSource) ||
+      go_hash == result.graph.source_hashes.end() || go_hash->second != cgraph::sha256_hex(kGoSource)) {
+    std::filesystem::remove_all(root);
+    return 8;
   }
 
   // The Go file produced real symbols (type + functions), not just a file node.

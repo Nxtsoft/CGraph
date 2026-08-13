@@ -5,6 +5,7 @@
 #include "cgraph/daemon_lifecycle.hpp"
 #include "cgraph/configured_extractors.hpp"
 #include "cgraph/daemon_ops.hpp"
+#include "cgraph/file_cache.hpp"
 #include "cgraph/incremental_update.hpp"
 #include "cgraph/index_persistence.hpp"
 #include "cgraph/operation_stats.hpp"
@@ -20,6 +21,7 @@
 #include "cgraph/file_watcher.hpp"
 
 #include <unordered_map>
+#include <unordered_set>
 
 #include <array>
 #include <atomic>
@@ -333,6 +335,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // Persisted next to the semantic cache so a restart stays cheap.
   const auto stat_index_path = drop_dir / "semantic-stat-index.json";
   SemanticStatIndex stat_index = read_semantic_stat_index(stat_index_path);
+  // Guards refresh snapshots against a live doc/media event that evicts an
+  // entry while the planner is hashing off-lock. A stale worker result is
+  // discarded instead of restoring the evicted hash after the event rebuild.
+  std::uint64_t stat_index_revision = 0;
   SemanticFragmentDropWatcher drop_watcher(drop_dir);
 
   // Enrichment planning (plan_semantic_chunks) walks the whole project and
@@ -349,10 +355,12 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   const auto run_enrichment_refresh = [&]() {
     SemanticCache snapshot;
     SemanticStatIndex index_snapshot;
+    std::uint64_t index_revision = 0;
     {
       const std::scoped_lock lock(graph_mutex);
       snapshot = cache;              // quick copies; release before the slow walk
       index_snapshot = stat_index;
+      index_revision = stat_index_revision;
     }
     SemanticChunkPlanOptions plan_options;
     plan_options.excluded_dirs = {drop_dir};
@@ -368,22 +376,35 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
     {
       const std::scoped_lock lock(graph_mutex);
-      stat_index = index_snapshot;  // publish the refreshed stat entries
+      if (index_revision != stat_index_revision) {
+        // A watcher event evicted an entry while this plan ran. Requeue from the
+        // newer index and do not publish stale counts or stale persisted hashes.
+        {
+          const std::scoped_lock refresh_lock(refresh_mutex);
+          refresh_requested = true;
+        }
+        refresh_cv.notify_one();
+        return;
+      }
+      stat_index = index_snapshot;
+      // Serialize the file write with watcher eviction. Otherwise an older
+      // worker could overwrite the just-evicted index after releasing the lock.
+      if (plan.files_hashed > 0) {
+        write_semantic_stat_index(stat_index, stat_index_path);
+      }
     }
     {
-      // enrichment_mutex guards the counters read concurrently by `status`.
+      // Derive enrichment health from current cache state + plan, replacing
+      // cumulative counters with a point-in-time snapshot.
       const std::scoped_lock lock(state.enrichment_mutex);
       ++state.enrichment_plans_run;
       state.enrichment_pending = pending;
       state.enrichment_stale = plan.stale_inputs;
+      state.enrichment_failed = plan.failed_inputs;
       state.enrichment_state = state.enrichment_failed > 0  ? EnrichmentState::Failed
+                               : state.enrichment_stale > 0 ? EnrichmentState::Stale
                                : pending > 0                ? EnrichmentState::Pending
                                                             : EnrichmentState::Idle;
-    }
-    // Persist only when something was newly hashed (the index meaningfully
-    // changed); a pure stat-hit pass leaves the file untouched.
-    if (plan.files_hashed > 0) {
-      write_semantic_stat_index(index_snapshot, stat_index_path);
     }
   };
 
@@ -395,37 +416,78 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     refresh_cv.notify_one();
   };
 
-  // Merges one dropped fragment, caching it against its manifest source(s).
-  const auto ingest_drop = [&](const SemanticFragmentDrop& drop,
-                               const std::unordered_map<std::size_t, std::vector<std::filesystem::path>>& sources) {
-    const auto entry = sources.find(drop.chunk_index);
-    const std::filesystem::path source =
-        (entry != sources.end() && !entry->second.empty()) ? entry->second.front() : drop.path;
-    const auto result = ingest_semantic_fragment(state, cache, source, drop.path);
-    if (!result.merged) {
-      const std::scoped_lock lock(state.enrichment_mutex);  // status reads enrichment_failed
-      ++state.enrichment_failed;
-      return false;
+  // The incremental index is also the canonical source of exact code hashes
+  // used to fingerprint semantic dependencies during ingest and replay.
+  IncrementalGraphIndex index;
+
+  // Canonical code-only snapshot. Every deterministic rebuild/load replaces it;
+  // every semantic or memory publication starts from a copy. graph.json is
+  // written only from this snapshot, never from the fused live graph.
+  GraphSnapshot deterministic_graph;
+
+  const auto live_sources_for = [&](const SemanticFragmentDrop& drop,
+                                    const std::unordered_map<std::size_t,
+                                                             std::vector<SemanticSourceInput>>& sources) {
+    if (const auto entry = sources.find(drop.chunk_index);
+        entry != sources.end() && !entry->second.empty()) {
+      return entry->second;
     }
-    if (entry != sources.end()) {
-      for (std::size_t i = 1; i < entry->second.size(); ++i) {
-        cache.upsert(make_semantic_cache_record(entry->second[i], drop.path, SemanticCacheState::Valid));
-      }
+
+    std::vector<SemanticSourceInput> source_inputs;
+    for (const auto& record : cache.find_for_fragment(drop.path)) {
+      source_inputs.push_back(SemanticSourceInput{
+          .path = record.source_path,
+          .content_sha256 = record.content_hash,
+      });
     }
-    return true;
+    if (source_inputs.empty()) {
+      // A genuinely new live drop may validate before the host has published a
+      // plan. Its self-attribution is intentionally non-replayable below.
+      source_inputs.push_back(SemanticSourceInput{
+          .path = drop.path,
+          .content_sha256 = {},
+      });
+    }
+    return source_inputs;
   };
 
-  // Re-overlays every present fragment. Run after a deterministic rescan (which
-  // rebuilds from code only and would otherwise drop merged semantic nodes).
-  const auto ingest_all_drops = [&]() {
-    const auto sources = load_chunk_sources(drop_dir);
-    bool merged_any = false;
-    for (const auto& drop : discover_semantic_fragment_drops(drop_dir)) {
-      merged_any = ingest_drop(drop, sources) || merged_any;
+  // Replays only a fragment with durable source attribution whose entire cache
+  // unit is currently valid. A plan-attributed first ingest remains allowed;
+  // a self-attributed live orphan never becomes restart-replayable.
+  const auto replay_drop = [&](DaemonState& target,
+                               const SemanticFragmentDrop& drop,
+                               const std::unordered_map<std::size_t,
+                                                        std::vector<SemanticSourceInput>>& sources) {
+    std::vector<SemanticSourceInput> source_inputs;
+    const auto records = cache.find_for_fragment(drop.path);
+    if (!records.empty()) {
+      source_inputs.reserve(records.size());
+      for (const auto& record : records) {
+        if (record.state != SemanticCacheState::Valid ||
+            normalize_semantic_source_path(record.source_path) ==
+                normalize_semantic_source_path(drop.path)) {
+          return false;
+        }
+        source_inputs.push_back(SemanticSourceInput{
+            .path = record.source_path,
+            .content_sha256 = record.content_hash,
+        });
+      }
+    } else {
+      const auto entry = sources.find(drop.chunk_index);
+      if (entry == sources.end() || entry->second.empty()) {
+        return false;
+      }
+      source_inputs = entry->second;
+      for (const auto& source : entry->second) {
+        const auto rec = cache.find_for_source(source.path);
+        if (rec.has_value() && rec->state != SemanticCacheState::Valid) {
+          return false;
+        }
+      }
     }
-    if (merged_any) {
-      write_semantic_cache(cache, cache_path);
-    }
+
+    return ingest_semantic_fragment(target, cache, source_inputs, drop.path).merged;
   };
 
   // Re-overlays every session-memory checkpoint sidecar (cgraph-out/memory/*.json).
@@ -433,11 +495,11 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // sidecars are the durable source of truth, re-merged here after every rebuild so
   // checkpoints survive restarts, incremental edits, and full rescans. merge_fragment
   // is first-occurrence-wins, so re-applying an already-present checkpoint is a no-op.
-  const auto ingest_all_memory = [&]() {
+  const auto ingest_all_memory = [&](DaemonState& target) {
     std::error_code ec;
     std::size_t applied = 0;
     if (!std::filesystem::exists(memory_dir, ec)) {
-      state.last_memory_overlay_count = 0;
+      target.last_memory_overlay_count = 0;
       return;
     }
     for (const auto& entry : std::filesystem::directory_iterator(memory_dir, ec)) {
@@ -451,10 +513,84 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       if (!validation.valid) {
         continue;
       }
-      mutate_graph_snapshot(state, [&](GraphSnapshot& graph) { merge_fragment(graph, validation.fragment); });
+      std::unordered_map<std::string, std::string> overlay_hashes;
+      overlay_hashes[entry.path().lexically_normal().generic_string()] = validation.source_sha256;
+      for (const auto& node : validation.fragment.nodes) {
+        if (node.source_file.empty()) {
+          continue;
+        }
+        const auto source_path = std::filesystem::path{node.source_file};
+        std::error_code source_error;
+        if (std::filesystem::exists(source_path, source_error) && !source_error) {
+          overlay_hashes[source_path.lexically_normal().generic_string()] = sha256_file_hex(source_path);
+        }
+      }
+      mutate_graph_snapshot(target, [&](GraphSnapshot& graph) {
+        merge_fragment(graph, validation.fragment);
+        for (const auto& [path, hash] : overlay_hashes) {
+          graph.source_hashes[path] = hash;
+        }
+      });
       ++applied;
     }
-    state.last_memory_overlay_count = applied;  // observability: size of the last re-overlay pass
+    target.last_memory_overlay_count = applied;  // observability: size of the last re-overlay pass
+  };
+
+  // Publish one coherent fused graph from the canonical deterministic snapshot.
+  // Live replacements first detach their source records from any prior fragment,
+  // so replay cannot reintroduce the old path before the new drop is validated.
+  const auto rebuild_final_overlay = [&] (
+      const std::vector<SemanticFragmentDropEvent>* live_events = nullptr) {
+    const auto sources = load_chunk_sources(drop_dir);
+    struct LiveDrop {
+      SemanticFragmentDrop drop;
+      std::vector<SemanticSourceInput> source_inputs;
+    };
+    std::vector<LiveDrop> pending_live;
+    std::unordered_set<std::string> event_paths;
+    if (live_events != nullptr) {
+      pending_live.reserve(live_events->size());
+      event_paths.reserve(live_events->size());
+      for (const auto& event : *live_events) {
+        event_paths.insert(normalize_semantic_source_path(event.drop.path));
+        if (event.change == SemanticFragmentDropChange::Deleted) {
+          continue;
+        }
+        auto source_inputs = live_sources_for(event.drop, sources);
+        for (const auto& source : source_inputs) {
+          cache.remove(source.path);
+        }
+        pending_live.push_back(LiveDrop{
+            .drop = event.drop,
+            .source_inputs = std::move(source_inputs),
+        });
+      }
+    }
+
+    // Stage the fused graph invisibly: seed a private state with the canonical
+    // deterministic snapshot, merge every overlay into it, and publish the
+    // result to the served state exactly once. A reader never observes a
+    // code-only or half-overlaid intermediate -- during the initial build it
+    // keeps seeing the empty/building snapshot until the fused one lands.
+    DaemonState overlay_state;
+    publish_graph_snapshot(overlay_state, deterministic_graph);
+    (void)reconcile_semantic_cache(cache, deterministic_graph);
+    for (const auto& drop : discover_semantic_fragment_drops(drop_dir)) {
+      if (!event_paths.contains(normalize_semantic_source_path(drop.path))) {
+        (void)replay_drop(overlay_state, drop, sources);
+      }
+    }
+    for (const auto& live : pending_live) {
+      (void)ingest_semantic_fragment(overlay_state, cache, live.source_inputs, live.drop.path);
+    }
+    ingest_all_memory(overlay_state);
+    write_semantic_cache(cache, cache_path);
+    publish_graph_snapshot(state, *read_graph_snapshot(overlay_state));
+    {
+      // enrichment_mutex so a concurrent status read never tears the counter.
+      const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+      state.last_memory_overlay_count = overlay_state.last_memory_overlay_count;
+    }
   };
 
   // The daemon owns the incremental file index: startup and every `update` op
@@ -469,7 +605,6 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   const auto graph_path = out_dir / "graph.json";
   const auto manifest_path = out_dir / "index-manifest.json";
 
-  IncrementalGraphIndex index;
   // Whether index.files holds extractions for the whole tree. A full rescan
   // hydrates it; the Tier-1 fast path (persisted graph load) does NOT — it only
   // publishes the snapshot. Incremental updates rebuild the graph from
@@ -477,10 +612,8 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // full graph with just the changed files.
   std::atomic<bool> index_hydrated{false};
 
-  // Periodic persistence of incremental state: watcher/fragment changes mark the
-  // graph dirty, and the serve loop re-persists graph.json + manifest once the
-  // change has been memory-only for persist_interval (and again on exit), so a
-  // crash or idle shutdown never loses more than that window.
+  // Periodic persistence of deterministic watcher state. Semantic and memory
+  // changes are durable in their own cache/sidecars and never enter graph.json.
   DaemonLifecycleState lifecycle;
   DaemonLifecycleConfig lifecycle_config;
   lifecycle_config.endpoint_path = socket_path;
@@ -493,7 +626,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   const auto persist_manifest = [&]() {
     IndexManifest manifest;
     manifest.version_key = index_version_key();
-    manifest.content_root = read_graph_snapshot(state)->content_root;
+    manifest.content_root = deterministic_graph.content_root;
     manifest.files.reserve(index.cache.size());
     for (const auto& [_, entry] : index.cache) {
       manifest.files.push_back(entry);
@@ -505,7 +638,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
 
   // Writes graph.json + the file manifest atomically.
   const auto persist_graph_and_manifest = [&]() {
-    if (!persist_graph_snapshot(state, graph_path)) {
+    if (!persist_graph_snapshot(deterministic_graph, graph_path)) {
       std::cerr << "graphd: failed to persist " << graph_path << '\n';
       return;
     }
@@ -514,20 +647,32 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
 
   const auto rescan = [&]() {
     const std::scoped_lock lock(graph_mutex);
-    const auto result = full_stat_index_rescan(state, index, identity.project_root);
-    index_hydrated.store(true);
-    ingest_all_drops();
-    ingest_all_memory();  // re-overlay session-memory checkpoints dropped by the code-only rebuild
-    // Persist as soon as the graph is final (post semantic overlay) and before
-    // enrichment planning, which walks the whole project and can take seconds on
-    // a large repo. The Tier-1 cache should land promptly, not behind planning.
-    persist_graph_and_manifest();
-    // No enrichment re-plan here: a rescan is a code-only operation and does not
-    // change the doc/media set. The plan runs once at startup and thereafter only
-    // on doc/media watcher events, so an `update .` no longer walks the doc tree.
+    // Build into a private state so readers keep the current (or, during the
+    // initial build, the empty/building) snapshot until rebuild_final_overlay
+    // publishes the fused deterministic+overlay result in one step.
+    DaemonState scan_state;
+    const auto result = full_stat_index_rescan(scan_state, index, identity.project_root);
+    if (result.applied) {
+      {
+        // enrichment_mutex covers unextracted and the modeled-saving scalars so
+        // a concurrent `status` read never tears them. scan_state is private to
+        // this call, so reading it unlocked is safe.
+        const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+        state.unextracted = scan_state.unextracted;
+        state.last_files_cache_hit = scan_state.last_files_cache_hit;
+        state.last_extract_mean_ms = scan_state.last_extract_mean_ms;
+      }
+      index_hydrated.store(true);
+      deterministic_graph = *read_graph_snapshot(scan_state);
+      rebuild_final_overlay();
+      // Persist the code-only snapshot before
+      // enrichment planning, which walks the whole project and can take seconds on
+      // a large repo. The Tier-1 cache should land promptly, not behind planning.
+      persist_graph_and_manifest();
+    }
     const auto graph = read_graph_snapshot(state);
-    return nlohmann::json{
-        {"accepted", true},
+    nlohmann::json response{
+        {"accepted", result.applied},
         {"full_rescan", result.full_rescan},
         {"files_hashed", result.files_hashed},
         {"bytes_hashed", result.bytes_hashed},
@@ -538,6 +683,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         {"edge_count", graph->edges.size()},
         {"freshness", freshness_metadata(*graph)},
     };
+    if (!result.warnings.empty()) {
+      response["warnings"] = result.warnings;
+    }
+    return response;
   };
 
   // Tier-1 fast path: if the persisted manifest's version key still matches this
@@ -564,12 +713,18 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
     auto graph = *read_graph_snapshot(persisted_state);
     graph.content_root = manifest->content_root;
-    publish_graph_snapshot(state, std::move(graph));
+    graph.source_hashes.reserve(manifest->files.size());
+    for (const auto& entry : manifest->files) {
+      if (!entry.sha256.empty()) {
+        graph.source_hashes[incremental_file_key(entry.path)] = entry.sha256;
+      }
+    }
+    deterministic_graph = std::move(graph);
     // The persisted graph does not hydrate extraction fragments, but its file
     // entries were just content-verified and remain the canonical manifest
-    // source until the first full rescan. Without this cache hydration, a
-    // semantic-only persist after fast-load would overwrite the manifest with
-    // an empty file set and waste the next restart's fast path.
+    // source until the first full rescan. Without this cache hydration, a later
+    // deterministic persist would overwrite the manifest with an empty file set
+    // and waste the next restart's fast path.
     index.project_root = identity.project_root;
     index.cache.clear();
     index.cache.reserve(manifest->files.size());
@@ -582,8 +737,9 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       const std::scoped_lock enrichment_lock(state.enrichment_mutex);  // status reads unextracted
       state.unextracted = unextracted_counts(detected);
     }
-    ingest_all_drops();
-    ingest_all_memory();  // checkpoints re-overlaid from sidecars; graph.json holds none
+    // Reconcile from the deterministic fast-loaded graph before publishing any
+    // cache-valid semantic drops or memory sidecars.
+    rebuild_final_overlay();
     // Log the fast-path load immediately — before enrichment planning, which
     // walks the whole project and can take seconds.
     std::cerr << "graphd: loaded persisted graph (" << detected.size() << " files unchanged)\n";
@@ -591,6 +747,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   };
   state.update_handler = [&](const nlohmann::json&) {
     auto result = rescan();
+    // Dependency reconciliation can make semantic sources stale even when the
+    // doc/media files themselves did not change. Re-plan from the reconciled
+    // cache so status and the host-visible queue describe current work.
+    request_refresh();
     // rescan persisted graph + manifest itself; nothing is memory-only now.
     // Runs on the serve-loop thread, the same thread that marks/persists.
     lifecycle.graph_dirty = false;
@@ -626,9 +786,9 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       if (!try_load_persisted()) {
         (void)rescan();
       }
-      // Plan enrichment exactly once after the initial build/load to populate the
-      // pending/stale counts. Thereafter only doc/media changes (and drop ingests)
-      // re-plan; a code-only rescan does not.
+      // Plan enrichment after the initial build/load to populate current health.
+      // Later doc/media changes, drop ingests, and code-dependency reconciliation
+      // request another plan from the persisted stat/hash index.
       request_refresh();
       initial_build_done.store(true);  // hands the watcher to the serve loop
     });
@@ -675,26 +835,25 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       break;
     }
 
-    // Ingest any debounced fragment drops discovered since the last tick.
-    if (const auto events = drop_watcher.poll(FileWatcherClock::now()); !events.empty()) {
+    // Ingest any debounced fragment drops discovered since the last tick. Not
+    // polled until the initial build publishes: the build thread holds
+    // graph_mutex across semantic replay (which can block on a source read), so
+    // taking it here would wedge the accept loop -- the exact hang the persist
+    // step's try_to_lock avoids. Drops that land mid-build stay pending in the
+    // watcher and are picked up on the first post-build poll; the build's own
+    // rebuild_final_overlay already discovers on-disk drops directly.
+    if (const auto events = (!options.build_graph_on_start || initial_build_done.load())
+                                ? drop_watcher.poll(FileWatcherClock::now())
+                                : std::vector<SemanticFragmentDropEvent>{};
+        !events.empty()) {
       const std::scoped_lock lock(graph_mutex);  // serialize with the build/rescan thread
-      const auto sources = load_chunk_sources(drop_dir);
       // Mark the batch in-flight so a concurrent `status` reports enrichment as
       // running; the scope clears the running count on exit and request_refresh
       // recomputes the steady state below.
       const EnrichmentRunningScope running(state, events.size());
-      bool merged_any = false;
-      for (const auto& event : events) {
-        if (event.change == SemanticFragmentDropChange::Deleted) {
-          continue;
-        }
-        merged_any = ingest_drop(event.drop, sources) || merged_any;
-      }
-      if (merged_any) {
-        write_semantic_cache(cache, cache_path);
-        mark_graph_dirty(lifecycle, DaemonClock::now());  // overlay is memory-only until persisted
-      }
+      rebuild_final_overlay(&events);
       request_refresh();
+      last_activity = FileWatcherClock::now();
     }
 
     // Fold live code changes into the graph. Each watcher poll walks the project
@@ -705,12 +864,12 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       last_code_poll = FileWatcherClock::now();
       const auto events = code_watcher.poll(last_code_poll);
       bool code_changed = false;
-      bool docs_changed = false;
+      std::vector<FileWatchEvent> semantic_source_events;
       for (const auto& event : events) {
         if (event.change == FileWatchChange::Overflow || event.kind == WatchedFileKind::Code) {
           code_changed = true;
         } else {
-          docs_changed = true;
+          semantic_source_events.push_back(event);
         }
       }
       if (code_changed) {
@@ -722,34 +881,73 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         constexpr std::size_t kFullDedupReconcileEvery = 5;
         const std::scoped_lock lock(graph_mutex);
         IncrementalUpdateResult result;
-        if (index_hydrated.load()) {
+        DaemonState hydration_state;
+        const bool hydration = !index_hydrated.load();
+        if (!hydration) {
           result = apply_incremental_code_updates(
               state, index, events, IncrementalDedupPolicy{.full_reconcile_every = kFullDedupReconcileEvery});
         } else {
           // First edit after a fast-load restart: hydrate the index with one
-          // full rescan (a per-file rebuild here would wipe the graph), then
-          // subsequent events go incremental.
-          result = full_stat_index_rescan(state, index, identity.project_root);
-          index_hydrated.store(true);
+          // full rescan (a per-file rebuild here would wipe the graph), staged
+          // like every rescan so readers never see an intermediate; subsequent
+          // events go incremental.
+          result = full_stat_index_rescan(hydration_state, index, identity.project_root);
         }
-        ingest_all_drops();   // the rebuild is code-only; re-overlay semantic fragments
-        ingest_all_memory();  // and re-overlay session-memory checkpoints
-        ++state.incremental_updates;
-        mark_graph_dirty(lifecycle, DaemonClock::now());
+        for (const auto& warning : result.warnings) {
+          std::cerr << "graphd: " << warning << '\n';
+        }
+        if (result.applied) {
+          if (hydration) {
+            {
+              const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+              state.unextracted = hydration_state.unextracted;
+              state.last_files_cache_hit = hydration_state.last_files_cache_hit;
+              state.last_extract_mean_ms = hydration_state.last_extract_mean_ms;
+            }
+            index_hydrated.store(true);
+            deterministic_graph = *read_graph_snapshot(hydration_state);
+          } else {
+            deterministic_graph = *read_graph_snapshot(state);
+          }
+          rebuild_final_overlay();
+          request_refresh();    // code dependencies may have requeued semantic sources
+          ++state.incremental_updates;
+          mark_graph_dirty(lifecycle, DaemonClock::now());
+          std::cerr << "graphd: incremental update (" << result.files_reextracted << " re-extracted, "
+                    << result.files_removed << " removed" << (result.full_rescan ? ", full rescan" : "") << ")\n";
+        }
         last_activity = FileWatcherClock::now();  // active editing keeps the daemon alive
-        std::cerr << "graphd: incremental update (" << result.files_reextracted << " re-extracted, "
-                  << result.files_removed << " removed" << (result.full_rescan ? ", full rescan" : "") << ")\n";
       }
-      if (docs_changed) {
-        request_refresh();  // doc/media changes only move the enrichment plan
+      if (!semantic_source_events.empty()) {
+        const std::scoped_lock lock(graph_mutex);
+        for (const auto& event : semantic_source_events) {
+          stat_index.erase(normalize_semantic_source_path(event.path));
+        }
+        ++stat_index_revision;
+        write_semantic_stat_index(stat_index, stat_index_path);
+        rebuild_final_overlay();
+        request_refresh();
+        last_activity = FileWatcherClock::now();
       }
     }
 
     // Re-persist graph + manifest once incremental changes have aged past the
-    // persist interval, so a crash loses at most that window.
-    if (persist_if_due(state, lifecycle, lifecycle_config, DaemonClock::now())) {
-      const std::scoped_lock lock(graph_mutex);
-      persist_manifest();
+    // persist interval, so a crash loses at most that window. try_to_lock: the
+    // initial build (or a long overlay replay) holds graph_mutex, and the serve
+    // loop must keep answering from the current snapshot while it runs -- a
+    // skipped persist is retried on the next loop pass.
+    bool persisted_incremental = false;
+    {
+      const std::unique_lock<std::mutex> lock(graph_mutex, std::try_to_lock);
+      if (lock.owns_lock()) {
+        persisted_incremental =
+            persist_if_due(deterministic_graph, lifecycle, lifecycle_config, DaemonClock::now());
+        if (persisted_incremental) {
+          persist_manifest();
+        }
+      }
+    }
+    if (persisted_incremental) {
       std::cerr << "graphd: persisted incremental graph state\n";
     }
 
@@ -776,11 +974,6 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     // The thin client uses one connection per request: read it, answer it, close.
     if (const auto request = read_frame(conn)) {
       const auto response = handle_daemon_request(state, *request);
-      // A successful `remember` mutates the snapshot; mark it dirty so the
-      // checkpoint node is persisted into graph.json and survives a restart.
-      if (request->value("op", std::string{}) == "remember" && response.value("ok", false)) {
-        mark_graph_dirty(lifecycle, DaemonClock::now());
-      }
       (void)write_frame(conn, response);
     }
     ::close(conn);
@@ -789,8 +982,8 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   if (build_thread.joinable()) {
     build_thread.join();  // captures locals by reference: join before they leave scope
   }
-  // Flush any incremental state still memory-only (the persist interval had not
-  // elapsed) so an idle timeout or shutdown op never drops applied changes.
+  // Flush any deterministic incremental state whose persist interval had not
+  // elapsed. Semantic cache and memory sidecars are written on their own paths.
   if (lifecycle.graph_dirty) {
     const std::scoped_lock lock(graph_mutex);
     persist_graph_and_manifest();

@@ -1,6 +1,7 @@
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_server.hpp"
+#include "cgraph/file_cache.hpp"
 #include "cgraph/protocol.hpp"
 
 #include <array>
@@ -14,7 +15,9 @@
 #include <optional>
 #include <thread>
 
+#include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -69,6 +72,53 @@ std::optional<nlohmann::json> request_with_retry(const std::filesystem::path& so
   return response;
 }
 
+bool response_has_label(const std::optional<nlohmann::json>& response, std::string_view label) {
+  if (!response || !response->value("ok", false) || !response->contains("result")) {
+    return false;
+  }
+  for (const auto& node : (*response)["result"].value("nodes", nlohmann::json::array())) {
+    if (node.value("label", std::string{}) == label) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool wait_for_label(
+    const std::filesystem::path& socket_path,
+    std::string_view query,
+    std::string_view label,
+    bool expected) {
+  for (int attempt = 0; attempt < 500; ++attempt) {
+    const auto response = request_with_retry(
+        socket_path, cgraph::make_request("query", {{"q", std::string(query)}}));
+    if (response && response->value("ok", false) && response_has_label(response, label) == expected) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return false;
+}
+
+std::string wait_for_node_id(
+    const std::filesystem::path& socket_path,
+    std::string_view query,
+    std::string_view label) {
+  for (int attempt = 0; attempt < 500; ++attempt) {
+    const auto response = request_with_retry(
+        socket_path, cgraph::make_request("query", {{"q", std::string(query)}}));
+    if (response && response->value("ok", false)) {
+      for (const auto& node : (*response)["result"].value("nodes", nlohmann::json::array())) {
+        if (node.value("label", std::string{}) == label) {
+          return node.value("id", std::string{});
+        }
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return {};
+}
+
 }  // namespace
 
 // Exercises the real Unix-socket daemon end to end: a server thread binds the
@@ -77,6 +127,93 @@ std::optional<nlohmann::json> request_with_retry(const std::filesystem::path& so
 // live rescan that picks up a newly-added source file. No mocks.
 int main() {
   namespace fs = std::filesystem;
+  bool ok = true;
+
+  // Hold semantic replay on a real FIFO after deterministic extraction has
+  // finished. Until that reader is released, the public daemon snapshot must
+  // remain the initial empty/building graph; after release, one snapshot must
+  // contain both deterministic code and the semantic overlay.
+  {
+    const auto atomic_root = fs::temp_directory_path() / "cgraph_daemon_atomic_overlay_test";
+    const auto drop_dir = atomic_root / "cgraph-out" / "semantic-drop";
+    const auto barrier_source = drop_dir / "overlay-source.fifo";
+    const auto fragment_path = drop_dir / "chunk_00.json";
+    const auto atomic_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(atomic_root));
+    fs::remove_all(atomic_root);
+    fs::remove(atomic_socket);
+    write_file(
+        atomic_root / "src" / "atomic.ts",
+        "export class AtomicTarget { value() { return 1; } }\n");
+    fs::create_directories(drop_dir);
+    expect(ok, ::mkfifo(barrier_source.c_str(), 0600) == 0,
+           "atomic-overlay: created real semantic-source FIFO");
+    write_file(
+        drop_dir / "plan.json",
+        R"({"chunks":[{"index":0,"inputs":[{"path":")" +
+            barrier_source.generic_string() + R"(","content_hash":""}]}]})");
+    write_file(
+        fragment_path,
+        R"({"nodes":[{"id":"doc:atomic-overlay","label":"Atomic Overlay","type":"document"}],"edges":[],"hyperedges":[]})");
+
+    cgraph::DaemonServerOptions atomic_options;
+    atomic_options.idle_timeout = std::chrono::seconds(60);
+    atomic_options.build_graph_on_start = true;
+    atomic_options.code_poll_interval = std::chrono::milliseconds(0);
+    atomic_options.drop_poll_interval = std::chrono::milliseconds(20);
+
+    int atomic_rc = -1;
+    std::thread atomic_server(
+        [&] { atomic_rc = cgraph::run_daemon_server(atomic_root, atomic_options); });
+
+    // O_NONBLOCK succeeds only after the daemon has opened the FIFO for reading,
+    // proving the build is paused in semantic replay rather than merely still
+    // extracting code. Keep the writer open without bytes so replay stays paused.
+    int barrier_writer = -1;
+    for (int attempt = 0; attempt < 500 && barrier_writer < 0; ++attempt) {
+      barrier_writer = ::open(barrier_source.c_str(), O_WRONLY | O_NONBLOCK);
+      if (barrier_writer < 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    expect(ok, barrier_writer >= 0,
+           "atomic-overlay: deterministic build reached semantic replay barrier");
+
+    const auto before_publish = request_with_retry(
+        atomic_socket, cgraph::make_request("query", {{"q", ""}}));
+    expect(ok,
+           before_publish && before_publish->value("ok", false) &&
+               (*before_publish)["result"].value("graph_state", std::string{}) == "building" &&
+               (*before_publish)["result"].value("nodes", nlohmann::json::array()).empty(),
+           "atomic-overlay: reader saw only empty/building while fused snapshot staged");
+
+    if (barrier_writer >= 0) {
+      constexpr std::string_view semantic_source = "atomic semantic source\n";
+      (void)::write(barrier_writer, semantic_source.data(), semantic_source.size());
+      ::close(barrier_writer);
+    }
+
+    bool complete_snapshot_seen = false;
+    for (int attempt = 0; attempt < 500 && !complete_snapshot_seen; ++attempt) {
+      const auto complete = request_with_retry(
+          atomic_socket, cgraph::make_request("query", {{"q", ""}}));
+      complete_snapshot_seen = response_has_label(complete, "AtomicTarget") &&
+                               response_has_label(complete, "Atomic Overlay");
+      if (!complete_snapshot_seen) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    expect(ok, complete_snapshot_seen,
+           "atomic-overlay: one published snapshot contained deterministic and semantic nodes");
+
+    const auto atomic_shutdown = request_with_retry(
+        atomic_socket, cgraph::make_request("shutdown"));
+    expect(ok, atomic_shutdown && atomic_shutdown->value("ok", false),
+           "atomic-overlay: shutdown accepted");
+    atomic_server.join();
+    expect(ok, atomic_rc == 0, "atomic-overlay: daemon exited cleanly");
+    fs::remove_all(atomic_root);
+  }
+
   const auto root = fs::temp_directory_path() / "cgraph_daemon_server_test";
   fs::remove_all(root);
   fs::create_directories(root);
@@ -96,8 +233,6 @@ int main() {
 
   int server_rc = -1;
   std::thread server([&] { server_rc = cgraph::run_daemon_server(root, options); });
-
-  bool ok = true;
 
   // Status round-trips immediately (the daemon serves while building on a worker
   // thread), so poll until the initial build publishes the baseline graph
@@ -122,9 +257,9 @@ int main() {
   expect(ok, still_a && (*still_a)["ok"] == true,
          "original daemon still owns the socket after a deferred start");
 
-  // Enrichment re-plan gating: the initial plan runs once after the build; a
-  // code-only `update .` must NOT re-plan (no doc tree walk), but a doc change
-  // must. enrichment_plans_run is the observable: a re-plan increments it.
+  // The initial plan runs once after the build. A code-only update must re-plan
+  // after dependency reconciliation because code changes can requeue semantic
+  // sources even when no document bytes changed.
   int plans_run = 0;
   for (int attempt = 0; attempt < 300 && plans_run < 1; ++attempt) {
     const auto s = request_with_retry(socket_path, cgraph::make_request("status"));
@@ -137,16 +272,21 @@ int main() {
 
   const auto code_update = request_with_retry(socket_path, cgraph::make_request("update", {{"path", "."}}));
   expect(ok, code_update && (*code_update)["ok"] == true, "code-only update accepted");
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // several watcher poll windows
-  const auto after_code = request_with_retry(socket_path, cgraph::make_request("status"));
-  const int plans_after_code = after_code ? (*after_code)["result"].value("enrichment_plans_run", 0) : -1;
-  expect(ok, plans_after_code == plans_run, "code-only rescan did not re-plan enrichment");
+  int plans_after_code = plans_run;
+  for (int attempt = 0; attempt < 300 && plans_after_code <= plans_run; ++attempt) {
+    const auto after_code = request_with_retry(socket_path, cgraph::make_request("status"));
+    plans_after_code = after_code ? (*after_code)["result"].value("enrichment_plans_run", 0) : -1;
+    if (plans_after_code <= plans_run) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  expect(ok, plans_after_code > plans_run, "code-only rescan re-planned dependency health");
 
   write_file(root / "notes.md", "# Notes\nsome documentation\n");
   bool replanned = false;
   for (int attempt = 0; attempt < 600 && !replanned; ++attempt) {
     const auto s = cgraph::request_over_unix_socket(socket_path, cgraph::make_request("status"));
-    replanned = s && (*s)["result"].value("enrichment_plans_run", 0) > plans_run;
+    replanned = s && (*s)["result"].value("enrichment_plans_run", 0) > plans_after_code;
     if (!replanned) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -167,6 +307,11 @@ int main() {
   // Semantic enrichment: drop a valid fragment into the daemon's drop dir and
   // the watcher must merge it into the live snapshot (no update op issued).
   const auto nodes_pre_enrich = nodes_after;
+  write_file(
+      root / "cgraph-out" / "semantic-drop" / "plan.json",
+      R"({"chunks":[{"index":0,"inputs":[{"path":")" +
+          (root / "notes.md").generic_string() + R"(","content_hash":")" +
+          cgraph::sha256_file_hex(root / "notes.md") + R"("}]}]})");
   write_file(root / "cgraph-out" / "semantic-drop" / "chunk_00.json", R"({
     "nodes": [
       {"id": "doc:guide", "label": "Guide", "type": "document"},
@@ -186,7 +331,30 @@ int main() {
   const auto topic = cgraph::request_over_unix_socket(socket_path, cgraph::make_request("query", {{"q", "Topic"}}));
   expect(ok, topic && !(*topic)["result"]["nodes"].empty(), "enriched concept queryable");
 
+  // Touch the fragment once after its live merge so the watcher consumes it
+  // against the still-current plan attribution before later tests replace the
+  // plan with a different chunk.
+  write_file(root / "cgraph-out" / "semantic-drop" / "chunk_00.json", R"({
+    "nodes": [
+      {"id": "doc:guide", "label": "Guide Attributed", "type": "document"},
+      {"id": "concept:topic", "label": "Topic", "type": "concept"}
+    ],
+    "edges": [{"source": "doc:guide", "target": "concept:topic", "relation": "DESCRIBES"}]
+  })");
+  expect(ok, wait_for_label(socket_path, "Guide Attributed", "Guide Attributed", true),
+         "semantic fragment cached against its manifest source");
+
   // A malformed fragment is rejected: enrichment_state goes failed, graph unchanged.
+  const auto before_malformed = request_with_retry(socket_path, cgraph::make_request("status"));
+  const int nodes_before_malformed =
+      before_malformed ? (*before_malformed)["result"].value("node_count", 0) : -1;
+  const auto malformed_source = root / "malformed.md";
+  write_file(malformed_source, "# Malformed source\n");
+  write_file(
+      root / "cgraph-out" / "semantic-drop" / "plan.json",
+      R"({"chunks":[{"index":1,"inputs":[{"path":")" +
+          malformed_source.generic_string() + R"(","content_hash":")" +
+          cgraph::sha256_file_hex(malformed_source) + R"("}]}]})");
   write_file(root / "cgraph-out" / "semantic-drop" / "chunk_01.json", R"({"nodes":[{"id":"x"}],"edges":[]})");
   bool failed_seen = false;
   int nodes_at_fail = 0;
@@ -199,7 +367,8 @@ int main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
   }
-  expect(ok, failed_seen && nodes_at_fail == nodes_pre_enrich + 2, "malformed fragment rejected, graph unchanged");
+  expect(ok, failed_seen && nodes_at_fail == nodes_before_malformed,
+         "malformed fragment rejected, graph unchanged");
 
   // Live watching: a new source file lands in the graph with NO update op. The
   // gitignored peer (written first, same watch window) must never enter.
@@ -331,6 +500,26 @@ int main() {
   }
   expect(ok, nodes_loaded >= nodes_at_shutdown, "fast-load restored the full graph");
 
+  const auto fast_status = request_with_retry(socket_path, cgraph::make_request("status"));
+  const auto fast_root = fast_status
+                             ? (*fast_status)["result"]["freshness"].value("content_root", std::string{})
+                             : std::string{};
+  const auto fast_pinned = request_with_retry(
+      socket_path,
+      cgraph::make_request("query", {{"q", "beta"}, {"expected_content_root", fast_root}}));
+  bool fast_source_verified = false;
+  if (fast_pinned && (*fast_pinned).value("ok", false)) {
+    const auto expected_beta_hash = cgraph::sha256_file_hex(root / "src" / "beta.ts");
+    for (const auto& node : (*fast_pinned)["result"]["nodes"]) {
+      if (node.value("source_sha256", std::string{}) == expected_beta_hash) {
+        fast_source_verified = true;
+        break;
+      }
+    }
+  }
+  expect(ok, !fast_root.empty() && fast_source_verified,
+         "fast-load reconstructed source evidence for a pinned snippet read");
+
   write_file(root / "src" / "delta.ts", "export function delta() { return 3; }\n");
   bool delta_seen = false;
   for (int attempt = 0; attempt < 600 && !delta_seen; ++attempt) {
@@ -389,6 +578,19 @@ int main() {
     write_file(freshness_source, after);
     fs::last_write_time(freshness_source, preserved_mtime);
 
+    const auto mixed_snapshot_attempt = request_with_retry(
+        freshness_socket,
+        cgraph::make_request("query", {{"q", "alpha"}, {"expected_content_root", old_root}}));
+    const auto mismatch_error = mixed_snapshot_attempt
+                                    ? mixed_snapshot_attempt->value("error", std::string{})
+                                    : std::string{};
+    expect(ok,
+           mixed_snapshot_attempt && !mixed_snapshot_attempt->value("ok", true) &&
+               !mixed_snapshot_attempt->contains("result") &&
+               mismatch_error.find("source-snapshot-mismatch") != std::string::npos &&
+               mismatch_error.find("synchronize again") != std::string::npos,
+           "pinned read rejects old-graph/new-source bytes atomically before publication");
+
     const auto new_update = request_with_retry(freshness_socket, cgraph::make_request("update", {{"path", "."}}));
     const bool new_update_has_freshness = new_update && (*new_update).contains("result") &&
                                           (*new_update)["result"].contains("freshness");
@@ -406,10 +608,20 @@ int main() {
     const auto pinned_new = request_with_retry(
         freshness_socket,
         cgraph::make_request("query", {{"q", "omega"}, {"expected_content_root", new_root}}));
+    bool new_source_verified = false;
+    if (pinned_new && pinned_new->value("ok", false)) {
+      for (const auto& node : (*pinned_new)["result"]["nodes"]) {
+        if (node.value("source_sha256", std::string{}) == cgraph::sha256_hex(after)) {
+          new_source_verified = true;
+          break;
+        }
+      }
+    }
     expect(ok,
            pinned_new && (*pinned_new).value("ok", false) && !(*pinned_new)["result"]["nodes"].empty() &&
                (*pinned_new)["result"]["freshness"].value("verified", false) &&
-               (*pinned_new)["result"]["freshness"].value("content_root", std::string{}) == new_root,
+               (*pinned_new)["result"]["freshness"].value("content_root", std::string{}) == new_root &&
+               new_source_verified,
            "new root pins a query to the updated snapshot");
 
     const auto stale_query = request_with_retry(
@@ -460,6 +672,488 @@ int main() {
   immortal_server.join();
   expect(ok, immortal_rc == 0, "never-idle server exited cleanly");
   fs::remove_all(root2);
+
+  // Semantic lifecycle: dependency invalidation omits the whole overlay,
+  // survives restart, and only a freshly fingerprinted replacement recovers it.
+  {
+    const auto sem_root = fs::temp_directory_path() / "cgraph_daemon_semantic_lifecycle_test";
+    const auto code_source = sem_root / "src" / "target.ts";
+    const auto guide_source = sem_root / "docs" / "guide.md";
+    const auto drop_dir = sem_root / "cgraph-out" / "semantic-drop";
+    const auto sem_frag = drop_dir / "chunk_00.json";
+    const auto manifest = drop_dir / "plan.json";
+    fs::remove_all(sem_root);
+    write_file(code_source, "export class Target { run() { return 1; } }\n");
+    write_file(guide_source, "# Guide\nReferences target\n");
+
+    const auto sem_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(sem_root));
+    fs::remove(sem_socket);
+    cgraph::DaemonServerOptions sem_options;
+    sem_options.idle_timeout = std::chrono::seconds(60);
+    sem_options.build_graph_on_start = true;
+    sem_options.code_poll_interval = std::chrono::milliseconds::zero();
+    sem_options.persist_interval = std::chrono::seconds(1);
+
+    const auto target_id_from = [](const std::optional<nlohmann::json>& response) {
+      if (!response || !response->value("ok", false)) {
+        return std::string{};
+      }
+      for (const auto& node : (*response)["result"]["nodes"]) {
+        if (node.value("label", std::string{}) == "Target") {
+          return node.value("id", std::string{});
+        }
+      }
+      return std::string{};
+    };
+    const auto wait_for_enrichment = [&](std::string_view expected_state,
+                                         std::size_t minimum_pending,
+                                         std::size_t maximum_failed,
+                                         int attempt_limit = 400) -> std::optional<nlohmann::json> {
+      for (int attempt = 0; attempt < attempt_limit; ++attempt) {
+        const auto observed = request_with_retry(sem_socket, cgraph::make_request("status"));
+        if (observed && (*observed)["result"].value("enrichment_state", std::string{}) == expected_state &&
+            (*observed)["result"].value("enrichment_pending", std::size_t{0}) >= minimum_pending &&
+            (*observed)["result"].value("enrichment_failed", std::size_t{0}) <= maximum_failed) {
+          return observed;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      return std::nullopt;
+    };
+
+    int sem_rc = -1;
+    std::thread sem_server([&] { sem_rc = cgraph::run_daemon_server(sem_root, sem_options); });
+    std::string target_node_id;
+    for (int attempt = 0; attempt < 300 && target_node_id.empty(); ++attempt) {
+      target_node_id = target_id_from(request_with_retry(
+          sem_socket, cgraph::make_request("query", {{"q", "Target"}})));
+      if (target_node_id.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    expect(ok, !target_node_id.empty(), "sem-lifecycle: deterministic target is queryable");
+    expect(ok, !wait_for_enrichment("never-matches", 0, 0, 1),
+           "sem-lifecycle: enrichment wait rejects a non-matching status");
+
+    write_file(
+        manifest,
+        R"({"chunks":[{"index":0,"inputs":[{"path":")" + guide_source.generic_string() +
+            R"(","content_hash":")" + cgraph::sha256_file_hex(guide_source) + R"("}]}]})");
+    write_file(
+        sem_frag,
+        R"({"nodes":[{"id":"doc:guide","label":"Guide","type":"document","source_file":")" +
+            guide_source.generic_string() +
+            R"("}],"edges":[{"source":"doc:guide","target":")" + target_node_id +
+            R"(","relation":"MENTIONS"}],"hyperedges":[]})");
+
+    bool guide_visible = false;
+    for (int attempt = 0; attempt < 300 && !guide_visible; ++attempt) {
+      const auto guide_query = cgraph::request_over_unix_socket(
+          sem_socket, cgraph::make_request("query", {{"q", "Guide"}}));
+      guide_visible = guide_query && !(*guide_query)["result"]["nodes"].empty();
+      if (!guide_visible) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    expect(ok, guide_visible, "sem-lifecycle: dependency-bound overlay merged");
+
+    fs::remove(code_source);
+    const auto delete_update = request_with_retry(
+        sem_socket, cgraph::make_request("update", {{"path", "."}}));
+    expect(ok, delete_update && delete_update->value("ok", false),
+           "sem-lifecycle: target deletion synchronized");
+    const auto guide_omitted = request_with_retry(
+        sem_socket, cgraph::make_request("query", {{"q", "Guide"}}));
+    expect(ok, guide_omitted && (*guide_omitted)["result"]["nodes"].empty(),
+           "sem-lifecycle: invalid overlay omitted after deterministic rebuild");
+    const auto stale_status = wait_for_enrichment("stale", 1, 0);
+    expect(ok, stale_status && (*stale_status)["result"].value("enrichment_pending", 0) >= 1,
+           "sem-lifecycle: dependency invalidation is stale and requeued");
+
+    const auto first_shutdown = cgraph::request_over_unix_socket(
+        sem_socket, cgraph::make_request("shutdown"));
+    expect(ok, first_shutdown && first_shutdown->value("ok", false),
+           "sem-lifecycle: invalid state shutdown accepted");
+    sem_server.join();
+    expect(ok, sem_rc == 0, "sem-lifecycle: invalid state server exited cleanly");
+
+    int stale_restart_rc = -1;
+    std::thread stale_restart(
+        [&] { stale_restart_rc = cgraph::run_daemon_server(sem_root, sem_options); });
+    const auto restart_stale_status = wait_for_enrichment("stale", 1, 0);
+    const auto restart_guide = request_with_retry(
+        sem_socket, cgraph::make_request("query", {{"q", "Guide"}}));
+    expect(ok, restart_stale_status && restart_guide &&
+                   (*restart_guide)["result"]["nodes"].empty(),
+           "sem-lifecycle: restart preserves stale health and omits invalid overlay");
+
+    write_file(code_source, "export class Target { run() { return 2; } }\n");
+    const auto restore_update = request_with_retry(
+        sem_socket, cgraph::make_request("update", {{"path", "."}}));
+    expect(ok, restore_update && restore_update->value("ok", false),
+           "sem-lifecycle: changed target restored deterministically");
+    const auto restored_target = request_with_retry(
+        sem_socket, cgraph::make_request("query", {{"q", "Target"}}));
+    const auto restored_target_id = target_id_from(restored_target);
+    const auto still_omitted = request_with_retry(
+        sem_socket, cgraph::make_request("query", {{"q", "Guide"}}));
+    expect(ok, !restored_target_id.empty() && still_omitted &&
+                   (*still_omitted)["result"]["nodes"].empty(),
+           "sem-lifecycle: stale overlay stays omitted until host replacement");
+
+    write_file(
+        sem_frag,
+        R"({"nodes":[{"id":"doc:guide","label":"Guide Recovered","type":"document","source_file":")" +
+            guide_source.generic_string() +
+            R"("}],"edges":[{"source":"doc:guide","target":")" + restored_target_id +
+            R"(","relation":"MENTIONS"}],"hyperedges":[]})");
+    bool recovered = false;
+    for (int attempt = 0; attempt < 400 && !recovered; ++attempt) {
+      const auto recovery_query = cgraph::request_over_unix_socket(
+          sem_socket, cgraph::make_request("query", {{"q", "Guide Recovered"}}));
+      recovered = recovery_query && !(*recovery_query)["result"]["nodes"].empty();
+      if (!recovered) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    const auto recovered_status = wait_for_enrichment("idle", 0, 0);
+    expect(ok, recovered && recovered_status &&
+                   (*recovered_status)["result"].value("enrichment_stale", 1) == 0 &&
+                   (*recovered_status)["result"].value("enrichment_failed", 1) == 0,
+           "sem-lifecycle: valid replacement clears current error state atomically");
+
+    const auto recovered_shutdown = cgraph::request_over_unix_socket(
+        sem_socket, cgraph::make_request("shutdown"));
+    expect(ok, recovered_shutdown && recovered_shutdown->value("ok", false),
+           "sem-lifecycle: recovered state shutdown accepted");
+    stale_restart.join();
+    expect(ok, stale_restart_rc == 0, "sem-lifecycle: recovered state server exited cleanly");
+
+    int recovered_restart_rc = -1;
+    std::thread recovered_restart(
+        [&] { recovered_restart_rc = cgraph::run_daemon_server(sem_root, sem_options); });
+    bool stable_guide_visible = false;
+    for (int attempt = 0; attempt < 400 && !stable_guide_visible; ++attempt) {
+      const auto stable_guide = request_with_retry(
+          sem_socket, cgraph::make_request("query", {{"q", "Guide Recovered"}}));
+      stable_guide_visible = stable_guide && !(*stable_guide)["result"]["nodes"].empty();
+      if (!stable_guide_visible) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    const auto stable_status = wait_for_enrichment("idle", 0, 0);
+    expect(ok, stable_status && stable_guide_visible &&
+                   (*stable_status)["result"].value("enrichment_stale", 1) == 0 &&
+                   (*stable_status)["result"].value("enrichment_failed", 1) == 0,
+           "sem-lifecycle: restart reproduces recovered overlay and health");
+    const auto final_shutdown = cgraph::request_over_unix_socket(
+        sem_socket, cgraph::make_request("shutdown"));
+    expect(ok, final_shutdown && final_shutdown->value("ok", false),
+           "sem-lifecycle: final shutdown accepted");
+    recovered_restart.join();
+    expect(ok, recovered_restart_rc == 0, "sem-lifecycle: final server exited cleanly");
+    fs::remove_all(sem_root);
+  }
+
+  // The daemon keeps graph.json deterministic-only and rebuilds semantic
+  // overlays from cache-valid attribution after every restart and live event.
+  {
+    const auto event_root = fs::temp_directory_path() / "cgraph_daemon_overlay_events_test";
+    const auto code_source = event_root / "src" / "target.ts";
+    const auto guide_source = event_root / "docs" / "guide.md";
+    const auto drop_dir = event_root / "cgraph-out" / "semantic-drop";
+    const auto graph_path = event_root / "cgraph-out" / "graph.json";
+    const auto stat_index_path = drop_dir / "semantic-stat-index.json";
+    const auto event_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(event_root));
+    fs::remove_all(event_root);
+    fs::remove(event_socket);
+    write_file(code_source, "export class Target { run() { return 1; } }\n");
+    write_file(guide_source, "# Guide\nOriginal target\n");
+
+    cgraph::DaemonServerOptions event_options;
+    event_options.idle_timeout = std::chrono::seconds(60);
+    event_options.build_graph_on_start = true;
+    event_options.code_poll_interval = std::chrono::milliseconds(40);
+    event_options.watch_debounce = std::chrono::milliseconds(20);
+    event_options.persist_interval = std::chrono::seconds(1);
+
+    const auto write_plan = [&](std::size_t index) {
+      write_file(
+          drop_dir / "plan.json",
+          R"({"chunks":[{"index":)" + std::to_string(index) +
+              R"(,"inputs":[{"path":")" + guide_source.generic_string() +
+              R"(","content_hash":")" + cgraph::sha256_file_hex(guide_source) +
+              R"("}]}]})");
+    };
+    const auto write_overlay = [&](const fs::path& path,
+                                   std::string_view id,
+                                   std::string_view label,
+                                   std::string_view target_id) {
+      write_file(
+          path,
+          R"({"nodes":[{"id":")" + std::string(id) +
+              R"(","label":")" + std::string(label) +
+              R"(","type":"document","source_file":")" + guide_source.generic_string() +
+              R"("}],"edges":[{"source":")" + std::string(id) +
+              R"(","target":")" + std::string(target_id) +
+              R"(","relation":"MENTIONS"}],"hyperedges":[]})");
+    };
+    const auto shutdown_server = [&](std::thread& thread, int& rc, const char* accepted, const char* exited) {
+      const auto response = request_with_retry(event_socket, cgraph::make_request("shutdown"));
+      expect(ok, response && response->value("ok", false), accepted);
+      thread.join();
+      expect(ok, rc == 0, exited);
+    };
+    const auto persisted_graph_has_overlay = [&]() {
+      std::ifstream input(graph_path, std::ios::binary);
+      const auto graph = nlohmann::json::parse(input, nullptr, false);
+      if (!graph.is_object()) {
+        return true;
+      }
+      for (const auto& node : graph.value("nodes", nlohmann::json::array())) {
+        if (node.value("id", std::string{}).starts_with("doc:event-") ||
+            node.value("id", std::string{}) == "doc:orphan-live" ||
+            node.value("id", std::string{}).starts_with("memory:")) {
+          return true;
+        }
+      }
+      for (const auto& edge : graph.value("links", nlohmann::json::array())) {
+        if (edge.value("source", std::string{}).starts_with("doc:event-") ||
+            edge.value("source", std::string{}) == "doc:orphan-live" ||
+            edge.value("source", std::string{}).starts_with("memory:") ||
+            edge.value("target", std::string{}).starts_with("memory:")) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    int event_rc = -1;
+    std::thread event_server([&] { event_rc = cgraph::run_daemon_server(event_root, event_options); });
+    const auto target_id = wait_for_node_id(event_socket, "Target", "Target");
+    expect(ok, !target_id.empty(), "overlay-events: deterministic target became queryable");
+    write_plan(0);
+    write_overlay(drop_dir / "chunk_00.json", "doc:event-old", "Overlay Original", target_id);
+    expect(ok, wait_for_label(event_socket, "Overlay Original", "Overlay Original", true),
+           "overlay-events: initial attributed drop merged live");
+    const auto remembered = request_with_retry(
+        event_socket,
+        cgraph::make_request(
+            "remember",
+            {{"title", "Overlay memory"}, {"body", "survives overlay rebuilds"}, {"touches", {target_id}}}));
+    expect(ok, remembered && remembered->value("ok", false),
+           "overlay-events: memory checkpoint created before persistence");
+    shutdown_server(
+        event_server,
+        event_rc,
+        "overlay-events: initial shutdown accepted",
+        "overlay-events: initial daemon exited cleanly");
+    expect(ok, !persisted_graph_has_overlay(),
+           "overlay-events: graph.json excluded semantic nodes and edges");
+
+    // A semantic source changed while the daemon was down. The code manifest is
+    // still unchanged, so startup takes the persisted fast path, reconciles the
+    // cache against current bytes, and must not leak the old fused overlay.
+    write_file(guide_source, "# Guide\nOffline source change\n");
+    int source_restart_rc = -1;
+    std::thread source_restart(
+        [&] { source_restart_rc = cgraph::run_daemon_server(event_root, event_options); });
+    expect(ok, !wait_for_node_id(event_socket, "Target", "Target").empty(),
+           "overlay-events: source-change restart fast-loaded deterministic code");
+    expect(ok, wait_for_label(event_socket, "Overlay Original", "Overlay Original", false),
+           "overlay-events: offline semantic-source change omitted cached overlay");
+    const auto source_restart_memory = request_with_retry(
+        event_socket, cgraph::make_request("recall", {}));
+    expect(ok,
+           source_restart_memory && source_restart_memory->value("ok", false) &&
+               (*source_restart_memory)["result"].value("total", 0) == 1,
+           "overlay-events: fast-load replayed memory from its sidecar");
+
+    write_plan(0);
+    write_overlay(drop_dir / "chunk_00.json", "doc:event-old", "Overlay Source Restored", target_id);
+    expect(ok, wait_for_label(event_socket, "Overlay Source Restored", "Overlay Source Restored", true),
+           "overlay-events: live source replacement restored a valid overlay");
+    shutdown_server(
+        source_restart,
+        source_restart_rc,
+        "overlay-events: source-recovery shutdown accepted",
+        "overlay-events: source-recovery daemon exited cleanly");
+
+    // Only the fragment bytes change offline this time. Fast-load must reconcile
+    // its fingerprint before replay rather than publishing the prior overlay.
+    write_overlay(drop_dir / "chunk_00.json", "doc:event-old", "Overlay Offline Tamper", target_id);
+    int fragment_restart_rc = -1;
+    std::thread fragment_restart(
+        [&] { fragment_restart_rc = cgraph::run_daemon_server(event_root, event_options); });
+    expect(ok, !wait_for_node_id(event_socket, "Target", "Target").empty(),
+           "overlay-events: fragment-change restart fast-loaded deterministic code");
+    expect(ok, wait_for_label(event_socket, "Overlay Source Restored", "Overlay Source Restored", false) &&
+                   wait_for_label(event_socket, "Overlay Offline Tamper", "Overlay Offline Tamper", false),
+           "overlay-events: offline fragment change omitted old and tampered overlays");
+
+    write_overlay(drop_dir / "chunk_00.json", "doc:event-old", "Overlay Before Move", target_id);
+    expect(ok, wait_for_label(event_socket, "Overlay Before Move", "Overlay Before Move", true),
+           "overlay-events: valid same-path replacement merged live");
+
+    // The host assigns the same semantic source a new fragment path while the
+    // old file remains. Rebuilding from deterministic state must remove the old
+    // node and its edge instead of leaving first-occurrence-wins residue.
+    write_plan(1);
+    write_overlay(drop_dir / "chunk_01.json", "doc:event-new", "Overlay After Move", target_id);
+    expect(ok, wait_for_label(event_socket, "Overlay After Move", "Overlay After Move", true),
+           "overlay-events: replacement in a new fragment path merged live");
+    const auto old_explain = request_with_retry(
+        event_socket, cgraph::make_request("explain", {{"id", "doc:event-old"}}));
+    expect(ok,
+           wait_for_label(event_socket, "Overlay Before Move", "Overlay Before Move", false) &&
+               old_explain && !(*old_explain)["result"].value("found", true),
+           "overlay-events: new-path replacement removed the old node and edge endpoint");
+
+    // A live document edit invalidates its overlay immediately, even before the
+    // asynchronous planner reports its next batch.
+    write_file(guide_source, "# Guide\nLive edit target\n");
+    expect(ok, wait_for_label(event_socket, "Overlay After Move", "Overlay After Move", false),
+           "overlay-events: live document edit removed the invalid overlay");
+
+    write_plan(2);
+    write_overlay(drop_dir / "chunk_02.json", "doc:event-delete", "Overlay Before Delete", target_id);
+    expect(ok, wait_for_label(event_socket, "Overlay Before Delete", "Overlay Before Delete", true),
+           "overlay-events: post-edit replacement merged live");
+
+    fs::remove(guide_source);
+    expect(ok, wait_for_label(event_socket, "Overlay Before Delete", "Overlay Before Delete", false),
+           "overlay-events: live document deletion removed the invalid overlay");
+    bool deleted_stat_evicted = false;
+    for (int attempt = 0; attempt < 500 && !deleted_stat_evicted; ++attempt) {
+      std::ifstream input(stat_index_path, std::ios::binary);
+      const auto stat_json = nlohmann::json::parse(input, nullptr, false);
+      if (stat_json.is_object()) {
+        deleted_stat_evicted = true;
+        for (const auto& entry : stat_json.value("entries", nlohmann::json::array())) {
+          if (entry.value("path", std::string{}) == guide_source.generic_string()) {
+            deleted_stat_evicted = false;
+          }
+        }
+      }
+      if (!deleted_stat_evicted) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    expect(ok, deleted_stat_evicted,
+           "overlay-events: live document deletion evicted the persisted stat-index entry");
+    const auto deletion_memory = request_with_retry(
+        event_socket, cgraph::make_request("recall", {}));
+    expect(ok,
+           deletion_memory && deletion_memory->value("ok", false) &&
+               (*deletion_memory)["result"].value("total", 0) == 1,
+           "overlay-events: document deletion rebuilt semantic overlay and preserved memory");
+
+    // A newly arriving unattributed drop may still validate live, but it has no
+    // durable semantic-source attribution and therefore must not replay.
+    write_file(
+        drop_dir / "chunk_99.json",
+        R"({"nodes":[{"id":"doc:orphan-live","label":"Orphan Live","type":"document"}],"edges":[],"hyperedges":[]})");
+    expect(ok, wait_for_label(event_socket, "Orphan Live", "Orphan Live", true),
+           "overlay-events: unattributed new drop validated live");
+    shutdown_server(
+        fragment_restart,
+        fragment_restart_rc,
+        "overlay-events: event daemon shutdown accepted",
+        "overlay-events: event daemon exited cleanly");
+    expect(ok, !persisted_graph_has_overlay(),
+           "overlay-events: final graph.json remained deterministic-only");
+
+    int orphan_restart_rc = -1;
+    std::thread orphan_restart(
+        [&] { orphan_restart_rc = cgraph::run_daemon_server(event_root, event_options); });
+    expect(ok, !wait_for_node_id(event_socket, "Target", "Target").empty(),
+           "overlay-events: orphan restart fast-loaded deterministic code");
+    expect(ok, wait_for_label(event_socket, "Orphan Live", "Orphan Live", false),
+           "overlay-events: replay skipped the unattributed orphan fragment");
+    shutdown_server(
+        orphan_restart,
+        orphan_restart_rc,
+        "overlay-events: orphan restart shutdown accepted",
+        "overlay-events: orphan restart daemon exited cleanly");
+    fs::remove_all(event_root);
+  }
+
+  // Coverage + refusal contract. Two regressions from review:
+  //  - a cold-start rescan builds through a staging state; its unextracted
+  //    coverage map must still reach the served status payload.
+  //  - an update that finds a verified source unreadable must refuse visibly
+  //    (accepted=false, warnings) and must NOT re-derive the deterministic
+  //    persistence snapshot from the fused live graph -- graph.json stays
+  //    overlay-free.
+  {
+    const auto cov_root = fs::temp_directory_path() / "cgraph_daemon_coverage_refusal_test";
+    const auto cov_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(cov_root));
+    fs::remove_all(cov_root);
+    fs::remove(cov_socket);
+    const auto cov_source = cov_root / "src" / "cov.py";
+    write_file(cov_source, "class Covered:\n    pass\n");
+    write_file(cov_root / "view.blade.php", "<div>{{ $x }}</div>\n");
+
+    cgraph::DaemonServerOptions cov_options;
+    cov_options.idle_timeout = std::chrono::seconds(60);
+    cov_options.build_graph_on_start = true;
+    cov_options.code_poll_interval = std::chrono::milliseconds(0);
+    cov_options.drop_poll_interval = std::chrono::milliseconds(20);
+
+    int cov_rc = -1;
+    std::thread cov_server([&] { cov_rc = cgraph::run_daemon_server(cov_root, cov_options); });
+    expect(ok, wait_for_label(cov_socket, "Covered", "Covered", true),
+           "coverage: initial build published the deterministic graph");
+
+    const auto cov_status = request_with_retry(cov_socket, cgraph::make_request("status"));
+    expect(ok,
+           cov_status && cov_status->value("ok", false) &&
+               (*cov_status)["result"].value("unextracted", nlohmann::json::object())
+                       .value("php-blade", 0) == 1,
+           "coverage: status.unextracted reports php-blade after a cold-start rescan");
+
+    // Overlay a session-memory checkpoint so the fused live graph and the
+    // deterministic persistence snapshot genuinely differ.
+    const auto remember = request_with_retry(
+        cov_socket,
+        cgraph::make_request(
+            "remember", {{"title", "coverage checkpoint"}, {"summary", "refusal regression"}}));
+    expect(ok, remember && remember->value("ok", false), "coverage: remember accepted");
+
+    expect(ok, ::chmod(cov_source.c_str(), 0) == 0, "coverage: made verified source unreadable");
+    const auto refused = request_with_retry(cov_socket, cgraph::make_request("update", {{"path", "."}}));
+    expect(ok,
+           refused && refused->value("ok", false) &&
+               !(*refused)["result"].value("accepted", true) &&
+               !(*refused)["result"].value("warnings", nlohmann::json::array()).empty(),
+           "coverage: update refused with warnings while a verified source is unreadable");
+    expect(ok, wait_for_label(cov_socket, "Covered", "Covered", true),
+           "coverage: served graph kept the last verified code after the refusal");
+
+    expect(ok, ::chmod(cov_source.c_str(), 0600) == 0, "coverage: restored source permissions");
+    const auto cov_shutdown = request_with_retry(cov_socket, cgraph::make_request("shutdown"));
+    expect(ok, cov_shutdown && cov_shutdown->value("ok", false), "coverage: shutdown accepted");
+    cov_server.join();
+    expect(ok, cov_rc == 0, "coverage: daemon exited cleanly");
+
+    std::ifstream persisted(cov_root / "cgraph-out" / "graph.json", std::ios::binary);
+    const auto persisted_graph = nlohmann::json::parse(persisted, nullptr, false);
+    bool overlay_in_persisted = !persisted_graph.is_object();
+    bool code_in_persisted = false;
+    for (const auto& node : persisted_graph.value("nodes", nlohmann::json::array())) {
+      const auto id = node.value("id", std::string{});
+      if (id.starts_with("memory:")) {
+        overlay_in_persisted = true;
+      }
+      if (node.value("label", std::string{}) == "Covered") {
+        code_in_persisted = true;
+      }
+    }
+    expect(ok, !overlay_in_persisted && code_in_persisted,
+           "coverage: graph.json stayed deterministic-only across the refused update");
+
+    fs::remove_all(cov_root);
+  }
 
   fs::remove_all(root);
   return ok ? 0 : 1;

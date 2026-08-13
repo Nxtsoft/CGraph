@@ -9,6 +9,9 @@
 #include "cgraph/graph_builder.hpp"
 
 #include <fstream>
+#include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace cgraph {
@@ -35,7 +38,9 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
   std::vector<Fragment> fragments;
   std::vector<RawCall> raw_calls;
   std::vector<RawRelation> raw_relations;
+  std::unordered_map<std::string, std::string> source_hashes;
   fragments.reserve(files.size());
+  source_hashes.reserve(files.size());
 
   // Time each phase at the orchestration seam (scoped timers), so instrumentation
   // stays here rather than threaded into every extractor/builder/dedup function.
@@ -44,10 +49,15 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
     // Extract concurrently; the results come back in detection order, so merging
     // them below is identical to the serial path (parity preserved).
     auto extractions = extract_files(files);
-    for (auto& extraction : extractions) {
+    for (std::size_t i = 0; i < extractions.size(); ++i) {
+      auto& extraction = extractions[i];
       result.warnings.insert(result.warnings.end(), extraction.fragment.warnings.begin(), extraction.fragment.warnings.end());
       raw_calls.insert(raw_calls.end(), extraction.raw_calls.begin(), extraction.raw_calls.end());
       raw_relations.insert(raw_relations.end(), extraction.raw_relations.begin(), extraction.raw_relations.end());
+      if (!extraction.source_sha256.empty()) {
+        source_hashes.emplace(
+            files[i].path.lexically_normal().generic_string(), extraction.source_sha256);
+      }
       fragments.push_back(std::move(extraction.fragment));
     }
   }
@@ -55,6 +65,7 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
   {
     ScopedTimer timer(&result.stats.merge_ms);
     result.graph = merge_fragments(fragments);
+    result.graph.source_hashes = std::move(source_hashes);
   }
   {
     ScopedTimer timer(&result.stats.resolve_ms);

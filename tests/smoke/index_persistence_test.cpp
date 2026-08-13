@@ -42,7 +42,7 @@ int main() {
   // rebuild or re-sign, forcing a cold rebuild on the next query. The trailing
   // segment must therefore stay a short literal (bumped by hand on parity-surface
   // changes) and never a 64-char hex digest. Update this literal when you bump it.
-  if (key != "cgraph-index-v1:logic-3") {
+  if (key != "cgraph-index-v1:logic-4") {
     fs::remove_all(root);
     return 1;
   }

@@ -30,10 +30,13 @@ void mark_graph_dirty(DaemonLifecycleState& lifecycle, DaemonClock::time_point n
     const DaemonLifecycleConfig& config,
     DaemonClock::time_point now);
 [[nodiscard]] bool cleanup_daemon_endpoint(const std::filesystem::path& endpoint_path);
+[[nodiscard]] bool persist_graph_snapshot(
+    const GraphSnapshot& snapshot,
+    const std::filesystem::path& graph_path);
 [[nodiscard]] bool persist_graph_snapshot(const DaemonState& state, const std::filesystem::path& graph_path);
 [[nodiscard]] bool load_graph_snapshot(DaemonState& state, const std::filesystem::path& graph_path);
 [[nodiscard]] bool persist_if_due(
-    const DaemonState& state,
+    const GraphSnapshot& persistence_snapshot,
     DaemonLifecycleState& lifecycle,
     const DaemonLifecycleConfig& config,
     DaemonClock::time_point now);

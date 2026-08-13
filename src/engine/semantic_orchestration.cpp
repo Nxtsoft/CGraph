@@ -76,8 +76,8 @@ std::string fragment_filename_for_chunk(std::size_t chunk_index) {
   return name.str();
 }
 
-std::unordered_map<std::size_t, std::vector<fs::path>> load_chunk_sources(const fs::path& drop_dir) {
-  std::unordered_map<std::size_t, std::vector<fs::path>> sources_by_chunk;
+std::unordered_map<std::size_t, std::vector<SemanticSourceInput>> load_chunk_sources(const fs::path& drop_dir) {
+  std::unordered_map<std::size_t, std::vector<SemanticSourceInput>> sources_by_chunk;
   std::ifstream manifest_file(drop_dir / kManifestName, std::ios::binary);
   if (!manifest_file) {
     return sources_by_chunk;
@@ -90,7 +90,10 @@ std::unordered_map<std::size_t, std::vector<fs::path>> load_chunk_sources(const 
     const auto index = chunk.value("index", std::size_t{0});
     for (const auto& input : chunk.value("inputs", nlohmann::json::array())) {
       if (const auto path = input.value("path", std::string{}); !path.empty()) {
-        sources_by_chunk[index].emplace_back(path);
+        sources_by_chunk[index].push_back(SemanticSourceInput{
+            .path = path,
+            .content_sha256 = input.value("content_hash", std::string{}),
+        });
       }
     }
   }
@@ -197,21 +200,27 @@ EnrichmentIngestResult ingest_enrichment(const std::filesystem::path& root, cons
 
   for (const auto& drop : discover_semantic_fragment_drops(drop_dir)) {
     const auto sources = sources_by_chunk.find(drop.chunk_index);
-    // Attribute the fragment to its first manifest source; fall back to the
-    // fragment path itself when no manifest entry exists.
-    const fs::path source = (sources != sources_by_chunk.end() && !sources->second.empty())
-                                ? sources->second.front()
-                                : drop.path;
+    std::vector<SemanticSourceInput> source_inputs;
+    if (sources != sources_by_chunk.end() && !sources->second.empty()) {
+      source_inputs = sources->second;
+    } else {
+      for (const auto& record : cache.find_for_fragment(drop.path)) {
+        source_inputs.push_back(SemanticSourceInput{
+            .path = record.source_path,
+            .content_sha256 = record.content_hash,
+        });
+      }
+    }
+    if (source_inputs.empty()) {
+      source_inputs.push_back(SemanticSourceInput{
+          .path = drop.path,
+          .content_sha256 = {},
+      });
+    }
 
-    auto ingest = ingest_semantic_fragment(state, cache, source, drop.path);
+    auto ingest = ingest_semantic_fragment(state, cache, source_inputs, drop.path);
     if (ingest.merged) {
       ++result.fragments_ingested;
-      // Cache any additional documents this chunk covered against the same fragment.
-      if (sources != sources_by_chunk.end()) {
-        for (std::size_t i = 1; i < sources->second.size(); ++i) {
-          cache.upsert(make_semantic_cache_record(sources->second[i], drop.path, SemanticCacheState::Valid));
-        }
-      }
     } else {
       ++result.fragments_rejected;
       for (auto& error : ingest.errors) {

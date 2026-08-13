@@ -1,8 +1,11 @@
 #include "cgraph/semantic_fragment_validation.hpp"
 
+#include "cgraph/file_cache.hpp"
 #include "cgraph/fragment_json.hpp"
 
 #include <fstream>
+#include <iterator>
+#include <utility>
 
 namespace cgraph {
 
@@ -20,13 +23,23 @@ SemanticFragmentValidationResult validate_semantic_fragment_file(const std::file
     return result;
   }
 
-  const auto value = nlohmann::json::parse(input, nullptr, false);
+  const std::string contents{
+      std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  if (input.bad()) {
+    result.errors.push_back("failed to read semantic fragment: " + path.generic_string());
+    return result;
+  }
+  result.source_sha256 = sha256_hex(contents);
+
+  const auto value = nlohmann::json::parse(contents, nullptr, false);
   if (value.is_discarded()) {
     result.errors.push_back("semantic fragment is malformed JSON: " + path.generic_string());
     return result;
   }
 
-  return validate_semantic_fragment_json(value);
+  auto validated = validate_semantic_fragment_json(value);
+  validated.source_sha256 = std::move(result.source_sha256);
+  return validated;
 }
 
 }  // namespace cgraph

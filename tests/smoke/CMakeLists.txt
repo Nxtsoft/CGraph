@@ -178,6 +178,18 @@ cgraph_enable_sanitizers(cgraph_file_extraction_test)
 
 add_test(NAME cgraph_file_extraction_test COMMAND cgraph_file_extraction_test)
 
+add_executable(cgraph_snapshot_source_reader_test
+  snapshot_source_reader_test.cpp)
+
+target_link_libraries(cgraph_snapshot_source_reader_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_snapshot_source_reader_test)
+cgraph_enable_sanitizers(cgraph_snapshot_source_reader_test)
+
+add_test(NAME cgraph_snapshot_source_reader_test COMMAND cgraph_snapshot_source_reader_test)
+
 add_executable(cgraph_extractor_hardening_test
   extractor_hardening_test.cpp)
 

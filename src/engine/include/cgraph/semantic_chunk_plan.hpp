@@ -38,8 +38,7 @@ struct SemanticChunkPlan {
   std::vector<SemanticChunk> chunks;
   std::size_t cache_hits = 0;
   std::size_t stale_inputs = 0;
-  // Observability for the stat cache: how many files were read + hashed this
-  // plan vs. reused from a stat hit (the work avoided).
+  std::size_t failed_inputs = 0;
   std::size_t files_hashed = 0;
   std::size_t files_stat_reused = 0;
 };

@@ -48,7 +48,9 @@ bool cleanup_daemon_endpoint(const std::filesystem::path& endpoint_path) {
   return !error;
 }
 
-bool persist_graph_snapshot(const DaemonState& state, const std::filesystem::path& graph_path) {
+bool persist_graph_snapshot(
+    const GraphSnapshot& snapshot,
+    const std::filesystem::path& graph_path) {
   if (graph_path.empty()) {
     return false;
   }
@@ -65,14 +67,6 @@ bool persist_graph_snapshot(const DaemonState& state, const std::filesystem::pat
     if (!output) {
       return false;
     }
-    // Session-memory nodes are NOT persisted to graph.json: their on-disk sidecar
-    // fragments are the sole source of truth and are re-overlaid after load. This
-    // keeps one source of truth for memory and avoids a divergent persisted copy.
-    auto snapshot = *read_graph_snapshot(state);
-    std::erase_if(snapshot.nodes, [](const Node& node) { return is_memory_node_id(node.id); });
-    std::erase_if(snapshot.edges, [](const Edge& edge) {
-      return is_memory_node_id(edge.source) || is_memory_node_id(edge.target);
-    });
     output << to_node_link_json(snapshot).dump(2) << '\n';
   }
 
@@ -88,6 +82,19 @@ bool persist_graph_snapshot(const DaemonState& state, const std::filesystem::pat
     return false;
   }
   return true;
+}
+
+bool persist_graph_snapshot(const DaemonState& state, const std::filesystem::path& graph_path) {
+  // Direct in-process callers do not own the daemon's explicit deterministic
+  // snapshot. Preserve the established memory-sidecar contract for that narrow
+  // API; the daemon itself always calls the GraphSnapshot overload with its
+  // code-only persistence snapshot, which excludes every overlay by construction.
+  auto snapshot = *read_graph_snapshot(state);
+  std::erase_if(snapshot.nodes, [](const Node& node) { return is_memory_node_id(node.id); });
+  std::erase_if(snapshot.edges, [](const Edge& edge) {
+    return is_memory_node_id(edge.source) || is_memory_node_id(edge.target);
+  });
+  return persist_graph_snapshot(snapshot, graph_path);
 }
 
 bool load_graph_snapshot(DaemonState& state, const std::filesystem::path& graph_path) {
@@ -106,14 +113,14 @@ bool load_graph_snapshot(DaemonState& state, const std::filesystem::path& graph_
 }
 
 bool persist_if_due(
-    const DaemonState& state,
+    const GraphSnapshot& persistence_snapshot,
     DaemonLifecycleState& lifecycle,
     const DaemonLifecycleConfig& config,
     DaemonClock::time_point now) {
   if (!lifecycle.graph_dirty || now - lifecycle.dirty_since < config.persist_interval) {
     return false;
   }
-  if (!persist_graph_snapshot(state, config.graph_path)) {
+  if (!persist_graph_snapshot(persistence_snapshot, config.graph_path)) {
     return false;
   }
   lifecycle.graph_dirty = false;

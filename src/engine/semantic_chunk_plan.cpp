@@ -83,20 +83,12 @@ namespace {
   return classify_watched_file(path) == WatchedFileKind::Media ? SemanticInputKind::Media : SemanticInputKind::Document;
 }
 
-[[nodiscard]] bool is_valid_cached_record(const SemanticCacheRecord& record) {
-  return record.state == SemanticCacheState::Valid && std::filesystem::exists(record.fragment_path);
-}
-
-[[nodiscard]] bool has_stale_record_for_source(
-    const SemanticCache& cache,
-    const std::filesystem::path& path,
-    std::string_view current_hash) {
-  for (const auto& record : cache.records()) {
-    if (record.source_path == path && record.content_hash != current_hash) {
-      return true;
-    }
-  }
-  return false;
+[[nodiscard]] bool is_valid_cached_record(const SemanticCacheRecord& record, std::string_view current_hash) {
+  return record.state == SemanticCacheState::Valid &&
+         record.content_hash == current_hash &&
+         std::filesystem::exists(record.fragment_path) &&
+         !record.fragment_hash.empty() &&
+         sha256_file_hex(record.fragment_path) == record.fragment_hash;
 }
 
 void flush_chunk(SemanticChunkPlan& plan, SemanticChunk& chunk, std::uintmax_t& chunk_bytes) {
@@ -146,13 +138,18 @@ SemanticChunkPlan plan_semantic_chunks(
     index[key] = *classification.current;
 
     const auto& hash = classification.current->sha256;
-    const auto cached = cache.find_by_content_hash(hash);
-    if (cached.has_value() && is_valid_cached_record(*cached)) {
+    const auto cached = cache.find_for_source(path);
+    const auto current = cache.find_for_source(path, hash);
+    if (current.has_value() && is_valid_cached_record(*current, hash)) {
       ++plan.cache_hits;
       continue;
     }
-    if (cached.has_value() || has_stale_record_for_source(cache, path, hash)) {
-      ++plan.stale_inputs;
+    if (cached.has_value()) {
+      if (current.has_value() && current->state == SemanticCacheState::Failed) {
+        ++plan.failed_inputs;
+      } else {
+        ++plan.stale_inputs;
+      }
     }
 
     const auto input = SemanticInput{

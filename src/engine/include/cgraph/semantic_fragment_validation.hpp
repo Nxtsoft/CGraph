@@ -13,6 +13,9 @@ namespace cgraph {
 struct SemanticFragmentValidationResult {
   bool valid = false;
   Fragment fragment;
+  // SHA-256 of the exact byte buffer parsed by validate_semantic_fragment_file.
+  // Empty for in-memory JSON validation or when the file could not be read.
+  std::string source_sha256;
   std::vector<std::string> errors;
 };
 
