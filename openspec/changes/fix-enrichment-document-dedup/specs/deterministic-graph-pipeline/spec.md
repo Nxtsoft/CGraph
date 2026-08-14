@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
 ### Requirement: An enrichment node's identity includes the file it came from
-Two nodes that were not extracted from source but do record a `source_file` -- `document` and `media` -- SHALL NOT be merged by label similarity when their `source_file` values differ. A document's identity is the file it was written from, on the same footing as a `file` node's identity being its path.
+A node of an enrichment kind that records a `source_file` -- `document` and `media`, matched case-insensitively because `kind` is unvalidated host input -- SHALL NOT be merged by label similarity with ANY node whose `source_file` differs, enrichment or code symbol alike. A document's identity is scoped by the file it was written from: unlike a `file` node (which is excluded from dedup entirely), a document still participates in dedup within its own file.
 
-A `concept`, which records no `source_file`, is unaffected: label similarity remains its only merge signal.
+A `concept` -- or any enrichment node that omits `source_file` -- is unaffected: with no file recorded, label similarity remains its only merge signal.
 
 #### Scenario: A change's proposal, tasks and design stay three documents
 - **GIVEN** document nodes for `x/proposal.md`, `x/tasks.md` and `x/design.md`

@@ -58,11 +58,24 @@ The "either node" scoping (rather than "both nodes are enrichment") is deliberat
 stops a cross-file document-into-code-symbol merge, which deletes the document just the same,
 and it cannot affect code-symbol pairs.
 
-**Fragment contract (task 4.1): not tightened here.** The guard is kind-scoped and defensive
-across all four `source_file`/`source_location` presence combinations, so no per-kind schema
-constraint is required for correctness, and rejecting fragment shapes hosts already produce
-would break ingest compatibility. The silent degradation of a mistyped `source_location`
-remains recorded as an ambiguity in the `deterministic-graph-pipeline` spec.
+**Fragment contract (task 4.1): not tightened here.** Rejecting fragment shapes hosts already
+produce would break ingest compatibility, so the guard stays defensive instead — with two
+residuals recorded rather than papered over:
+
+- A `document`/`media` node that omits `source_file` (contract-legal: `source_file` is optional
+  for every kind) degrades to label-only identity, exactly like a `concept` — with no file
+  recorded there is nothing to scope identity to. Requiring `source_file` for enrichment kinds
+  at validation is the follow-up that would close this.
+- `kind` is verbatim host free text with no allowed-value list, so the guard casefolds the
+  comparison ("Document" must not bypass it); alias kinds ("doc", "image") are outside the
+  documented contract and are not special-cased.
+- Pre-existing and untouched: a document can still be absorbed by a *same-file* code symbol
+  with a similar label (both from-source, document unsited, so the declaration-site guard
+  cannot fire and `unite()` keeps the lower-indexed symbol). Cross-file merges — the measured
+  data loss — are what this change closes.
+
+The silent degradation of a mistyped `source_location` remains recorded as an ambiguity in the
+`deterministic-graph-pipeline` spec.
 
 ## Capabilities
 

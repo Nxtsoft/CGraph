@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -75,6 +76,21 @@ class UnionFind {
     }
   }
   return diffs == 1;
+}
+
+// An enrichment node's identity includes the file it was written from, so the
+// fuzzy pass must never merge a document or media node with anything from a
+// different source file. `kind` is verbatim host input (fragment_json copies
+// `type`/`kind` with no validation), so the comparison casefolds ASCII --
+// a host writing "Document" must not silently bypass the guard and resume
+// deleting documents.
+[[nodiscard]] bool enrichment_file_scoped_kind(const Node& node) {
+  std::string folded;
+  folded.reserve(node.kind.size());
+  for (const char ch : node.kind) {
+    folded.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return folded == "document" || folded == "media";
 }
 
 // Mirrors Graphify's fuzzy-merge blockers. Jaro-Winkler's prefix bonus scores
@@ -357,11 +373,12 @@ void semantic_dedup_impl(
         // build). Code symbols must keep merging across files -- the cross-file
         // "PaymentService"/"Payment Service" case is Graphify parity -- so the
         // rule is scoped to the enrichment kinds that carry a file: `document` and
-        // `media`. `concept` records no source_file and keeps label-only identity.
-        const auto file_scoped_kind = [](const Node& node) {
-          return node.kind == "document" || node.kind == "media";
-        };
-        if ((file_scoped_kind(left_node) || file_scoped_kind(right_node)) &&
+        // `media`. The guard fires when EITHER node is such a kind: a cross-file
+        // document-into-code-symbol merge deletes the document just the same. A
+        // concept (in practice written without a source_file) keeps label-only
+        // identity, as does a document that omits its source_file -- with no file
+        // recorded there is nothing to scope identity to.
+        if ((enrichment_file_scoped_kind(left_node) || enrichment_file_scoped_kind(right_node)) &&
             left_node.source_file != right_node.source_file) {
           continue;
         }

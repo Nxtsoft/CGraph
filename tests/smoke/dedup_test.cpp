@@ -167,6 +167,32 @@ int main() {
                                      .label = "Semantic Ingest Pipeline Tasks",
                                      .source_file = "docs/media/semantic-ingest-flow.svg",
                                      .kind = "media"});
+  // The guard fires when EITHER node is an enrichment kind: a cross-file
+  // document-into-code-symbol merge deletes the document just the same, so
+  // "either" must not decay to "both".
+  guard.nodes.push_back(cgraph::Node{.id = "dsym",
+                                     .label = "incremental_update_flow",
+                                     .source_file = "src/engine/incremental_update.cpp",
+                                     .source_location = cgraph::SourceLocation{.start_line = 12, .end_line = 12},
+                                     .kind = "function",
+                                     .properties = {{"community", "openspec-docs"}}});
+  guard.nodes.push_back(cgraph::Node{.id = "doc5",
+                                     .label = "incremental_update_notes",
+                                     .source_file = "docs/incremental-update-notes.md",
+                                     .kind = "document",
+                                     .properties = {{"community", "openspec-docs"}}});
+  // `kind` is verbatim host input with no validation; a cased variant must not
+  // bypass the guard.
+  guard.nodes.push_back(cgraph::Node{.id = "doc6",
+                                     .label = "plan-candidate-code-links/proposal.md",
+                                     .source_file = "openspec/changes/plan-candidate-code-links/proposal.md",
+                                     .kind = "Document",
+                                     .properties = {{"community", "openspec-docs"}}});
+  guard.nodes.push_back(cgraph::Node{.id = "doc7",
+                                     .label = "plan-candidate-code-links/design.md",
+                                     .source_file = "openspec/changes/plan-candidate-code-links/design.md",
+                                     .kind = "Document",
+                                     .properties = {{"community", "openspec-docs"}}});
   // An edge into each at-risk document: rewrite must keep resolving after dedup.
   guard.edges.push_back(cgraph::Edge{.source = "doc1", .target = "doc2", .relation = "REFERENCES"});
 
@@ -274,6 +300,23 @@ int main() {
     }
     if (contract_docs != 1) {
       std::cerr << "two records of one document failed to merge: " << contract_docs << "\n";
+      return 1;
+    }
+    std::size_t either_scope = 0;
+    std::size_t cased_docs = 0;
+    for (const auto& node : guard.nodes) {
+      either_scope += node.label == "incremental_update_notes" || node.label == "incremental_update_flow" ? 1 : 0;
+      cased_docs += node.label == "plan-candidate-code-links/proposal.md" ||
+                            node.label == "plan-candidate-code-links/design.md"
+                        ? 1
+                        : 0;
+    }
+    if (either_scope != 2) {
+      std::cerr << "a cross-file document merged into a code symbol: " << either_scope << "\n";
+      return 1;
+    }
+    if (cased_docs != 2) {
+      std::cerr << "a cased enrichment kind bypassed the file-scoped guard: " << cased_docs << "\n";
       return 1;
     }
     for (const auto& edge : guard.edges) {
