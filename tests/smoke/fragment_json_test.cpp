@@ -94,27 +94,76 @@ int main() {
   };
   cgraph::Fragment poisoned;
   // Must not throw. The fragment is structurally valid, so it parses; the
-  // mistyped location fields degrade -- absent location, or well-typed fields
-  // honoured and mistyped ones defaulted -- never an abort.
+  // mistyped fields degrade and the one well-typed field (end_column: 4) is
+  // honoured, so the location is present and reflects only that field.
   if (!cgraph::parse_fragment(poison, poisoned, errors)) {
     return 1;
   }
   if (poisoned.nodes.size() != 1) {
     return 1;
   }
-  // A location whose components could not be read as numbers must not silently
-  // become line 0 col 0 -- an int-typed absent field is a fabricated site. With
-  // no readable numeric component the location is absent.
-  if (poisoned.nodes[0].source_location.has_value() &&
-      poisoned.nodes[0].source_location->start_line == 0 &&
-      poisoned.nodes[0].source_location->start_column == 0 &&
-      poisoned.nodes[0].source_location->end_line == 0) {
-    // end_column was 4, so a present location is acceptable only if it reflects
-    // that; an all-zero location paired with the string/null/bool fields is the
-    // fabricated-site bug.
-    if (poisoned.nodes[0].source_location->end_column != 4) {
+  {
+    const auto& loc = poisoned.nodes[0].source_location;
+    if (!loc.has_value()) {
       return 1;
     }
+    if (loc->start_line != 0 || loc->start_column != 0 || loc->end_line != 0 || loc->end_column != 4) {
+      return 1;
+    }
+  }
+
+  // A location whose every component is unreadable must be ABSENT, not a
+  // fabricated line-0/column-0 site the host never stated.
+  const auto all_garbage = nlohmann::json{
+      {"nodes",
+       nlohmann::json::array({
+           {
+               {"id", "g"},
+               {"label", "G"},
+               {"type", "document"},
+               {"source_location",
+                {
+                    {"start_line", "9"},
+                    {"start_column", "1"},
+                    {"end_line", "2"},
+                    {"end_column", "3"},
+                }},
+           },
+       })},
+      {"edges", nlohmann::json::array()},
+  };
+  cgraph::Fragment garbage;
+  if (!cgraph::parse_fragment(all_garbage, garbage, errors)) {
+    return 1;
+  }
+  if (garbage.nodes.size() != 1 || garbage.nodes[0].source_location.has_value()) {
+    return 1;
+  }
+
+  // A negative or above-uint32 component degrades to 0, never wraps.
+  const auto out_of_range = nlohmann::json{
+      {"nodes",
+       nlohmann::json::array({
+           {
+               {"id", "r"},
+               {"label", "R"},
+               {"source_location",
+                {
+                    {"start_line", -5},
+                    {"end_line", 4294967296},
+                }},
+           },
+       })},
+      {"edges", nlohmann::json::array()},
+  };
+  cgraph::Fragment ranged;
+  if (!cgraph::parse_fragment(out_of_range, ranged, errors)) {
+    return 1;
+  }
+  // Neither component is readable as a uint32 (negative / oversized), so the
+  // location has no readable component and is absent.
+  if (ranged.nodes[0].source_location.has_value()) {
+    return 1;
   }
 
   return 0;

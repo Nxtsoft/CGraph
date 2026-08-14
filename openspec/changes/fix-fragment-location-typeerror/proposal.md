@@ -33,8 +33,10 @@ call sites), and confirmed a companion bug: numeric out-of-range fields wrap sil
   number, degrading absent/null/string/bool/float/negative/oversized values to 0 -- the same
   "tolerate garbage, reject only on structure" rule the rest of the parser follows. Parsing a
   fragment becomes total: no fragment shape can throw out of `parse_fragment`.
-- A `source_location` object with no readable numeric component becomes absent rather than a
-  fabricated line-0/column-0 site.
+- A `source_location` object with no readable numeric component (every field absent, or all
+  string/null/bool/float/negative/oversized) becomes absent rather than a fabricated
+  line-0/column-0 site; a location with at least one readable field is present and reflects
+  only the readable fields.
 - Regression test in `fragment_json_test.cpp`: a fragment whose location fields are
   string/null/bool/int must parse without throwing and must not fabricate an all-zero site.
 - Non-goals: no change to which fragments are structurally rejected; no new validation errors;
