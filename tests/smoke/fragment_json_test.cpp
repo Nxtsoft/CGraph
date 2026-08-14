@@ -67,5 +67,55 @@ int main() {
     return 1;
   }
 
+  // A type-confused source_location field must degrade to absent, never throw.
+  // A host (or LLM) writing "start_line": "9" -- a string where an int is
+  // expected -- once crashed the resident daemon with an uncaught
+  // nlohmann::type_error: the whole optional-field contract is "tolerate garbage,
+  // reject only on structure", and every other optional field honours it. A
+  // parse must be total: no fragment shape may throw out of parse_fragment.
+  const auto poison = nlohmann::json{
+      {"nodes",
+       nlohmann::json::array({
+           {
+               {"id", "poison"},
+               {"label", "Poison"},
+               {"type", "document"},
+               {"source_file", "docs/notes.md"},
+               {"source_location",
+                {
+                    {"start_line", "9"},        // string, not number
+                    {"start_column", nullptr},  // null
+                    {"end_line", true},         // bool
+                    {"end_column", 4},          // the one well-typed field
+                }},
+           },
+       })},
+      {"edges", nlohmann::json::array()},
+  };
+  cgraph::Fragment poisoned;
+  // Must not throw. The fragment is structurally valid, so it parses; the
+  // mistyped location fields degrade -- absent location, or well-typed fields
+  // honoured and mistyped ones defaulted -- never an abort.
+  if (!cgraph::parse_fragment(poison, poisoned, errors)) {
+    return 1;
+  }
+  if (poisoned.nodes.size() != 1) {
+    return 1;
+  }
+  // A location whose components could not be read as numbers must not silently
+  // become line 0 col 0 -- an int-typed absent field is a fabricated site. With
+  // no readable numeric component the location is absent.
+  if (poisoned.nodes[0].source_location.has_value() &&
+      poisoned.nodes[0].source_location->start_line == 0 &&
+      poisoned.nodes[0].source_location->start_column == 0 &&
+      poisoned.nodes[0].source_location->end_line == 0) {
+    // end_column was 4, so a present location is acceptable only if it reflects
+    // that; an all-zero location paired with the string/null/bool fields is the
+    // fabricated-site bug.
+    if (poisoned.nodes[0].source_location->end_column != 4) {
+      return 1;
+    }
+  }
+
   return 0;
 }
