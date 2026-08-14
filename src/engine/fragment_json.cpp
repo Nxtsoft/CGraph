@@ -1,5 +1,6 @@
 #include "cgraph/fragment_json.hpp"
 
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -80,11 +81,42 @@ void parse_confidence_fields(const nlohmann::json& value, Confidence& confidence
     return std::nullopt;
   }
 
+  // The rest of the parser tolerates type-confused optional fields by degrading
+  // to a default rather than throwing; source_location must do the same.
+  // nlohmann's json::value(key, default) THROWS type_error.302 on a type
+  // mismatch (a host or LLM writing "start_line": "9"), and no caller on the
+  // drop-ingest path catches it -- one such fragment aborted the resident
+  // daemon. Accept any non-negative integer, whether nlohmann typed it unsigned
+  // (its JSON parser does this for positive literals) or signed; an absent,
+  // null, string, bool, float, or negative value degrades to 0 -- and a negative
+  // never wraps to a huge unsigned line number, which the old value() coercion
+  // did. `any_read` records whether a real number was seen so an all-garbage
+  // location does not fabricate a site.
+  bool any_read = false;
+  const auto number_field = [&iter, &any_read](std::string_view key) -> std::uint32_t {
+    const auto field = iter->find(key);
+    if (field == iter->end() || !field->is_number_integer()) {
+      return 0U;
+    }
+    const auto raw = field->get<std::int64_t>();
+    if (raw < 0 || raw > std::numeric_limits<std::uint32_t>::max()) {
+      return 0U;
+    }
+    any_read = true;
+    return static_cast<std::uint32_t>(raw);
+  };
+
   SourceLocation location;
-  location.start_line = iter->value("start_line", 0U);
-  location.start_column = iter->value("start_column", 0U);
-  location.end_line = iter->value("end_line", 0U);
-  location.end_column = iter->value("end_column", 0U);
+  location.start_line = number_field("start_line");
+  location.start_column = number_field("start_column");
+  location.end_line = number_field("end_line");
+  location.end_column = number_field("end_column");
+
+  // With no readable numeric component, treat the location as absent rather than
+  // fabricating an all-zero site the host never stated.
+  if (!any_read) {
+    return std::nullopt;
+  }
   return location;
 }
 
