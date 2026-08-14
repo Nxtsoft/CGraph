@@ -345,16 +345,24 @@ void semantic_dedup_impl(
         // integrations/skills/cgraph-enrich/SKILL.md tells hosts to set it -- they
         // just carry no source_location. So they take the `left_from_source` branch
         // above, and identical-label documents are correctly kept apart.
-        //
-        // KNOWN, PRE-EXISTING, NOT FIXED HERE: because documents have no
-        // source_location, the site check below cannot fire for them, so two
-        // SIMILAR document labels in different files still merge -- a proposal, its
-        // tasks and its design collapsing into one node (44 documents and 144 edges
-        // lost per build, identical on HEAD~1). Filed as its own change; fixing it
-        // needs a decision about whether enrichment kinds should fuzzy-merge across
-        // files at all, which the cross-file `PaymentService` parity case says code
-        // symbols should.
         if (left_label == right_label && left_from_source) {
+          continue;
+        }
+        // An enrichment node's identity includes the file it was written from. A
+        // change's proposal, its tasks, and its design are three documents about
+        // one subject: labels similar enough to cross the threshold, a source_file
+        // each, and no source_location -- so neither the identical-label guard
+        // above nor the declaration-site guard below can protect them (measured on
+        // this repo's enriched graph: 44 documents and 144 edges deleted per
+        // build). Code symbols must keep merging across files -- the cross-file
+        // "PaymentService"/"Payment Service" case is Graphify parity -- so the
+        // rule is scoped to the enrichment kinds that carry a file: `document` and
+        // `media`. `concept` records no source_file and keeps label-only identity.
+        const auto file_scoped_kind = [](const Node& node) {
+          return node.kind == "document" || node.kind == "media";
+        };
+        if ((file_scoped_kind(left_node) || file_scoped_kind(right_node)) &&
+            left_node.source_file != right_node.source_file) {
           continue;
         }
         // Two nodes that each name a concrete declaration site are distinct

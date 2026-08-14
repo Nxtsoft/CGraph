@@ -43,6 +43,27 @@ The shape is specific and was mis-stated in that change's first draft: `document
 - **Recovers real content**: 44 document nodes and 144 edges per build on this repo. Any graph with enrichment is affected in proportion to how many similarly-named documents it has -- an OpenSpec-shaped repo, where every change has a `proposal.md`, `tasks.md` and `design.md`, is close to worst case.
 - Fixing it changes `graph.json` for any enriched project, so the retrieval fixture's frozen shape drifts further from what the engine produces. That is already recorded in `fix-cpp-call-resolution`.
 
+## Decision (task 1.1/1.2)
+
+An enrichment node that records a `source_file` — `document` and `media` — has **file-scoped
+identity**: the fuzzy pass SHALL NOT merge it with any node whose `source_file` differs,
+regardless of what the other node is. A document's identity is the file it was written from,
+the same way a `file` node's identity is its path. The guard is scoped by kind, not by the
+absence of a `source_location`, because code symbols with the identical shape (source file, no
+location) must keep cross-file fuzzy merging — `PaymentService` in `a.cpp` merging with
+`Payment Service` in `b.cpp` is Graphify parity behaviour asserted in `dedup_test.cpp`.
+`concept` records no `source_file` and keeps label-only identity, unchanged.
+
+The "either node" scoping (rather than "both nodes are enrichment") is deliberate: it also
+stops a cross-file document-into-code-symbol merge, which deletes the document just the same,
+and it cannot affect code-symbol pairs.
+
+**Fragment contract (task 4.1): not tightened here.** The guard is kind-scoped and defensive
+across all four `source_file`/`source_location` presence combinations, so no per-kind schema
+constraint is required for correctness, and rejecting fragment shapes hosts already produce
+would break ingest compatibility. The silent degradation of a mistyped `source_location`
+remains recorded as an ambiguity in the `deterministic-graph-pipeline` spec.
+
 ## Capabilities
 
 ### Modified Capabilities
