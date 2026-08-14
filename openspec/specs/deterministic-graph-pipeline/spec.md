@@ -266,6 +266,166 @@ The system SHALL merge fragments into a graph with Graphify-compatible per-file 
 - **WHEN** a raw call matches only common or ambiguous names
 - **THEN** the system avoids creating a misleading extracted call edge
 
+### Requirement: Semantic dedup never merges file nodes
+Semantic dedup SHALL exclude nodes of kind `file` from both dedup passes; a file's identity is
+its path, never a label match.
+*Evidence: `src/engine/dedup.cpp:229-231` (at f3b9837).*
+
+#### Scenario: Sibling files with near-identical names both survive
+- **GIVEN** file nodes `viewers/compiq-viewer.tsx` and `viewers/compiq-viewer-states.tsx` whose labels score above the fuzzy threshold
+- **WHEN** semantic dedup runs
+- **THEN** both file nodes survive and every edge referencing them still resolves
+
+### Requirement: Exact-pass identity is normalized label, source file, and declaration site
+For nodes with a non-empty `source_file`, semantic dedup SHALL merge two nodes in its exact pass
+only when their normalized labels (`make_id`: NFKC, non-word runs to `_`, casefold), their
+`source_file`, and their declaration site (start line AND start column; empty when
+`source_location` is absent) are all equal.
+*Evidence: `src/engine/dedup.cpp:250-263`, `src/engine/normalize.cpp:111-121` (at f3b9837).*
+
+#### Scenario: A double-extraction of one symbol merges
+- **GIVEN** two nodes labeled `same_site_twice` at `twice.cpp` line 12
+- **WHEN** semantic dedup runs
+- **THEN** one node survives
+
+#### Scenario: Overloads sharing a line survive
+- **GIVEN** three `three_up` nodes at `cols.cpp` line 7 with columns 0, 30, and 62
+- **WHEN** semantic dedup runs
+- **THEN** all three survive — the site is line AND column
+
+#### Scenario: Same name in two files is two symbols
+- **GIVEN** `HelperWidget` declared in `one.tsx` and in `two.tsx`
+- **WHEN** semantic dedup runs
+- **THEN** both survive
+
+#### Scenario: Exact identity is separator- and case-insensitive
+- **GIVEN** `Payment Service` and `payment_service` in one file at one site
+- **WHEN** semantic dedup runs
+- **THEN** their normalized labels are equal and the exact pass unites them
+
+### Requirement: Nodes without a source file are excluded from the exact pass
+Semantic dedup SHALL NOT enter a node with an empty `source_file` into the exact pass; the fuzzy
+pass is such a node's only merge path.
+*Evidence: `src/engine/dedup.cpp:250,337-341` (at f3b9837).*
+
+#### Scenario: Identical source-less concepts merge via the fuzzy pass
+- **GIVEN** two `concept` nodes labeled `OpenSpec Change Lifecycle` with no `source_file`, the label clearing the fuzzy entropy gate
+- **WHEN** semantic dedup runs
+- **THEN** they merge into one node
+
+#### Scenario: Identical low-entropy source-less labels never merge
+- **GIVEN** two source-less nodes with the identical low-entropy label `aaa`
+- **WHEN** semantic dedup runs
+- **THEN** both survive — they enter neither the exact pass nor the fuzzy pass
+
+### Requirement: Only high-entropy labels enter the fuzzy pass
+Semantic dedup SHALL admit a node to the fuzzy pass only when its normalized label has length at
+least 3 and Shannon entropy at least `entropy_floor` (default 2.5); the exact pass has no
+entropy gate.
+*Evidence: `src/engine/dedup.cpp:60-62,265-268`, `src/engine/include/cgraph/dedup.hpp:11` (at f3b9837).*
+
+#### Scenario: A low-entropy label survives a high similarity score
+- **GIVEN** a node labeled `aaaaaa` alongside similar high-entropy labels
+- **WHEN** semantic dedup runs
+- **THEN** the `aaaaaa` node survives untouched
+
+### Requirement: Fuzzy candidates come from LSH bands and community buckets
+Semantic dedup SHALL compare a fuzzy pair only when the two nodes share a MinHash/LSH band
+(16 hashes, bands of 4, over 3-gram shingles of the normalized label) or the same non-empty
+`community` property; pairs colliding in neither MAY be missed — candidate generation is
+approximate by design.
+*Evidence: `src/engine/dedup.cpp:21-22,104-141,270-281` (at f3b9837).*
+
+#### Scenario: Same-community pairs are always compared
+- **GIVEN** two high-entropy nodes with `community = "payments"` whose MinHash bands do not collide
+- **WHEN** semantic dedup runs
+- **THEN** the pair is still scored, via the shared community bucket
+
+### Requirement: Fuzzy merges require the similarity threshold
+Semantic dedup SHALL merge a fuzzy candidate pair only when the Jaro-Winkler similarity of the
+normalized labels is at least `jaro_winkler_threshold` (default 0.92), lowered to
+`same_community_threshold` (default 0.88) when both nodes carry the same non-empty community.
+*Evidence: `src/engine/dedup.cpp:53-58,302-309`, `src/engine/include/cgraph/dedup.hpp:12-13` (at f3b9837).*
+
+#### Scenario: A near-identical pair in one community merges at the lower threshold
+- **GIVEN** `PaymentServic` and `PaymentServce`, both in community `payments`
+- **WHEN** semantic dedup runs
+- **THEN** they merge
+
+#### Scenario: Cross-file similar code symbols merge (Graphify parity)
+- **GIVEN** `PaymentService` in `a.cpp` and `Payment Service` in `b.cpp`, no locations, no shared community
+- **WHEN** semantic dedup runs
+- **THEN** they merge into one node — the pair passes the threshold and no guard fires
+
+### Requirement: Prefix extensions and short labels are blocked from fuzzy merge
+Semantic dedup SHALL NOT fuzzy-merge a pair where one label is a strict prefix of the other, and
+SHALL NOT fuzzy-merge a pair whose longer label is under 12 characters unless the labels are
+same-length, differ at exactly one position, and score at least 0.97.
+*Evidence: `src/engine/dedup.cpp:89-102,310-312` (at f3b9837).*
+
+#### Scenario: A component and its props type stay distinct
+- **GIVEN** `MessageBubble` and `MessageBubbleProps` in one file
+- **WHEN** semantic dedup runs
+- **THEN** both survive
+
+### Requirement: From-source and source-less nodes never fuzzy-merge
+Semantic dedup SHALL NOT fuzzy-merge two nodes whose `source_file` presence differs — a code
+symbol and an enrichment concept are different species.
+*Evidence: `src/engine/dedup.cpp:320-329` (at f3b9837).*
+
+#### Scenario: A concept does not absorb a code symbol
+- **GIVEN** a sited `PaymentProcessor` function node and a source-less `PaymentProcessor` concept
+- **WHEN** semantic dedup runs
+- **THEN** both survive
+
+### Requirement: Identical from-source labels belong to the exact pass alone
+Semantic dedup SHALL NOT fuzzy-merge two from-source nodes whose normalized labels are
+identical; only the exact pass (file + site) may unite them.
+*Evidence: `src/engine/dedup.cpp:357-359` (at f3b9837).*
+
+#### Scenario: Cross-file identical labels stay apart in the fuzzy pass
+- **GIVEN** `HelperWidget` in `one.tsx` and `two.tsx`, both high-entropy
+- **WHEN** the fuzzy pass scores them at 1.0
+- **THEN** they are not united
+
+### Requirement: Distinct declaration sites never fuzzy-merge
+Semantic dedup SHALL NOT fuzzy-merge two nodes that both carry a `source_location` unless their
+file, start line, and start column are all equal.
+*Evidence: `src/engine/dedup.cpp:375-380` (at f3b9837).*
+
+#### Scenario: Similar function names at different sites survive
+- **GIVEN** `validate_semantic_fragment_json` at `validation.cpp:9` and `validate_semantic_fragment_file` at `validation.cpp:15`, scoring above the threshold
+- **WHEN** semantic dedup runs
+- **THEN** both survive
+
+### Requirement: Merges keep the earliest node and rewrite edges
+When nodes merge, semantic dedup SHALL keep the group's earliest node (lowest index) as the
+survivor, rewrite every edge endpoint to the survivor's id, and collapse edges that become
+duplicates under the (source, relation, target) key.
+*Evidence: `src/engine/dedup.cpp:37-47,152-186` (at f3b9837).*
+
+#### Scenario: No edge references a merged-away id
+- **GIVEN** edges pointing at nodes that merge
+- **WHEN** semantic dedup runs
+- **THEN** every edge endpoint resolves to a surviving node id
+
+### Requirement: Neighborhood dedup scopes to changed files
+`semantic_dedup_neighborhood` SHALL consider a merge only when at least one node of the pair has
+its `source_file` in the changed-files set (for the exact pass, the node itself must be in
+scope), and SHALL be a no-op when the changed set is empty. A scoped pair MAY merge with an
+unchanged file's node — that is how a re-extracted duplicate finds its original.
+*Evidence: `src/engine/dedup.cpp:213-215,250,292-294,478-487` (at f3b9837).*
+
+#### Scenario: An unrelated pair is not re-examined
+- **GIVEN** a neighborhood dedup scoped to `{a.cpp}`
+- **WHEN** two similar nodes both sourced from `b.cpp` are candidates
+- **THEN** they are not compared
+
+#### Scenario: Empty change set is a no-op
+- **GIVEN** an empty changed-files set
+- **WHEN** `semantic_dedup_neighborhood` is called
+- **THEN** the graph is unchanged
+
 ### Requirement: Graph analysis and exports
 The system SHALL compute community assignments, centrality-derived god-node rankings, cross-community surprise signals, and Graphify-compatible exports.
 

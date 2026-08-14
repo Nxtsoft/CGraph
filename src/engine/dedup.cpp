@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -75,6 +76,21 @@ class UnionFind {
     }
   }
   return diffs == 1;
+}
+
+// An enrichment node's identity includes the file it was written from, so the
+// fuzzy pass must never merge a document or media node with anything from a
+// different source file. `kind` is verbatim host input (fragment_json copies
+// `type`/`kind` with no validation), so the comparison casefolds ASCII --
+// a host writing "Document" must not silently bypass the guard and resume
+// deleting documents.
+[[nodiscard]] bool enrichment_file_scoped_kind(const Node& node) {
+  std::string folded;
+  folded.reserve(node.kind.size());
+  for (const char ch : node.kind) {
+    folded.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return folded == "document" || folded == "media";
 }
 
 // Mirrors Graphify's fuzzy-merge blockers. Jaro-Winkler's prefix bonus scores
@@ -345,16 +361,25 @@ void semantic_dedup_impl(
         // integrations/skills/cgraph-enrich/SKILL.md tells hosts to set it -- they
         // just carry no source_location. So they take the `left_from_source` branch
         // above, and identical-label documents are correctly kept apart.
-        //
-        // KNOWN, PRE-EXISTING, NOT FIXED HERE: because documents have no
-        // source_location, the site check below cannot fire for them, so two
-        // SIMILAR document labels in different files still merge -- a proposal, its
-        // tasks and its design collapsing into one node (44 documents and 144 edges
-        // lost per build, identical on HEAD~1). Filed as its own change; fixing it
-        // needs a decision about whether enrichment kinds should fuzzy-merge across
-        // files at all, which the cross-file `PaymentService` parity case says code
-        // symbols should.
         if (left_label == right_label && left_from_source) {
+          continue;
+        }
+        // An enrichment node's identity includes the file it was written from. A
+        // change's proposal, its tasks, and its design are three documents about
+        // one subject: labels similar enough to cross the threshold, a source_file
+        // each, and no source_location -- so neither the identical-label guard
+        // above nor the declaration-site guard below can protect them (measured on
+        // this repo's enriched graph: 44 documents and 144 edges deleted per
+        // build). Code symbols must keep merging across files -- the cross-file
+        // "PaymentService"/"Payment Service" case is Graphify parity -- so the
+        // rule is scoped to the enrichment kinds that carry a file: `document` and
+        // `media`. The guard fires when EITHER node is such a kind: a cross-file
+        // document-into-code-symbol merge deletes the document just the same. A
+        // concept (in practice written without a source_file) keeps label-only
+        // identity, as does a document that omits its source_file -- with no file
+        // recorded there is nothing to scope identity to.
+        if ((enrichment_file_scoped_kind(left_node) || enrichment_file_scoped_kind(right_node)) &&
+            left_node.source_file != right_node.source_file) {
           continue;
         }
         // Two nodes that each name a concrete declaration site are distinct

@@ -43,6 +43,40 @@ The shape is specific and was mis-stated in that change's first draft: `document
 - **Recovers real content**: 44 document nodes and 144 edges per build on this repo. Any graph with enrichment is affected in proportion to how many similarly-named documents it has -- an OpenSpec-shaped repo, where every change has a `proposal.md`, `tasks.md` and `design.md`, is close to worst case.
 - Fixing it changes `graph.json` for any enriched project, so the retrieval fixture's frozen shape drifts further from what the engine produces. That is already recorded in `fix-cpp-call-resolution`.
 
+## Decision (task 1.1/1.2)
+
+An enrichment node that records a `source_file` — `document` and `media` — has **file-scoped
+identity**: the fuzzy pass SHALL NOT merge it with any node whose `source_file` differs,
+regardless of what the other node is. A document's identity is the file it was written from,
+the same way a `file` node's identity is its path. The guard is scoped by kind, not by the
+absence of a `source_location`, because code symbols with the identical shape (source file, no
+location) must keep cross-file fuzzy merging — `PaymentService` in `a.cpp` merging with
+`Payment Service` in `b.cpp` is Graphify parity behaviour asserted in `dedup_test.cpp`.
+`concept` records no `source_file` and keeps label-only identity, unchanged.
+
+The "either node" scoping (rather than "both nodes are enrichment") is deliberate: it also
+stops a cross-file document-into-code-symbol merge, which deletes the document just the same,
+and it cannot affect code-symbol pairs.
+
+**Fragment contract (task 4.1): not tightened here.** Rejecting fragment shapes hosts already
+produce would break ingest compatibility, so the guard stays defensive instead — with two
+residuals recorded rather than papered over:
+
+- A `document`/`media` node that omits `source_file` (contract-legal: `source_file` is optional
+  for every kind) degrades to label-only identity, exactly like a `concept` — with no file
+  recorded there is nothing to scope identity to. Requiring `source_file` for enrichment kinds
+  at validation is the follow-up that would close this.
+- `kind` is verbatim host free text with no allowed-value list, so the guard casefolds the
+  comparison ("Document" must not bypass it); alias kinds ("doc", "image") are outside the
+  documented contract and are not special-cased.
+- Pre-existing and untouched: a document can still be absorbed by a *same-file* code symbol
+  with a similar label (both from-source, document unsited, so the declaration-site guard
+  cannot fire and `unite()` keeps the lower-indexed symbol). Cross-file merges — the measured
+  data loss — are what this change closes.
+
+The silent degradation of a mistyped `source_location` remains recorded as an ambiguity in the
+`deterministic-graph-pipeline` spec.
+
 ## Capabilities
 
 ### Modified Capabilities

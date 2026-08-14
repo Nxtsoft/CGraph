@@ -129,6 +129,73 @@ int main() {
   guard.nodes.push_back(cgraph::Node{.id = "f1", .label = "viewers/compiq-viewer.tsx", .source_file = "viewers/compiq-viewer.tsx", .kind = "file"});
   guard.nodes.push_back(cgraph::Node{.id = "f2", .label = "viewers/compiq-viewer-states.tsx", .source_file = "viewers/compiq-viewer-states.tsx", .kind = "file"});
 
+  // An enrichment document's identity is the file it was written from. A change's
+  // proposal and its tasks are two different documents about one subject: labels
+  // similar enough to cross the fuzzy threshold, a source_file each, and no
+  // source_location -- so neither the identical-label guard nor the
+  // declaration-site guard can fire. Merging them deletes real content (measured
+  // on this repo's enriched graph: 44 documents and 144 edges per build).
+  // The community property mirrors the graphs this bites in production: dedup
+  // re-runs over already-published graphs whose nodes carry communities, which
+  // buckets the pair as candidates at the lower 0.88 threshold.
+  guard.nodes.push_back(cgraph::Node{.id = "doc1",
+                                     .label = "persist-incremental-index/proposal.md",
+                                     .source_file = "openspec/changes/persist-incremental-index/proposal.md",
+                                     .kind = "document",
+                                     .properties = {{"community", "openspec-docs"}}});
+  guard.nodes.push_back(cgraph::Node{.id = "doc2",
+                                     .label = "persist-incremental-index/tasks.md",
+                                     .source_file = "openspec/changes/persist-incremental-index/tasks.md",
+                                     .kind = "document",
+                                     .properties = {{"community", "openspec-docs"}}});
+  // Two records of ONE document (same source file) are still a duplicate and merge.
+  guard.nodes.push_back(cgraph::Node{.id = "doc3",
+                                     .label = "Host Skill Contract",
+                                     .source_file = "docs/host-skill-contract.md",
+                                     .kind = "document"});
+  guard.nodes.push_back(cgraph::Node{.id = "doc4",
+                                     .label = "Host Skill Contract",
+                                     .source_file = "docs/host-skill-contract.md",
+                                     .kind = "document"});
+  // media carries the same shape (source_file, no source_location) and follows
+  // the same file-scoped identity rule.
+  guard.nodes.push_back(cgraph::Node{.id = "med1",
+                                     .label = "Semantic Ingest Pipeline Proposal",
+                                     .source_file = "docs/media/semantic-ingest-pipeline.svg",
+                                     .kind = "media"});
+  guard.nodes.push_back(cgraph::Node{.id = "med2",
+                                     .label = "Semantic Ingest Pipeline Tasks",
+                                     .source_file = "docs/media/semantic-ingest-flow.svg",
+                                     .kind = "media"});
+  // The guard fires when EITHER node is an enrichment kind: a cross-file
+  // document-into-code-symbol merge deletes the document just the same, so
+  // "either" must not decay to "both".
+  guard.nodes.push_back(cgraph::Node{.id = "dsym",
+                                     .label = "incremental_update_flow",
+                                     .source_file = "src/engine/incremental_update.cpp",
+                                     .source_location = cgraph::SourceLocation{.start_line = 12, .end_line = 12},
+                                     .kind = "function",
+                                     .properties = {{"community", "openspec-docs"}}});
+  guard.nodes.push_back(cgraph::Node{.id = "doc5",
+                                     .label = "incremental_update_notes",
+                                     .source_file = "docs/incremental-update-notes.md",
+                                     .kind = "document",
+                                     .properties = {{"community", "openspec-docs"}}});
+  // `kind` is verbatim host input with no validation; a cased variant must not
+  // bypass the guard.
+  guard.nodes.push_back(cgraph::Node{.id = "doc6",
+                                     .label = "plan-candidate-code-links/proposal.md",
+                                     .source_file = "openspec/changes/plan-candidate-code-links/proposal.md",
+                                     .kind = "Document",
+                                     .properties = {{"community", "openspec-docs"}}});
+  guard.nodes.push_back(cgraph::Node{.id = "doc7",
+                                     .label = "plan-candidate-code-links/design.md",
+                                     .source_file = "openspec/changes/plan-candidate-code-links/design.md",
+                                     .kind = "Document",
+                                     .properties = {{"community", "openspec-docs"}}});
+  // An edge into each at-risk document: rewrite must keep resolving after dedup.
+  guard.edges.push_back(cgraph::Edge{.source = "doc1", .target = "doc2", .relation = "REFERENCES"});
+
   cgraph::semantic_dedup(guard);
 
   bool saw_props = false;
@@ -208,6 +275,60 @@ int main() {
   if (config_loaders != 1) {
     std::cerr << "same-file duplicate labels were not merged\n";
     return 1;
+  }
+  {
+    // A change's proposal and tasks stay two documents; two records of one
+    // document still merge; media follows the document rule.
+    std::size_t change_docs = 0;
+    std::size_t contract_docs = 0;
+    std::size_t media_nodes = 0;
+    for (const auto& node : guard.nodes) {
+      change_docs += node.label == "persist-incremental-index/proposal.md" ||
+                             node.label == "persist-incremental-index/tasks.md"
+                         ? 1
+                         : 0;
+      contract_docs += node.label == "Host Skill Contract" ? 1 : 0;
+      media_nodes += node.kind == "media" ? 1 : 0;
+    }
+    if (change_docs != 2) {
+      std::cerr << "similar documents from different files were merged: " << change_docs << "\n";
+      return 1;
+    }
+    if (media_nodes != 2) {
+      std::cerr << "similar media from different files were merged: " << media_nodes << "\n";
+      return 1;
+    }
+    if (contract_docs != 1) {
+      std::cerr << "two records of one document failed to merge: " << contract_docs << "\n";
+      return 1;
+    }
+    std::size_t either_scope = 0;
+    std::size_t cased_docs = 0;
+    for (const auto& node : guard.nodes) {
+      either_scope += node.label == "incremental_update_notes" || node.label == "incremental_update_flow" ? 1 : 0;
+      cased_docs += node.label == "plan-candidate-code-links/proposal.md" ||
+                            node.label == "plan-candidate-code-links/design.md"
+                        ? 1
+                        : 0;
+    }
+    if (either_scope != 2) {
+      std::cerr << "a cross-file document merged into a code symbol: " << either_scope << "\n";
+      return 1;
+    }
+    if (cased_docs != 2) {
+      std::cerr << "a cased enrichment kind bypassed the file-scoped guard: " << cased_docs << "\n";
+      return 1;
+    }
+    for (const auto& edge : guard.edges) {
+      if (edge.relation != "REFERENCES") {
+        continue;
+      }
+      if (edge.source != "doc1" || edge.target != "doc2") {
+        std::cerr << "document edge no longer resolves to both documents: " << edge.source << " -> "
+                  << edge.target << "\n";
+        return 1;
+      }
+    }
   }
   return 0;
 }
