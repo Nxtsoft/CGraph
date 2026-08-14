@@ -659,18 +659,25 @@ int main() {
 
     // Capstone: the 44-document deletion in miniature, through the real
     // ingest -> dedup path. Two kind-less documents from different files with
-    // similar labels (Jaro-Winkler ~0.94, above the fuzzy threshold). Without
-    // the ingest stamp their kind is empty, the file-scoped guard skips them,
-    // and semantic_dedup merges one away. With the stamp both are `document`
-    // and both survive.
+    // similar labels (Jaro-Winkler ~0.94). In the real enriched graph such
+    // documents become fuzzy candidates through the COMMUNITY bucket, not LSH
+    // banding (a mid-string proposal<->tasks difference defeats minhash bands) --
+    // so both nodes carry the same community, exactly as a post-community-detection
+    // graph does. Without the ingest stamp their kind is empty, the file-scoped
+    // guard skips them, and semantic_dedup merges one away; with the stamp both
+    // are `document` and both survive.
     const auto prop_src = root / "changes" / "persist-incremental-index" / "proposal.md";
     const auto task_src = root / "changes" / "persist-incremental-index" / "tasks.md";
     write_file(prop_src, "# Proposal\n");
     write_file(task_src, "# Tasks\n");
+    const auto community_doc = [](std::string id, std::string label, const std::string& source_file) {
+      return "{\"id\":\"" + id + "\",\"label\":\"" + label + "\",\"source_file\":\"" + source_file +
+             "\",\"properties\":{\"community\":\"openspec-docs\"}}";
+    };
     const auto prop_frag = root / "semantic-drop" / "k_prop.json";
     const auto task_frag = root / "semantic-drop" / "k_task.json";
-    write_file(prop_frag, frag_json(node_json("doc:prop", "persist-incremental-index/proposal.md", "", abs(prop_src))));
-    write_file(task_frag, frag_json(node_json("doc:task", "persist-incremental-index/tasks.md", "", abs(task_src))));
+    write_file(prop_frag, frag_json(community_doc("doc:prop", "persist-incremental-index/proposal.md", abs(prop_src))));
+    write_file(task_frag, frag_json(community_doc("doc:task", "persist-incremental-index/tasks.md", abs(task_src))));
     (void)cgraph::ingest_semantic_fragment(
         kind_state, kind_cache, {{.path = prop_src, .content_sha256 = cgraph::sha256_file_hex(prop_src)}}, prop_frag);
     (void)cgraph::ingest_semantic_fragment(
