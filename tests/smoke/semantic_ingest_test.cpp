@@ -3,6 +3,7 @@
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/file_cache.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/dedup.hpp"
 #include "cgraph/semantic_chunk_plan.hpp"
 
 #include <cerrno>
@@ -41,6 +42,15 @@ bool has_node_label(const cgraph::GraphSnapshot& graph, const std::string& label
     }
   }
   return false;
+}
+
+std::string node_kind_for(const cgraph::GraphSnapshot& graph, const std::string& label) {
+  for (const auto& node : graph.nodes) {
+    if (node.label == label) {
+      return node.kind;
+    }
+  }
+  return "<absent>";
 }
 
 bool has_edge(const cgraph::GraphSnapshot& graph, const std::string& source, const std::string& relation, const std::string& target) {
@@ -551,5 +561,132 @@ int main() {
   expect(ok, status["result"]["enrichment_stale"].get<int>() >= 1, "status: reports stale count");
 
   std::filesystem::remove_all(root);
+  // Enrichment identity must not depend on the host-optional kind field. The
+  // dedup file-scoped guard only protects a node whose kind is exactly
+  // document/media, but kind is optional and unvalidated -- a host that omits it
+  // or aliases it re-opens the cross-file document deletion. Ingest stamps the
+  // planned kind (derived deterministically from the source path) onto every
+  // node whose source_file matches a planned enrichment source, EXCEPT a node
+  // the host explicitly marked a concept (a concept legitimately carries a
+  // source_file -- see the "Service" node above -- and must keep its identity).
+  {
+    cgraph::DaemonState kind_state;
+    cgraph::GraphSnapshot kind_seed;
+    kind_seed.build_state = cgraph::BuildState::DeterministicReady;
+    cgraph::publish_graph_snapshot(kind_state, std::move(kind_seed));
+    cgraph::SemanticCache kind_cache;
+
+    const auto omitted_src = root / "docs" / "omitted.md";
+    const auto aliased_src = root / "docs" / "aliased.md";
+    const auto concept_src = root / "docs" / "with-concept.md";
+    const auto media_src = root / "media" / "diagram.png";
+    write_file(omitted_src, "# Omitted kind\n");
+    write_file(aliased_src, "# Aliased kind\n");
+    write_file(concept_src, "# Has a concept\n");
+    write_file(media_src, "\x89PNG\r\n\x1a\n binary-ish");
+
+    // Hosts write the absolute source path the plan handed them (SKILL.md shows
+    // an absolute `source_file`), which is what the planned-source match keys on.
+    const auto abs = [](const std::filesystem::path& p) { return p.generic_string(); };
+    const auto node_json = [](std::string id, std::string label, std::string type_field,
+                              const std::string& source_file) {
+      std::string node = "{\"id\":\"" + id + "\",\"label\":\"" + label + "\"";
+      if (!type_field.empty()) {
+        node += ",\"type\":\"" + type_field + "\"";
+      }
+      node += ",\"source_file\":\"" + source_file + "\"}";
+      return node;
+    };
+    const auto frag_json = [](const std::string& nodes) {
+      return "{\"nodes\":[" + nodes + "],\"edges\":[],\"hyperedges\":[]}";
+    };
+
+    // A document with NO type, and one with an aliased type ("doc"). Both -> document.
+    const auto omitted_frag = root / "semantic-drop" / "k_omitted.json";
+    write_file(omitted_frag, frag_json(node_json("doc:omitted", "Omitted", "", abs(omitted_src))));
+    auto omitted_res = cgraph::ingest_semantic_fragment(
+        kind_state, kind_cache, {{.path = omitted_src, .content_sha256 = cgraph::sha256_file_hex(omitted_src)}}, omitted_frag);
+    auto kind_graph = cgraph::read_graph_snapshot(kind_state);
+    expect(ok, omitted_res.merged, "kind: omitted-type fragment merges");
+    expect(ok, node_kind_for(*kind_graph, "Omitted") == "document",
+           "kind: a document authored without a type is stamped document");
+
+    const auto aliased_frag = root / "semantic-drop" / "k_aliased.json";
+    write_file(aliased_frag, frag_json(node_json("doc:aliased", "Aliased", "doc", abs(aliased_src))));
+    auto aliased_res = cgraph::ingest_semantic_fragment(
+        kind_state, kind_cache, {{.path = aliased_src, .content_sha256 = cgraph::sha256_file_hex(aliased_src)}}, aliased_frag);
+    kind_graph = cgraph::read_graph_snapshot(kind_state);
+    expect(ok, aliased_res.merged, "kind: aliased-type fragment merges");
+    expect(ok, node_kind_for(*kind_graph, "Aliased") == "document",
+           "kind: an aliased type (doc) is corrected to document");
+
+    // A media source is stamped media.
+    const auto media_frag = root / "semantic-drop" / "k_media.json";
+    write_file(media_frag, frag_json(node_json("media:diagram", "Diagram", "", abs(media_src))));
+    auto media_res = cgraph::ingest_semantic_fragment(
+        kind_state, kind_cache, {{.path = media_src, .content_sha256 = cgraph::sha256_file_hex(media_src)}}, media_frag);
+    kind_graph = cgraph::read_graph_snapshot(kind_state);
+    expect(ok, media_res.merged, "kind: media fragment merges");
+    expect(ok, node_kind_for(*kind_graph, "Diagram") == "media",
+           "kind: a media source node is stamped media");
+
+    // A fragment mixing a kind-less document node with an explicit concept node,
+    // both carrying the SAME planned source_file: the document is stamped, the
+    // concept is preserved.
+    const auto concept_frag = root / "semantic-drop" / "k_concept.json";
+    write_file(concept_frag,
+               frag_json(node_json("doc:wc", "WithConcept", "", abs(concept_src)) + "," +
+                         node_json("concept:wc", "WCConcept", "concept", abs(concept_src))));
+    auto concept_res = cgraph::ingest_semantic_fragment(
+        kind_state, kind_cache, {{.path = concept_src, .content_sha256 = cgraph::sha256_file_hex(concept_src)}}, concept_frag);
+    kind_graph = cgraph::read_graph_snapshot(kind_state);
+    expect(ok, concept_res.merged, "kind: mixed doc+concept fragment merges");
+    expect(ok, node_kind_for(*kind_graph, "WithConcept") == "document",
+           "kind: kind-less document beside a concept is stamped document");
+    expect(ok, node_kind_for(*kind_graph, "WCConcept") == "concept",
+           "kind: an explicit concept carrying a source_file is preserved");
+
+    // A node whose source_file is NOT one of this fragment's planned sources is
+    // left untouched (we only assert kinds for sources the plan classified).
+    const auto stray_frag = root / "semantic-drop" / "k_stray.json";
+    write_file(stray_frag, frag_json(node_json("x:stray", "Stray", "note", abs(root / "docs" / "unplanned.md"))));
+    auto stray_res = cgraph::ingest_semantic_fragment(
+        kind_state, kind_cache, {{.path = omitted_src, .content_sha256 = cgraph::sha256_file_hex(omitted_src)}}, stray_frag);
+    kind_graph = cgraph::read_graph_snapshot(kind_state);
+    expect(ok, stray_res.merged, "kind: stray fragment merges");
+    expect(ok, node_kind_for(*kind_graph, "Stray") == "note",
+           "kind: a node whose source_file is not a planned source keeps its host kind");
+
+    // Capstone: the 44-document deletion in miniature, through the real
+    // ingest -> dedup path. Two kind-less documents from different files with
+    // similar labels (Jaro-Winkler ~0.94, above the fuzzy threshold). Without
+    // the ingest stamp their kind is empty, the file-scoped guard skips them,
+    // and semantic_dedup merges one away. With the stamp both are `document`
+    // and both survive.
+    const auto prop_src = root / "changes" / "persist-incremental-index" / "proposal.md";
+    const auto task_src = root / "changes" / "persist-incremental-index" / "tasks.md";
+    write_file(prop_src, "# Proposal\n");
+    write_file(task_src, "# Tasks\n");
+    const auto prop_frag = root / "semantic-drop" / "k_prop.json";
+    const auto task_frag = root / "semantic-drop" / "k_task.json";
+    write_file(prop_frag, frag_json(node_json("doc:prop", "persist-incremental-index/proposal.md", "", abs(prop_src))));
+    write_file(task_frag, frag_json(node_json("doc:task", "persist-incremental-index/tasks.md", "", abs(task_src))));
+    (void)cgraph::ingest_semantic_fragment(
+        kind_state, kind_cache, {{.path = prop_src, .content_sha256 = cgraph::sha256_file_hex(prop_src)}}, prop_frag);
+    (void)cgraph::ingest_semantic_fragment(
+        kind_state, kind_cache, {{.path = task_src, .content_sha256 = cgraph::sha256_file_hex(task_src)}}, task_frag);
+    auto fused = *cgraph::read_graph_snapshot(kind_state);
+    cgraph::semantic_dedup(fused);
+    std::size_t survivors = 0;
+    for (const auto& node : fused.nodes) {
+      survivors += (node.label == "persist-incremental-index/proposal.md" ||
+                    node.label == "persist-incremental-index/tasks.md")
+                       ? 1
+                       : 0;
+    }
+    expect(ok, survivors == 2,
+           "kind: two kind-less cross-file documents both survive dedup after ingest stamps them");
+  }
+
   return ok ? 0 : 1;
 }
