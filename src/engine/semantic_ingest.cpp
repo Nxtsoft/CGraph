@@ -1,11 +1,14 @@
 #include "cgraph/semantic_ingest.hpp"
 
 #include "cgraph/file_cache.hpp"
+#include "cgraph/file_watcher.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/semantic_fragment_validation.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -25,6 +28,44 @@ struct SourceFingerprint {
 
 [[nodiscard]] std::string normalized_path(const std::filesystem::path& path) {
   return normalize_semantic_source_path(path);
+}
+
+[[nodiscard]] std::string ascii_casefold(std::string_view value) {
+  std::string folded;
+  folded.reserve(value.size());
+  for (const char ch : value) {
+    folded.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return folded;
+}
+
+// Stamp the planned kind onto every node whose source_file is one of this
+// fragment's planned enrichment sources, so a node's cross-file dedup identity
+// does not depend on the host-optional `type`/`kind` field. The kind is
+// re-derived from the source PATH via the same classifier the plan uses
+// (classify_watched_file), so it is correct on every ingest path -- live drop,
+// manifest replay, and restart replay from cache records that carry no kind.
+//
+// The host-written kind is overridden EXCEPT when the host explicitly marked the
+// node a concept: a concept may legitimately carry a source_file (provenance of
+// where the idea was discussed) and is a distinct semantic entity, not the
+// document itself, so its identity must be preserved. A document a host wrongly
+// labels `concept` is thereby left unprotected -- indistinguishable from a real
+// concept, it is an accepted residual, not something to guess at.
+void stamp_planned_kinds(
+    std::vector<Node>& nodes,
+    const std::unordered_set<std::string>& planned_sources) {
+  for (auto& node : nodes) {
+    if (node.source_file.empty() || !planned_sources.contains(node.source_file)) {
+      continue;
+    }
+    if (ascii_casefold(node.kind) == "concept") {
+      continue;
+    }
+    node.kind = classify_watched_file(node.source_file) == WatchedFileKind::Media
+                    ? "media"
+                    : "document";
+  }
 }
 
 [[nodiscard]] DependencyResult compute_external_dependencies(
@@ -183,6 +224,10 @@ SemanticIngestResult ingest_semantic_fragment(
   for (const auto& source : source_fingerprints) {
     current_sources.insert(normalized_path(source.path));
   }
+
+  // node.source_file was normalized in the loop above, so it matches the
+  // normalized planned-source keys directly.
+  stamp_planned_kinds(validation.fragment.nodes, current_sources);
 
   DependencyResult dependency_result;
   mutate_graph_snapshot(state, [&](GraphSnapshot& current) {
