@@ -330,5 +330,68 @@ int main() {
       }
     }
   }
+
+  // Escape-path B: a non-compliant host omits source_file on two similar-labeled
+  // document nodes. They share a community (so the fuzzy pass buckets them as
+  // candidates at the 0.88 threshold) but carry no file to scope identity to.
+  // With no source_file the pair's source_files compare equal (""=="") -- the
+  // file-scoped guard must still keep them apart, or one document is silently
+  // deleted. A document that dropped its file is not label-mergeable with
+  // another document.
+  {
+    cgraph::GraphSnapshot g;
+    g.nodes.push_back(cgraph::Node{.id = "b1",
+                                   .label = "orphan-change/proposal.md",
+                                   .kind = "document",
+                                   .properties = {{"community", "openspec-docs"}}});
+    g.nodes.push_back(cgraph::Node{.id = "b2",
+                                   .label = "orphan-change/tasks.md",
+                                   .kind = "document",
+                                   .properties = {{"community", "openspec-docs"}}});
+    cgraph::semantic_dedup(g);
+    std::size_t sourceless_docs = 0;
+    for (const auto& node : g.nodes) {
+      sourceless_docs += (node.label == "orphan-change/proposal.md" ||
+                          node.label == "orphan-change/tasks.md")
+                             ? 1
+                             : 0;
+    }
+    if (sourceless_docs != 2) {
+      std::cerr << "source_file-less documents were fuzzy-merged (escape-path B): " << sourceless_docs
+                << "\n";
+      return 1;
+    }
+  }
+
+  // No over-block: two documents that share the SAME real source_file but have
+  // different (similar) labels must still merge -- the guard only keeps apart
+  // pairs lacking a shared non-empty file. This path is otherwise untested and
+  // is what the source_file.empty() clause protects.
+  {
+    cgraph::GraphSnapshot g;
+    g.nodes.push_back(cgraph::Node{.id = "s1",
+                                   .label = "reproducible-ci-dependencies-notes-one",
+                                   .source_file = "openspec/changes/reproducible-ci/notes.md",
+                                   .kind = "document",
+                                   .properties = {{"community", "openspec-docs"}}});
+    g.nodes.push_back(cgraph::Node{.id = "s2",
+                                   .label = "reproducible-ci-dependencies-notes-two",
+                                   .source_file = "openspec/changes/reproducible-ci/notes.md",
+                                   .kind = "document",
+                                   .properties = {{"community", "openspec-docs"}}});
+    cgraph::semantic_dedup(g);
+    std::size_t same_file_docs = 0;
+    for (const auto& node : g.nodes) {
+      same_file_docs += (node.label == "reproducible-ci-dependencies-notes-one" ||
+                         node.label == "reproducible-ci-dependencies-notes-two")
+                            ? 1
+                            : 0;
+    }
+    if (same_file_docs != 1) {
+      std::cerr << "two documents sharing one real source_file failed to merge: " << same_file_docs
+                << "\n";
+      return 1;
+    }
+  }
   return 0;
 }

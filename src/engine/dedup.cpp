@@ -375,11 +375,19 @@ void semantic_dedup_impl(
         // rule is scoped to the enrichment kinds that carry a file: `document` and
         // `media`. The guard fires when EITHER node is such a kind: a cross-file
         // document-into-code-symbol merge deletes the document just the same. A
-        // concept (in practice written without a source_file) keeps label-only
-        // identity, as does a document that omits its source_file -- with no file
-        // recorded there is nothing to scope identity to.
+        // concept keeps label-only identity because it is not a file-scoped kind
+        // and never reaches this branch as such.
+        //
+        // A file-scoped node is kept apart unless the pair shares the SAME
+        // non-empty source_file. Two documents from different files differ and
+        // are kept apart; a genuine re-extraction of one document shares its file
+        // and may still merge. Crucially, two file-scoped nodes that BOTH omit
+        // source_file compare equal ("" == "") -- but an empty file is no proof
+        // of shared identity, so they are kept apart too. Otherwise a
+        // non-compliant host that drops source_file would have its similar-named
+        // documents silently merged away (escape-path B).
         if ((enrichment_file_scoped_kind(left_node) || enrichment_file_scoped_kind(right_node)) &&
-            left_node.source_file != right_node.source_file) {
+            (left_node.source_file != right_node.source_file || left_node.source_file.empty())) {
           continue;
         }
         // Two nodes that each name a concrete declaration site are distinct
