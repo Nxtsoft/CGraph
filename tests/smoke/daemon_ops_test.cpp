@@ -1510,5 +1510,53 @@ int main() {
     writer.join();
   }
 
+  // Enrichment concepts must not out-rank structural code in search (issue #16):
+  // a `concept:` node whose prose mentions a symbol is host-authored text, not a
+  // code symbol, so a code search surfaces structural results first while the
+  // concept still appears (coexist, not eclipse) and `total` reflects all.
+  {
+    cgraph::DaemonState rank_state;
+    cgraph::GraphSnapshot g;
+    g.build_state = cgraph::BuildState::DeterministicReady;
+    g.nodes.push_back(cgraph::Node{.id = "f_resolve", .label = "resolveRepoId", .source_file = "a/mem.ts",
+                                   .source_location = cgraph::SourceLocation{.start_line = 1}, .kind = "function"});
+    g.nodes.push_back(cgraph::Node{.id = "f_resolve_cached", .label = "resolveRepoIdCached", .source_file = "a/cache.ts",
+                                   .source_location = cgraph::SourceLocation{.start_line = 2}, .kind = "function"});
+    // Label chosen to sort BEFORE the function labels alphabetically (leading
+    // "Economics" < "resolveRepoId") so that without the structural-first
+    // partition the concept would rank first at equal centrality -- the exact
+    // eclipse-adjacent ordering issue #16 reports.
+    g.nodes.push_back(cgraph::Node{.id = "concept:known-selector",
+                                   .label = "Economics-tab workspace selector unions repoIds (resolveRepoId-deduped)",
+                                   .kind = "concept"});
+    cgraph::publish_graph_snapshot(rank_state, std::move(g));
+
+    // "resolveRepo" is a substring of two functions AND the concept, and is an
+    // exact match for none, so it takes the search route.
+    const auto res = cgraph::handle_daemon_request(rank_state, cgraph::make_request("query", {{"q", "resolveRepo"}}))["result"];
+    if (res.value("route", std::string{}) != "search") {
+      return 90;
+    }
+    if (res.value("total", 0) != 3) {  // all three coexist; the concept is not dropped
+      return 91;
+    }
+    const auto& nodes = res["nodes"];
+    if (nodes.size() != 3) {
+      return 92;
+    }
+    // Structural nodes first, the concept last.
+    if (nodes[0].value("kind", std::string{}) != "function" ||
+        nodes[1].value("kind", std::string{}) != "function" ||
+        nodes[2].value("kind", std::string{}) != "concept") {
+      return 93;
+    }
+    // The exact symbol still routes to entity and returns the structural node.
+    const auto exact = cgraph::handle_daemon_request(rank_state, cgraph::make_request("query", {{"q", "resolveRepoId"}}))["result"];
+    if (exact.value("route", std::string{}) != "entity" ||
+        exact["nodes"][0].value("kind", std::string{}) != "function") {
+      return 94;
+    }
+  }
+
   return 0;
 }

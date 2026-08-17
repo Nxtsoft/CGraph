@@ -20,6 +20,15 @@ using Properties = std::unordered_map<std::string, std::string>;
   return id.starts_with("memory:");
 }
 
+// Semantic-enrichment nodes live in the host-authored `doc:`/`concept:`/`media:`/
+// `topic:` id namespaces. They are prose about the code, not code symbols, so in
+// code search they are ranked after structural results (they still appear -- they
+// do not eclipse -- but a code query surfaces code first).
+[[nodiscard]] inline bool is_enrichment_node_id(std::string_view id) {
+  return id.starts_with("doc:") || id.starts_with("concept:") || id.starts_with("media:") ||
+         id.starts_with("topic:");
+}
+
 enum class Confidence {
   Extracted,
   Inferred,

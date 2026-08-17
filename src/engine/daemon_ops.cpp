@@ -732,6 +732,14 @@ struct StructuralIntent {
       return lhs->label < rhs->label;  // stable, deterministic tiebreak
     });
   }
+  // Enrichment nodes (doc:/concept:/media:/topic:) are host-authored prose about
+  // the code, not code symbols. Keep them after structural results so a code
+  // search surfaces code first -- an agent looking up `resolveRepo` should get
+  // the functions, not a saved memory that merely mentions the name. They still
+  // appear (no eclipse) and `total` is unchanged; this is a stable partition, so
+  // the centrality/overlap order within each group is preserved.
+  std::ranges::stable_partition(
+      matches, [](const Node* node) { return !is_enrichment_node_id(node->id); });
 
   const auto total = matches.size();
   if (limit > 0 && matches.size() > limit) {
