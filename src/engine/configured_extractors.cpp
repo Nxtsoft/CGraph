@@ -19,6 +19,7 @@ extern "C" const TSLanguage* tree_sitter_javascript();
 extern "C" const TSLanguage* tree_sitter_kotlin();
 extern "C" const TSLanguage* tree_sitter_python();
 extern "C" const TSLanguage* tree_sitter_ruby();
+extern "C" const TSLanguage* tree_sitter_rust();
 extern "C" const TSLanguage* tree_sitter_scala();
 extern "C" const TSLanguage* tree_sitter_typescript();
 extern "C" const TSLanguage* tree_sitter_tsx();
@@ -243,6 +244,66 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
   return config;
 }
 
+// Rust `::`-qualified and turbofish callees are shapes cpp_callee_name does not
+// know (callee_leaf_name only descends the C-family node kinds), so reusing it
+// would silently drop every `Type::assoc()` and `foo::<T>()` call. Descend the
+// Rust-specific wrappers to the leaf identifier instead:
+//   scoped_identifier -> its `name` (Type::assoc / path::to::fn)
+//   generic_function  -> its `function` (turbofish foo::<T>())
+//   field_expression  -> its `field` (x.method::<T>())
+// and stop at identifier / field_identifier. Anything else yields no name (the
+// call is dropped rather than guessed).
+[[nodiscard]] std::string rust_callee_name(const TSNode& node, const ExtractionContext& context) {
+  TSNode cur = node;
+  while (!ts_node_is_null(cur)) {
+    const std::string_view type = ts_node_type(cur);
+    if (type == "identifier" || type == "field_identifier") {
+      return go_node_text(cur, context.source);
+    }
+    if (type == "scoped_identifier") {
+      cur = ts_node_child_by_field_name(cur, "name", 4);
+      continue;
+    }
+    if (type == "generic_function") {
+      cur = ts_node_child_by_field_name(cur, "function", 8);
+      continue;
+    }
+    if (type == "field_expression") {
+      cur = ts_node_child_by_field_name(cur, "field", 5);
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
+[[nodiscard]] LanguageConfig rust_config() {
+  return LanguageConfig{
+      .name = "rust",
+      .grammar_name = "tree-sitter-rust",
+      .extensions = {".rs"},
+      // No class kind in Rust: struct/enum/union/trait/type-alias are all "type"
+      // nodes (mirrors Go's type_spec choice). impl blocks carry no name and are
+      // deliberately not registered -- methods inside them are function_items and
+      // are captured as file-contained functions, exactly like Go's methods.
+      .function_node_types = {"function_item", "function_signature_item"},
+      .type_node_types = {"struct_item", "enum_item", "union_item", "trait_item", "type_item"},
+      // use paths are `::`-delimited and decoupled from file layout, so every
+      // import stub would resolve to no project file and be dropped -- imports are
+      // a v1 non-goal, not wasted work.
+      .call_node_types = {"call_expression"},
+      .name_fields = {"name"},
+      .body_fields = {"body"},
+      .call_accessor_fields = {"function"},
+      // `x.method()` is call_expression{function: field_expression}; the bare
+      // method name is the `field`. Qualified `Type::method()` is a
+      // scoped_identifier (not a member call) and is reduced by rust_callee_name.
+      .call_member_node_types = {"field_expression"},
+      .call_member_field = "field",
+      .resolve_callee_name = rust_callee_name,
+  };
+}
+
 [[nodiscard]] LanguageConfig groovy_config() {
   return LanguageConfig{
       .name = "groovy",
@@ -282,6 +343,8 @@ const TSLanguage* tree_sitter_language_for(DetectedLanguage language) {
       return tree_sitter_python();
     case DetectedLanguage::Ruby:
       return tree_sitter_ruby();
+    case DetectedLanguage::Rust:
+      return tree_sitter_rust();
     case DetectedLanguage::Scala:
       return tree_sitter_scala();
     case DetectedLanguage::TypeScript:
@@ -315,6 +378,8 @@ std::optional<LanguageConfig> config_for_language(DetectedLanguage language) {
       return python_language_config();
     case DetectedLanguage::Ruby:
       return ruby_config();
+    case DetectedLanguage::Rust:
+      return rust_config();
     case DetectedLanguage::Scala:
       return scala_config();
     case DetectedLanguage::TypeScript:

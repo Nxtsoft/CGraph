@@ -64,6 +64,8 @@ int main() {
       {cgraph::DetectedLanguage::Groovy, "Service.groovy", "class Service { def run() {} }", "Service"},
       {cgraph::DetectedLanguage::Go, "service.go",
        "package main\n\ntype Service struct{}\n\nfunc (s *Service) Run() {}\n", "Service"},
+      {cgraph::DetectedLanguage::Rust, "service.rs",
+       "struct Service {}\nimpl Service { fn run(&self) { helper(); } }\nfn helper() {}\n", "Service"},
       {cgraph::DetectedLanguage::MsBuild, "app.csproj", R"xml(<Project><Target Name="Build"/></Project>)xml", "Build"},
       {cgraph::DetectedLanguage::Delphi, "Form1.dfm", "object Form1: TForm1\nend\n", "Form1"},
       {cgraph::DetectedLanguage::Apex, "Worker.cls", "public class Worker { public void run() {} }", "Worker"},

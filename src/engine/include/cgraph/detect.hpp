@@ -24,6 +24,7 @@ enum class DetectedLanguage {
   PhpBlade,
   Python,
   Ruby,
+  Rust,
   Scala,
   Sql,
   TypeScript,
