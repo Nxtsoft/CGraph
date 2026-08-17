@@ -66,6 +66,9 @@ DetectedLanguage detect_language(const std::filesystem::path& path) {
   if (extension == ".go") {
     return DetectedLanguage::Go;
   }
+  if (extension == ".rs") {
+    return DetectedLanguage::Rust;
+  }
   if (extension == ".groovy" || extension == ".gvy" || extension == ".gradle") {
     return DetectedLanguage::Groovy;
   }
@@ -120,6 +123,8 @@ std::string_view language_name(DetectedLanguage language) {
       return "delphi";
     case DetectedLanguage::Go:
       return "go";
+    case DetectedLanguage::Rust:
+      return "rust";
     case DetectedLanguage::Groovy:
       return "groovy";
     case DetectedLanguage::Java:

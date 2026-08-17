@@ -152,6 +152,73 @@ bool check_go_extraction() {
   return true;
 }
 
+bool check_rust_extraction() {
+  constexpr std::string_view source =
+      "struct Service {}\n"
+      "enum Status { Ok, Err }\n"
+      "trait Handler { fn handle(&self); }\n"
+      "type Id = i64;\n"
+      "\n"
+      "impl Service {\n"
+      "    fn run(&self) {\n"
+      "        helper();\n"
+      "        self.tick();\n"
+      "        Service::make();\n"
+      "    }\n"
+      "    fn tick(&self) {}\n"
+      "    fn make() -> Service { Service {} }\n"
+      "}\n"
+      "\n"
+      "fn helper() {}\n";
+
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::Rust,
+      cgraph::ExtractionContext{.source_file = "src/service.rs", .source = source});
+  if (!result.has_value()) {
+    return fail("rust extraction returned no result");
+  }
+
+  // struct/enum/trait/type-alias are all `type` nodes (no class kind in Rust).
+  for (const char* type_name : {"Service", "Status", "Handler", "Id"}) {
+    if (find_node(*result, type_name, "type") == nullptr) {
+      return fail(std::string("missing type node ") + type_name);
+    }
+  }
+  // impl methods are function_items and are captured as functions; `handle` is a
+  // trait function_signature_item (no body); `helper` is a free function.
+  for (const char* fn_name : {"run", "tick", "make", "helper", "handle"}) {
+    if (find_node(*result, fn_name, "function") == nullptr) {
+      return fail(std::string("missing function node ") + fn_name);
+    }
+  }
+
+  // helper() -> a plain identifier call, non-member.
+  const auto plain_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "helper" && !call.is_member_call;
+  });
+  if (plain_call == result->raw_calls.end()) {
+    return fail("missing plain raw call to helper");
+  }
+  // self.tick() -> call_expression{function: field_expression}; the bare field
+  // name is a member call so resolution stays same-file.
+  const auto member_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "tick" && call.is_member_call;
+  });
+  if (member_call == result->raw_calls.end()) {
+    return fail("missing member raw call to tick");
+  }
+  // Service::make() -> a scoped_identifier callee. cpp_callee_name would drop it;
+  // rust_callee_name reduces it to the bare name `make`, kept as a non-member
+  // call eligible for project-wide resolution.
+  const auto scoped_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "make" && !call.is_member_call;
+  });
+  if (scoped_call == result->raw_calls.end()) {
+    return fail("missing scoped raw call reduced to make");
+  }
+  return true;
+}
+
 bool check_coverage_registry() {
   if (!cgraph::has_registered_extractor(cgraph::DetectedLanguage::Go) ||
       !cgraph::has_registered_extractor(cgraph::DetectedLanguage::Python) ||
@@ -194,6 +261,7 @@ int main() {
       cgraph::DetectedLanguage::Kotlin,
       cgraph::DetectedLanguage::Python,
       cgraph::DetectedLanguage::Ruby,
+      cgraph::DetectedLanguage::Rust,
       cgraph::DetectedLanguage::Scala,
       cgraph::DetectedLanguage::TypeScript,
       cgraph::DetectedLanguage::Tsx,
@@ -221,6 +289,9 @@ int main() {
   }
   if (!check_csharp_extraction()) {
     return 4;
+  }
+  if (!check_rust_extraction()) {
+    return 5;
   }
   if (!check_coverage_registry()) {
     return 3;
