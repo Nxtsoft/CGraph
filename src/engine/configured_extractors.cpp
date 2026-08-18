@@ -6,6 +6,13 @@
 #include "cgraph/normalize.hpp"
 #include "cgraph/python_extractor.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
 namespace cgraph {
 namespace {
 
