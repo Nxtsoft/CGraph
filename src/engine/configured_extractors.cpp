@@ -277,8 +277,164 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
   return {};
 }
 
+// --- Rust `use` imports ------------------------------------------------------
+// A `use` path is `::`-delimited and decoupled from file layout (`a/b.rs` vs
+// `a/b/mod.rs`), and the syntax alone cannot tell whether the last segment names
+// a module or an item declared in one. Extraction therefore records one stub per
+// imported leaf -- the full `/`-joined path, the original (pre-alias) name, and
+// a `module_layout=rust` marker -- and resolve_imports owns the layout decision:
+// `<path>.rs` / `<path>/mod.rs` first, then the parent path as the module with
+// the leaf as a declared item. Glob (`use a::b::*`) and `{self}` leaves name the
+// module itself and are emitted as `module` stubs. Every stub is consumed by
+// resolve_imports (remapped or dropped), so the marker never reaches an export.
+// Leading `crate::`/`self::`/`super::` segments only position the path within
+// the project and are stripped before unique-suffix resolution.
+
+[[nodiscard]] bool rust_plain_use_path(std::string_view text) {
+  if (text.empty()) {
+    return false;
+  }
+  return std::ranges::all_of(text, [](char ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') || ch == '_' || ch == ':';
+  });
+}
+
+// Append the `::`-split segments of a path-shaped node. Returns false for
+// anything that is not a plain path -- a bracketed `<T as Trait>` or generic
+// path is dropped rather than guessed.
+[[nodiscard]] bool rust_append_use_path(
+    const TSNode& node, const ExtractionContext& context, std::vector<std::string>& segments) {
+  const auto text = go_node_text(node, context.source);
+  if (!rust_plain_use_path(text)) {
+    return false;
+  }
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    const auto pos = text.find("::", start);
+    auto segment = text.substr(start, pos == std::string::npos ? std::string::npos : pos - start);
+    if (!segment.empty()) {
+      segments.push_back(std::move(segment));
+    }
+    if (pos == std::string::npos) {
+      break;
+    }
+    start = pos + 2;
+  }
+  return true;
+}
+
+void rust_emit_use_stub(
+    std::vector<std::string> segments, bool module_only, const ExtractionContext& context, Fragment& fragment) {
+  std::size_t first = 0;
+  while (first < segments.size() &&
+         (segments[first] == "crate" || segments[first] == "self" || segments[first] == "super")) {
+    ++first;
+  }
+  bool as_module = module_only;
+  if (segments.size() > first && segments.back() == "self") {
+    segments.pop_back();  // `use a::b::{self, ...}`: the self leaf IS module a::b
+    as_module = true;
+  }
+  if (first >= segments.size()) {
+    return;  // `use crate::*;` and friends: nothing project-resolvable remains
+  }
+  std::string joined = segments[first];
+  for (std::size_t index = first + 1; index < segments.size(); ++index) {
+    joined += "/" + segments[index];
+  }
+  const auto label = as_module ? joined : segments.back();
+  // The id carries path AND label so an item stub and a module stub over the
+  // same path never collide across fragments (first-occurrence-wins in merge
+  // would otherwise pick one kind nondeterministically).
+  const auto stub_id = make_id("rust_use:" + joined + ":" + label);
+  const auto exists = std::ranges::any_of(
+      fragment.nodes, [&](const Node& existing) { return existing.id == stub_id; });
+  if (!exists) {
+    fragment.nodes.push_back(Node{
+        .id = stub_id,
+        .label = label,
+        .source_location = SourceLocation{.start_line = 1, .end_line = 1},
+        .kind = as_module ? "module" : "import",
+        .confidence = Confidence::Extracted,
+        .properties = {{"import_path", joined}, {"module_layout", "rust"}},
+    });
+  }
+  fragment.edges.push_back(Edge{
+      .source = make_id(context.source_file),
+      .target = stub_id,
+      .relation = "imports",
+      .confidence = Confidence::Extracted,
+  });
+}
+
+void rust_walk_use_tree(
+    const TSNode& node,
+    const ExtractionContext& context,
+    Fragment& fragment,
+    const std::vector<std::string>& prefix) {
+  const std::string_view type = ts_node_type(node);
+  if (type == "identifier" || type == "scoped_identifier" || type == "crate" ||
+      type == "self" || type == "super") {
+    auto segments = prefix;
+    if (rust_append_use_path(node, context, segments)) {
+      rust_emit_use_stub(std::move(segments), false, context, fragment);
+    }
+    return;
+  }
+  if (type == "use_as_clause") {
+    // Resolution goes through the ORIGINAL name; the alias never becomes a node
+    // (resolve_imports remaps by the name declared in the target file).
+    const auto path = ts_node_child_by_field_name(node, "path", 4);
+    if (!ts_node_is_null(path)) {
+      rust_walk_use_tree(path, context, fragment, prefix);
+    }
+    return;
+  }
+  if (type == "scoped_use_list") {
+    auto segments = prefix;
+    const auto path = ts_node_child_by_field_name(node, "path", 4);
+    if (!ts_node_is_null(path) && !rust_append_use_path(path, context, segments)) {
+      return;
+    }
+    const auto list = ts_node_child_by_field_name(node, "list", 4);
+    if (!ts_node_is_null(list)) {
+      rust_walk_use_tree(list, context, fragment, segments);
+    }
+    return;
+  }
+  if (type == "use_list") {
+    const auto count = ts_node_named_child_count(node);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      rust_walk_use_tree(ts_node_named_child(node, index), context, fragment, prefix);
+    }
+    return;
+  }
+  if (type == "use_wildcard") {
+    auto segments = prefix;
+    if (ts_node_named_child_count(node) > 0 &&
+        !rust_append_use_path(ts_node_named_child(node, 0), context, segments)) {
+      return;
+    }
+    rust_emit_use_stub(std::move(segments), true, context, fragment);
+    return;
+  }
+  // metavariable and anything else: dropped rather than guessed.
+}
+
+void rust_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
+  if (std::string_view(ts_node_type(node)) != "use_declaration") {
+    return;
+  }
+  const auto argument = ts_node_child_by_field_name(node, "argument", 8);
+  if (ts_node_is_null(argument)) {
+    return;
+  }
+  rust_walk_use_tree(argument, context, fragment, {});
+}
+
 [[nodiscard]] LanguageConfig rust_config() {
-  return LanguageConfig{
+  LanguageConfig config{
       .name = "rust",
       .grammar_name = "tree-sitter-rust",
       .extensions = {".rs"},
@@ -288,9 +444,7 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
       // are captured as file-contained functions, exactly like Go's methods.
       .function_node_types = {"function_item", "function_signature_item"},
       .type_node_types = {"struct_item", "enum_item", "union_item", "trait_item", "type_item"},
-      // use paths are `::`-delimited and decoupled from file layout, so every
-      // import stub would resolve to no project file and be dropped -- imports are
-      // a v1 non-goal, not wasted work.
+      .import_node_types = {"use_declaration"},
       .call_node_types = {"call_expression"},
       .name_fields = {"name"},
       .body_fields = {"body"},
@@ -302,6 +456,8 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
       .call_member_field = "field",
       .resolve_callee_name = rust_callee_name,
   };
+  config.import_handler = rust_import_handler;
+  return config;
 }
 
 [[nodiscard]] LanguageConfig groovy_config() {
