@@ -130,15 +130,14 @@ int main() {
     int budget;
     double baseline;  // measured on the committed fixture at gate introduction
   };
-  // Re-pinned for openspec/changes/rank-focal-seeds-by-idf: idf-weighted seed
-  // ranking plus the 3-seed gather lifted measured end-to-end recall from
-  // 0.1804/0.2330/0.2795/0.2936 (the re-anchor pins on this same fixture) to
-  // the values below -- +39% relative at the shipped default budget of 6000.
-  // Baselines are transcriptions of the gate's own output on the committed
-  // pair (regenerated at 0cb8237: 1580 nodes / 3178 links, 75 symbol rows),
-  // measured at root length 58.
+  // Re-pinned for openspec/changes/stem-lexical-seed-matching: stemming the
+  // seed-ranking terms lifted measured end-to-end recall from
+  // 0.2175/0.3403/0.3864/0.4245 (the idf-ranking pins on this same fixture) to
+  // the values below. Baselines are transcriptions of the gate's own output on
+  // the committed pair (regenerated at 0cb8237: 1580 nodes / 3178 links, 75
+  // symbol rows), measured at root length 58.
   const std::vector<Target> targets = {
-      {2000, 0.2175}, {4000, 0.3403}, {6000, 0.3864}, {8000, 0.4245}};
+      {2000, 0.2487}, {4000, 0.3629}, {6000, 0.3927}, {8000, 0.4425}};
   constexpr double kTol = 0.03;
 
   std::cout << "end-to-end retrieval gate  (N=" << rows.size() << " symbol rows, q-only, engine defaults)\n";

@@ -254,12 +254,44 @@ constexpr std::size_t kSameFileCandidateCap = 5;
 // never a substring of a symbol label — still resolves a focal node instead of
 // returning empty. A query that shares no term with any label yields no match, so
 // a genuinely off-topic request stays an honest zero hit.
+// One-shot suffix-strip stemming for seed matching, so a query inflection
+// ("packing", "resolves", "imports") matches the code identifier it names
+// ("pack", "resolve", "import"). Deliberately light: a single strip from a
+// fixed suffix list, and the stem must keep >= 4 chars so short roots stay
+// exact -- doubled-consonant gerunds ("running" -> "runn") are accepted misses
+// rather than reasons for a heavier stemmer. Used ONLY by lexical_matches
+// below; lexical_terms itself, the adaptive gather gate, and the knapsack
+// value keep exact-match semantics. Measured on the committed fixture:
+// +1.4 to +3.5 end-to-end recall points at every budget, and the share of
+// rows whose grade-2 anchor is lexically reachable at all rises 0.733 -> 0.747
+// (research/beyond-lexical).
+[[nodiscard]] std::string stem_term(const std::string& term) {
+  static constexpr std::string_view kSuffixes[] = {"ing", "tion", "sion", "ers", "ies",
+                                                   "ed",  "es",   "al",   "er",  "s"};
+  for (const auto suffix : kSuffixes) {
+    if (term.size() >= suffix.size() + 4 && term.ends_with(suffix)) {
+      return term.substr(0, term.size() - suffix.size());
+    }
+  }
+  return term;
+}
+
+[[nodiscard]] std::unordered_set<std::string> stem_terms(const std::unordered_set<std::string>& terms) {
+  std::unordered_set<std::string> out;
+  out.reserve(terms.size());
+  for (const auto& term : terms) {
+    out.insert(stem_term(term));
+  }
+  return out;
+}
+
 [[nodiscard]] std::vector<const Node*> lexical_matches(
-    const GraphSnapshot& graph, const std::unordered_set<std::string>& query_terms) {
+    const GraphSnapshot& graph, const std::unordered_set<std::string>& raw_query_terms) {
   std::vector<std::pair<double, const Node*>> scored;
-  if (query_terms.empty()) {
+  if (raw_query_terms.empty()) {
     return {};
   }
+  const auto query_terms = stem_terms(raw_query_terms);
   // Rank by idf-weighted overlap: each query term is worth log(1 + N/(1+df)),
   // so a rare identifier outranks a ubiquitous word instead of every term
   // counting equally. Plain query-term fraction let common words dominate the
@@ -275,7 +307,7 @@ constexpr std::size_t kSameFileCandidateCap = 5;
     if (is_memory_node_id(node.id)) {
       continue;  // session-memory checkpoints are not code matches
     }
-    auto terms = lexical_terms(node.label);
+    auto terms = stem_terms(lexical_terms(node.label));
     for (const auto& term : terms) {
       ++df[term];
     }
