@@ -1,0 +1,68 @@
+name: release-binaries
+
+# Builds the release-preset binaries and attaches them to a GitHub release,
+# so consumers (CI test selection, agent hosts) can download cgraph instead
+# of building from source.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag to create or upload to (e.g. bin-v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-upload:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/triplets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: macos-latest
+            platform: macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: lukka/get-cmake@latest
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: vcpkg.json
+
+      - name: Configure
+        run: cmake --preset release
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp build/release/src/cli/cgraph \
+             build/release/src/daemon/graphd \
+             build/release/src/client/cgraph-client \
+             build/release/src/mcp/cgraph-mcp dist/
+          tar -czf "cgraph-${{ matrix.platform }}.tar.gz" -C dist .
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+                 --title "Binaries ${{ inputs.tag }}" \
+                 --notes "Prebuilt release binaries (cgraph, graphd, cgraph-client, cgraph-mcp)."
+          gh release upload "${{ inputs.tag }}" "cgraph-${{ matrix.platform }}.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" --clobber
