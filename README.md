@@ -125,7 +125,7 @@ Plus structured/regex extraction for Apex, Delphi form/source, MSBuild/XML proje
 **Prerequisites:** CMake 3.25+, Ninja, a C++20 compiler, Git, a Fortran compiler (`gfortran` — igraph pulls in `lapack-reference`), and vcpkg. See [Install & Setup](#install--setup) for the full recipe.
 
 ```sh
-git clone --recurse-submodules https://github.com/taylor009/CGraph.git && cd CGraph
+git clone --recurse-submodules https://github.com/Nxtsoft/CGraph.git && cd CGraph
 git clone https://github.com/microsoft/vcpkg .vcpkg && ./.vcpkg/bootstrap-vcpkg.sh
 export VCPKG_ROOT="$PWD/.vcpkg"
 cmake --preset release && cmake --build --preset release
@@ -154,7 +154,7 @@ open cgraph-out/graph.html
 ### 1. Clone (with submodules)
 
 ```sh
-git clone --recurse-submodules https://github.com/taylor009/CGraph.git && cd CGraph
+git clone --recurse-submodules https://github.com/Nxtsoft/CGraph.git && cd CGraph
 # already cloned without submodules?
 git submodule update --init --recursive
 ```
