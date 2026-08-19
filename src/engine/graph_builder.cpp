@@ -239,6 +239,28 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     return suffix_match(import_path);
   };
 
+  // Rust `use` paths carry no extension and can live at `<path>.rs` OR
+  // `<path>/mod.rs`; both spellings of one module are matched here, unique
+  // across the project or nothing (two candidates would make the edge a guess,
+  // exactly like suffix_match's ambiguity rule -- including the invalid-Rust
+  // case where both layouts of one module exist).
+  const auto rust_module_match = [&](const std::string& spec) -> std::optional<std::string> {
+    const std::string file_needle = "/" + spec + ".rs";
+    const std::string mod_needle = "/" + spec + "/mod.rs";
+    const std::string file_exact = spec + ".rs";
+    const std::string mod_exact = spec + "/mod.rs";
+    std::optional<std::string> match;
+    for (const auto& [path, id] : files_by_path) {
+      if (path == file_exact || path == mod_exact || path.ends_with(file_needle) || path.ends_with(mod_needle)) {
+        if (match && *match != id) {
+          return std::nullopt;  // ambiguous
+        }
+        match = id;
+      }
+    }
+    return match;
+  };
+
   std::unordered_set<std::string> node_ids;
   node_ids.reserve(graph.nodes.size());
   for (const auto& node : graph.nodes) {
@@ -260,13 +282,32 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     if (prop == node.properties.end()) {
       continue;
     }
-    const auto file_id = resolve_file(prop->second);
+    // A Rust stub (module_layout=rust) cannot tell from syntax whether its last
+    // segment names a module or an item declared in one: try the full path as a
+    // module file first (`use a::b;`), then the parent path as the module with
+    // the leaf as its declared item (`use a::b::Item;`).
+    const auto layout = node.properties.find("module_layout");
+    const bool rust_layout = layout != node.properties.end() && layout->second == "rust";
+    std::optional<std::string> file_id;
+    bool resolved_as_module = node.kind == "module";
+    if (rust_layout) {
+      file_id = rust_module_match(prop->second);
+      if (file_id) {
+        resolved_as_module = true;
+      } else if (node.kind == "import") {
+        if (const auto slash = prop->second.rfind('/'); slash != std::string::npos) {
+          file_id = rust_module_match(prop->second.substr(0, slash));
+        }
+      }
+    } else {
+      file_id = resolve_file(prop->second);
+    }
     if (!file_id) {
       removed.insert(node.id);
       dropped.insert(node.id);  // external package: delete node and its edges
       continue;
     }
-    if (node.kind == "module") {
+    if (resolved_as_module) {
       remap[node.id] = *file_id;
     } else {
       const auto real = make_id(source_of_file[*file_id] + ":" + node.label);

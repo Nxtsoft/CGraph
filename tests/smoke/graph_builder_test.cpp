@@ -61,6 +61,96 @@ int test_resolve_imports() {
   return 0;
 }
 
+// Rust stubs carry module_layout=rust: the import_path resolves as a module
+// file (<path>.rs or <path>/mod.rs, unique suffix); when the full path names no
+// module file, the parent path is retried as the module and the leaf as an item
+// declared in it (falling back to the file node when the item is not declared).
+// Zero or multiple candidate files leave no stub and no dangling edge.
+int test_resolve_rust_imports() {
+  const auto importer = cgraph::make_id("src/main.rs");
+  const auto bar_file = cgraph::make_id("src/foo/bar.rs");
+  const auto baz_symbol = cgraph::make_id("src/foo/bar.rs:Baz");
+  const auto qux_mod_file = cgraph::make_id("src/qux/mod.rs");
+  const auto q_symbol = cgraph::make_id("src/qux/mod.rs:Q");
+  const auto util_a = cgraph::make_id("src/a/util.rs");
+  const auto util_b = cgraph::make_id("src/b/util.rs");
+
+  const auto item_stub = cgraph::make_id("rust_use:foo/bar/Baz:Baz");
+  const auto module_stub = cgraph::make_id("rust_use:foo/bar:bar");
+  const auto glob_stub = cgraph::make_id("rust_use:foo/bar:foo/bar");
+  const auto mod_rs_stub = cgraph::make_id("rust_use:qux/Q:Q");
+  const auto undeclared_stub = cgraph::make_id("rust_use:qux/Missing:Missing");
+  const auto external_stub = cgraph::make_id("rust_use:serde/Serialize:Serialize");
+  const auto ambiguous_stub = cgraph::make_id("rust_use:util/Thing:Thing");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = importer, .label = "src/main.rs", .source_file = "src/main.rs", .kind = "file"});
+  graph.nodes.push_back({.id = bar_file, .label = "src/foo/bar.rs", .source_file = "src/foo/bar.rs", .kind = "file"});
+  graph.nodes.push_back({.id = baz_symbol, .label = "Baz", .source_file = "src/foo/bar.rs", .kind = "type"});
+  graph.nodes.push_back({.id = qux_mod_file, .label = "src/qux/mod.rs", .source_file = "src/qux/mod.rs", .kind = "file"});
+  graph.nodes.push_back({.id = q_symbol, .label = "Q", .source_file = "src/qux/mod.rs", .kind = "function"});
+  graph.nodes.push_back({.id = util_a, .label = "src/a/util.rs", .source_file = "src/a/util.rs", .kind = "file"});
+  graph.nodes.push_back({.id = util_b, .label = "src/b/util.rs", .source_file = "src/b/util.rs", .kind = "file"});
+
+  const cgraph::Node stubs[] = {
+      // use crate::foo::bar::Baz; -> item declared in foo/bar.rs
+      {.id = item_stub, .label = "Baz", .kind = "import",
+       .properties = {{"import_path", "foo/bar/Baz"}, {"module_layout", "rust"}}},
+      // use crate::foo::bar; -> the full path IS a module file
+      {.id = module_stub, .label = "bar", .kind = "import",
+       .properties = {{"import_path", "foo/bar"}, {"module_layout", "rust"}}},
+      // use crate::foo::bar::*; -> glob names the module itself
+      {.id = glob_stub, .label = "foo/bar", .kind = "module",
+       .properties = {{"import_path", "foo/bar"}, {"module_layout", "rust"}}},
+      // use crate::qux::Q; -> mod.rs layout resolves the parent module
+      {.id = mod_rs_stub, .label = "Q", .kind = "import",
+       .properties = {{"import_path", "qux/Q"}, {"module_layout", "rust"}}},
+      // use crate::qux::Missing; -> module resolves, item is not declared -> file
+      {.id = undeclared_stub, .label = "Missing", .kind = "import",
+       .properties = {{"import_path", "qux/Missing"}, {"module_layout", "rust"}}},
+      // use serde::Serialize; -> external crate, no project file
+      {.id = external_stub, .label = "Serialize", .kind = "import",
+       .properties = {{"import_path", "serde/Serialize"}, {"module_layout", "rust"}}},
+      // use crate::util::Thing; -> two files match the util suffix -> ambiguous
+      {.id = ambiguous_stub, .label = "Thing", .kind = "import",
+       .properties = {{"import_path", "util/Thing"}, {"module_layout", "rust"}}},
+  };
+  for (const auto& stub : stubs) {
+    graph.nodes.push_back(stub);
+    graph.edges.push_back({.source = importer, .target = stub.id, .relation = "imports"});
+  }
+
+  cgraph::resolve_imports(graph);
+
+  for (const auto& stub : stubs) {
+    if (has_node(graph, stub.id)) {
+      return 1;  // every stub is consumed: remapped or dropped
+    }
+  }
+  if (!has_edge(graph, importer, baz_symbol, "imports")) {
+    return 1;  // item import -> declared symbol
+  }
+  if (!has_edge(graph, importer, bar_file, "imports")) {
+    return 1;  // module import (and glob) -> module file
+  }
+  if (!has_edge(graph, importer, q_symbol, "imports")) {
+    return 1;  // mod.rs layout -> declared symbol in qux/mod.rs
+  }
+  if (!has_edge(graph, importer, qux_mod_file, "imports")) {
+    return 1;  // undeclared item -> the resolved module's file node
+  }
+  // External and ambiguous imports leave nothing behind.
+  if (has_edge(graph, importer, util_a, "imports") || has_edge(graph, importer, util_b, "imports")) {
+    return 1;
+  }
+  for (const auto& edge : graph.edges) {
+    if (edge.target == external_stub || edge.target == ambiguous_stub) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 [[nodiscard]] cgraph::Confidence edge_confidence(const cgraph::GraphSnapshot& graph, const std::string& source, const std::string& target, const std::string& relation) {
   for (const auto& e : graph.edges) {
     if (e.source == source && e.target == target && e.relation == relation) {
@@ -225,6 +315,9 @@ int test_resolve_relations() {
 }  // namespace
 
 int main() {
+  if (test_resolve_rust_imports() != 0) {
+    return 1;
+  }
   if (test_resolve_imports() != 0) {
     return 1;
   }

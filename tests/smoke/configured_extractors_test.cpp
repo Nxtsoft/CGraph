@@ -1,4 +1,5 @@
 #include "cgraph/configured_extractors.hpp"
+#include "cgraph/normalize.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -219,6 +220,91 @@ bool check_rust_extraction() {
   return true;
 }
 
+// Rust `use` declarations: one stub per imported leaf. The path syntax alone
+// cannot distinguish a module from an item declared in a module, so extraction
+// records the full `/`-joined path plus a `module_layout=rust` marker and defers
+// the layout decision (`<path>.rs` / `<path>/mod.rs`, parent-module retry for
+// items) to resolve_imports. Aliases resolve via the original name; glob and
+// `{self}` leaves name the module itself.
+bool check_rust_use_imports() {
+  constexpr std::string_view source =
+      "use crate::foo::bar::Baz;\n"
+      "use crate::util::helper as h;\n"
+      "use crate::a::{b::C, d};\n"
+      "use crate::e::prelude::*;\n"
+      "use serde::Serialize;\n"
+      "use crate::m::{self, n};\n"
+      "use super::sibling::Thing;\n"
+      "\n"
+      "fn main() {}\n";
+
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::Rust,
+      cgraph::ExtractionContext{.source_file = "src/main.rs", .source = source});
+  if (!result.has_value()) {
+    return fail("rust extraction returned no result");
+  }
+
+  const auto find_stub = [&](std::string_view label, std::string_view kind,
+                             std::string_view import_path) -> const cgraph::Node* {
+    for (const auto& node : result->fragment.nodes) {
+      if (node.label != label || node.kind != kind) {
+        continue;
+      }
+      const auto path = node.properties.find("import_path");
+      if (path == node.properties.end() || path->second != import_path) {
+        continue;
+      }
+      const auto layout = node.properties.find("module_layout");
+      if (layout == node.properties.end() || layout->second != "rust") {
+        continue;
+      }
+      return &node;
+    }
+    return nullptr;
+  };
+
+  struct Expected {
+    const char* label;
+    const char* kind;
+    const char* path;
+  };
+  const Expected expected[] = {
+      {"Baz", "import", "foo/bar/Baz"},         // plain scoped item, crate:: stripped
+      {"helper", "import", "util/helper"},      // alias: original name, never `h`
+      {"C", "import", "a/b/C"},                 // nested scoped leaf inside a list
+      {"d", "import", "a/d"},                   // plain leaf inside a list
+      {"e/prelude", "module", "e/prelude"},     // glob names the module itself
+      {"Serialize", "import", "serde/Serialize"},  // external crate: still a stub here
+      {"m", "module", "m"},                     // {self} names the module itself
+      {"n", "import", "m/n"},                   // sibling leaf of the self import
+      {"Thing", "import", "sibling/Thing"},     // super:: stripped
+  };
+  for (const auto& item : expected) {
+    if (find_stub(item.label, item.kind, item.path) == nullptr) {
+      return fail(std::string("missing rust use stub ") + item.label + " (" + item.path + ")");
+    }
+  }
+  // The alias must not surface as its own node.
+  for (const auto& node : result->fragment.nodes) {
+    if (node.label == "h") {
+      return fail("alias `h` leaked into the fragment");
+    }
+  }
+
+  const auto file_id = cgraph::make_id("src/main.rs");
+  std::size_t import_edges = 0;
+  for (const auto& edge : result->fragment.edges) {
+    if (edge.relation == "imports" && edge.source == file_id) {
+      ++import_edges;
+    }
+  }
+  if (import_edges < std::size(expected)) {
+    return fail("missing file -> stub imports edges");
+  }
+  return true;
+}
+
 bool check_coverage_registry() {
   if (!cgraph::has_registered_extractor(cgraph::DetectedLanguage::Go) ||
       !cgraph::has_registered_extractor(cgraph::DetectedLanguage::Python) ||
@@ -292,6 +378,9 @@ int main() {
   }
   if (!check_rust_extraction()) {
     return 5;
+  }
+  if (!check_rust_use_imports()) {
+    return 6;
   }
   if (!check_coverage_registry()) {
     return 3;
