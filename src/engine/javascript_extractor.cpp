@@ -144,7 +144,15 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
     const auto spec = strip_string_quotes(node_text(source, context.source));
     if (!spec.empty()) {
       const auto resolved = resolve_module_spec(context.source_file, spec);
-      const auto module_id = make_id(resolved);
+      // The stub id is namespaced so it can never equal a real node's id. A
+      // specifier that spells the source extension ("./chunkBy.ts", legal under
+      // allowImportingTsExtensions) resolves to the imported file's exact path,
+      // and an un-namespaced make_id(resolved) would collide with that file
+      // node's id. Fragments merge in path order and "X.spec.ts" sorts before
+      // "X.ts", so the stub claimed the id first, merge_fragment discarded the
+      // real file node as a duplicate, and resolve_imports — finding no file
+      // node for the path — deleted the stub and every edge with it (issue #39).
+      const auto module_id = make_id("import-module:" + resolved);
       fragment.nodes.push_back(Node{
           .id = module_id,
           .label = spec,
@@ -174,7 +182,11 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
   std::vector<std::string> names;
   collect_specifier_names(node, context.source, names);
   for (auto& name : names) {
-    const auto symbol_id = make_id(module_key + ":" + name);
+    // Namespaced for the same reason as module_id above: with an
+    // extension-spelled specifier, make_id(module_key + ":" + name) is exactly
+    // the id add_symbol_node gives the real declared symbol, and the squatting
+    // stub deletes the real function from the graph (issue #39/#40).
+    const auto symbol_id = make_id("import-symbol:" + module_key + ":" + name);
     fragment.nodes.push_back(Node{
         .id = symbol_id,
         .label = name,

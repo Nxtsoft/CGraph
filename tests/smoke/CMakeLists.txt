@@ -572,6 +572,18 @@ cgraph_enable_sanitizers(cgraph_pipeline_test)
 
 add_test(NAME cgraph_pipeline_test COMMAND cgraph_pipeline_test)
 
+add_executable(cgraph_import_stub_collision_test
+  import_stub_collision_test.cpp)
+
+target_link_libraries(cgraph_import_stub_collision_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_import_stub_collision_test)
+cgraph_enable_sanitizers(cgraph_import_stub_collision_test)
+
+add_test(NAME cgraph_import_stub_collision_test COMMAND cgraph_import_stub_collision_test)
+
 add_executable(cgraph_operation_stats_test
   operation_stats_test.cpp)
 
