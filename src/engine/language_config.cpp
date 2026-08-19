@@ -37,6 +37,7 @@ namespace {
 void intern_node_symbols(LanguageConfig& config, const TSLanguage* language) {
   config.symbols.class_nodes = intern_many(language, config.class_node_types);
   config.symbols.function_nodes = intern_many(language, config.function_node_types);
+  config.symbols.method_nodes = intern_many(language, config.method_node_types);
   config.symbols.type_nodes = intern_many(language, config.type_node_types);
   config.symbols.import_nodes = intern_many(language, config.import_node_types);
   config.symbols.call_nodes = intern_many(language, config.call_node_types);

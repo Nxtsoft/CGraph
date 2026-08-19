@@ -191,15 +191,23 @@ int main() {
   // Three overloads can share ONE line, so a single id retry is not enough.
   write_file(root / "sameline.cpp",
              "int triple(int a) { return a; } int triple(double a) { return 0; } int triple(char a) { return 1; }\n");
-  // A member call must stay scoped to its own file: the receiver type is unknown,
-  // so matching a same-named method in another file would invent an edge.
+  // A member call that misses its own file resolves project-wide only when the
+  // bare name uniquely names a METHOD (issue #44): `only_over_here` is declared
+  // exactly once, as a method, so the edge is real (graded INFERRED). A name
+  // also carried by a free function must never bind (`freestanding` below), and
+  // an ambiguous method name must not either.
   write_file(root / "elsewhere.cpp",
              "struct Elsewhere {\n"
              "  int only_over_here(int a) { return a; }\n"
-             "};\n");
+             "};\n"
+             "int freestanding(int a) { return a; }\n");
   write_file(root / "reaches.cpp",
              "struct Ptr { Elsewhere* e; };\n"
-             "int reaches_across(Ptr& p) { return p.e->only_over_here(5); }\n");
+             "int reaches_across(Ptr& p) { return p.e->only_over_here(5) + p.e->freestanding(6); }\n");
+  write_file(root / "twins.cpp",
+             "struct TwinA { int twin_method(); };\n"
+             "struct TwinB { int twin_method(); };\n"
+             "int calls_twin(TwinA& a) { return a.twin_method(); }\n");
   write_file(root / "scoped.cpp",
              "namespace demo {\n"
              "int scoped_helper(int x) { return x; }\n"
@@ -295,9 +303,16 @@ int main() {
   check(has_edge(graph, "callee_user", "free_fn", "CALLS"), "qualified call ns::free_fn resolves");
   check(has_edge(graph, "callee_user", "method", "CALLS"), "member calls obj.f() and ptr->f() resolve");
   check(has_edge(graph, "via_implicit", "method", "CALLS"), "unqualified call to a sibling method resolves");
-  // ...but a member call never reaches out of its own file.
-  check(!has_edge(graph, "reaches_across", "only_over_here", "CALLS"),
-        "member call does not match a same-named method in another file");
+  // A member call that misses its own file binds to a project-wide unique
+  // METHOD (#44)...
+  check(has_edge(graph, "reaches_across", "only_over_here", "CALLS"),
+        "member call resolves to the project-unique method in another file");
+  // ...but never to a free function of the same name, and never to an
+  // ambiguous method name.
+  check(!has_edge(graph, "reaches_across", "freestanding", "CALLS"),
+        "member call does not bind to a free function");
+  check(!has_edge(graph, "calls_twin", "twin_method", "CALLS"),
+        "member call does not bind to an ambiguous method name");
 
   // A namespace is structure, not a type: no class node, no `method` edge, and
   // its members attach to their file with `contains` instead.

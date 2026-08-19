@@ -52,6 +52,10 @@ struct CallResolution {
   std::size_t total = 0;
   std::size_t resolved_same_file = 0;
   std::size_t resolved_project_unique = 0;
+  // A member call (`obj.method()`) that missed its own file but uniquely names
+  // a method project-wide. Graded INFERRED: the receiver type is unknown, the
+  // method-only index is what keeps the guess narrow.
+  std::size_t resolved_member_method = 0;
   // A same-file overload set: resolved to the first declaration and graded
   // INFERRED, because which overload a call means needs types we do not have.
   std::size_t resolved_overload_first = 0;
@@ -60,14 +64,15 @@ struct CallResolution {
   std::size_t dropped_self = 0;       // resolved to the caller itself
 
   [[nodiscard]] bool balances() const {
-    return resolved_same_file + resolved_project_unique + dropped_unknown + dropped_ambiguous +
-               dropped_self ==
+    return resolved_same_file + resolved_project_unique + resolved_member_method + dropped_unknown +
+               dropped_ambiguous + dropped_self ==
            total;  // resolved_overload_first is a subset of resolved_same_file
   }
 
   [[nodiscard]] double resolved_rate() const {
     return total == 0 ? 0.0
-                      : static_cast<double>(resolved_same_file + resolved_project_unique) /
+                      : static_cast<double>(resolved_same_file + resolved_project_unique +
+                                            resolved_member_method) /
                             static_cast<double>(total);
   }
 };
