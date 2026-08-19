@@ -137,7 +137,7 @@ int main() {
   // the committed pair (regenerated at 0cb8237: 1580 nodes / 3178 links, 75
   // symbol rows), measured at root length 58.
   const std::vector<Target> targets = {
-      {2000, 0.2487}, {4000, 0.3629}, {6000, 0.3927}, {8000, 0.4425}};
+      {2000, 0.2487}, {4000, 0.3629}, {6000, 0.3925}, {8000, 0.4425}};
   constexpr double kTol = 0.03;
 
   std::cout << "end-to-end retrieval gate  (N=" << rows.size() << " symbol rows, q-only, engine defaults)\n";
