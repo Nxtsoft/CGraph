@@ -225,6 +225,113 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
   });
 }
 
+
+// Deepest type_identifier under a (possibly pointer-wrapped, parenthesized)
+// receiver type: `(r *Route)` -> "Route".
+[[nodiscard]] std::string go_receiver_type_name(const TSNode& node, const ExtractionContext& context) {
+  if (std::string_view(ts_node_type(node)) == "type_identifier") {
+    return go_node_text(node, context.source);
+  }
+  const auto child_count = ts_node_child_count(node);
+  for (std::uint32_t index = 0; index < child_count; ++index) {
+    auto found = go_receiver_type_name(ts_node_child(node, index), context);
+    if (!found.empty()) {
+      return found;
+    }
+  }
+  return {};
+}
+
+// Binds each Go method to its receiver type: `func (r *Route) Match(...)` emits
+// a `method_of` fact (method -> "Route") that resolve_raw_relations turns into
+// an edge when the type is declared in the same file (Go's common layout) or an
+// imported one. Interface-dispatch resolution reads these to compute per-type
+// method sets.
+void go_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
+                         std::vector<RawRelation>& raw_relations) {
+  if (std::string_view(ts_node_type(node)) != "method_declaration") {
+    return;
+  }
+  const auto receiver = ts_node_child_by_field_name(node, "receiver", 8);
+  if (ts_node_is_null(receiver)) {
+    return;
+  }
+  auto type_name = go_receiver_type_name(receiver, context);
+  if (type_name.empty()) {
+    return;
+  }
+  raw_relations.push_back(RawRelation{
+      .source_id = node_id,
+      .target_label = std::move(type_name),
+      .relation = "method_of",
+      .context = "receiver",
+      .source_file = context.source_file,
+      .allow_same_file = true,
+  });
+}
+
+// Materializes Go interface method sets: each `method_elem` of an
+// `interface_type` becomes a function node (tagged interface_method) owned by
+// the interface's type node via a `method` edge, so dispatch resolution can
+// see what an interface promises. The node id is namespaced — an interface
+// method is a contract entry, never the same node as an implementation.
+void go_extra_walk(const TSNode& node, const ExtractionContext& context, Fragment& fragment,
+                   std::vector<RawCall>& raw_calls) {
+  (void)raw_calls;
+  if (std::string_view(ts_node_type(node)) != "type_spec") {
+    return;
+  }
+  const auto type_field = ts_node_child_by_field_name(node, "type", 4);
+  if (ts_node_is_null(type_field) || std::string_view(ts_node_type(type_field)) != "interface_type") {
+    return;
+  }
+  const auto name_field = ts_node_child_by_field_name(node, "name", 4);
+  if (ts_node_is_null(name_field)) {
+    return;
+  }
+  const auto interface_name = go_node_text(name_field, context.source);
+  if (interface_name.empty()) {
+    return;
+  }
+  const auto interface_id = make_id(context.source_file + ":" + interface_name);
+
+  const auto child_count = ts_node_named_child_count(type_field);
+  for (std::uint32_t index = 0; index < child_count; ++index) {
+    const auto elem = ts_node_named_child(type_field, index);
+    if (std::string_view(ts_node_type(elem)) != "method_elem") {
+      continue;  // embedded interfaces are a follow-up
+    }
+    const auto method_name_node = ts_node_child_by_field_name(elem, "name", 4);
+    if (ts_node_is_null(method_name_node)) {
+      continue;
+    }
+    const auto method_name = go_node_text(method_name_node, context.source);
+    if (method_name.empty()) {
+      continue;
+    }
+    const auto start = ts_node_start_point(elem);
+    const auto end = ts_node_end_point(elem);
+    fragment.nodes.push_back(Node{
+        .id = make_id("iface-method:" + context.source_file + ":" + interface_name + ":" + method_name),
+        .label = method_name,
+        .source_file = context.source_file,
+        .source_location = SourceLocation{.start_line = start.row + 1,
+                                          .start_column = start.column,
+                                          .end_line = end.row + 1,
+                                          .end_column = end.column},
+        .kind = "function",
+        .confidence = Confidence::Extracted,
+        .properties = {{"method", "true"}, {"interface_method", "true"}},
+    });
+    fragment.edges.push_back(Edge{
+        .source = interface_id,
+        .target = fragment.nodes.back().id,
+        .relation = "method",
+        .confidence = Confidence::Extracted,
+    });
+  }
+}
+
 [[nodiscard]] LanguageConfig go_config() {
   LanguageConfig config{
       .name = "go",
@@ -249,6 +356,8 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
       .resolve_callee_name = cpp_callee_name,
   };
   config.import_handler = go_import_handler;
+  config.relation_handler = go_relation_handler;
+  config.extra_walk = go_extra_walk;
   return config;
 }
 

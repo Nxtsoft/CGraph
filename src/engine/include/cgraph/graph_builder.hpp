@@ -39,6 +39,14 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
 // and, for heritage relations only, a same-file declaration — never a
 // project-wide name guess. Unresolvable targets emit no edge. Run after
 // resolve_imports so a file's imports point at their real symbols.
+// Interface-dispatch resolution (Go): computes `implements` edges from
+// per-type method sets vs interface method sets, `dispatches_to` edges from
+// each interface method to its implementations, and rescues member calls whose
+// bare name was ambiguous among concrete methods but uniquely names an
+// interface method — the `r.Match(...)` pattern that name-based resolution
+// alone cannot bind. Runs after resolve_raw_relations (needs `method_of`).
+void resolve_interface_dispatch(GraphSnapshot& graph, std::span<const RawCall> raw_calls);
+
 void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> raw_relations);
 
 }  // namespace cgraph

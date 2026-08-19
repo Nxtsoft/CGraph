@@ -584,6 +584,18 @@ cgraph_enable_sanitizers(cgraph_test_connectivity_test)
 
 add_test(NAME cgraph_test_connectivity_test COMMAND cgraph_test_connectivity_test)
 
+add_executable(cgraph_interface_dispatch_test
+  interface_dispatch_test.cpp)
+
+target_link_libraries(cgraph_interface_dispatch_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_interface_dispatch_test)
+cgraph_enable_sanitizers(cgraph_interface_dispatch_test)
+
+add_test(NAME cgraph_interface_dispatch_test COMMAND cgraph_interface_dispatch_test)
+
 add_executable(cgraph_import_stub_collision_test
   import_stub_collision_test.cpp)
 

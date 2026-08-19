@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -722,6 +723,117 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
     if (seen_edges.insert(edge_key(edge)).second) {
       graph.edges.push_back(std::move(edge));
     }
+  }
+}
+
+
+void resolve_interface_dispatch(GraphSnapshot& graph, std::span<const RawCall> raw_calls) {
+  // Interface method nodes, grouped by their owning interface (the `method`
+  // edge the extractor emitted alongside the tagged node).
+  std::unordered_map<std::string, const Node*> nodes_by_id;
+  for (const auto& node : graph.nodes) {
+    nodes_by_id.emplace(node.id, &node);
+  }
+  const auto is_iface_method = [&](const std::string& id) {
+    const auto it = nodes_by_id.find(id);
+    if (it == nodes_by_id.end()) {
+      return false;
+    }
+    const auto tag = it->second->properties.find("interface_method");
+    return tag != it->second->properties.end() && tag->second == "true";
+  };
+
+  // interface id -> (method name key -> interface method node id)
+  std::map<std::string, std::map<std::string, std::string>> iface_methods;
+  // concrete type id -> (method name key -> method node ids)
+  std::map<std::string, std::map<std::string, std::vector<std::string>>> type_methods;
+  for (const auto& edge : graph.edges) {
+    if (edge.relation == "method" && is_iface_method(edge.target)) {
+      iface_methods[edge.source].emplace(make_id(nodes_by_id.at(edge.target)->label), edge.target);
+    } else if (edge.relation == "method_of") {
+      // method -> receiver type (Go); invert into the type's method set.
+      if (const auto method = nodes_by_id.find(edge.source); method != nodes_by_id.end()) {
+        type_methods[edge.target][make_id(method->second->label)].push_back(edge.source);
+      }
+    } else if (edge.relation == "method" && !is_iface_method(edge.target)) {
+      // class -> method (Python/TS class methods) participates the same way.
+      if (const auto method = nodes_by_id.find(edge.target); method != nodes_by_id.end()) {
+        type_methods[edge.source][make_id(method->second->label)].push_back(edge.target);
+      }
+    }
+  }
+  if (iface_methods.empty()) {
+    return;
+  }
+
+  std::unordered_set<std::string> seen_edges;
+  seen_edges.reserve(graph.edges.size());
+  for (const auto& edge : graph.edges) {
+    seen_edges.insert(edge_key(edge));
+  }
+  const auto add_edge = [&](std::string source, std::string target, const char* relation,
+                            Confidence confidence) {
+    Edge edge{.source = std::move(source), .target = std::move(target), .relation = relation,
+              .confidence = confidence};
+    if (seen_edges.insert(edge_key(edge)).second) {
+      graph.edges.push_back(std::move(edge));
+    }
+  };
+
+  // implements: T satisfies I when I's method-name set is a subset of T's.
+  // Name-only satisfaction (no signatures — deliberately structural-lite);
+  // the exactly-one guard below is what keeps call rescue honest, not this.
+  for (const auto& [iface_id, promised] : iface_methods) {
+    for (const auto& [type_id, methods] : type_methods) {
+      if (type_id == iface_id || promised.empty()) {
+        continue;
+      }
+      const bool satisfies = std::ranges::all_of(
+          promised, [&](const auto& entry) { return methods.contains(entry.first); });
+      if (!satisfies) {
+        continue;
+      }
+      add_edge(type_id, iface_id, "implements", Confidence::Inferred);
+      for (const auto& [name_key, iface_method_id] : promised) {
+        for (const auto& impl_id : methods.at(name_key)) {
+          add_edge(iface_method_id, impl_id, "dispatches_to", Confidence::Inferred);
+        }
+      }
+    }
+  }
+
+  // Rescue member calls that name exactly one interface method project-wide:
+  // `r.Match(...)` was ambiguous among 8 concrete `Match`es on gorilla/mux, but
+  // `matcher.Match` is the single interface contract they satisfy — the call
+  // binds to the contract, dispatches_to carries it to the implementations.
+  std::map<std::string, std::string> unique_iface_method_by_name;
+  std::unordered_set<std::string> ambiguous_names;
+  for (const auto& [iface_id, promised] : iface_methods) {
+    for (const auto& [name_key, method_id] : promised) {
+      if (ambiguous_names.contains(name_key)) {
+        continue;
+      }
+      const auto [slot, inserted] = unique_iface_method_by_name.emplace(name_key, method_id);
+      if (!inserted && slot->second != method_id) {
+        unique_iface_method_by_name.erase(slot);
+        ambiguous_names.insert(name_key);
+      }
+    }
+  }
+  std::unordered_set<std::string> node_ids;
+  node_ids.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) {
+    node_ids.insert(node.id);
+  }
+  for (const auto& raw_call : raw_calls) {
+    if (!raw_call.is_member_call || raw_call.caller_id.empty() || !node_ids.contains(raw_call.caller_id)) {
+      continue;
+    }
+    const auto slot = unique_iface_method_by_name.find(make_id(raw_call.callee_label));
+    if (slot == unique_iface_method_by_name.end() || slot->second == raw_call.caller_id) {
+      continue;
+    }
+    add_edge(raw_call.caller_id, slot->second, kCallRelation.data(), Confidence::Inferred);
   }
 }
 

@@ -68,6 +68,7 @@ namespace {
   resolve_imports(graph, index.aliases);
   resolve_raw_calls(graph, raw_calls);
   resolve_raw_relations(graph, raw_relations);
+  resolve_interface_dispatch(graph, raw_calls);
   return graph;
 }
 
