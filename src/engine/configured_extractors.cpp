@@ -234,6 +234,7 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
       // aliases) are all declared through type_spec / type_alias; they become
       // "type" nodes rather than guessing class-ness per underlying type.
       .function_node_types = {"function_declaration", "method_declaration"},
+      .method_node_types = {"method_declaration"},
       .type_node_types = {"type_spec", "type_alias"},
       .import_node_types = {"import_spec"},
       .call_node_types = {"call_expression"},

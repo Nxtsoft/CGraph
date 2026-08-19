@@ -311,6 +311,12 @@ void walk_node(
     } else {
       auto id = add_symbol_node(node, config, context, "function", fragment);
       if (!id.empty()) {
+        // A grammar-level method (Go's `func (r *T) M()`): tag it so member-call
+        // resolution can distinguish methods from free functions. Class-contained
+        // methods are instead marked by the `method` containment relation below.
+        if (contains_symbol(config.symbols.method_nodes, symbol)) {
+          fragment.nodes.back().properties.emplace("method", "true");
+        }
         add_containment_edge(scope_id, scope_kind, id, "function", fragment);
         // Offer the function to the relation handler too, so a language can emit
         // references from its parameter/return types (C/C++ free functions and

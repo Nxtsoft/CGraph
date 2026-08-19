@@ -179,10 +179,16 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     const fs::path path = fs::path(node.source_file).lexically_normal();
     file_id_by_key[path.generic_string()] = node.id;
     file_id_by_key.emplace((path.parent_path() / path.stem()).generic_string(), node.id);
-    if (path.stem() == "index") {
+    // A directory import resolves to its index module: JS `./utils` ->
+    // utils/index.ts, Python `import pkg` -> pkg/__init__.py.
+    if (path.stem() == "index" || path.stem() == "__init__") {
       file_id_by_key.emplace(path.parent_path().generic_string(), node.id);
+      files_by_path.emplace_back(path.parent_path().generic_string(), node.id);
     }
     files_by_path.emplace_back(path.generic_string(), node.id);
+    // Extension-stripped form, so a Python dotted spec ("itsdangerous/signer",
+    // no extension to spell) can suffix-match the real file.
+    files_by_path.emplace_back((path.parent_path() / path.stem()).generic_string(), node.id);
   }
 
   // Resolve a header-style include spec ("cgraph/types.hpp") to the project file
@@ -194,10 +200,10 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     std::optional<std::string> match;
     for (const auto& [path, id] : files_by_path) {
       if (path == spec || path.ends_with(needle)) {
-        if (match) {
-          return std::nullopt;  // ambiguous
+        if (match && *match != id) {
+          return std::nullopt;  // ambiguous across distinct files
         }
-        match = id;
+        match = id;  // a second path form of the same file is not ambiguity
       }
     }
     return match;
@@ -346,6 +352,24 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
 void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
                        CallResolution* outcomes) {
   const auto index = label_index(graph);
+  // Methods only, for member-call resolution: nodes marked by the `method`
+  // containment relation (class-contained functions) or the extractor's
+  // grammar-level tag (Go's method_declaration). A member call's bare name must
+  // never bind to a free function or a variable — the receiver is unknown, and
+  // that mistake is how `.connect()` used to reach a syscall wrapper.
+  std::unordered_set<std::string> method_ids;
+  for (const auto& edge : graph.edges) {
+    if (edge.relation == "method") {
+      method_ids.insert(edge.target);
+    }
+  }
+  std::unordered_map<std::string, std::vector<std::string>> method_index;
+  for (const auto& node : graph.nodes) {
+    const auto tagged = node.properties.find("method");
+    if (method_ids.contains(node.id) || (tagged != node.properties.end() && tagged->second == "true")) {
+      method_index[make_id(node.label)].push_back(node.id);
+    }
+  }
   std::unordered_set<std::string> node_ids;
   std::unordered_map<std::string, std::string> source_file_by_id;
   node_ids.reserve(graph.nodes.size());
@@ -512,9 +536,25 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       confidence = has_import_evidence ? Confidence::Extracted : Confidence::Inferred;
     }
 
+    // 2b. A member call that missed its own file resolves project-wide only
+    //     against METHODS, under the same exactly-one-candidate rule, and only
+    //     ever graded INFERRED (no import evidence can exist for a bare property
+    //     name). This is what connects `r.Match(...)` in a test file to the
+    //     method's declaration (issue #44) without letting `.map()` bind to a
+    //     free function that happens to share the name.
+    bool member_method_hit = false;
+    if (target_id.empty() && raw_call.is_member_call) {
+      if (const auto methods = method_index.find(key);
+          methods != method_index.end() && methods->second.size() == 1) {
+        target_id = methods->second.front();
+        confidence = Confidence::Inferred;
+        member_method_hit = true;
+      }
+    }
+
     if (target_id.empty()) {
-      // A member call that missed its own file: the receiver type is unknown, so
-      // the project-wide tier deliberately does not apply.
+      // A member call that missed its own file and did not uniquely name a
+      // method: the receiver type is unknown, so no wider guess applies.
       ++tally.dropped_unknown;
       continue;
     }
@@ -522,7 +562,13 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       ++tally.dropped_self;
       continue;
     }
-    ++(same_file_hit ? tally.resolved_same_file : tally.resolved_project_unique);
+    if (same_file_hit) {
+      ++tally.resolved_same_file;
+    } else if (member_method_hit) {
+      ++tally.resolved_member_method;
+    } else {
+      ++tally.resolved_project_unique;
+    }
     Edge edge{
         .source = raw_call.caller_id,
         .target = target_id,

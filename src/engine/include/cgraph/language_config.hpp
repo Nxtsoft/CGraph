@@ -54,6 +54,7 @@ using RelationHandler = std::function<void(const TSNode&, const ExtractionContex
 struct InternedSymbols {
   std::vector<TSSymbol> class_nodes;
   std::vector<TSSymbol> function_nodes;
+  std::vector<TSSymbol> method_nodes;
   std::vector<TSSymbol> type_nodes;
   std::vector<TSSymbol> import_nodes;
   std::vector<TSSymbol> call_nodes;
@@ -65,6 +66,12 @@ struct LanguageConfig {
   std::vector<std::string> extensions;
   std::vector<std::string> class_node_types;
   std::vector<std::string> function_node_types;
+  // Function declarations that are METHODS by grammar shape alone (Go's
+  // method_declaration). Class-contained functions are already marked by the
+  // `method` containment relation; this covers receiver syntax with no
+  // enclosing class node. Members of this list must also be listed in
+  // function_node_types — it only tags, it does not extract.
+  std::vector<std::string> method_node_types;
   std::vector<std::string> type_node_types;
   std::vector<std::string> import_node_types;
   std::vector<std::string> call_node_types;
