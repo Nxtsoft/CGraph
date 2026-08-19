@@ -40,6 +40,10 @@ jobs:
   fuzz-smoke:
     name: ubuntu-latest / fuzzers
     runs-on: ubuntu-latest
+    # The whole job historically finishes in ~12 minutes; without a ceiling a
+    # single wedged step blocks a PR for the 6-hour default (observed three
+    # times in one day on apt).
+    timeout-minutes: 30
     env:
       VCPKG_DEFAULT_TRIPLET: x64-linux-clang
       VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/triplets
@@ -51,10 +55,16 @@ jobs:
 
       - uses: lukka/get-cmake@latest
 
-      - name: Install Clang
+      # ubuntu-latest ships a libFuzzer-capable clang; `apt-get update` against
+      # the mirrors wedged indefinitely three times on 2026-08-19, each hang
+      # eating an hour+ of merge latency. Use the preinstalled toolchain and
+      # keep a hard step ceiling so any future environment stall fails fast
+      # instead of blocking the PR.
+      - name: Verify Clang toolchain
+        timeout-minutes: 3
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
+          clang --version
+          clang++ --version
 
       - uses: lukka/run-vcpkg@v11
         with:
