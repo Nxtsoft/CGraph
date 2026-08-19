@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <optional>
 #include <cstdlib>
 #include <filesystem>
@@ -902,13 +903,19 @@ struct StructuralIntent {
   const auto packing = params.value("packing", std::string{"greedy"});
   // Adaptive relevance-gated gather (the default; pass gather="fixed" to opt out):
   // keeps the full 2-hop core but expands past depth 1 only along query-relevant
-  // nodes, reaching beyond 2 hops without the full 3-hop fan-out. Implies the
-  // knapsack fill, which also raises the default depth to kKnapsackContextDepth.
+  // nodes, reaching beyond 2 hops without the full 3-hop fan-out. Gather and fill
+  // are independent: adaptive widens the candidate pool (and raises the default
+  // depth) but fills rank-ordered greedy unless knapsack is asked for. Adaptive
+  // used to imply the knapsack fill; on the current, denser graph that cost the
+  // default path 2.6-5.9 recall points against plain fixed-k2 greedy (measured
+  // per-row at budgets 2000/4000, research/packer-regression), because the wider
+  // pool fed the DP confetti to prefer. A wider pool is harmless under a greedy
+  // rank-order fill -- nearer, higher-centrality candidates pack first.
   const auto gather = params.value("gather", std::string{"adaptive"});
   const bool adaptive = gather == "adaptive";
   const double gather_theta = std::clamp(params.value("gather_theta", 0.05), 0.0, 1.0);
-  const bool use_knapsack = packing == "knapsack" || adaptive;
-  const int default_depth = use_knapsack ? kKnapsackContextDepth : kDefaultContextDepth;
+  const bool use_knapsack = packing == "knapsack";
+  const int default_depth = (use_knapsack || adaptive) ? kKnapsackContextDepth : kDefaultContextDepth;
   const auto max_depth = std::max(0, params.value("max_depth", default_depth));
   const auto by_id = index_nodes(graph);
 
@@ -1098,6 +1105,15 @@ struct StructuralIntent {
       value[i] = reached[node->id].via == "same_file"
                      ? overlap
                      : 1.0 / (1.0 + static_cast<double>(depth)) + overlap;
+      // Scale by sqrt(slice size): with per-ITEM value the DP's optimum is many
+      // tiny weakly-relevant entries -- on this repo's graph it packed 21 entries
+      // of median ~143 tokens while shedding the 240-313-token symbols the query
+      // was actually about (grade-2 recall 0.407 vs greedy's 0.494 @4000,
+      // research/packer-regression). The sqrt curve prices longer slices as
+      // adding context sublinearly: measured deltas against greedy land at
+      // 0.009-0.012 across budgets 2000-8000, inside the parity band at every
+      // budget, where linear cost-scaling sat on the band edge at 6000.
+      value[i] *= std::sqrt(static_cast<double>(weight[i]));
       total_weight += weight[i];
     }
 
@@ -1260,6 +1276,15 @@ struct StructuralIntent {
       projected_source_entry_token_cost(node_brief(*focal), *focal);
   std::size_t omitted = 0;
   for (const auto* node : candidates) {
+    // Same-file admission is an inferred relationship and packs only on lexical
+    // evidence. The knapsack encodes this as zero value (never taken); greedy
+    // has no value gate, so the equivalent is skipping the candidate outright --
+    // otherwise a generous budget floods the bundle with unrelated same-file
+    // siblings.
+    if (reached[node->id].via == "same_file" &&
+        query_term_overlap(query_terms, node->label) == 0.0) {
+      continue;
+    }
     auto brief = candidate_brief(*node);
     const auto full_cost = projected_source_entry_token_cost(brief, *node);
     if (projected_used <= budget && full_cost <= budget - projected_used) {
@@ -1329,12 +1354,19 @@ struct StructuralIntent {
       {"selection_tokens_used", projected_used},
       {"budget_basis", "measured_serialized_tokens"},
       {"packing", "greedy"},
-      {"gather", "fixed"},
+      {"gather", adaptive ? "adaptive" : "fixed"},
       {"source_files_read", source_reader.files_read()},
       {"included", std::move(included)},
       {"omitted", omitted}};
   if (omitted > 0 || used > budget) {
     result["truncated"] = true;
+  }
+  // The reach summary describes the GATHER stage, so it accompanies adaptive
+  // regardless of which fill packed the candidates.
+  if (adaptive) {
+    result["reach"] = {{"candidates", candidates.size()},
+                       {"expanded_past_core", expanded_past_core},
+                       {"gated_at_core", gated_at_core}};
   }
   return result;
 }
