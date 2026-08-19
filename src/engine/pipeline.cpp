@@ -1,5 +1,7 @@
 #include "cgraph/pipeline.hpp"
 
+#include "cgraph/file_cache.hpp"
+
 #include "cgraph/analysis.hpp"
 #include "cgraph/configured_extractors.hpp"
 #include "cgraph/dedup.hpp"
@@ -66,6 +68,19 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
     ScopedTimer timer(&result.stats.merge_ms);
     result.graph = merge_fragments(fragments);
     result.graph.source_hashes = std::move(source_hashes);
+    // Name the exact tree this build saw: the same sha256-merkle-v1 root the
+    // daemon publishes, computed from the per-file hashes extraction already
+    // produced. One-shot consumers (CI) get pinnable provenance for free.
+    std::vector<FileCacheEntry> leaves;
+    leaves.reserve(result.graph.source_hashes.size());
+    for (const auto& [path, sha256] : result.graph.source_hashes) {
+      leaves.push_back(FileCacheEntry{.path = path, .sha256 = sha256});
+    }
+    // Detected paths are canonicalized (on macOS /var -> /private/var), so the
+    // root must be canonicalized the same way or every leaf looks like it lives
+    // outside the project and compute_content_root refuses.
+    result.graph.content_root =
+        compute_content_root(std::filesystem::weakly_canonical(root), leaves);
   }
   {
     ScopedTimer timer(&result.stats.resolve_ms);

@@ -1,5 +1,6 @@
 #include "cgraph/export_json.hpp"
 
+#include "cgraph/content_root.hpp"
 #include "cgraph/fragment_json.hpp"
 
 #include <algorithm>
@@ -155,6 +156,13 @@ GraphSnapshot parse_node_link_graph(const nlohmann::json& value) {
   const auto meta = value.value("graph", nlohmann::json::object());
   graph.build_state = parse_build_state(meta.value("build_state", static_cast<int>(BuildState::Empty)));
   graph.cache_hit_rate = meta.value("cache_hit_rate", 0.0);
+  if (const auto root = meta.find("content_root"); root != meta.end() && root->is_object()) {
+    graph.content_root = ContentRoot{
+        .algorithm = root->value("algorithm", ""),
+        .sha256 = root->value("sha256", ""),
+        .leaf_count = root->value("leaf_count", static_cast<std::size_t>(0)),
+    };
+  }
 
   for (const auto& node : value.value("nodes", nlohmann::json::array())) {
     graph.nodes.push_back(parse_node_link_node(node));
@@ -181,10 +189,22 @@ nlohmann::json to_node_link_json(const GraphSnapshot& graph) {
     links.push_back(std::move(value));
   }
 
+  nlohmann::json meta{{"build_state", static_cast<int>(graph.build_state)}, {"cache_hit_rate", graph.cache_hit_rate}};
+  // The content root names the exact source tree this graph was built from
+  // (sha256-merkle-v1). Consumers (CI test selection, provenance records) pin
+  // against it instead of trusting file mtimes. Written only when verified —
+  // never a fabricated or empty value.
+  if (is_valid_content_root(graph.content_root)) {
+    meta["content_root"] = nlohmann::json{
+        {"algorithm", graph.content_root.algorithm},
+        {"sha256", graph.content_root.sha256},
+        {"leaf_count", graph.content_root.leaf_count},
+    };
+  }
   return nlohmann::json{
       {"directed", true},
       {"multigraph", false},
-      {"graph", {{"build_state", static_cast<int>(graph.build_state)}, {"cache_hit_rate", graph.cache_hit_rate}}},
+      {"graph", std::move(meta)},
       {"nodes", std::move(nodes)},
       {"links", std::move(links)},
   };
