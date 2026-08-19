@@ -325,22 +325,32 @@ altered when producing or regenerating the fixture.
 ### Requirement: Lexical multi-seed focal resolution for free-text queries
 When resolving a focal node for a `context` or `query` request, the engine SHALL first attempt
 exact (id, label, bare symbol) and substring matching, and SHALL fall back to lexical term-overlap
-matching only when those produce no match. The lexical fallback SHALL rank nodes by
-inverse-document-frequency-weighted overlap of the query's lexical terms with the node label —
-each term weighted by `log(1 + N/(1+df))`, df being the term's document frequency over node-label
-subtokens in the snapshot — so a rare identifier outranks a ubiquitous word, and SHALL resolve the
-focal from the top match, deterministically (ties broken by centrality then id). For a `context`
-request, the gather SHALL be seeded from the top-N idf-ranked matches and union their
-neighborhoods; N is pinned to the measured optimum for the ranking in force (three, with idf —
-wider pools measurably dilute packing). When the query shares no lexical term with any node label,
-the focal SHALL remain unresolved — the response returns suggestions and the call is recorded as a
-zero hit.
+matching only when those produce no match. The lexical fallback SHALL compare stemmed terms — each
+query and label subtoken reduced by a one-shot strip of a fixed suffix list, with the stem keeping
+at least four characters — so a query inflection matches the identifier it names, and SHALL rank
+nodes by inverse-document-frequency-weighted overlap of those stems — each stem weighted by
+`log(1 + N/(1+df))`, df being the stem's document frequency over node-label subtokens in the
+snapshot — so a rare identifier outranks a ubiquitous word. The focal SHALL resolve from the top
+match, deterministically (ties broken by centrality then id). For a `context` request, the gather
+SHALL be seeded from the top-N ranked matches and union their neighborhoods; N is pinned to the
+measured optimum for the ranking in force (three — wider pools measurably dilute packing). When
+the query shares no stemmed term with any node label, the focal SHALL remain unresolved — the
+response returns suggestions and the call is recorded as a zero hit. Stemming applies to seed
+ranking only: the substring pre-pass, the adaptive gather gate, and the knapsack value keep
+exact-match semantics.
 
 #### Scenario: Natural-language query resolves via lexical overlap
 - **WHEN** a `context` request supplies a free-text query that is not an exact match or a substring
   of any node id or label, but shares lexical terms with one or more symbols
 - **THEN** a focal node is resolved from the highest-weighted match and a non-empty context bundle
   is returned, instead of the empty `focus:null` response
+
+#### Scenario: An inflected query term reaches the identifier it names
+- **GIVEN** a query term and a label subtoken that differ only by a common suffix
+  (e.g. "packs" / "packing")
+- **WHEN** the lexical fallback runs
+- **THEN** they match through their shared stem and the node is rankable, where exact matching
+  would have found nothing
 
 #### Scenario: A rare query term outranks a ubiquitous one
 - **GIVEN** a query with two terms, one appearing in a single node label and one appearing in many
@@ -354,15 +364,15 @@ zero hit.
 - **THEN** that node is resolved exactly as before and the lexical fallback does not run
 
 #### Scenario: Off-topic query stays an honest zero hit
-- **WHEN** a query shares no lexical term with any node label
+- **WHEN** a query shares no stemmed term with any node label
 - **THEN** the focal stays unresolved, the response returns `suggestions`, and the call is recorded
   as a context/query zero hit
 
 #### Scenario: Multi-seed gather unions several ego graphs
 - **WHEN** a free-text `context` query overlaps several symbols and resolves via the lexical fallback
-- **THEN** the gathered candidate set is the union of the neighborhoods of the top-N idf-ranked
-  seeds, deduplicated by shallowest reach, and a relevant node reachable only from a lower-ranked
-  seed is included
+- **THEN** the gathered candidate set is the union of the neighborhoods of the top-N ranked seeds,
+  deduplicated by shallowest reach, and a relevant node reachable only from a lower-ranked seed is
+  included
 
 #### Scenario: Resolution is deterministic
 - **WHEN** the same free-text query is resolved twice against the same snapshot
@@ -1066,4 +1076,35 @@ Baseline constants SHALL be transcriptions of measured output, never targets.
 #### Scenario: Eval rows derive from queries, never labels
 - **WHEN** `queries.jsonl` is regenerated
 - **THEN** rows are mined from git history by the committed config, grading and thresholds are unchanged, and no row is hand-edited
+
+### Requirement: Code context is prose-free
+The `context` op SHALL resolve its focus from, and assemble its bundle exclusively from,
+non-enrichment nodes. Enrichment nodes (the host-authored `doc:`, `concept:`, `media:`, and
+`topic:` id namespaces) never participate in code focal resolution or code context assembly:
+they are excluded
+from substring focal matching, from lexical seed scoring and its document frequencies, from
+`context` candidate collection, and from gather frontier expansion. Prose remains reachable
+through `query` search results (ranked below structural results), `explain`, `path`, and
+`impact`. Adding a semantic overlay to a graph SHALL NOT change any `context` response for a
+code query.
+
+#### Scenario: A dominating document label never becomes the code focus
+- **GIVEN** an enriched graph where a document's label contains the full free-text query and
+  lexically dominates every code label
+- **WHEN** a `context` request runs with that query
+- **THEN** the focus is the code node the query names, not the document
+
+#### Scenario: Enrichment never enters a code context bundle
+- **WHEN** a `context` request runs on an enriched graph with a generous budget
+- **THEN** no `included` entry carries an enrichment-namespace id
+
+#### Scenario: Enrichment is recall-neutral for code queries
+- **WHEN** the end-to-end retrieval gate runs against the same graph with and without a
+  semantic overlay
+- **THEN** measured grade-2 recall is identical at every budget
+
+#### Scenario: Prose labels do not vote on term rarity
+- **GIVEN** a query term that is rare among code labels but common in document labels
+- **WHEN** the lexical fallback ranks seeds
+- **THEN** the term's weight reflects its code-label document frequency only
 
