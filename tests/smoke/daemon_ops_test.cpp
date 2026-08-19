@@ -619,14 +619,17 @@ int main() {
     }
   }
 
-  // Default gather (no `gather` param) is now adaptive: it self-describes
-  // adaptive/knapsack and carries the reach summary. `fixed` is opt-in only.
+  // Default gather (no `gather` param) is adaptive; the FILL stays greedy.
+  // Adaptive used to imply the knapsack, which cost the default path 2.6-5.9
+  // recall points on this repo's graph once it densified -- the DP preferred
+  // many tiny entries over the large relevant slices (research/packer-regression).
+  // Gather and fill are independent; knapsack is `packing:"knapsack"` opt-in only.
   const auto def_ctx = cgraph::handle_daemon_request(
       state, cgraph::make_request("context", {{"id", "a"}, {"budget", 5000}}));
   const auto& dctx = def_ctx["result"];
   if (dctx["focus"].value("label", std::string{}) != "Alpha" ||
       dctx.value("gather", std::string{}) != "adaptive" ||
-      dctx.value("packing", std::string{}) != "knapsack" || !dctx.contains("reach")) {
+      dctx.value("packing", std::string{}) != "greedy" || !dctx.contains("reach")) {
     return 1;
   }
 
@@ -1555,6 +1558,52 @@ int main() {
     if (exact.value("route", std::string{}) != "entity" ||
         exact["nodes"][0].value("kind", std::string{}) != "function") {
       return 94;
+    }
+  }
+
+  // Knapsack value model: item value must scale with slice cost, or the DP
+  // prefers many tiny weakly-relevant entries over the one large entry the
+  // query is about (research/packer-regression: 0.407 -> 0.481 grade-2 recall
+  // @4000 on this repo's graph).
+  {
+    cgraph::DaemonState pack_state;
+    pack_state.pid = 129;
+    cgraph::GraphSnapshot pack_graph;
+    pack_graph.build_state = cgraph::BuildState::DeterministicReady;
+    // focal "f" -> "large" (depth 1, a 60-line slice, ~600 estimated tokens);
+    // focal -> "hub" -> eight tiny "s_N" leaves (depth 2, label-cost only).
+    pack_graph.nodes.push_back(cgraph::Node{.id = "f", .label = "packing_focal", .kind = "function"});
+    pack_graph.nodes.push_back(cgraph::Node{
+        .id = "large",
+        .label = "large_relevant_symbol",
+        .source_file = "/pack/large.cpp",
+        .source_location = cgraph::SourceLocation{.start_line = 10, .start_column = 0, .end_line = 69, .end_column = 1},
+        .kind = "function"});
+    pack_graph.nodes.push_back(cgraph::Node{.id = "hub", .label = "hub", .kind = "function"});
+    pack_graph.edges.push_back(cgraph::Edge{.source = "f", .target = "large", .relation = "CALLS"});
+    pack_graph.edges.push_back(cgraph::Edge{.source = "f", .target = "hub", .relation = "CALLS"});
+    for (int i = 0; i < 8; ++i) {
+      const auto id = "s" + std::to_string(i);
+      pack_graph.nodes.push_back(cgraph::Node{.id = id, .label = "leaf" + std::to_string(i), .kind = "function"});
+      pack_graph.edges.push_back(cgraph::Edge{.source = "hub", .target = id, .relation = "CALLS"});
+    }
+    cgraph::publish_graph_snapshot(pack_state, std::move(pack_graph));
+
+    // Explicit knapsack under a budget that fits EITHER the large slice or the
+    // tiny leaves: cost-scaled value must keep the large, equally-relevant slice.
+    const auto knap_ctx = cgraph::handle_daemon_request(
+        pack_state, cgraph::make_request("context", {{"id", "f"},
+                                                     {"budget", 610},
+                                                     {"packing", "knapsack"},
+                                                     {"gather", "fixed"}}))["result"];
+    bool large_included = false;
+    for (const auto& entry : knap_ctx.value("included", nlohmann::json::array())) {
+      if (entry.value("id", std::string{}) == "large") {
+        large_included = true;
+      }
+    }
+    if (!large_included) {
+      return 96;
     }
   }
 

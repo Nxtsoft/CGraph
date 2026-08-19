@@ -130,18 +130,17 @@ int main() {
     int budget;
     double baseline;  // measured on the committed fixture at gate introduction
   };
-  // Re-pinned for openspec/changes/honest-context-budget: the previous pins
-  // (0.224/0.315/0.383, provenance-orphaned by the d5030c1 fixture rewrite) were
-  // measured against a packer shipping ~6x its stated budget -- at budget 2000
-  // the live payload measured ~12,700 tokens across ~87 entries. With the
-  // measured serialized ceiling enforced, a 2000-token bundle holds roughly a
-  // dozen full entries (~138 tokens each: absolute path, sha256, snippet), so
-  // end-to-end recall at a given nominal budget is genuinely lower; agents that
-  // relied on the old effective size should raise `budget`. Baselines measured
-  // on the frozen fixture at the ceiling-introducing commit; 6000 is the
-  // shipped default budget.
+  // Re-pinned for openspec/changes/re-anchor-retrieval-fixture: the fixture was
+  // regenerated at 0cb8237 (1580 nodes / 3178 links, 75 symbol rows mined from
+  // the full history vs 35 through June 15), and the same change decoupled the
+  // default adaptive gather from the knapsack fill -- the coupling was shedding
+  // the large relevant slices for confetti on the densified graph, and its
+  // removal roughly doubled measured end-to-end recall at every budget (e.g.
+  // 0.0995 -> 0.1804 at 2000 on this same pair). Baselines are transcriptions
+  // of the gate's own output on the new pair, measured at root length 58; 6000
+  // is the shipped default budget.
   const std::vector<Target> targets = {
-      {2000, 0.0745}, {4000, 0.1198}, {6000, 0.1928}, {8000, 0.2349}};
+      {2000, 0.1804}, {4000, 0.2330}, {6000, 0.2795}, {8000, 0.2936}};
   constexpr double kTol = 0.03;
 
   std::cout << "end-to-end retrieval gate  (N=" << rows.size() << " symbol rows, q-only, engine defaults)\n";
