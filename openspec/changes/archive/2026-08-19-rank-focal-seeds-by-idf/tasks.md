@@ -25,5 +25,6 @@
       adjacent quiet-condition runs measure AFTER at or below BEFORE (context median
       127.8ms vs 140.0ms; query-op 35.3ms vs 45.5ms). Same-binary medians spread 2.5x
       with machine load, so only adjacent runs are comparable; no regression.
-- [ ] 3.3 Full `ctest --preset default` green; sanitizers via CI (local ASan hang recorded in
-      add-rust-import-resolution).
+- [x] 3.3 Full `ctest --preset default` green (66/66) before commit; PR #37 CI green on all
+      eight jobs including both sanitizers. (Checkbox lagged the run at commit time;
+      corrected at archive.)

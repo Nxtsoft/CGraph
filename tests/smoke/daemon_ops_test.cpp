@@ -1611,5 +1611,32 @@ int main() {
     }
   }
 
+  // Stemmed seed matching: a query inflection resolves the identifier it names
+  // even when they share no exact lexical term ("packs budgets" vs
+  // "budget_packing" -- stems {pack, budget} match, exact terms {packs,
+  // budgets} vs {budget, packing} do not). Stemming applies to seed ranking
+  // only; an off-topic query still resolves nothing.
+  {
+    cgraph::DaemonState stem_state;
+    stem_state.pid = 131;
+    cgraph::GraphSnapshot stem_graph;
+    stem_graph.build_state = cgraph::BuildState::DeterministicReady;
+    stem_graph.nodes.push_back(cgraph::Node{
+        .id = "bp", .label = "budget_packing", .source_file = "pack.cpp", .kind = "function"});
+    cgraph::publish_graph_snapshot(stem_state, std::move(stem_graph));
+
+    const auto stemmed = cgraph::handle_daemon_request(
+        stem_state, cgraph::make_request("context", {{"q", "packs budgets"}, {"budget", 5000}}));
+    const auto& stem_focus = stemmed["result"]["focus"];
+    if (!stem_focus.is_object() || stem_focus.value("id", std::string{}) != "bp") {
+      return 97;  // inflected query terms must reach the identifier via stems
+    }
+    const auto offtopic = cgraph::handle_daemon_request(
+        stem_state, cgraph::make_request("context", {{"q", "xylophone zebras"}, {"budget", 5000}}));
+    if (!offtopic["result"]["focus"].is_null()) {
+      return 98;  // stemming must not turn off-topic queries into matches
+    }
+  }
+
   return 0;
 }

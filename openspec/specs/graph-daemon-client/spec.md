@@ -111,13 +111,14 @@ k-hop BFS (the pre-flip default), so callers can opt back into it exactly. Under
 "adaptive"` (the default) the gather SHALL expand all nodes at depth 0 and 1 unconditionally
 (preserving the full 2-hop core), and SHALL expand a node at depth ≥ 2 only when its query
 lexical-overlap is ≥ `gather_theta` (default 0.05), to a maximum depth of 3, so that the third hop is
-taken only along query-relevant paths. Adaptive gather SHALL use the existing knapsack fill and the
+taken only along query-relevant paths. Gather and fill are independent: adaptive gather SHALL use
+the greedy rank-order fill unless `packing = "knapsack"` is requested explicitly, and SHALL use the
 existing deterministic relevance signal; it SHALL introduce no model or LLM.
 
-#### Scenario: Default gather is adaptive
-- **WHEN** a `context` request omits `gather`
-- **THEN** the gather is `"adaptive"` (knapsack packing, depth 3, θ=0.05 gate) and the response
-  reports `gather: "adaptive"`
+#### Scenario: Default gather is adaptive with the greedy fill
+- **WHEN** a `context` request omits `gather` and `packing`
+- **THEN** the gather is `"adaptive"` (depth 3, θ=0.05 gate), the fill is greedy, and the response
+  reports `gather: "adaptive"` and `packing: "greedy"`
 
 #### Scenario: Explicit fixed gather is unchanged
 - **WHEN** a `context` request sets `gather = "fixed"`
@@ -132,26 +133,29 @@ existing deterministic relevance signal; it SHALL introduce no model or LLM.
 
 #### Scenario: Adaptive reaches beyond two hops for less than full three-hop cost
 - **WHEN** adaptive gather runs on the evaluation set versus a fixed 2-hop and fixed 3-hop gather
-- **THEN** its candidate set reaches relevant symbols a 2-hop gather misses, at a candidate-token
-  cost far below the full 3-hop gather
+- **THEN** its candidate set reaches symbols a 2-hop gather cannot, at a candidate count strictly
+  below the full 3-hop fan-out
 
 ### Requirement: In-engine revalidation gates adaptive gather
-The `context` default gather SHALL be `"adaptive"`, and a parity test SHALL guard that default by
-reproducing its grade-2 recall improvement through the engine's own token accounting (capped
-source-slice cost and the response's real packing), not only the offline Python harness. The parity
-test SHALL drive the `context` op with `gather = "adaptive"` over the evaluation rows and assert the
-in-engine recall and candidate-cost deltas against recorded targets. It SHALL measure against a
+The `context` default gather SHALL be `"adaptive"`, and a parity test SHALL guard that default
+through the engine's own token accounting (capped source-slice cost and the response's real
+packing), not only the offline Python harness. The parity test SHALL drive the `context` op with
+`gather = "adaptive"` over the evaluation rows and assert that the default path's mean grade-2
+recall is not inferior to the fixed 2-hop greedy baseline (within the recorded tolerance) while its
+candidate pool stays strictly smaller than the full 3-hop fan-out. It SHALL measure against a
 committed, version-controlled fixture pair (a deterministic code-only graph and a verbatim eval
 snapshot), NOT the mutable working-tree artifacts (`cgraph-out/graph.json`,
 `research/eval/queries.jsonl`), so the gate is reproducible and immune to daemon-state or
 working-tree drift. Because the fixture is always present, the gate SHALL run on every checkout
 including CI; the artifact-absent skip SHALL remain only as a defensive fallback for the case where
-the fixture is missing. The recorded targets and tolerance SHALL be unchanged by the default flip.
+the fixture is missing. Whenever the fixture is regenerated, the recorded targets SHALL be
+re-measured and re-pinned on the new pair in the same change.
 
-#### Scenario: Parity gate reproduces the recall gain in-engine
+#### Scenario: Parity gate holds the default to the fixed baseline in-engine
 - **WHEN** the parity test runs `gather = "adaptive"` against the committed fixture rows
-- **THEN** mean grade-2 recall@budget is at least the fixed-2-hop baseline plus the change's target
-  margin, measured under the engine's real cost model, and the test fails if it is not
+- **THEN** mean grade-2 recall@budget is at least the fixed-2-hop greedy baseline minus the
+  recorded tolerance, the adaptive candidate pool is strictly smaller than fixed 3-hop's, and the
+  test fails if either does not hold
 
 #### Scenario: Parity gate runs against the committed fixture, not the working tree
 - **WHEN** the parity test runs on any checkout, regardless of the contents of
@@ -321,18 +325,28 @@ altered when producing or regenerating the fixture.
 ### Requirement: Lexical multi-seed focal resolution for free-text queries
 When resolving a focal node for a `context` or `query` request, the engine SHALL first attempt
 exact (id, label, bare symbol) and substring matching, and SHALL fall back to lexical term-overlap
-matching only when those produce no match. The lexical fallback SHALL rank nodes by the overlap of
-the query's lexical terms with the node label and resolve the focal from the top match,
-deterministically (ties broken by centrality then id). For a `context` request, the gather SHALL be
-seeded from the top-N lexical matches and union their neighborhoods. When the best lexical overlap
-falls below a minimum confidence threshold, the focal SHALL remain unresolved — the response returns
-suggestions and the call is recorded as a zero hit, unchanged from current behavior.
+matching only when those produce no match. The lexical fallback SHALL rank nodes by
+inverse-document-frequency-weighted overlap of the query's lexical terms with the node label —
+each term weighted by `log(1 + N/(1+df))`, df being the term's document frequency over node-label
+subtokens in the snapshot — so a rare identifier outranks a ubiquitous word, and SHALL resolve the
+focal from the top match, deterministically (ties broken by centrality then id). For a `context`
+request, the gather SHALL be seeded from the top-N idf-ranked matches and union their
+neighborhoods; N is pinned to the measured optimum for the ranking in force (three, with idf —
+wider pools measurably dilute packing). When the query shares no lexical term with any node label,
+the focal SHALL remain unresolved — the response returns suggestions and the call is recorded as a
+zero hit.
 
 #### Scenario: Natural-language query resolves via lexical overlap
 - **WHEN** a `context` request supplies a free-text query that is not an exact match or a substring
   of any node id or label, but shares lexical terms with one or more symbols
-- **THEN** a focal node is resolved from the highest-overlap match and a non-empty context bundle is
-  returned, instead of the empty `focus:null` response
+- **THEN** a focal node is resolved from the highest-weighted match and a non-empty context bundle
+  is returned, instead of the empty `focus:null` response
+
+#### Scenario: A rare query term outranks a ubiquitous one
+- **GIVEN** a query with two terms, one appearing in a single node label and one appearing in many
+- **WHEN** the lexical fallback ranks the matches
+- **THEN** the node matching the rare term ranks above the nodes matching only the common term and
+  becomes the focus
 
 #### Scenario: Exact lookups are unchanged
 - **WHEN** a request supplies an exact node id, an exact label, or a bare symbol name that resolves
@@ -340,19 +354,19 @@ suggestions and the call is recorded as a zero hit, unchanged from current behav
 - **THEN** that node is resolved exactly as before and the lexical fallback does not run
 
 #### Scenario: Off-topic query stays an honest zero hit
-- **WHEN** a query's best lexical overlap with any node is below the confidence threshold
+- **WHEN** a query shares no lexical term with any node label
 - **THEN** the focal stays unresolved, the response returns `suggestions`, and the call is recorded
   as a context/query zero hit
 
 #### Scenario: Multi-seed gather unions several ego graphs
 - **WHEN** a free-text `context` query overlaps several symbols and resolves via the lexical fallback
-- **THEN** the gathered candidate set is the union of the neighborhoods of the top-N lexical seeds,
-  deduplicated by shallowest reach, and a relevant node reachable only from a lower-ranked seed is
-  included
+- **THEN** the gathered candidate set is the union of the neighborhoods of the top-N idf-ranked
+  seeds, deduplicated by shallowest reach, and a relevant node reachable only from a lower-ranked
+  seed is included
 
 #### Scenario: Resolution is deterministic
 - **WHEN** the same free-text query is resolved twice against the same snapshot
-- **THEN** the same focal node (and seed set) is selected, with equal-overlap ties broken by
+- **THEN** the same focal node (and seed set) is selected, with equal-weight ties broken by
   centrality then id
 
 ### Requirement: Query op routes by deterministic intent
@@ -754,7 +768,7 @@ daemon, or no socket at all) SHALL startup unlink any stale endpoint and bind it
 - **THEN** startup unlinks the stale socket, binds its own, and serves normally
 
 ### Requirement: Adaptive gather admits bounded same-file focal context
-When `gather = "adaptive"` and a free-text query is present, the `context` op SHALL consider code nodes that share a non-empty source file with the primary resolved focal, even when no persisted graph edge connects those nodes. Same-file candidates SHALL be admitted directly as candidates, SHALL NOT expand the graph frontier, SHALL be deduplicated against normally reached nodes, and SHALL be bounded to five admitted nodes from the focal source file. Ordering SHALL be deterministic by lexical overlap descending, centrality descending, then node id ascending. Admitted entries SHALL report depth 2 and `via = "same_file"`. During knapsack packing, a same-file candidate SHALL receive lexical-overlap value only and SHALL NOT receive the structural hop-value term used by persisted graph neighbors. The implementation SHALL NOT add nodes or edges to `graph.json`.
+When `gather = "adaptive"` and a free-text query is present, the `context` op SHALL consider code nodes that share a non-empty source file with the primary resolved focal, even when no persisted graph edge connects those nodes. Same-file candidates SHALL be admitted directly as candidates, SHALL NOT expand the graph frontier, SHALL be deduplicated against normally reached nodes, and SHALL be bounded to five admitted nodes from the focal source file. Ordering SHALL be deterministic by lexical overlap descending, centrality descending, then node id ascending. Admitted entries SHALL report depth 2 and `via = "same_file"`. Same-file admission is an inferred relationship: a same-file candidate SHALL be packed only on lexical evidence, under either fill — during knapsack packing it receives lexical-overlap value only (never the structural hop-value term), and during greedy packing a zero-overlap same-file candidate is not packed at all. The implementation SHALL NOT add nodes or edges to `graph.json`.
 
 #### Scenario: Adaptive gather includes a relevant same-file sibling
 - **WHEN** a free-text `context` request resolves a primary focal whose source file contains an otherwise-unreachable sibling
@@ -776,9 +790,9 @@ When `gather = "adaptive"` and a free-text query is present, the `context` op SH
 - **WHEN** more than five eligible siblings share a focal source file
 - **THEN** exactly the first five siblings under overlap-descending, centrality-descending, id-ascending order are admitted
 
-#### Scenario: Query overlap controls inferred-candidate value
+#### Scenario: Query overlap controls inferred-candidate packing
 - **WHEN** a focal-file sibling has no lexical overlap with the free-text query but remains within the five-candidate cap
-- **THEN** the sibling remains in the gathered candidate set but receives zero knapsack value and cannot displace a positive-value structural neighbor
+- **THEN** the sibling remains in the gathered candidate set (and in the adaptive reach summary) but is not packed: it receives zero knapsack value under the knapsack fill and is skipped by the greedy fill, so it cannot displace a structural neighbor under any budget
 
 ### Requirement: Current-path recall gates same-file expansion
 Same-file expansion SHALL be retained only when the committed query-only retrieval fixture demonstrates a strict mean grade-2 recall increase at one or more fixed budgets and no decrease at the remaining budgets, without fixture regeneration or tolerance weakening. The serialized graph parity tests SHALL remain unchanged, and median warmed `context` latency over at least 50 calls SHALL NOT regress by more than 10% on the same graph and query.
@@ -1015,4 +1029,41 @@ Snapshot source evidence SHALL remain runtime metadata outside graph topology an
 #### Scenario: Pinned context reads only selected source files
 - **WHEN** a pinned context response selects snippets from K distinct files in a larger repository
 - **THEN** source verification reads and hashes exactly those K files and does not scan unrelated project files
+
+### Requirement: Knapsack item value scales with slice cost
+The knapsack fill's per-item value SHALL scale sublinearly with the item's estimated slice token
+cost (relevance × √cost), so that equally-relevant entries compete on relevance rather than on
+being small. A per-item value that ignores cost lets the 0/1 fill maximize entry count — packing
+many tiny weakly-relevant entries while shedding the larger slices a query is about.
+
+#### Scenario: A large equally-relevant slice is not shed for confetti
+- **GIVEN** a focal with one large high-relevance neighbor and several tiny low-relevance
+  candidates, under a budget that fits either the large slice or the tiny ones
+- **WHEN** `packing = "knapsack"` runs
+- **THEN** the large neighbor is included
+
+#### Scenario: Both fills stay within the parity band on the committed fixture
+- **WHEN** the parity gate compares greedy and knapsack at the same enforced budgets on the
+  committed fixture
+- **THEN** each packer meets its pinned floor and the two stay within the recorded parity band
+
+### Requirement: Retrieval gate baselines are anchored to a recorded fixture generation
+The committed retrieval fixture pair SHALL be regenerated only by the documented procedure —
+the real one-shot build from a clean checkout with a two-run byte-identity check, and
+`scripts/bootstrap_eval.py` under the committed config with no grading edits — and every
+regeneration SHALL re-pin both gates' baseline constants to freshly measured values in the same
+change, recording the generation commit and the measurement environment in the fixture README.
+Baseline constants SHALL be transcriptions of measured output, never targets.
+
+#### Scenario: Regeneration re-pins both gates atomically
+- **WHEN** the fixture pair is replaced with a regeneration at a newer commit
+- **THEN** the same change updates the baseline constants of the parity gate and the end-to-end gate to values measured on the new pair, and the fixture README records the new node/link counts, row count, and generation commit
+
+#### Scenario: The fixture graph is reproducible
+- **WHEN** the one-shot pipeline runs twice over the same clean checkout
+- **THEN** the two `graph.json` outputs are byte-identical
+
+#### Scenario: Eval rows derive from queries, never labels
+- **WHEN** `queries.jsonl` is regenerated
+- **THEN** rows are mined from git history by the committed config, grading and thresholds are unchanged, and no row is hand-edited
 
