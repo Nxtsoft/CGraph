@@ -144,7 +144,16 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
     const auto spec = strip_string_quotes(node_text(source, context.source));
     if (!spec.empty()) {
       const auto resolved = resolve_module_spec(context.source_file, spec);
-      const auto module_id = make_id(resolved);
+      // The stub id is namespaced so it can NEVER equal a real node's id. With
+      // extensioned imports (`from './chunkBy.ts'`, the es-toolkit house style)
+      // `make_id(resolved)` is byte-identical to the imported FILE node's id;
+      // merge_fragments keeps the first occurrence per id, so whichever fragment
+      // merges first wins -- an importer's stub could squat the real file's id
+      // and resolve_imports would then drop the whole file from the graph
+      // (650 of 1508 es-toolkit files vanished this way, issue #39). Stubs are
+      // always consumed by resolve_imports, so the namespace never reaches an
+      // export. Same convention as the Rust `rust_use:` stubs.
+      const auto module_id = make_id("js_module:" + resolved);
       fragment.nodes.push_back(Node{
           .id = module_id,
           .label = spec,
@@ -174,7 +183,10 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
   std::vector<std::string> names;
   collect_specifier_names(node, context.source, names);
   for (auto& name : names) {
-    const auto symbol_id = make_id(module_key + ":" + name);
+    // Namespaced for the same reason as the module stub above: with an
+    // extensioned import spec, `make_id(module_key + ":" + name)` is exactly
+    // the imported SYMBOL's real id, and the stub squats it (issue #39).
+    const auto symbol_id = make_id("js_import:" + module_key + ":" + name);
     fragment.nodes.push_back(Node{
         .id = symbol_id,
         .label = name,

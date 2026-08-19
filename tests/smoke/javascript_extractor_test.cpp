@@ -195,5 +195,40 @@ interface Handler extends Listener {
     return 1;  // primitive types must be filtered
   }
 
+  // Import stub ids must NEVER collide with real node ids. With an extensioned
+  // relative import (`from './chunkBy.ts'`, the es-toolkit house style) the
+  // resolved module spec IS the imported file's path, and the naive ids
+  // make_id(path) / make_id(path + ":" + name) are byte-identical to the real
+  // file and symbol node ids -- merge_fragments keeps the first occurrence per
+  // id, so an importer that merges first squats the real ids and the imported
+  // file vanishes from the graph (650 of 1508 es-toolkit files, issue #39).
+  {
+    constexpr auto importer_source = R"ts(
+import { chunkBy } from './chunkBy.ts';
+export function chunkByPipe() {
+  return chunkBy([]);
+}
+)ts";
+    const auto importer = cgraph::extract_typescript(
+        cgraph::ExtractionContext{.source_file = "src/array/fp.ts", .source = importer_source});
+    constexpr auto imported_source = R"ts(
+export function chunkBy() {
+  return [];
+}
+)ts";
+    const auto imported = cgraph::extract_typescript(
+        cgraph::ExtractionContext{.source_file = "src/array/chunkBy.ts", .source = imported_source});
+    for (const auto& stub : importer.fragment.nodes) {
+      if (stub.kind != "import" && stub.kind != "module") {
+        continue;
+      }
+      for (const auto& real : imported.fragment.nodes) {
+        if (stub.id == real.id) {
+          return 1;  // a stub id squatting a real node id erases that node at merge
+        }
+      }
+    }
+  }
+
   return 0;
 }
