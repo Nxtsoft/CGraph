@@ -130,17 +130,15 @@ int main() {
     int budget;
     double baseline;  // measured on the committed fixture at gate introduction
   };
-  // Re-pinned for openspec/changes/re-anchor-retrieval-fixture: the fixture was
-  // regenerated at 0cb8237 (1580 nodes / 3178 links, 75 symbol rows mined from
-  // the full history vs 35 through June 15), and the same change decoupled the
-  // default adaptive gather from the knapsack fill -- the coupling was shedding
-  // the large relevant slices for confetti on the densified graph, and its
-  // removal roughly doubled measured end-to-end recall at every budget (e.g.
-  // 0.0995 -> 0.1804 at 2000 on this same pair). Baselines are transcriptions
-  // of the gate's own output on the new pair, measured at root length 58; 6000
-  // is the shipped default budget.
+  // Re-pinned for openspec/changes/rank-focal-seeds-by-idf: idf-weighted seed
+  // ranking plus the 3-seed gather lifted measured end-to-end recall from
+  // 0.1804/0.2330/0.2795/0.2936 (the re-anchor pins on this same fixture) to
+  // the values below -- +39% relative at the shipped default budget of 6000.
+  // Baselines are transcriptions of the gate's own output on the committed
+  // pair (regenerated at 0cb8237: 1580 nodes / 3178 links, 75 symbol rows),
+  // measured at root length 58.
   const std::vector<Target> targets = {
-      {2000, 0.1804}, {4000, 0.2330}, {6000, 0.2795}, {8000, 0.2936}};
+      {2000, 0.2175}, {4000, 0.3403}, {6000, 0.3864}, {8000, 0.4245}};
   constexpr double kTol = 0.03;
 
   std::cout << "end-to-end retrieval gate  (N=" << rows.size() << " symbol rows, q-only, engine defaults)\n";

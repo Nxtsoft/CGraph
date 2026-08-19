@@ -733,23 +733,27 @@ int main() {
     return 1;
   }
 
-  // Multi-seed gather: "alpha gamma" is no label's substring, so the lexical
-  // fallback seeds from the top matches (a/c via "alpha", d via "gamma"). "d" is
-  // disconnected (no edges) and reachable ONLY as its own seed, so its presence in
-  // the bundle proves the gather unions several ego graphs, not just the focal's.
+  // Multi-seed gather + idf ordering: "alpha gamma" is no label's substring, so
+  // the lexical fallback seeds from the top matches (a/c via "alpha", d via
+  // "gamma"). "gamma" appears in exactly one label while "alpha" appears in two,
+  // so idf weighting must rank "d" first -- the rare-term match becomes the
+  // focus (under plain overlap all three tied and centrality made "a" the
+  // focus). "d" is disconnected (no edges) and reachable ONLY as its own seed,
+  // and "a" is reachable only from the alpha seeds, so both appearing in the
+  // bundle proves the gather unions several ego graphs, not just the focal's.
   const auto multi = cgraph::handle_daemon_request(
       state, cgraph::make_request("context", {{"q", "alpha gamma"}, {"budget", 50000}}));
-  if (multi["result"]["focus"].is_null()) {
-    return 1;
+  if (multi["result"]["focus"].value("id", std::string{}) != "d") {
+    return 1;  // idf: the rare-term match outranks the ubiquitous-term matches
   }
-  bool multi_found_d = false;
+  bool multi_found_alpha = false;
   for (const auto& item : multi["result"]["included"]) {
-    if (item.value("id", std::string{}) == "d") {
-      multi_found_d = true;
+    if (item.value("id", std::string{}) == "a") {
+      multi_found_alpha = true;
     }
   }
-  if (!multi_found_d) {
-    return 1;
+  if (!multi_found_alpha) {
+    return 1;  // the lower-ranked alpha seeds' ego graphs are still unioned in
   }
 
   fs::remove_all(src.parent_path());
