@@ -236,10 +236,13 @@ void add_source_location(nlohmann::json& brief, const Node& node) {
 }
 
 // Number of lexical focal seeds whose neighborhoods a context gather unions when
-// resolving a free-text query. A single lexical top-1 is the truly-relevant
-// symbol only ~23% of the time (research/focal-resolution/results.md); seeding
-// from several hedges query ambiguity.
-constexpr std::size_t kFocalSeedCount = 5;
+// resolving a free-text query. Seeding from several hedges query ambiguity, but
+// pool size trades against packing dilution: with idf-weighted ranking, three
+// seeds measure best at the shipped default budget and above (k=3 beats k=5 by
+// ~3 recall points and k=10 loses outright; the tighter set is only safe BECAUSE
+// the ranking is good -- k=3 under the old plain-overlap ranking was a wash.
+// research/focal-ranking, measured through the committed e2e gate).
+constexpr std::size_t kFocalSeedCount = 3;
 // Same-file expansion targets the measured focal-file recall tail without
 // letting generated or unusually dense files flood the candidate set. Five
 // preserves the committed-fixture recall gain while bounding candidate growth.
@@ -257,12 +260,48 @@ constexpr std::size_t kSameFileCandidateCap = 5;
   if (query_terms.empty()) {
     return {};
   }
+  // Rank by idf-weighted overlap: each query term is worth log(1 + N/(1+df)),
+  // so a rare identifier outranks a ubiquitous word instead of every term
+  // counting equally. Plain query-term fraction let common words dominate the
+  // seed set; idf weighting moved end-to-end grade-2 recall at the default
+  // budget from 0.280 to 0.387 on the committed fixture (research/focal-ranking,
+  // with the 3-seed gather above). Label term sets are computed once per node in
+  // the same pass that builds the document frequencies -- one O(nodes) scan, the
+  // same shape as index_nodes and matching_nodes on this read path.
+  std::vector<std::pair<const Node*, std::unordered_set<std::string>>> node_terms;
+  node_terms.reserve(graph.nodes.size());
+  std::unordered_map<std::string, std::size_t> df;
   for (const auto& node : graph.nodes) {
     if (is_memory_node_id(node.id)) {
       continue;  // session-memory checkpoints are not code matches
     }
-    if (const double overlap = query_term_overlap(query_terms, node.label); overlap > 0.0) {
-      scored.emplace_back(overlap, &node);
+    auto terms = lexical_terms(node.label);
+    for (const auto& term : terms) {
+      ++df[term];
+    }
+    node_terms.emplace_back(&node, std::move(terms));
+  }
+  const double node_count = static_cast<double>(node_terms.size());
+  const auto idf = [&](const std::string& term) {
+    const auto found = df.find(term);
+    const double freq = found == df.end() ? 0.0 : static_cast<double>(found->second);
+    return std::log(1.0 + node_count / (1.0 + freq));
+  };
+  // A term absent from every label gets the maximum idf but can match no node,
+  // so it deflates all scores equally and never reorders them.
+  double denom = 0.0;
+  for (const auto& term : query_terms) {
+    denom += idf(term);
+  }
+  for (const auto& [node, terms] : node_terms) {
+    double weighted = 0.0;
+    for (const auto& term : query_terms) {
+      if (terms.contains(term)) {
+        weighted += idf(term);
+      }
+    }
+    if (weighted > 0.0) {
+      scored.emplace_back(weighted / denom, node);
     }
   }
   std::ranges::sort(scored, [](const auto& lhs, const auto& rhs) {
