@@ -81,7 +81,13 @@ Node-link JSON. Required: nodes need `id` + `label`; edges need `source` +
   nodes — reuse the ids the graph already has.
 - **Reuse concept ids across chunks** so docs in different chunks attach to the
   same concept and the graph stays connected (e.g. every OpenSpec command doc
-  points at one `concept:opsx-change-lifecycle`).
+  points at one `concept:opsx-change-lifecycle`) — but **define every concept
+  node locally in each fragment that references it**. An edge endpoint that is
+  neither a node in the fragment nor an existing CODE node is rejected
+  (`semantic fragment dependency has no source path`): the dependency
+  fingerprinter cannot record a source-less external node, so cross-fragment
+  concept reuse works by re-declaring the same `concept:` id (the merge
+  deduplicates identical ids), never by bare reference.
 - **Stay faithful.** The fragment is knowledge extracted from the files you read,
   not invention. If a file is low-signal (a license, a changelog), a single doc
   node with no edges is fine.

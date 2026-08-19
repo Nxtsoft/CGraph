@@ -304,8 +304,15 @@ constexpr std::size_t kSameFileCandidateCap = 5;
   node_terms.reserve(graph.nodes.size());
   std::unordered_map<std::string, std::size_t> df;
   for (const auto& node : graph.nodes) {
-    if (is_memory_node_id(node.id)) {
-      continue;  // session-memory checkpoints are not code matches
+    // Session-memory checkpoints and enrichment prose are not code matches. A
+    // document's NL label otherwise outranks every identifier for an NL query
+    // and becomes the focus, and 329 prose labels deflate the idf of exactly
+    // the query's own words -- measured on this repo's enriched graph, prose in
+    // focal resolution cost 2.8-6.8 end-to-end recall points at every budget
+    // (research/enrichment-seeding). Prose stays reachable via query/explain;
+    // it never resolves a CODE focal.
+    if (is_memory_node_id(node.id) || is_enrichment_node_id(node.id)) {
+      continue;
     }
     auto terms = stem_terms(lexical_terms(node.label));
     for (const auto& term : terms) {
@@ -1002,6 +1009,9 @@ struct StructuralIntent {
   std::vector<const Node*> seeds;
   if (focal == nullptr && !needle.empty()) {
     for (const auto* match : matching_nodes(graph, needle)) {
+      if (is_enrichment_node_id(match->id)) {
+        continue;  // prose about code never becomes the code focus
+      }
       if (focal == nullptr || node_centrality(*match) > node_centrality(*focal)) {
         focal = match;
       }
@@ -1076,6 +1086,11 @@ struct StructuralIntent {
       if (reached.contains(to)) {
         continue;
       }
+      // A document is a many-edge super-connector; walking through it collapses
+      // graph distance and floods shallow depths with weakly-related code.
+      if (is_enrichment_node_id(to)) {
+        continue;
+      }
       reached[to] = {depth + 1, relation};
       frontier.push(to);
     }
@@ -1125,6 +1140,11 @@ struct StructuralIntent {
     }
     if (is_memory_node_id(node_id)) {
       continue;  // memory checkpoints never enter code context, even when a concerns edge makes them adjacent
+    }
+    // A packed prose snippet spends budget that cannot answer a code query, and
+    // a document's fat ego graph dilutes the pool (research/enrichment-seeding).
+    if (is_enrichment_node_id(node_id)) {
+      continue;
     }
     if (const auto it = by_id.find(node_id); it != by_id.end()) {
       candidates.push_back(it->second);

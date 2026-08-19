@@ -1638,5 +1638,53 @@ int main() {
     }
   }
 
+  // Prose firewall: on an enriched graph, a document whose natural-language
+  // label dominates the query must never resolve the CODE focus (substring or
+  // lexical), and enrichment nodes never appear in a code context bundle --
+  // measured on this repo's enriched graph, prose in the code path cost 2.8-6.8
+  // end-to-end recall points at every budget (research/enrichment-seeding).
+  {
+    cgraph::DaemonState prose_state;
+    prose_state.pid = 132;
+    cgraph::GraphSnapshot prose_graph;
+    prose_graph.build_state = cgraph::BuildState::DeterministicReady;
+    prose_graph.nodes.push_back(cgraph::Node{
+        .id = "sv", .label = "snapshot_verifier", .source_file = "verify.cpp", .kind = "function"});
+    prose_graph.nodes.push_back(cgraph::Node{
+        .id = "helper_sv", .label = "verify_helper", .source_file = "verify.cpp", .kind = "function"});
+    // The doc label contains the full query as a substring AND lexically
+    // dominates it -- both focal paths would pick it without the firewall.
+    prose_graph.nodes.push_back(cgraph::Node{
+        .id = "doc:verify-notes",
+        .label = "verify snapshot bytes against the pinned graph",
+        .source_file = "docs/verify.md",
+        .kind = "document",
+        .properties = {{"degree_centrality", "1.000000"}}});
+    prose_graph.nodes.push_back(cgraph::Node{
+        .id = "concept:snapshot-verification", .label = "snapshot verification", .kind = "concept"});
+    prose_graph.edges.push_back(cgraph::Edge{.source = "doc:verify-notes", .target = "sv", .relation = "DESCRIBES"});
+    prose_graph.edges.push_back(cgraph::Edge{
+        .source = "doc:verify-notes", .target = "concept:snapshot-verification", .relation = "DESCRIBES"});
+    prose_graph.edges.push_back(cgraph::Edge{.source = "sv", .target = "helper_sv", .relation = "CALLS"});
+    cgraph::publish_graph_snapshot(prose_state, std::move(prose_graph));
+
+    const auto prose_ctx = cgraph::handle_daemon_request(
+        prose_state,
+        cgraph::make_request("context", {{"q", "verify snapshot bytes against the pinned graph"},
+                                         {"budget", 50000}}))["result"];
+    const auto& prose_focus = prose_ctx["focus"];
+    if (!prose_focus.is_object() || cgraph::is_enrichment_node_id(prose_focus.value("id", std::string{}))) {
+      return 99;  // prose never becomes the code focus
+    }
+    if (prose_focus.value("id", std::string{}) != "sv") {
+      return 100;  // the code the query names resolves instead
+    }
+    for (const auto& entry : prose_ctx.value("included", nlohmann::json::array())) {
+      if (cgraph::is_enrichment_node_id(entry.value("id", std::string{}))) {
+        return 101;  // enrichment never enters a code context bundle
+      }
+    }
+  }
+
   return 0;
 }
