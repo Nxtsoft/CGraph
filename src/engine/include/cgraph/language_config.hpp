@@ -58,6 +58,12 @@ using MethodPredicate = std::function<bool(const TSNode&, const ExtractionContex
 // Invoked for each class/interface node (with its already-assigned node id) to
 // emit heritage and member type-reference facts.
 using RelationHandler = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, std::vector<RawRelation>&)>;
+// Rewrites a file's source text BEFORE parsing, preserving every byte offset
+// (so node positions stay correct). Rust uses it to blank `cfg_*! { ... }`
+// item-wrapper macros with spaces, so the items inside — invisible as opaque
+// macro token-trees otherwise — parse in place with their real enclosing impl
+// and line numbers. Returns the rewritten source, or an empty string to skip.
+using PreprocessSource = std::function<std::string(std::string_view)>;
 
 struct InternedSymbols {
   std::vector<TSSymbol> class_nodes;
@@ -109,6 +115,7 @@ struct LanguageConfig {
   ExtraWalk extra_walk;
   RelationHandler relation_handler;
   MethodPredicate method_predicate;
+  PreprocessSource preprocess_source;
   InternedSymbols symbols;
 };
 

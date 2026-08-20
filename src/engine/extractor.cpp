@@ -379,11 +379,24 @@ ExtractionResult extract_with_config(
     return result;
   }
 
+  // A language may rewrite the source before parsing (Rust blanks `cfg_*!`
+  // item-wrapper macros). The rewrite preserves every byte offset, so the walk,
+  // node positions, and node_text all read the rewritten buffer transparently.
+  std::string rewritten;
+  ExtractionContext local = context;
+  if (config.preprocess_source) {
+    rewritten = config.preprocess_source(context.source);
+    if (!rewritten.empty()) {
+      local.source = rewritten;
+    }
+  }
+  const ExtractionContext& ctx = local;
+
   TreePtr tree(ts_parser_parse_string(
       parser,
       nullptr,
-      context.source.data(),
-      static_cast<std::uint32_t>(context.source.size())));
+      ctx.source.data(),
+      static_cast<std::uint32_t>(ctx.source.size())));
   if (tree == nullptr) {
     result.fragment.warnings.push_back("tree-sitter parser returned no tree");
     return result;
@@ -393,16 +406,16 @@ ExtractionResult extract_with_config(
   // `contains` edges, matching Graphify's file-rooted structure. Labelled with
   // the path tail (parent dir + filename) so distinct files that share a
   // basename are not collapsed by semantic dedup.
-  const std::filesystem::path source_path(context.source_file);
+  const std::filesystem::path source_path(ctx.source_file);
   std::string file_label = source_path.filename().string();
   if (source_path.has_parent_path() && source_path.parent_path().has_filename()) {
     file_label = source_path.parent_path().filename().string() + "/" + file_label;
   }
-  const auto file_id = make_id(context.source_file);
+  const auto file_id = make_id(ctx.source_file);
   result.fragment.nodes.push_back(Node{
       .id = file_id,
-      .label = file_label.empty() ? context.source_file : std::move(file_label),
-      .source_file = context.source_file,
+      .label = file_label.empty() ? ctx.source_file : std::move(file_label),
+      .source_file = ctx.source_file,
       .source_location = SourceLocation{.start_line = 1, .end_line = 1},
       .kind = "file",
       .confidence = Confidence::Extracted,
@@ -411,7 +424,7 @@ ExtractionResult extract_with_config(
   // The file is the structural root (owns `contains` edges) but not a call
   // scope, so the function-scope seed is empty: top-level calls are dropped
   // until the walk enters a function body.
-  walk_node(ts_tree_root_node(tree.get()), config, context, file_id, "file", /*function_scope_id=*/{}, result.fragment, result.raw_calls, result.raw_relations, /*depth=*/0);
+  walk_node(ts_tree_root_node(tree.get()), config, ctx, file_id, "file", /*function_scope_id=*/{}, result.fragment, result.raw_calls, result.raw_relations, /*depth=*/0);
   return result;
 }
 
