@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -380,10 +381,14 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   // empty id marks a label that is declared more than once in the file, so it
   // resolves to no single target.
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;
-  // "<source_file>\n<normalized label>" -> the id of the FIRST declaration bearing
-  // that name in that file. Consulted only for an overload set, where the per-file
-  // slot has been cleared as ambiguous.
-  std::unordered_map<std::string, std::string> overload_first_declaration;
+  // "<source_file>\n<normalized label>" -> every declaration bearing that name in
+  // that file, in declaration order. Consulted only for an overload set, where
+  // the per-file slot has been cleared as ambiguous: without types, ANY member
+  // may be the callee, so the call edges to all of them (all INFERRED). One
+  // arbitrary pick would leave the other overloads invisible to reverse
+  // dependency walks — a change inside them could never reach their callers
+  // (issue #52).
+  std::unordered_map<std::string, std::vector<std::string>> overload_declarations;
   // Cache make_id(source_file) per distinct source path. The confidence grading
   // below re-normalizes caller/callee file paths per raw call (hundreds of
   // thousands of calls over a few thousand distinct files); memoizing keeps the
@@ -401,9 +406,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     }
     auto& by_label = local_by_file[node.source_file];
     const auto label_key = make_id(node.label);
-    // Remember the first declaration of each name per file, so an overload set can
+    // Remember every declaration of each name per file, so an overload set can
     // still resolve to something concrete rather than dropping every call to it.
-    overload_first_declaration.try_emplace(node.source_file + "\n" + label_key, node.id);
+    overload_declarations[node.source_file + "\n" + label_key].push_back(node.id);
     const auto [slot, inserted] = by_label.emplace(label_key, node.id);
     if (!inserted && slot->second != node.id) {
       slot->second.clear();  // ambiguous within the file
@@ -478,27 +483,40 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     std::string target_id;
     auto confidence = Confidence::Extracted;
     bool same_file_hit = false;
+    // Sibling targets beyond target_id, filled only for an overload set: the
+    // call edges to EVERY member, because any of them may be the callee.
+    std::span<const std::string> overload_rest;
+
+    // Resolve an overload set: target the first declaration and remember the
+    // rest, all graded INFERRED. Which member a call means cannot be known
+    // without types, so the edges assert possibility, not certainty — one
+    // arbitrary pick would leave the other overloads invisible to reverse
+    // dependency walks (issue #52).
+    //
+    // Dropping instead would be a regression. Before labels became bare
+    // names, an overload set collapsed onto one node and the call resolved,
+    // so `add(int)` / `add(String)` in one Java class had working call
+    // edges; making the overloads distinct nodes must not take those away.
+    // Overloading is idiomatic in Java, C#, Kotlin, Scala, Groovy and C++.
+    const auto resolve_overload_set = [&](const std::string& declaring_file) {
+      const auto members = overload_declarations.find(declaring_file + "\n" + key);
+      if (members == overload_declarations.end()) {
+        return false;
+      }
+      target_id = members->second.front();
+      overload_rest = std::span(members->second).subspan(1);
+      confidence = Confidence::Inferred;
+      ++tally.resolved_overload_first;
+      return true;
+    };
 
     // 1. A symbol declared in the caller's own file (local helper, sibling fn).
     if (const auto file = local_by_file.find(caller_file); file != local_by_file.end()) {
       if (const auto slot = file->second.find(key); slot != file->second.end()) {
         target_id = slot->second;
         if (target_id.empty()) {
-          // An empty slot marks an overload set: several declarations in this file
-          // share the name. Which one a call means cannot be known without types,
-          // so resolve to the first declaration and grade the edge INFERRED.
-          //
-          // Dropping instead would be a regression. Before labels became bare
-          // names, an overload set collapsed onto one node and the call resolved,
-          // so `add(int)` / `add(String)` in one Java class had working call
-          // edges; making the overloads distinct nodes must not take those away.
-          // Overloading is idiomatic in Java, C#, Kotlin, Scala, Groovy and C++.
-          if (const auto first = overload_first_declaration.find(caller_file + "\n" + key);
-              first != overload_first_declaration.end()) {
-            target_id = first->second;
-            confidence = Confidence::Inferred;
-            ++tally.resolved_overload_first;
-          }
+          // An empty slot marks an overload set declared in the caller's file.
+          resolve_overload_set(caller_file);
         }
         if (target_id.empty()) {
           ++tally.dropped_ambiguous;
@@ -508,12 +526,15 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       }
     }
 
-    // 2. A project-wide unique label. An ambiguous name (more than one
-    //    declaration) or an unknown one resolves to nothing and is dropped —
-    //    this exactly-one-candidate rule is what keeps cross-file calls honest.
-    //    Member calls (`obj.method()`) are excluded: the bare property name has
-    //    no import evidence and collides with any top-level function of the same
-    //    name, so it stays scoped to the caller's own file (handled above).
+    // 2. A project-wide unique label. An unknown name resolves to nothing; an
+    //    ambiguous one is dropped UNLESS every candidate lives in one file — a
+    //    true overload set (idiomatic in C++, Java, C#), which resolves exactly
+    //    as the same-file tier does. A collision spanning files stays dropped:
+    //    picking a module would be a guess, and that exactly-one-module rule is
+    //    what keeps cross-file calls honest. Member calls (`obj.method()`) are
+    //    excluded: the bare property name has no import evidence and collides
+    //    with any top-level function of the same name, so it stays scoped to
+    //    the caller's own file (handled above).
     if (target_id.empty() && !raw_call.is_member_call) {
       const auto targets = index.find(key);
       if (targets == index.end()) {
@@ -521,20 +542,31 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
         continue;
       }
       if (targets->second.size() != 1) {
-        ++tally.dropped_ambiguous;
-        continue;
+        const auto first_file = source_file_by_id.find(targets->second.front());
+        const bool single_file_overload_set =
+            first_file != source_file_by_id.end() && !first_file->second.empty() &&
+            std::all_of(targets->second.begin(), targets->second.end(), [&](const std::string& id) {
+              const auto it = source_file_by_id.find(id);
+              return it != source_file_by_id.end() && it->second == first_file->second;
+            });
+        if (!single_file_overload_set || !resolve_overload_set(first_file->second)) {
+          ++tally.dropped_ambiguous;
+          continue;
+        }
+      } else {
+        target_id = targets->second.front();
+        // Grade confidence: EXTRACTED when the caller's file actually imports
+        // the resolved symbol or its module, INFERRED when it is only a name
+        // match.
+        const auto& caller_file_id = file_id_for(caller_file);
+        const auto& callee_file_id = file_id_for(source_file_by_id[target_id]);
+        const auto symbols = imported_symbols.find(caller_file_id);
+        const auto modules = imported_modules.find(caller_file_id);
+        const bool has_import_evidence =
+            (symbols != imported_symbols.end() && symbols->second.contains(target_id)) ||
+            (modules != imported_modules.end() && modules->second.contains(callee_file_id));
+        confidence = has_import_evidence ? Confidence::Extracted : Confidence::Inferred;
       }
-      target_id = targets->second.front();
-      // Grade confidence: EXTRACTED when the caller's file actually imports the
-      // resolved symbol or its module, INFERRED when it is only a name match.
-      const auto& caller_file_id = file_id_for(caller_file);
-      const auto& callee_file_id = file_id_for(source_file_by_id[target_id]);
-      const auto symbols = imported_symbols.find(caller_file_id);
-      const auto modules = imported_modules.find(caller_file_id);
-      const bool has_import_evidence =
-          (symbols != imported_symbols.end() && symbols->second.contains(target_id)) ||
-          (modules != imported_modules.end() && modules->second.contains(callee_file_id));
-      confidence = has_import_evidence ? Confidence::Extracted : Confidence::Inferred;
     }
 
     // 2b. A member call that missed its own file resolves project-wide only
@@ -578,6 +610,22 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     };
     if (seen_edges.insert(edge_key(edge)).second) {
       graph.edges.push_back(std::move(edge));
+    }
+    // The remaining members of an overload set: the call may mean any of them,
+    // so each gets the same INFERRED edge (dedupe applies per target).
+    for (const auto& sibling : overload_rest) {
+      if (sibling == raw_call.caller_id) {
+        continue;
+      }
+      Edge sibling_edge{
+          .source = raw_call.caller_id,
+          .target = sibling,
+          .relation = std::string(kCallRelation),
+          .confidence = Confidence::Inferred,
+      };
+      if (seen_edges.insert(edge_key(sibling_edge)).second) {
+        graph.edges.push_back(std::move(sibling_edge));
+      }
     }
   }
   if (outcomes != nullptr) {

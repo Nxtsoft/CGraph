@@ -56,17 +56,19 @@ struct CallResolution {
   // a method project-wide. Graded INFERRED: the receiver type is unknown, the
   // method-only index is what keeps the guess narrow.
   std::size_t resolved_member_method = 0;
-  // A same-file overload set: resolved to the first declaration and graded
-  // INFERRED, because which overload a call means needs types we do not have.
+  // An overload set (same-file, or project-wide with every candidate declared
+  // in one file): the call edges to every member, all graded INFERRED, because
+  // which overload a call means needs types we do not have. Counted once per
+  // call, not per edge.
   std::size_t resolved_overload_first = 0;
   std::size_t dropped_unknown = 0;    // nothing callable bears the name
-  std::size_t dropped_ambiguous = 0;  // more than one candidate does
+  std::size_t dropped_ambiguous = 0;  // candidates span more than one file
   std::size_t dropped_self = 0;       // resolved to the caller itself
 
   [[nodiscard]] bool balances() const {
     return resolved_same_file + resolved_project_unique + resolved_member_method + dropped_unknown +
                dropped_ambiguous + dropped_self ==
-           total;  // resolved_overload_first is a subset of resolved_same_file
+           total;  // resolved_overload_first is a subset of same_file + project_unique
   }
 
   [[nodiscard]] double resolved_rate() const {
