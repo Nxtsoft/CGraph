@@ -7,6 +7,8 @@
 #include "cgraph/python_extractor.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -811,6 +813,106 @@ void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
   }
 }
 
+// Skip a string literal, char literal, or comment starting at `pos` (returns the
+// index just past it); otherwise returns pos+1. Keeps the cfg-macro scan and its
+// brace matcher from tripping on a `{`/`}` inside `"..."`, `'{'`, or a comment.
+// A leading `'` is a char literal only when it closes within a couple of chars
+// (`'x'`, `'\n'`); a bare `'a` is a lifetime, skipped as one character.
+[[nodiscard]] std::size_t rust_skip_inert(std::string_view s, std::size_t pos) {
+  const auto n = s.size();
+  const char c = s[pos];
+  if (c == '/' && pos + 1 < n && s[pos + 1] == '/') {
+    std::size_t p = pos + 2;
+    while (p < n && s[p] != '\n') ++p;
+    return p;
+  }
+  if (c == '/' && pos + 1 < n && s[pos + 1] == '*') {
+    std::size_t p = pos + 2;
+    while (p + 1 < n && !(s[p] == '*' && s[p + 1] == '/')) ++p;
+    return std::min(n, p + 2);
+  }
+  if (c == '"') {
+    std::size_t p = pos + 1;
+    while (p < n && s[p] != '"') {
+      if (s[p] == '\\') ++p;
+      ++p;
+    }
+    return std::min(n, p + 1);
+  }
+  if (c == '\'') {
+    const bool char_lit =
+        (pos + 1 < n && s[pos + 1] == '\\') || (pos + 2 < n && s[pos + 2] == '\'');
+    if (char_lit) {
+      std::size_t p = pos + 1;
+      if (p < n && s[p] == '\\') ++p;
+      ++p;                       // the char
+      if (p < n && s[p] == '\'') ++p;
+      return p;
+    }
+    return pos + 1;              // a lifetime `'a`
+  }
+  return pos + 1;
+}
+
+// Blank `cfg_*! { ... }` item-wrapper macros — tokio's `cfg_rt!`, `cfg_coop!`,
+// `cfg_io_util!`, etc. — replacing the `cfg_NAME! {` prefix and the matching `}`
+// with spaces, so the items inside parse in place with their real enclosing
+// impl/module and unchanged line numbers (tree-sitter otherwise leaves a macro
+// body an opaque token_tree, hiding every fn/impl/struct within: 317 sites in
+// tokio/src). Byte offsets are preserved, so downstream extraction is unchanged.
+// Returns the rewritten source, or empty if nothing matched.
+[[nodiscard]] std::string rust_blank_cfg_macros(std::string_view src) {
+  std::string out(src);
+  const auto n = out.size();
+  bool changed = false;
+  const auto blank = [&](std::size_t a, std::size_t b) {
+    for (std::size_t k = a; k < b; ++k) {
+      if (out[k] != '\n') out[k] = ' ';
+    }
+  };
+  std::size_t i = 0;
+  while (i < n) {
+    if (out[i] == '/' || out[i] == '"' || out[i] == '\'') {
+      const auto next = rust_skip_inert(out, i);
+      i = next > i ? next : i + 1;
+      continue;
+    }
+    // Match `cfg_<word>! <ws>* {` at an identifier boundary.
+    const bool boundary = i == 0 || (!std::isalnum(static_cast<unsigned char>(out[i - 1])) && out[i - 1] != '_');
+    if (boundary && out.compare(i, 4, "cfg_") == 0) {
+      std::size_t k = i + 4;
+      while (k < n && (std::isalnum(static_cast<unsigned char>(out[k])) || out[k] == '_')) ++k;
+      if (k < n && out[k] == '!') {
+        std::size_t m = k + 1;
+        while (m < n && std::isspace(static_cast<unsigned char>(out[m]))) ++m;
+        if (m < n && out[m] == '{') {
+          std::size_t depth = 1;
+          std::size_t p = m + 1;
+          while (p < n && depth > 0) {
+            if (out[p] == '/' || out[p] == '"' || out[p] == '\'') {
+              const auto next = rust_skip_inert(out, p);
+              p = next > p ? next : p + 1;
+              continue;
+            }
+            if (out[p] == '{') ++depth;
+            else if (out[p] == '}') --depth;
+            ++p;
+          }
+          if (depth == 0) {
+            blank(i, m + 1);   // `cfg_NAME! {`
+            blank(p - 1, p);   // the matching `}`
+            changed = true;
+            i = m + 1;         // keep scanning inside the now-unwrapped body
+            continue;
+          }
+        }
+      }
+    }
+    ++i;
+  }
+  return changed ? out : std::string();
+}
+
 [[nodiscard]] LanguageConfig rust_config() {
   LanguageConfig config{
       .name = "rust",
@@ -842,6 +944,7 @@ void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
   config.method_predicate = [](const TSNode& node, const ExtractionContext&) {
     return rust_is_impl_method(node);
   };
+  config.preprocess_source = rust_blank_cfg_macros;
   return config;
 }
 
