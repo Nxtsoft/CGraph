@@ -163,8 +163,9 @@ int test_resolve_rust_imports() {
 // Call resolution mirrors Graphify: a call resolves to a same-file declaration
 // (EXTRACTED) or to a project-wide *unique* label. A unique target the caller's
 // file imports is EXTRACTED; one it does not import is still resolved but marked
-// INFERRED. An ambiguous name (more than one declaration anywhere) and a
-// built-in global resolve to nothing.
+// INFERRED. A multi-candidate name resolves overload-first when every candidate
+// shares one file; a collision across files and a built-in global resolve to
+// nothing.
 int test_call_scoping() {
   const auto a_file = cgraph::make_id("/p/a.ts");
   const auto caller = cgraph::make_id("/p/a.ts:main");
@@ -180,6 +181,12 @@ int test_call_scoping() {
   const auto ctor_class = cgraph::make_id("/p/g.ts:Ctor");
   // ...and so is a module-level binding that holds a callable.
   const auto callable_binding = cgraph::make_id("/p/h.ts:boundCallable");
+  // A cross-file overload set: two declarations sharing one name in ONE file
+  // (idiomatic C++/Java/C#). Unlike `dup` (a collision across modules), this
+  // resolves — to EVERY member, all INFERRED, because without types any of
+  // them may be the callee (issue #52).
+  const auto serve_first = cgraph::make_id("/p/i.cpp:serve");
+  const auto serve_second = cgraph::make_id("/p/i.cpp:serve:2");
 
   cgraph::GraphSnapshot graph;
   graph.nodes.push_back({.id = a_file, .label = "a.ts", .source_file = "/p/a.ts", .kind = "file"});
@@ -192,6 +199,8 @@ int test_call_scoping() {
   graph.nodes.push_back({.id = field_named_connect, .label = "connect", .source_file = "/p/f.ts", .kind = "field"});
   graph.nodes.push_back({.id = ctor_class, .label = "Ctor", .source_file = "/p/g.ts", .kind = "class"});
   graph.nodes.push_back({.id = callable_binding, .label = "boundCallable", .source_file = "/p/h.ts", .kind = "variable"});
+  graph.nodes.push_back({.id = serve_first, .label = "serve", .source_file = "/p/i.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = serve_second, .label = "serve", .source_file = "/p/i.cpp", .kind = "function"});
   // a.ts imports `helper` -> the resolved call to it should be EXTRACTED.
   graph.edges.push_back({.source = a_file, .target = imported_helper, .relation = "imports"});
 
@@ -204,6 +213,7 @@ int test_call_scoping() {
       {.caller_id = caller, .callee_label = "connect", .source_file = "/p/a.ts"},
       {.caller_id = caller, .callee_label = "Ctor", .source_file = "/p/a.ts"},
       {.caller_id = caller, .callee_label = "boundCallable", .source_file = "/p/a.ts"},
+      {.caller_id = caller, .callee_label = "serve", .source_file = "/p/a.ts"},
   };
   cgraph::resolve_imports(graph);
   cgraph::CallResolution outcomes;
@@ -216,16 +226,20 @@ int test_call_scoping() {
     return 1;
   }
   // The fixture's counted calls: localHelper (same file); helper, Ctor,
-  // boundCallable and orphan (project-unique, the last unimported); dup
-  // (ambiguous); connect (a field, so not callable -> unknown). `Map` is a
-  // built-in and is never counted.
-  if (outcomes.total != 7) {
+  // boundCallable and orphan (project-unique, the last unimported); serve (a
+  // single-file overload set, resolved overload-first); dup (ambiguous across
+  // files); connect (a field, so not callable -> unknown). `Map` is a built-in
+  // and is never counted.
+  if (outcomes.total != 8) {
     return 1;
   }
-  if (outcomes.resolved_same_file != 1 || outcomes.resolved_project_unique != 4) {
+  if (outcomes.resolved_same_file != 1 || outcomes.resolved_project_unique != 5) {
     return 1;
   }
   if (outcomes.dropped_ambiguous != 1 || outcomes.dropped_unknown != 1) {
+    return 1;
+  }
+  if (outcomes.resolved_overload_first != 1) {
     return 1;
   }
 
@@ -241,8 +255,18 @@ int test_call_scoping() {
   if (edge_confidence(graph, caller, orphan, "CALLS") != cgraph::Confidence::Inferred) {
     return 1;
   }
-  // Ambiguous name (two declarations) resolves to nothing.
+  // Ambiguous name (two declarations in DIFFERENT files) resolves to nothing.
   if (has_edge(graph, caller, dup_one, "CALLS") || has_edge(graph, caller, dup_two, "CALLS")) {
+    return 1;
+  }
+  // An overload set confined to one file resolves to EVERY member, INFERRED —
+  // which overload a call means needs types we do not have, so the edges
+  // assert possibility. A change inside either overload must reach the caller
+  // in a reverse-dependency walk.
+  if (edge_confidence(graph, caller, serve_first, "CALLS") != cgraph::Confidence::Inferred) {
+    return 1;
+  }
+  if (edge_confidence(graph, caller, serve_second, "CALLS") != cgraph::Confidence::Inferred) {
     return 1;
   }
   // A call target must be callable. A uniquely-named FIELD is not: on the real
