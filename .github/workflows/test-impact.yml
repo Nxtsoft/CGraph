@@ -40,6 +40,7 @@ jobs:
         id: blastline
         with:
           graph-path: /tmp/self-graph/graph.json
+          base-graph-command: cgraph --root . --out "$BLASTLINE_BASE_OUT"
           github-token: ${{ github.token }}
           ignore: |
             \.md$
