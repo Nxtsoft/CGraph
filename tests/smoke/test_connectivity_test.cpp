@@ -139,7 +139,13 @@ int main() {
                "    assert_eq!(add(1, 2), 3);\n}\n");
     write_file(root / "repro2/tests/only_method.rs",
                "use repro2::Counter;\n\n#[test]\nfn only_call_is_a_method() {\n"
-               "    let mut c = Counter::new();\n    let n = c.bump();\n    let _ = n;\n}\n");
+               "    let mut c = Counter::new();\n    let n = c.bump();\n    let _ = n;\n}\n\n"
+               // A test fn named after the method it tests (tokio's convention:
+               // `fn blocking_acquire()` testing `sem.blocking_acquire()`). The
+               // same-file name match is the sibling test, not the method — the
+               // member call must skip it and still reach the impl method.
+               "#[test]\nfn bump() {\n    let mut c = Counter::new();\n"
+               "    assert_eq!(c.bump(), 1);\n}\n");
     const auto result = cgraph::run_one_shot(root);
     const Ids ids{result.graph};
     fs::remove_all(root);
@@ -168,6 +174,16 @@ int main() {
     // `pub mod math;` ties the module file into the tree.
     if (!ids.edge("imports", lib_file, math_file)) {
       return 10;
+    }
+    // The test fn named after the method: its member call skips the same-file
+    // name match (itself) and binds to the impl method cross-file.
+    const auto bump_test = ids.id_of("bump", "only_method.rs");
+    if (!ids.edge("CALLS", bump_test, bump)) {
+      return 11;
+    }
+    // And the sibling test's member call must not bind to the same-named test fn.
+    if (ids.edge("CALLS", method_test, bump_test)) {
+      return 12;
     }
   }
   return 0;

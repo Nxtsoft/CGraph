@@ -445,10 +445,13 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     }
   }
   std::unordered_map<std::string, std::vector<std::string>> method_index;
+  // Every method node id, for validating same-file member-call bindings below.
+  std::unordered_set<std::string> method_node_ids;
   for (const auto& node : graph.nodes) {
     const auto tagged = node.properties.find("method");
     if (method_ids.contains(node.id) || (tagged != node.properties.end() && tagged->second == "true")) {
       method_index[make_id(node.label)].push_back(node.id);
+      method_node_ids.insert(node.id);
     }
   }
   std::unordered_set<std::string> node_ids;
@@ -592,16 +595,27 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     // 1. A symbol declared in the caller's own file (local helper, sibling fn).
     if (const auto file = local_by_file.find(caller_file); file != local_by_file.end()) {
       if (const auto slot = file->second.find(key); slot != file->second.end()) {
-        target_id = slot->second;
-        if (target_id.empty()) {
-          // An empty slot marks an overload set declared in the caller's file.
-          resolve_overload_set(caller_file);
+        // A member call must never bind to a free function — tier 2b already
+        // enforces this project-wide, and the same-file tier has to as well:
+        // Rust test files conventionally name a test fn after the method it
+        // exercises (`fn blocking_acquire()` testing `sem.blocking_acquire()`
+        // in tokio's sync_semaphore.rs), so the same-file name match is the
+        // caller's own sibling test, not the receiver's method. Skip the
+        // non-method binding and let the method-only tier resolve it.
+        const bool member_call_on_non_method =
+            raw_call.is_member_call && !slot->second.empty() && !method_node_ids.contains(slot->second);
+        if (!member_call_on_non_method) {
+          target_id = slot->second;
+          if (target_id.empty()) {
+            // An empty slot marks an overload set declared in the caller's file.
+            resolve_overload_set(caller_file);
+          }
+          if (target_id.empty()) {
+            ++tally.dropped_ambiguous;
+            continue;
+          }
+          same_file_hit = true;
         }
-        if (target_id.empty()) {
-          ++tally.dropped_ambiguous;
-          continue;
-        }
-        same_file_hit = true;
       }
     }
 
