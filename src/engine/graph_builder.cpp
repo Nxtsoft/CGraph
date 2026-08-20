@@ -402,6 +402,78 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     }
     removed.insert(node.id);
   }
+
+  // Follow `pub use` re-export chains (issue #60). An item import that could only
+  // be resolved to a module *file* (its `file:Item` symbol node does not exist)
+  // has landed on a module that re-exports the item rather than defining it --
+  // `use tokio::task::LocalSet` reaching task/mod.rs, which carries `pub use
+  // local::LocalSet`. Redirect such imports to the re-export's real target so the
+  // reverse walk reaches the defining (and changed) file. Private `use` is not a
+  // re-export and is never followed.
+  if (!remap.empty()) {
+    std::unordered_set<std::string> file_ids;
+    file_ids.reserve(source_of_file.size());
+    for (const auto& [id, _] : source_of_file) {
+      file_ids.insert(id);
+    }
+    // Which file owns each re-export stub, and what it re-exports by name.
+    std::unordered_map<std::string, std::string> reexport_owner;  // stub id -> file id
+    for (const auto& edge : graph.edges) {
+      if (edge.relation == "re_exports") {
+        reexport_owner.emplace(edge.target, edge.source);
+      }
+    }
+    // owner file id -> (item name key -> the re-export's resolved target)
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> reexported_by_file;
+    for (const auto& node : graph.nodes) {
+      if (node.kind != "import" && node.kind != "module") {
+        continue;
+      }
+      if (const auto tag = node.properties.find("reexport");
+          tag == node.properties.end() || tag->second != "true") {
+        continue;
+      }
+      const auto owner = reexport_owner.find(node.id);
+      const auto target = remap.find(node.id);
+      if (owner == reexport_owner.end() || target == remap.end()) {
+        continue;
+      }
+      reexported_by_file[owner->second].emplace(make_id(node.label), target->second);
+    }
+    if (!reexported_by_file.empty()) {
+      // The item stubs that fell back to a module file, keyed for the follow.
+      for (const auto& node : graph.nodes) {
+        if (node.kind != "import") {
+          continue;
+        }
+        auto slot = remap.find(node.id);
+        if (slot == remap.end() || !file_ids.contains(slot->second)) {
+          continue;  // unresolved, or resolved straight to a real symbol already
+        }
+        const auto name_key = make_id(node.label);
+        std::string current = slot->second;
+        std::unordered_set<std::string> visited;
+        for (int hop = 0; hop < 8 && file_ids.contains(current); ++hop) {
+          if (!visited.insert(current).second) {
+            break;  // cyclic re-export: stop rather than spin
+          }
+          const auto file = reexported_by_file.find(current);
+          if (file == reexported_by_file.end()) {
+            break;
+          }
+          const auto reexp = file->second.find(name_key);
+          if (reexp == file->second.end() || reexp->second == current) {
+            break;
+          }
+          current = reexp->second;
+        }
+        if (current != slot->second) {
+          slot->second = current;
+        }
+      }
+    }
+  }
+
   if (removed.empty()) {
     return;
   }
@@ -940,6 +1012,42 @@ void resolve_interface_dispatch(GraphSnapshot& graph, std::span<const RawCall> r
           add_edge(iface_method_id, impl_id, "dispatches_to", Confidence::Inferred);
         }
       }
+    }
+  }
+
+  // Trait-scoped dispatch (issue #60). The subset rule above misses `impl Trait
+  // for Type` blocks whenever the trait promises methods the impl does not
+  // override -- default/provided methods, and the async ext-trait plumbing where
+  // a concrete type implements only `poll_read` while the contract carries a
+  // dozen provided combinators. The Rust extractor emits an `impl_trait` edge
+  // (impl method -> the trait node it names) for exactly this: bind the method to
+  // its declared contract's same-named promise, independent of the subset check.
+  // Its owning type is recorded so `implements` still lands for the reverse walk.
+  std::unordered_map<std::string, std::string> type_of_method;
+  for (const auto& edge : graph.edges) {
+    if (edge.relation == "method_of") {
+      type_of_method.emplace(edge.source, edge.target);
+    }
+  }
+  for (const auto& edge : graph.edges) {
+    if (edge.relation != "impl_trait") {
+      continue;
+    }
+    const auto iface = iface_methods.find(edge.target);
+    if (iface == iface_methods.end()) {
+      continue;  // the named trait has no materialized contract methods
+    }
+    const auto method = nodes_by_id.find(edge.source);
+    if (method == nodes_by_id.end()) {
+      continue;
+    }
+    const auto promise = iface->second.find(make_id(method->second->label));
+    if (promise == iface->second.end()) {
+      continue;  // this method is not one the trait promises by name
+    }
+    add_edge(promise->second, edge.source, "dispatches_to", Confidence::Inferred);
+    if (const auto owner = type_of_method.find(edge.source); owner != type_of_method.end()) {
+      add_edge(owner->second, edge.target, "implements", Confidence::Inferred);
     }
   }
 
