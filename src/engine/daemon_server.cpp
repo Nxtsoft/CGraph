@@ -297,7 +297,8 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   const auto socket_path = unix_socket_path(identity);
   const int listen_fd = open_listen_socket(socket_path);
   if (listen_fd == kEndpointAlreadyServed) {
-    return 0;  // a resident daemon already serves this root; defer cleanly
+    return 0;  // a resident daemon already serves this root; defer cleanly,
+               // leaving its socket and snapshots untouched
   }
   if (listen_fd < 0) {
     return 1;
