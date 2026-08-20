@@ -165,12 +165,16 @@ bool check_rust_extraction() {
       "        helper();\n"
       "        self.tick();\n"
       "        Service::make();\n"
+      "        assert_eq!(mhelper(), 1);\n"
+      "        assert!(self.mtick());\n"
       "    }\n"
       "    fn tick(&self) {}\n"
+      "    fn mtick(&self) -> bool { true }\n"
       "    fn make() -> Service { Service {} }\n"
       "}\n"
       "\n"
-      "fn helper() {}\n";
+      "fn helper() {}\n"
+      "fn mhelper() -> i32 { 1 }\n";
 
   const auto result = cgraph::extract_configured_language(
       cgraph::DetectedLanguage::Rust,
@@ -216,6 +220,77 @@ bool check_rust_extraction() {
   });
   if (scoped_call == result->raw_calls.end()) {
     return fail("missing scoped raw call reduced to make");
+  }
+
+  // --- issue #58 ---
+  // assert_eq!(mhelper(), 1): a call inside a macro invocation is token-tree
+  // content, not a call_expression; the macro scan must still record it.
+  const auto macro_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "mhelper" && !call.is_member_call;
+  });
+  if (macro_call == result->raw_calls.end()) {
+    return fail("missing macro-wrapped raw call to mhelper");
+  }
+  // assert!(self.mtick()): `. ident (` inside a macro is a member call.
+  const auto macro_member = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "mtick" && call.is_member_call;
+  });
+  if (macro_member == result->raw_calls.end()) {
+    return fail("missing macro-wrapped member raw call to mtick");
+  }
+  // The macro names themselves are not calls.
+  if (std::ranges::any_of(result->raw_calls, [](const cgraph::RawCall& call) {
+        return call.callee_label == "assert_eq" || call.callee_label == "assert";
+      })) {
+    return fail("macro name recorded as a call");
+  }
+  // An impl method is tagged so member-call resolution can see it; a free
+  // function and a trait signature are not. Contract nodes (interface_method)
+  // are separate namespaced nodes and are excluded from the check.
+  const auto method_tag = [&](const char* fn_name) {
+    for (const auto& node : result->fragment.nodes) {
+      if (node.label != fn_name || node.kind != "function" ||
+          node.properties.contains("interface_method")) {
+        continue;
+      }
+      const auto tag = node.properties.find("method");
+      return tag != node.properties.end() && tag->second == "true";
+    }
+    return false;
+  };
+  for (const char* fn_name : {"run", "tick", "make"}) {
+    if (!method_tag(fn_name)) {
+      return fail(std::string("impl method not tagged: ") + fn_name);
+    }
+  }
+  for (const char* fn_name : {"helper", "handle"}) {
+    if (method_tag(fn_name)) {
+      return fail(std::string("non-impl function wrongly tagged: ") + fn_name);
+    }
+  }
+  // Each impl method binds to its self type via a method_of fact.
+  const auto method_of = std::ranges::count_if(result->raw_relations, [](const cgraph::RawRelation& rel) {
+    return rel.relation == "method_of" && rel.target_label == "Service";
+  });
+  if (method_of != 4) {  // run, tick, mtick, make
+    return fail("expected 4 method_of facts binding impl methods to Service, got " +
+                std::to_string(method_of));
+  }
+  // The trait's promised method is materialized as a contract node (tagged
+  // interface_method) owned by the trait via a `method` edge — the mirror of
+  // Go's interface handling, feeding implements/dispatches_to resolution.
+  const auto contract = std::ranges::find_if(result->fragment.nodes, [](const cgraph::Node& node) {
+    const auto tag = node.properties.find("interface_method");
+    return node.label == "handle" && tag != node.properties.end() && tag->second == "true";
+  });
+  if (contract == result->fragment.nodes.end()) {
+    return fail("missing trait contract node for handle");
+  }
+  const auto contract_owned = std::ranges::any_of(result->fragment.edges, [&](const cgraph::Edge& edge) {
+    return edge.relation == "method" && edge.target == contract->id;
+  });
+  if (!contract_owned) {
+    return fail("trait contract node not owned via a method edge");
   }
   return true;
 }

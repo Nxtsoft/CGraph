@@ -311,10 +311,12 @@ void walk_node(
     } else {
       auto id = add_symbol_node(node, config, context, "function", fragment);
       if (!id.empty()) {
-        // A grammar-level method (Go's `func (r *T) M()`): tag it so member-call
+        // A grammar-level method (Go's `func (r *T) M()`) or a context-level one
+        // (Rust's `function_item` inside an `impl_item`): tag it so member-call
         // resolution can distinguish methods from free functions. Class-contained
         // methods are instead marked by the `method` containment relation below.
-        if (contains_symbol(config.symbols.method_nodes, symbol)) {
+        if (contains_symbol(config.symbols.method_nodes, symbol) ||
+            (config.method_predicate && config.method_predicate(node, context))) {
           fragment.nodes.back().properties.emplace("method", "true");
         }
         add_containment_edge(scope_id, scope_kind, id, "function", fragment);
@@ -355,7 +357,7 @@ void walk_node(
     add_raw_call(node, config, context, child_function_scope, raw_calls);
   }
   if (config.extra_walk) {
-    config.extra_walk(node, context, fragment, raw_calls);
+    config.extra_walk(node, context, child_function_scope, fragment, raw_calls);
   }
 
   const auto child_count = ts_node_child_count(node);

@@ -38,6 +38,6 @@ void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fr
 // (`::stat(...)`), which names a platform symbol rather than a project one.
 [[nodiscard]] std::string cpp_callee_name(const TSNode& node, const ExtractionContext& context);
 void cpp_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id, std::vector<RawRelation>& out);
-void cpp_field_walk(const TSNode& node, const ExtractionContext& context, Fragment& fragment, std::vector<RawCall>& raw_calls);
+void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id, Fragment& fragment, std::vector<RawCall>& raw_calls);
 
 }  // namespace cgraph
