@@ -232,7 +232,7 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
 // (`useStore()`) resolve to a real target instead of dropping. Arrow-valued
 // consts are handled by the function branch of the generic walk, so they are
 // skipped here.
-void module_const_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment, std::vector<RawCall>&) {
+void module_const_handler(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/, Fragment& fragment, std::vector<RawCall>&) {
   const std::string_view type = ts_node_type(node);
   if (type != "lexical_declaration" && type != "variable_declaration") {
     return;

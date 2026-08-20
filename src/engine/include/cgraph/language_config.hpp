@@ -46,7 +46,15 @@ struct ExtractionContext {
 using ImportHandler = std::function<void(const TSNode&, const ExtractionContext&, Fragment&)>;
 using ResolveFunctionName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
 using ResolveCalleeName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
-using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, Fragment&, std::vector<RawCall>&)>;
+// The third argument is the innermost enclosing function scope (empty at file /
+// class / type scope) — the caller id for any RawCall the walk emits. Handlers
+// that emit no calls ignore it.
+using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, Fragment&, std::vector<RawCall>&)>;
+// True when a function node is a method by its surrounding context rather than
+// its grammar shape (Rust's `function_item` inside an `impl_item` — the node
+// type alone cannot tell a method from a free function). Complements
+// method_node_types, which handles grammar-shape methods (Go).
+using MethodPredicate = std::function<bool(const TSNode&, const ExtractionContext&)>;
 // Invoked for each class/interface node (with its already-assigned node id) to
 // emit heritage and member type-reference facts.
 using RelationHandler = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, std::vector<RawRelation>&)>;
@@ -100,6 +108,7 @@ struct LanguageConfig {
   ResolveFunctionName resolve_function_name;
   ExtraWalk extra_walk;
   RelationHandler relation_handler;
+  MethodPredicate method_predicate;
   InternedSymbols symbols;
 };
 

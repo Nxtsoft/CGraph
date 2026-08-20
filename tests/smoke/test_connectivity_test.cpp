@@ -1,5 +1,5 @@
-// Regression tests for issues #44 and #45: tests must be able to reach the
-// code they exercise.
+// Regression tests for issues #44, #45, and #58: tests must be able to reach
+// the code they exercise.
 //
 // #44 (Go): receiver-method calls (`r.Match(...)`) resolved same-file only, so
 // a method had zero cross-file incoming CALLS — on gorilla/mux, route.go's 53
@@ -11,6 +11,13 @@
 // relations at all, and `obj.method()` calls were unresolvable. Imports now
 // emit the standard module/import stub shape, `__init__.py` anchors its
 // package directory, and `attribute` calls are member calls.
+//
+// #58 (Rust): calls inside macro invocations were never extracted (assertions
+// are macros, so most test-body calls did not exist), impl methods carried no
+// method membership so `c.bump()` resolved to nothing, and the extern-crate
+// `use` spelling — the only one an integration test can use — produced no
+// import edge, nor did `pub mod x;`. Across six public repos test-file
+// reachability measured 0.000–0.142 vs 0.955 on a healthy TS graph.
 #include "cgraph/pipeline.hpp"
 
 #include <algorithm>
@@ -111,6 +118,56 @@ int main() {
     if (std::ranges::any_of(result.graph.nodes,
                             [](const auto& n) { return n.kind == "module" || n.kind == "import"; })) {
       return 6;
+    }
+  }
+
+  // --- Rust: macro-wrapped calls, impl-method member calls, extern-crate
+  //     imports, and `mod` declarations connect tests to code (#58) ---
+  {
+    const auto root = fs::temp_directory_path() / "cgraph_rust_connectivity_test";
+    fs::remove_all(root);
+    write_file(root / "repro2/Cargo.toml",
+               "[package]\nname = \"repro2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write_file(root / "repro2/src/lib.rs",
+               "pub mod math;\n\npub struct Counter {\n    pub n: i32,\n}\n\nimpl Counter {\n"
+               "    pub fn new() -> Self {\n        Counter { n: 0 }\n    }\n"
+               "    pub fn bump(&mut self) -> i32 {\n        self.n += 1;\n        self.n\n    }\n}\n");
+    write_file(root / "repro2/src/math.rs",
+               "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n");
+    write_file(root / "repro2/tests/only_macro.rs",
+               "use repro2::math::add;\n\n#[test]\nfn only_call_is_macro_wrapped() {\n"
+               "    assert_eq!(add(1, 2), 3);\n}\n");
+    write_file(root / "repro2/tests/only_method.rs",
+               "use repro2::Counter;\n\n#[test]\nfn only_call_is_a_method() {\n"
+               "    let mut c = Counter::new();\n    let n = c.bump();\n    let _ = n;\n}\n");
+    const auto result = cgraph::run_one_shot(root);
+    const Ids ids{result.graph};
+    fs::remove_all(root);
+
+    const auto macro_test = ids.id_of("only_call_is_macro_wrapped", "only_macro.rs");
+    const auto method_test = ids.id_of("only_call_is_a_method", "only_method.rs");
+    const auto add_fn = ids.id_of("add", "math.rs");
+    const auto bump = ids.id_of("bump", "lib.rs");
+    const auto lib_file = ids.id_of("src/lib.rs", "lib.rs");
+    const auto math_file = ids.id_of("src/math.rs", "math.rs");
+    const auto macro_file = ids.id_of("tests/only_macro.rs", "only_macro.rs");
+
+    // The only call in the test body sits inside assert_eq! — it must exist
+    // and bind across files.
+    if (!ids.edge("CALLS", macro_test, add_fn)) {
+      return 7;
+    }
+    // `c.bump()` binds to the impl method across files (the Rust twin of #44).
+    if (!ids.edge("CALLS", method_test, bump)) {
+      return 8;
+    }
+    // `use repro2::math::add` resolves through the package name to the item.
+    if (!ids.edge("imports", macro_file, add_fn)) {
+      return 9;
+    }
+    // `pub mod math;` ties the module file into the tree.
+    if (!ids.edge("imports", lib_file, math_file)) {
+      return 10;
     }
   }
   return 0;

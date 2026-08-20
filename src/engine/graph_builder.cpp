@@ -269,6 +269,74 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     return match;
   };
 
+  // Cargo package roots, for `use` paths that address a crate by name: each
+  // `<dir>/src/` directory in the project claims the crate name `<dir>` (with
+  // `-` matching `_`, Cargo's package-name/dir convention). An integration test
+  // (`tests/*.rs`) compiles as a separate crate and can ONLY spell the library
+  // by its package name — `use repro2::add;` — a spelling no module-layout walk
+  // can reach (issue #58). A name claimed by more than one src root resolves to
+  // nothing rather than guessing between crates.
+  std::unordered_map<std::string, std::unordered_set<std::string>> crate_src_roots;
+  for (const auto& [path, id] : files_by_path) {
+    const auto pos = path.rfind("/src/");
+    if (pos == std::string::npos) {
+      continue;
+    }
+    const auto prefix = path.substr(0, pos);
+    const auto slash = prefix.rfind('/');
+    auto dir = slash == std::string::npos ? prefix : prefix.substr(slash + 1);
+    if (dir.empty()) {
+      continue;
+    }
+    std::ranges::replace(dir, '-', '_');
+    crate_src_roots[dir].insert(path.substr(0, pos + 4));  // ".../<dir>/src"
+  }
+
+  // Resolve "<crate>/<segments...>" inside the named crate's src root. Returns
+  // the module file id and whether the full path named a module (vs. its parent
+  // module with the leaf as a declared item, the same two-step every Rust stub
+  // goes through).
+  const auto rust_extern_crate_match =
+      [&](const std::string& spec, bool leaf_may_be_item) -> std::pair<std::optional<std::string>, bool> {
+    const auto slash = spec.find('/');
+    const auto first = slash == std::string::npos ? spec : spec.substr(0, slash);
+    const auto rest = slash == std::string::npos ? std::string{} : spec.substr(slash + 1);
+    const auto roots = crate_src_roots.find(first);
+    if (roots == crate_src_roots.end() || roots->second.size() != 1) {
+      return {std::nullopt, false};
+    }
+    const auto& root = *roots->second.begin();
+    const auto crate_root_file = [&]() -> std::optional<std::string> {
+      if (const auto lib = lookup(root + "/lib.rs")) {
+        return lib;
+      }
+      return lookup(root + "/main.rs");
+    };
+    if (rest.empty()) {
+      return {crate_root_file(), true};
+    }
+    if (const auto as_file = lookup(root + "/" + rest + ".rs")) {
+      return {as_file, true};
+    }
+    if (const auto as_mod = lookup(root + "/" + rest + "/mod.rs")) {
+      return {as_mod, true};
+    }
+    if (leaf_may_be_item) {
+      const auto parent_end = rest.rfind('/');
+      if (parent_end == std::string::npos) {
+        return {crate_root_file(), false};  // `use crate_name::Item;`
+      }
+      const auto parent = rest.substr(0, parent_end);
+      if (const auto as_file = lookup(root + "/" + parent + ".rs")) {
+        return {as_file, false};
+      }
+      if (const auto as_mod = lookup(root + "/" + parent + "/mod.rs")) {
+        return {as_mod, false};
+      }
+    }
+    return {std::nullopt, false};
+  };
+
   std::unordered_set<std::string> node_ids;
   node_ids.reserve(graph.nodes.size());
   for (const auto& node : graph.nodes) {
@@ -305,6 +373,17 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
       } else if (node.kind == "import") {
         if (const auto slash = prop->second.rfind('/'); slash != std::string::npos) {
           file_id = rust_module_match(prop->second.substr(0, slash));
+        }
+      }
+      if (!file_id) {
+        // The path's first segment may name a Cargo package (the only spelling
+        // available to an integration test, and the common cross-crate spelling
+        // in a workspace).
+        const auto [crate_file, crate_module] =
+            rust_extern_crate_match(prop->second, node.kind == "import");
+        if (crate_file) {
+          file_id = crate_file;
+          resolved_as_module = crate_module || node.kind == "module";
         }
       }
     } else {

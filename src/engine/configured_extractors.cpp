@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -275,7 +276,8 @@ void go_relation_handler(const TSNode& node, const ExtractionContext& context, c
 // the interface's type node via a `method` edge, so dispatch resolution can
 // see what an interface promises. The node id is namespaced — an interface
 // method is a contract entry, never the same node as an implementation.
-void go_extra_walk(const TSNode& node, const ExtractionContext& context, Fragment& fragment,
+void go_extra_walk(const TSNode& node, const ExtractionContext& context,
+                   const std::string& /*function_scope_id*/, Fragment& fragment,
                    std::vector<RawCall>& raw_calls) {
   (void)raw_calls;
   if (std::string_view(ts_node_type(node)) != "type_spec") {
@@ -540,7 +542,36 @@ void rust_walk_use_tree(
 }
 
 void rust_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
-  if (std::string_view(ts_node_type(node)) != "use_declaration") {
+  const std::string_view type = ts_node_type(node);
+  if (type == "mod_item") {
+    // A bodyless `mod math;` (or `pub mod math;`) declares that another file is
+    // a child module of this one — the only edge tying `src/math.rs` into the
+    // module tree. An inline `mod x { ... }` carries its body and needs none.
+    // The stub's path is directory-qualified (Cargo's layout rules: a crate
+    // root or mod.rs anchors its own directory, any other file anchors a
+    // directory named after itself), so resolution is exact rather than a
+    // project-wide suffix guess.
+    if (!ts_node_is_null(ts_node_child_by_field_name(node, "body", 4))) {
+      return;
+    }
+    const auto name_node = ts_node_child_by_field_name(node, "name", 4);
+    if (ts_node_is_null(name_node)) {
+      return;
+    }
+    const auto name = go_node_text(name_node, context.source);
+    if (name.empty()) {
+      return;
+    }
+    const std::filesystem::path source(context.source_file);
+    const auto stem = source.stem().string();
+    auto base = source.parent_path();
+    if (stem != "lib" && stem != "main" && stem != "mod") {
+      base /= stem;
+    }
+    rust_emit_use_stub({(base / name).generic_string()}, /*module_only=*/true, context, fragment);
+    return;
+  }
+  if (type != "use_declaration") {
     return;
   }
   const auto argument = ts_node_child_by_field_name(node, "argument", 8);
@@ -550,6 +581,188 @@ void rust_import_handler(const TSNode& node, const ExtractionContext& context, F
   rust_walk_use_tree(argument, context, fragment, {});
 }
 
+// A `function_item` is a method exactly when it sits in an impl block
+// (function_item -> declaration_list -> impl_item); the node type alone cannot
+// tell it from a free function, which is why Rust needs the context predicate
+// rather than Go's method_node_types.
+[[nodiscard]] bool rust_is_impl_method(const TSNode& node) {
+  if (std::string_view(ts_node_type(node)) != "function_item") {
+    return false;
+  }
+  const TSNode list = ts_node_parent(node);
+  if (ts_node_is_null(list) || std::string_view(ts_node_type(list)) != "declaration_list") {
+    return false;
+  }
+  const TSNode impl = ts_node_parent(list);
+  return !ts_node_is_null(impl) && std::string_view(ts_node_type(impl)) == "impl_item";
+}
+
+// Binds each impl-block method to its self type: `impl Counter { fn bump.. }`
+// emits a `method_of` fact (bump -> "Counter"), exactly what go_relation_handler
+// emits for receiver syntax. `impl<T> Foo<T>` reduces to Foo (deepest
+// type_identifier, shared with Go's receiver walk); `impl Matcher for Router`
+// binds to Router — the `type` field is the implementing type, the `trait`
+// field is the contract and is handled by trait materialization instead.
+void rust_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
+                           std::vector<RawRelation>& raw_relations) {
+  if (!rust_is_impl_method(node)) {
+    return;
+  }
+  const TSNode impl = ts_node_parent(ts_node_parent(node));
+  const auto type_field = ts_node_child_by_field_name(impl, "type", 4);
+  if (ts_node_is_null(type_field)) {
+    return;
+  }
+  auto type_name = go_receiver_type_name(type_field, context);
+  if (type_name.empty()) {
+    return;  // impl for a primitive or non-nominal type: nothing to bind to
+  }
+  raw_relations.push_back(RawRelation{
+      .source_id = node_id,
+      .target_label = std::move(type_name),
+      .relation = "method_of",
+      .context = "impl",
+      .source_file = context.source_file,
+      .allow_same_file = true,
+  });
+}
+
+// Calls inside a macro invocation are invisible to the call_expression walk:
+// tree-sitter-rust exposes macro arguments as an opaque token_tree, so
+// `add(1, 2)` inside `assert_eq!` is never a call_expression. Rust test bodies
+// are dominated by assertion macros (issue #58: clap has 2,516 assert*! call
+// sites across 1,246 #[test] functions), so without this scan most test calls
+// do not exist. Recognize call shapes by token sequence: `ident (…)` is a
+// plain call, `. ident (…)` a member call, `:: ident (…)` a scoped call
+// reduced to its leaf (the same reduction rust_callee_name applies outside
+// macros). `ident !` is a nested macro name, not a call; `ident {…}` /
+// `ident […]` are struct-literal / index shapes and are skipped. Nested token
+// trees (including nested macro bodies) are scanned recursively.
+void rust_scan_macro_tokens(const TSNode& token_tree, const ExtractionContext& context,
+                            const std::string& caller_id, std::vector<RawCall>& raw_calls) {
+  const auto child_count = ts_node_child_count(token_tree);
+  for (std::uint32_t index = 0; index < child_count; ++index) {
+    const auto child = ts_node_child(token_tree, index);
+    const std::string_view type = ts_node_type(child);
+    if (type == "token_tree") {
+      rust_scan_macro_tokens(child, context, caller_id, raw_calls);
+      continue;
+    }
+    if (type != "identifier" || index + 1 >= child_count) {
+      continue;
+    }
+    const auto next = ts_node_child(token_tree, index + 1);
+    if (std::string_view(ts_node_type(next)) != "token_tree") {
+      continue;
+    }
+    const auto delimiter = ts_node_child(next, 0);
+    if (ts_node_is_null(delimiter) || std::string_view(ts_node_type(delimiter)) != "(") {
+      continue;
+    }
+    bool is_member_call = false;
+    if (index > 0 &&
+        std::string_view(ts_node_type(ts_node_child(token_tree, index - 1))) == ".") {
+      is_member_call = true;
+    }
+    auto label = go_node_text(child, context.source);
+    if (label.empty()) {
+      continue;
+    }
+    const auto start = ts_node_start_point(child);
+    const auto end = ts_node_end_point(child);
+    raw_calls.push_back(RawCall{
+        .caller_id = caller_id,
+        .callee_label = std::move(label),
+        .source_file = context.source_file,
+        .source_location = SourceLocation{.start_line = start.row + 1,
+                                          .start_column = start.column,
+                                          .end_line = end.row + 1,
+                                          .end_column = end.column},
+        .is_member_call = is_member_call,
+    });
+  }
+}
+
+// Materializes Rust trait method sets, the exact mirror of go_extra_walk's
+// interface handling: each method a trait declares (function_signature_item, or
+// function_item for a defaulted method) becomes a contract node (tagged
+// interface_method) owned by the trait's type node via a `method` edge, so
+// dispatch resolution can see what the trait promises. Also dispatches macro
+// bodies to the token scan above — both jobs need a hook outside the
+// allowlist-driven walk, so they share the one extra_walk slot.
+void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
+                     const std::string& function_scope_id, Fragment& fragment,
+                     std::vector<RawCall>& raw_calls) {
+  const std::string_view type = ts_node_type(node);
+  if (type == "macro_invocation") {
+    // Same rule as call_expression extraction: a macro at file/type scope has
+    // no enclosing function, so its calls have no caller and are dropped.
+    if (function_scope_id.empty()) {
+      return;
+    }
+    const auto child_count = ts_node_child_count(node);
+    for (std::uint32_t index = 0; index < child_count; ++index) {
+      const auto child = ts_node_child(node, index);
+      if (std::string_view(ts_node_type(child)) == "token_tree") {
+        rust_scan_macro_tokens(child, context, function_scope_id, raw_calls);
+      }
+    }
+    return;
+  }
+  if (type != "trait_item") {
+    return;
+  }
+  const auto name_field = ts_node_child_by_field_name(node, "name", 4);
+  if (ts_node_is_null(name_field)) {
+    return;
+  }
+  const auto trait_name = go_node_text(name_field, context.source);
+  if (trait_name.empty()) {
+    return;
+  }
+  const auto body = ts_node_child_by_field_name(node, "body", 4);
+  if (ts_node_is_null(body)) {
+    return;
+  }
+  const auto trait_id = make_id(context.source_file + ":" + trait_name);
+  const auto child_count = ts_node_named_child_count(body);
+  for (std::uint32_t index = 0; index < child_count; ++index) {
+    const auto elem = ts_node_named_child(body, index);
+    const std::string_view elem_type = ts_node_type(elem);
+    if (elem_type != "function_signature_item" && elem_type != "function_item") {
+      continue;
+    }
+    const auto method_name_node = ts_node_child_by_field_name(elem, "name", 4);
+    if (ts_node_is_null(method_name_node)) {
+      continue;
+    }
+    const auto method_name = go_node_text(method_name_node, context.source);
+    if (method_name.empty()) {
+      continue;
+    }
+    const auto start = ts_node_start_point(elem);
+    const auto end = ts_node_end_point(elem);
+    fragment.nodes.push_back(Node{
+        .id = make_id("trait-method:" + context.source_file + ":" + trait_name + ":" + method_name),
+        .label = method_name,
+        .source_file = context.source_file,
+        .source_location = SourceLocation{.start_line = start.row + 1,
+                                          .start_column = start.column,
+                                          .end_line = end.row + 1,
+                                          .end_column = end.column},
+        .kind = "function",
+        .confidence = Confidence::Extracted,
+        .properties = {{"method", "true"}, {"interface_method", "true"}},
+    });
+    fragment.edges.push_back(Edge{
+        .source = trait_id,
+        .target = fragment.nodes.back().id,
+        .relation = "method",
+        .confidence = Confidence::Extracted,
+    });
+  }
+}
+
 [[nodiscard]] LanguageConfig rust_config() {
   LanguageConfig config{
       .name = "rust",
@@ -557,11 +770,13 @@ void rust_import_handler(const TSNode& node, const ExtractionContext& context, F
       .extensions = {".rs"},
       // No class kind in Rust: struct/enum/union/trait/type-alias are all "type"
       // nodes (mirrors Go's type_spec choice). impl blocks carry no name and are
-      // deliberately not registered -- methods inside them are function_items and
-      // are captured as file-contained functions, exactly like Go's methods.
+      // deliberately not registered -- methods inside them are function_items,
+      // captured as file-contained functions and tagged methods by
+      // rust_is_impl_method (the node type alone cannot tell them from free
+      // functions, so method_node_types does not apply).
       .function_node_types = {"function_item", "function_signature_item"},
       .type_node_types = {"struct_item", "enum_item", "union_item", "trait_item", "type_item"},
-      .import_node_types = {"use_declaration"},
+      .import_node_types = {"use_declaration", "mod_item"},
       .call_node_types = {"call_expression"},
       .name_fields = {"name"},
       .body_fields = {"body"},
@@ -574,6 +789,11 @@ void rust_import_handler(const TSNode& node, const ExtractionContext& context, F
       .resolve_callee_name = rust_callee_name,
   };
   config.import_handler = rust_import_handler;
+  config.relation_handler = rust_relation_handler;
+  config.extra_walk = rust_extra_walk;
+  config.method_predicate = [](const TSNode& node, const ExtractionContext&) {
+    return rust_is_impl_method(node);
+  };
   return config;
 }
 
