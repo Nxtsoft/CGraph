@@ -444,7 +444,8 @@ void go_extra_walk(const TSNode& node, const ExtractionContext& context,
 }
 
 void rust_emit_use_stub(
-    std::vector<std::string> segments, bool module_only, const ExtractionContext& context, Fragment& fragment) {
+    std::vector<std::string> segments, bool module_only, bool is_reexport,
+    const ExtractionContext& context, Fragment& fragment) {
   std::size_t first = 0;
   while (first < segments.size() &&
          (segments[first] == "crate" || segments[first] == "self" || segments[first] == "super")) {
@@ -470,19 +471,29 @@ void rust_emit_use_stub(
   const auto exists = std::ranges::any_of(
       fragment.nodes, [&](const Node& existing) { return existing.id == stub_id; });
   if (!exists) {
-    fragment.nodes.push_back(Node{
+    Node stub{
         .id = stub_id,
         .label = label,
         .source_location = SourceLocation{.start_line = 1, .end_line = 1},
         .kind = as_module ? "module" : "import",
         .confidence = Confidence::Extracted,
         .properties = {{"import_path", joined}, {"module_layout", "rust"}},
-    });
+    };
+    // `pub use a::b::Item` re-exports Item from this file: a consumer that spells
+    // `this_module::Item` reaches the real definition only by following the
+    // re-export chain (issue #60 -- tokio-util's tests reach a changed
+    // `tokio::task::LocalSet` through `pub use local::LocalSet` in task/mod.rs).
+    // Mark the stub so resolve_imports can follow it; a private `use` stays an
+    // internal import that no outside consumer resolves through.
+    if (is_reexport) {
+      stub.properties.emplace("reexport", "true");
+    }
+    fragment.nodes.push_back(std::move(stub));
   }
   fragment.edges.push_back(Edge{
       .source = make_id(context.source_file),
       .target = stub_id,
-      .relation = "imports",
+      .relation = is_reexport ? "re_exports" : "imports",
       .confidence = Confidence::Extracted,
   });
 }
@@ -491,13 +502,14 @@ void rust_walk_use_tree(
     const TSNode& node,
     const ExtractionContext& context,
     Fragment& fragment,
-    const std::vector<std::string>& prefix) {
+    const std::vector<std::string>& prefix,
+    bool is_reexport) {
   const std::string_view type = ts_node_type(node);
   if (type == "identifier" || type == "scoped_identifier" || type == "crate" ||
       type == "self" || type == "super") {
     auto segments = prefix;
     if (rust_append_use_path(node, context, segments)) {
-      rust_emit_use_stub(std::move(segments), false, context, fragment);
+      rust_emit_use_stub(std::move(segments), false, is_reexport, context, fragment);
     }
     return;
   }
@@ -506,7 +518,7 @@ void rust_walk_use_tree(
     // (resolve_imports remaps by the name declared in the target file).
     const auto path = ts_node_child_by_field_name(node, "path", 4);
     if (!ts_node_is_null(path)) {
-      rust_walk_use_tree(path, context, fragment, prefix);
+      rust_walk_use_tree(path, context, fragment, prefix, is_reexport);
     }
     return;
   }
@@ -518,14 +530,14 @@ void rust_walk_use_tree(
     }
     const auto list = ts_node_child_by_field_name(node, "list", 4);
     if (!ts_node_is_null(list)) {
-      rust_walk_use_tree(list, context, fragment, segments);
+      rust_walk_use_tree(list, context, fragment, segments, is_reexport);
     }
     return;
   }
   if (type == "use_list") {
     const auto count = ts_node_named_child_count(node);
     for (std::uint32_t index = 0; index < count; ++index) {
-      rust_walk_use_tree(ts_node_named_child(node, index), context, fragment, prefix);
+      rust_walk_use_tree(ts_node_named_child(node, index), context, fragment, prefix, is_reexport);
     }
     return;
   }
@@ -535,7 +547,7 @@ void rust_walk_use_tree(
         !rust_append_use_path(ts_node_named_child(node, 0), context, segments)) {
       return;
     }
-    rust_emit_use_stub(std::move(segments), true, context, fragment);
+    rust_emit_use_stub(std::move(segments), true, is_reexport, context, fragment);
     return;
   }
   // metavariable and anything else: dropped rather than guessed.
@@ -568,7 +580,8 @@ void rust_import_handler(const TSNode& node, const ExtractionContext& context, F
     if (stem != "lib" && stem != "main" && stem != "mod") {
       base /= stem;
     }
-    rust_emit_use_stub({(base / name).generic_string()}, /*module_only=*/true, context, fragment);
+    rust_emit_use_stub({(base / name).generic_string()}, /*module_only=*/true,
+                       /*is_reexport=*/false, context, fragment);
     return;
   }
   if (type != "use_declaration") {
@@ -578,7 +591,19 @@ void rust_import_handler(const TSNode& node, const ExtractionContext& context, F
   if (ts_node_is_null(argument)) {
     return;
   }
-  rust_walk_use_tree(argument, context, fragment, {});
+  // A leading `visibility_modifier` (`pub`, `pub(crate)`, `pub(super)`) makes the
+  // use a re-export: the name becomes reachable through this module's path, so
+  // resolution must be able to follow it to the real definition. A bare `use` is
+  // a private, internal-only import.
+  bool is_reexport = false;
+  const auto child_count = ts_node_child_count(node);
+  for (std::uint32_t index = 0; index < child_count; ++index) {
+    if (std::string_view(ts_node_type(ts_node_child(node, index))) == "visibility_modifier") {
+      is_reexport = true;
+      break;
+    }
+  }
+  rust_walk_use_tree(argument, context, fragment, {}, is_reexport);
 }
 
 // A `function_item` is a method exactly when it sits in an impl block
@@ -625,6 +650,29 @@ void rust_relation_handler(const TSNode& node, const ExtractionContext& context,
       .source_file = context.source_file,
       .allow_same_file = true,
   });
+  // `impl AsyncRead for DuplexStream`: the `trait` field names the contract this
+  // method satisfies. Name-only dispatch resolution (resolve_interface_dispatch)
+  // only links a contract to a type when the trait's whole method-name set is a
+  // subset of the type's -- which fails for traits with default/provided methods
+  // the impl does not override (AsyncRead, the async ext-trait plumbing in #60).
+  // Emit the declared trait as an `impl_trait` fact so dispatch resolution can
+  // bind this exact method to its contract regardless of the subset check, scoped
+  // by the trait the impl actually names. Third-party traits (std, other crates)
+  // stay unresolved -- resolve_raw_relations only binds a trait the file can see.
+  const auto trait_field = ts_node_child_by_field_name(impl, "trait", 5);
+  if (!ts_node_is_null(trait_field)) {
+    auto trait_name = go_receiver_type_name(trait_field, context);
+    if (!trait_name.empty()) {
+      raw_relations.push_back(RawRelation{
+          .source_id = node_id,
+          .target_label = std::move(trait_name),
+          .relation = "impl_trait",
+          .context = "impl",
+          .source_file = context.source_file,
+          .allow_same_file = true,
+      });
+    }
+  }
 }
 
 // Calls inside a macro invocation are invisible to the call_expression walk:

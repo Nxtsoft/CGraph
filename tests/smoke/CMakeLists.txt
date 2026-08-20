@@ -596,6 +596,30 @@ cgraph_enable_sanitizers(cgraph_interface_dispatch_test)
 
 add_test(NAME cgraph_interface_dispatch_test COMMAND cgraph_interface_dispatch_test)
 
+add_executable(cgraph_rust_dispatch_test
+  rust_dispatch_test.cpp)
+
+target_link_libraries(cgraph_rust_dispatch_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_rust_dispatch_test)
+cgraph_enable_sanitizers(cgraph_rust_dispatch_test)
+
+add_test(NAME cgraph_rust_dispatch_test COMMAND cgraph_rust_dispatch_test)
+
+add_executable(cgraph_rust_reexport_test
+  rust_reexport_test.cpp)
+
+target_link_libraries(cgraph_rust_reexport_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_rust_reexport_test)
+cgraph_enable_sanitizers(cgraph_rust_reexport_test)
+
+add_test(NAME cgraph_rust_reexport_test COMMAND cgraph_rust_reexport_test)
+
 add_executable(cgraph_content_root_export_test
   content_root_export_test.cpp)
 
