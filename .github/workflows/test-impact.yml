@@ -1,0 +1,53 @@
+name: test-impact
+
+# Dogfood: CGraph builds its own code graph with the prebuilt release binary,
+# and blastline comments the impacted smoke tests and blast radius on every PR
+# touching the C++ sources or tests. Selection is safe-superset: anything the
+# graph cannot vouch for fails open to "run everything", with reasons.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test-impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install cgraph (prebuilt release binaries)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download bin-v0.1.0 --repo Nxtsoft/CGraph \
+            --pattern cgraph-linux-x64.tar.gz --output cgraph-bin.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf cgraph-bin.tar.gz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the self-graph
+        run: cgraph --root . --out /tmp/self-graph
+
+      - uses: Nxtsoft/blastline@v0
+        id: blastline
+        with:
+          graph-path: /tmp/self-graph/graph.json
+          github-token: ${{ github.token }}
+          ignore: |
+            \.md$
+            ^openspec/
+            ^\.github/
+            ^integrations/
+            ^assets/
+            ^docs/
+
+      - name: Log selection kind
+        run: echo "selection=${{ steps.blastline.outputs.kind }}"
