@@ -195,6 +195,14 @@ void add_raw_call(
         label = node_text(*child, context.source);
       }
     }
+  } else if (config.resolve_callee_name) {
+    // A grammar whose call node exposes no callee field at all (Kotlin's
+    // field-less `call_expression`) hands the whole call node to the resolver,
+    // which locates the callee's leaf name itself. Without this the callee would
+    // be labelled with the entire call's text (`c.add(1, 2)`), matching nothing.
+    // An empty return is a deliberate drop, handled below.
+    label = config.resolve_callee_name(node, context);
+    callee_resolver_ran = true;
   } else {
     label = node_text(node, context.source);
   }

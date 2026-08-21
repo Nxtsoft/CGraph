@@ -34,6 +34,10 @@ extern "C" const TSLanguage* tree_sitter_scala();
 extern "C" const TSLanguage* tree_sitter_typescript();
 extern "C" const TSLanguage* tree_sitter_tsx();
 
+// Defined below (next to go_import_handler); forward-declared so the Kotlin
+// resolvers above it can reuse the same byte-safe node-text helper.
+[[nodiscard]] std::string go_node_text(const TSNode& node, std::string_view source);
+
 [[nodiscard]] LanguageConfig c_config() {
   LanguageConfig config{
       .name = "c",
@@ -151,19 +155,106 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   };
 }
 
+// fwcd/tree-sitter-kotlin exposes NO named fields on its declarations:
+// class_declaration, object_declaration, and function_declaration all have empty
+// field tables (only function_declaration carries a `receiver` field, which is
+// the extension-function receiver type, not the name). So the field-based name
+// path in label_for_node finds nothing and every Kotlin symbol is skipped -- the
+// reason a Kotlin repo extracts zero nodes today. Resolve the name positionally
+// instead: a class or object is named by its `type_identifier` child, a function
+// by its `simple_identifier` child (its return type is a `user_type`, and its
+// parameters live inside `function_value_parameters`, so the sole top-level
+// simple_identifier is the name). Returning empty falls through to
+// label_for_node's documented skip path -- an anonymous `object { }` literal has
+// no such child and is correctly not a symbol.
+[[nodiscard]] std::string kotlin_symbol_name(const TSNode& node, const ExtractionContext& context) {
+  const std::string_view node_type = ts_node_type(node);
+  const std::string_view wanted =
+      (node_type == "function_declaration") ? "simple_identifier" : "type_identifier";
+  const auto count = ts_node_named_child_count(node);
+  for (uint32_t index = 0; index < count; ++index) {
+    const TSNode child = ts_node_named_child(node, index);
+    if (std::string_view(ts_node_type(child)) == wanted) {
+      return go_node_text(child, context.source);
+    }
+  }
+  return {};
+}
+
+// Kotlin's `call_expression` is likewise field-less (no `function` field), so the
+// accessor-field path in add_raw_call never reaches a resolver and the callee
+// would be labelled with the entire call's text. Given the call node, descend to
+// the callee's bare leaf name:
+//   call_expression       -> its first named child is the callee expression
+//   navigation_expression (`recv.member`) -> the (last) navigation_suffix's
+//       simple_identifier -- the bare member name, matched project-wide by name
+//       exactly like Java's method_invocation `name`. The receiver type is
+//       unknown, so this is deliberately a project-wide name match, not a
+//       same-file member call; it is what connects `c.add()` in a test to
+//       `Calc.add` in another file.
+//   simple_identifier (`f()`, `Widget()`) -> its text (a bare call or a
+//       constructor-style invocation, which resolves to the class of that name).
+// Anything else -- a call on a literal, an indexing/lambda result -- yields no
+// name and the call is dropped rather than guessed.
+[[nodiscard]] std::string kotlin_callee_name(const TSNode& node, const ExtractionContext& context) {
+  TSNode cur = node;
+  if (std::string_view(ts_node_type(cur)) == "call_expression") {
+    cur = ts_node_named_child(cur, 0);
+  }
+  while (!ts_node_is_null(cur)) {
+    const std::string_view type = ts_node_type(cur);
+    if (type == "simple_identifier") {
+      return go_node_text(cur, context.source);
+    }
+    if (type == "navigation_expression") {
+      TSNode suffix = {};
+      const auto n = ts_node_named_child_count(cur);
+      for (uint32_t i = 0; i < n; ++i) {
+        const TSNode child = ts_node_named_child(cur, i);
+        if (std::string_view(ts_node_type(child)) == "navigation_suffix") {
+          suffix = child;  // keep the last one: `a.b.c` chains suffixes; c wins
+        }
+      }
+      if (ts_node_is_null(suffix)) {
+        return {};
+      }
+      const auto m = ts_node_named_child_count(suffix);
+      for (uint32_t i = 0; i < m; ++i) {
+        const TSNode child = ts_node_named_child(suffix, i);
+        if (std::string_view(ts_node_type(child)) == "simple_identifier") {
+          return go_node_text(child, context.source);
+        }
+      }
+      return {};
+    }
+    // A chained/parenthesized receiver (`foo().bar()`, `(x).y()`): descend to the
+    // receiver expression and keep reducing toward the outermost callee name.
+    if (type == "call_expression" || type == "parenthesized_expression") {
+      cur = ts_node_named_child(cur, 0);
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
 [[nodiscard]] LanguageConfig kotlin_config() {
-  return LanguageConfig{
+  LanguageConfig config{
       .name = "kotlin",
       .grammar_name = "tree-sitter-kotlin",
       .extensions = {".kt", ".kts"},
-      .class_node_types = {"class_declaration", "object_declaration", "interface_declaration"},
+      // An interface is a `class_declaration` with an `interface` modifier in
+      // this grammar -- there is no separate interface_declaration node.
+      .class_node_types = {"class_declaration", "object_declaration"},
       .function_node_types = {"function_declaration"},
-      .import_node_types = {"import_header"},
       .call_node_types = {"call_expression"},
-      .name_fields = {"name"},
-      .body_fields = {"body"},
-      .call_accessor_fields = {"function"},
+      // The grammar exposes no name/callee fields, so naming is positional. Kotlin
+      // imports are package-qualified and decoupled from file layout (like Rust's
+      // `use`), so import resolution is a non-goal and no import_handler is set.
   };
+  config.resolve_callee_name = kotlin_callee_name;
+  config.resolve_function_name = kotlin_symbol_name;
+  return config;
 }
 
 [[nodiscard]] LanguageConfig scala_config() {
