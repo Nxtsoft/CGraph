@@ -460,6 +460,73 @@ bool check_java_extraction() {
   return true;
 }
 
+// fwcd/tree-sitter-kotlin exposes no named fields on its declarations or its
+// call_expression, so without the positional resolvers (kotlin_symbol_name /
+// kotlin_callee_name) a Kotlin file extracts zero symbols and zero calls. This
+// drives the whole generic walker: a class, an object declaration, an interface
+// (spelled class_declaration in this grammar), named functions, a plain call,
+// and a `recv.member()` navigation call reduced to its bare name and — mirroring
+// Java's method_invocation — kept non-member so it resolves project-wide across
+// files.
+bool check_kotlin_extraction() {
+  constexpr std::string_view source =
+      "package com.example\n"
+      "\n"
+      "interface Shape {\n"
+      "    fun area(): Double\n"
+      "}\n"
+      "\n"
+      "object Registry {\n"
+      "    fun lookup(): Int = 0\n"
+      "}\n"
+      "\n"
+      "class Service : Shape {\n"
+      "    override fun area(): Double = 1.0\n"
+      "    fun run() {\n"
+      "        helper()\n"
+      "        Registry.lookup()\n"
+      "    }\n"
+      "    fun helper() {}\n"
+      "}\n";
+
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::Kotlin,
+      cgraph::ExtractionContext{.source_file = "com/example/Service.kt", .source = source});
+  if (!result.has_value()) {
+    return fail("kotlin extraction returned no result");
+  }
+  // interface (class_declaration), object_declaration, and class are all "class"
+  // nodes named by their type_identifier child.
+  for (const char* class_name : {"Shape", "Registry", "Service"}) {
+    if (find_node(*result, class_name, "class") == nullptr) {
+      return fail(std::string("missing class node ") + class_name);
+    }
+  }
+  // Functions are named by their simple_identifier child (not its return type).
+  for (const char* fn_name : {"area", "lookup", "run", "helper"}) {
+    if (find_node(*result, fn_name, "function") == nullptr) {
+      return fail(std::string("missing function node ") + fn_name);
+    }
+  }
+  // helper() -> a bare simple_identifier callee, non-member.
+  const auto plain_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "helper" && !call.is_member_call;
+  });
+  if (plain_call == result->raw_calls.end()) {
+    return fail("missing plain raw call to helper");
+  }
+  // Registry.lookup() -> a navigation_expression callee reduced to the bare member
+  // name `lookup`, kept non-member (like Java) so it resolves project-wide. Before
+  // the resolver the callee would have been the whole `Registry.lookup(...)` text.
+  const auto nav_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "lookup" && !call.is_member_call;
+  });
+  if (nav_call == result->raw_calls.end()) {
+    return fail("missing navigation raw call reduced to lookup");
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -509,8 +576,11 @@ int main() {
   if (!check_rust_use_imports()) {
     return 6;
   }
-  if (!check_java_extraction()) {
+  if (!check_kotlin_extraction()) {
     return 7;
+  }
+  if (!check_java_extraction()) {
+    return 8;
   }
   if (!check_coverage_registry()) {
     return 3;
