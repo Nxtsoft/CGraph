@@ -408,6 +408,58 @@ bool check_coverage_registry() {
   return true;
 }
 
+// Java constructor-call resolution: a `new Foo()` callee is an
+// object_creation_expression whose `type` field (not a `name` identifier) must be
+// reduced to the bare class name so the call resolves against the class node.
+// java_callee_name handles the plain, generic, and package-qualified forms.
+bool check_java_extraction() {
+  constexpr std::string_view source =
+      "package p;\n"
+      "import java.util.ArrayList;\n"
+      "public class Widget {\n"
+      "  public void build() {\n"
+      "    Widget w = new Widget();\n"
+      "    ArrayList<String> xs = new ArrayList<String>();\n"
+      "    java.util.HashMap<String, Integer> m = new java.util.HashMap<String, Integer>();\n"
+      "    helper();\n"
+      "  }\n"
+      "  void helper() {}\n"
+      "}\n";
+
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::Java,
+      cgraph::ExtractionContext{.source_file = "p/Widget.java", .source = source});
+  if (!result.has_value()) {
+    return fail("java extraction returned no result");
+  }
+  if (find_node(*result, "Widget", "class") == nullptr) {
+    return fail("missing class node Widget");
+  }
+  for (const char* fn_name : {"build", "helper"}) {
+    if (find_node(*result, fn_name, "function") == nullptr) {
+      return fail(std::string("missing method node ") + fn_name);
+    }
+  }
+  // Each constructor callee is reduced to the bare simple type name and kept
+  // non-member (a plain `new Foo()` resolves project-wide to the class node).
+  for (const char* type_name : {"Widget", "ArrayList", "HashMap"}) {
+    const auto ctor = std::ranges::find_if(result->raw_calls, [&](const cgraph::RawCall& call) {
+      return call.callee_label == type_name && !call.is_member_call;
+    });
+    if (ctor == result->raw_calls.end()) {
+      return fail(std::string("missing constructor raw call reduced to ") + type_name);
+    }
+  }
+  // A plain method_invocation still resolves by its `name` field, unchanged.
+  const auto plain_call = std::ranges::find_if(result->raw_calls, [](const cgraph::RawCall& call) {
+    return call.callee_label == "helper" && !call.is_member_call;
+  });
+  if (plain_call == result->raw_calls.end()) {
+    return fail("missing plain raw call to helper");
+  }
+  return true;
+}
+
 // fwcd/tree-sitter-kotlin exposes no named fields on its declarations or its
 // call_expression, so without the positional resolvers (kotlin_symbol_name /
 // kotlin_callee_name) a Kotlin file extracts zero symbols and zero calls. This
@@ -526,6 +578,9 @@ int main() {
   }
   if (!check_kotlin_extraction()) {
     return 7;
+  }
+  if (!check_java_extraction()) {
+    return 8;
   }
   if (!check_coverage_registry()) {
     return 3;

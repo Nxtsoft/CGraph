@@ -34,8 +34,8 @@ extern "C" const TSLanguage* tree_sitter_scala();
 extern "C" const TSLanguage* tree_sitter_typescript();
 extern "C" const TSLanguage* tree_sitter_tsx();
 
-// Defined below (next to go_import_handler); forward-declared so the Kotlin
-// resolvers above it can reuse the same byte-safe node-text helper.
+// Defined below (next to go_import_handler); forward-declared so the Kotlin and
+// Java resolvers above it can reuse the same byte-safe node-text helper.
 [[nodiscard]] std::string go_node_text(const TSNode& node, std::string_view source);
 
 [[nodiscard]] LanguageConfig c_config() {
@@ -103,8 +103,63 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   return config;
 }
 
+// A `new Foo()` / `new pkg.Foo<T>()` callee is an object_creation_expression
+// whose `type` field is a `_simple_type`, not a plain `name` identifier. Reduce
+// it (and a method_invocation's `name` identifier, passed through unchanged) to
+// the bare simple type/method name so the call resolves against the class node:
+//   type_identifier / identifier  -> its text
+//   generic_type (`Foo<T>`)       -> its base type_identifier/scoped_type_identifier
+//   scoped_type_identifier (`a.b.Foo`) / scoped_identifier -> the last simple name
+// Without this, `new ArrayList<>()` would be labelled `ArrayList<>` (matching
+// nothing) and `new com.foo.Bar()` `com.foo.Bar`; a plain `new Circle()` would
+// happen to work by text but the generic/qualified forms would silently drop.
+[[nodiscard]] std::string java_callee_name(const TSNode& node, const ExtractionContext& context) {
+  TSNode cur = node;
+  for (int guard = 0; guard < 8 && !ts_node_is_null(cur); ++guard) {
+    const std::string_view type = ts_node_type(cur);
+    if (type == "identifier" || type == "type_identifier") {
+      return go_node_text(cur, context.source);
+    }
+    if (type == "generic_type") {
+      TSNode base = {};
+      const auto count = ts_node_named_child_count(cur);
+      for (uint32_t index = 0; index < count; ++index) {
+        const TSNode child = ts_node_named_child(cur, index);
+        const std::string_view child_type = ts_node_type(child);
+        if (child_type == "type_identifier" || child_type == "scoped_type_identifier") {
+          base = child;
+          break;
+        }
+      }
+      if (ts_node_is_null(base)) {
+        return {};
+      }
+      cur = base;
+      continue;
+    }
+    if (type == "scoped_type_identifier" || type == "scoped_identifier") {
+      // The simple name is the last type_identifier/identifier child (`a.b.Foo` -> `Foo`).
+      TSNode leaf = {};
+      const auto count = ts_node_named_child_count(cur);
+      for (uint32_t index = 0; index < count; ++index) {
+        const TSNode child = ts_node_named_child(cur, index);
+        const std::string_view child_type = ts_node_type(child);
+        if (child_type == "type_identifier" || child_type == "identifier") {
+          leaf = child;
+        }
+      }
+      if (ts_node_is_null(leaf)) {
+        return {};
+      }
+      return go_node_text(leaf, context.source);
+    }
+    return {};
+  }
+  return {};
+}
+
 [[nodiscard]] LanguageConfig java_config() {
-  return LanguageConfig{
+  LanguageConfig config{
       .name = "java",
       .grammar_name = "tree-sitter-java",
       .extensions = {".java"},
@@ -114,8 +169,13 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       .call_node_types = {"method_invocation", "object_creation_expression"},
       .name_fields = {"name"},
       .body_fields = {"body"},
-      .call_accessor_fields = {"name"},
+      // method_invocation exposes the callee as `name`; object_creation_expression
+      // (a `new Foo()` constructor call) exposes it as `type`. java_callee_name
+      // reduces either to the bare simple name.
+      .call_accessor_fields = {"name", "type"},
   };
+  config.resolve_callee_name = java_callee_name;
+  return config;
 }
 
 [[nodiscard]] LanguageConfig csharp_config() {
