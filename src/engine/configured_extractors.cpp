@@ -173,6 +173,12 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       // (a `new Foo()` constructor call) exposes it as `type`. java_callee_name
       // reduces either to the bare simple name.
       .call_accessor_fields = {"name", "type"},
+      // `obj.method()` is a method_invocation with an `object` field and no
+      // member-access wrapper node, so call_member_node_types cannot see it.
+      // The receiver field is what marks it a member call, which is what the
+      // interface-dispatch rescue requires.
+      .call_receiver_field = "object",
+      .interface_node_types = {"interface_declaration"},
   };
   config.resolve_callee_name = java_callee_name;
   return config;

@@ -742,11 +742,34 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     //     free function that happens to share the name.
     bool member_method_hit = false;
     if (target_id.empty() && raw_call.is_member_call) {
-      if (const auto methods = method_index.find(key);
-          methods != method_index.end() && methods->second.size() == 1) {
-        target_id = methods->second.front();
-        confidence = Confidence::Inferred;
-        member_method_hit = true;
+      if (const auto methods = method_index.find(key); methods != method_index.end()) {
+        if (methods->second.size() == 1) {
+          target_id = methods->second.front();
+          confidence = Confidence::Inferred;
+          member_method_hit = true;
+        } else {
+          // Several methods share the name. When they all live in ONE file they
+          // are an overload set on a single type — idiomatic in Java, C#, C++,
+          // Kotlin — and issue #52's rule applies unchanged: without types any
+          // member may be the callee, so edge to ALL of them rather than drop
+          // the call. Tier 2 has always done this for non-member calls; a member
+          // call needs it just as much, and without it every call to an
+          // overloaded method (`tokener.nextTo(char)` / `nextTo(String)`)
+          // silently loses its edge. Candidates spread across files are a real
+          // cross-type collision and stay dropped — picking one would be a guess.
+          const auto first_file = source_file_by_id.find(methods->second.front());
+          const bool single_file_overload_set =
+              first_file != source_file_by_id.end() && !first_file->second.empty() &&
+              std::all_of(methods->second.begin(), methods->second.end(),
+                          [&](const std::string& id) {
+                            const auto it = source_file_by_id.find(id);
+                            return it != source_file_by_id.end() &&
+                                   it->second == first_file->second;
+                          });
+          if (single_file_overload_set && resolve_overload_set(first_file->second)) {
+            member_method_hit = true;
+          }
+        }
       }
     }
 
@@ -955,20 +978,37 @@ void resolve_interface_dispatch(GraphSnapshot& graph, std::span<const RawCall> r
     const auto tag = it->second->properties.find("interface_method");
     return tag != it->second->properties.end() && tag->second == "true";
   };
+  // Java reuses `method_declaration` for interface bodies, so its contract
+  // methods arrive as ordinary `method` nodes and cannot be recognized by their
+  // own tag (unlike Go's separately-emitted, namespaced `method_elem` nodes).
+  // The owning declaration carries the distinction instead: a method owned by an
+  // `interface` node is a promise, not an implementation.
+  const auto is_iface_owner = [&](const std::string& id) {
+    const auto it = nodes_by_id.find(id);
+    if (it == nodes_by_id.end()) {
+      return false;
+    }
+    const auto tag = it->second->properties.find("interface");
+    return tag != it->second->properties.end() && tag->second == "true";
+  };
 
   // interface id -> (method name key -> interface method node id)
   std::map<std::string, std::map<std::string, std::string>> iface_methods;
   // concrete type id -> (method name key -> method node ids)
   std::map<std::string, std::map<std::string, std::vector<std::string>>> type_methods;
   for (const auto& edge : graph.edges) {
-    if (edge.relation == "method" && is_iface_method(edge.target)) {
+    // A promise either by its own tag (Go) or by its owner being an interface
+    // declaration (Java). Both mean the same thing to everything downstream.
+    const bool promises = edge.relation == "method" &&
+                          (is_iface_method(edge.target) || is_iface_owner(edge.source));
+    if (promises) {
       iface_methods[edge.source].emplace(make_id(nodes_by_id.at(edge.target)->label), edge.target);
     } else if (edge.relation == "method_of") {
       // method -> receiver type (Go); invert into the type's method set.
       if (const auto method = nodes_by_id.find(edge.source); method != nodes_by_id.end()) {
         type_methods[edge.target][make_id(method->second->label)].push_back(edge.source);
       }
-    } else if (edge.relation == "method" && !is_iface_method(edge.target)) {
+    } else if (edge.relation == "method") {
       // class -> method (Python/TS class methods) participates the same way.
       if (const auto method = nodes_by_id.find(edge.target); method != nodes_by_id.end()) {
         type_methods[edge.source][make_id(method->second->label)].push_back(edge.target);

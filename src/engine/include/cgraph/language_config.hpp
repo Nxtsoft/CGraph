@@ -98,6 +98,19 @@ struct LanguageConfig {
   // the call is recorded as a member call carrying just the property name.
   std::vector<std::string> call_member_node_types;
   std::string call_member_field;
+  // The field naming a call's RECEIVER when the grammar exposes it directly on
+  // the call node instead of wrapping it in a member-access node. Java's
+  // `method_invocation` splits into `object` + `name` fields with no wrapper, so
+  // call_member_node_types never matches and `obj.method()` would be recorded as
+  // a plain call. When this field is set and present on the call node, the call
+  // is a member call — same meaning as the wrapper case: the receiver type is
+  // unknown, so the bare name must not be matched project-wide.
+  std::string call_receiver_field;
+  // Class-like declarations that are CONTRACTS rather than concrete types
+  // (Java's `interface_declaration`). Their methods are promises, not
+  // implementations: dispatch resolution reads them as an interface's method
+  // set and must not count them toward a concrete type's own methods.
+  std::vector<std::string> interface_node_types;
   // Resolves a non-member callee to its leaf name through the grammar
   // (`cgraph::run_one_shot()` -> `run_one_shot`). A qualified call is NOT a member
   // call: the name is fully determined by the qualification, so it stays eligible
