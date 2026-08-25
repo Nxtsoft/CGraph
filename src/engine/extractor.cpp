@@ -168,6 +168,15 @@ void add_raw_call(
   std::string label;
   bool is_member_call = false;
   bool callee_resolver_ran = false;
+  // A grammar that names the receiver in a field on the call node itself
+  // (Java's `method_invocation`: `object` + `name`, no member-access wrapper).
+  // Presence of the receiver field is what makes it a member call; the label
+  // still comes from the accessor field below.
+  const bool has_receiver_field =
+      !config.call_receiver_field.empty() &&
+      !ts_node_is_null(ts_node_child_by_field_name(
+          node, config.call_receiver_field.data(),
+          static_cast<std::uint32_t>(config.call_receiver_field.size())));
   if (const auto child = first_child_by_fields(node, config.call_accessor_fields); child.has_value()) {
     // A member/property access target (`obj.method()`): record only the bare
     // property name and flag it, so resolution can keep it to the caller's own
@@ -222,7 +231,7 @@ void add_raw_call(
       .callee_label = std::move(label),
       .source_file = context.source_file,
       .source_location = source_location(node),
-      .is_member_call = is_member_call,
+      .is_member_call = is_member_call || has_receiver_field,
   });
 }
 
@@ -299,6 +308,15 @@ void walk_node(
   std::string child_function_scope = function_scope_id;
   if (contains_symbol(config.symbols.class_nodes, symbol)) {
     if (auto id = add_symbol_node(node, config, context, "class", fragment); !id.empty()) {
+      // Mark contract declarations (Java's `interface_declaration`). Java reuses
+      // `method_declaration` inside an interface, so the methods below are
+      // indistinguishable from implementations by node type alone; dispatch
+      // resolution reads this tag on the OWNER to tell a promise from a method.
+      if (!config.interface_node_types.empty() &&
+          std::ranges::find(config.interface_node_types, std::string_view(ts_node_type(node))) !=
+              config.interface_node_types.end()) {
+        fragment.nodes.back().properties.emplace("interface", "true");
+      }
       add_containment_edge(scope_id, scope_kind, id, "class", fragment);
       if (config.relation_handler) {
         config.relation_handler(node, context, id, raw_relations);
