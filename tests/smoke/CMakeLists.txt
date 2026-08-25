@@ -620,6 +620,18 @@ cgraph_enable_sanitizers(cgraph_java_dispatch_test)
 
 add_test(NAME cgraph_java_dispatch_test COMMAND cgraph_java_dispatch_test)
 
+add_executable(cgraph_java_receiver_scope_test
+  java_receiver_scope_test.cpp)
+
+target_link_libraries(cgraph_java_receiver_scope_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_java_receiver_scope_test)
+cgraph_enable_sanitizers(cgraph_java_receiver_scope_test)
+
+add_test(NAME cgraph_java_receiver_scope_test COMMAND cgraph_java_receiver_scope_test)
+
 add_executable(cgraph_rust_cfg_macro_test
   rust_cfg_macro_test.cpp)
 
