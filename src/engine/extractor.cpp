@@ -172,11 +172,22 @@ void add_raw_call(
   // (Java's `method_invocation`: `object` + `name`, no member-access wrapper).
   // Presence of the receiver field is what makes it a member call; the label
   // still comes from the accessor field below.
-  const bool has_receiver_field =
-      !config.call_receiver_field.empty() &&
-      !ts_node_is_null(ts_node_child_by_field_name(
-          node, config.call_receiver_field.data(),
-          static_cast<std::uint32_t>(config.call_receiver_field.size())));
+  std::string receiver_label;
+  bool has_receiver_field = false;
+  if (!config.call_receiver_field.empty()) {
+    const auto receiver = ts_node_child_by_field_name(
+        node, config.call_receiver_field.data(),
+        static_cast<std::uint32_t>(config.call_receiver_field.size()));
+    if (!ts_node_is_null(receiver)) {
+      has_receiver_field = true;
+      // Only a bare identifier denotes a name we can resolve. A chained or
+      // computed receiver (`a.b().c()`, `arr[i]`) names no single symbol, so it
+      // stays an unknown-type member call.
+      if (std::string_view(ts_node_type(receiver)) == "identifier") {
+        receiver_label = node_text(receiver, context.source);
+      }
+    }
+  }
   if (const auto child = first_child_by_fields(node, config.call_accessor_fields); child.has_value()) {
     // A member/property access target (`obj.method()`): record only the bare
     // property name and flag it, so resolution can keep it to the caller's own
@@ -232,6 +243,7 @@ void add_raw_call(
       .source_file = context.source_file,
       .source_location = source_location(node),
       .is_member_call = is_member_call || has_receiver_field,
+      .receiver_label = std::move(receiver_label),
   });
 }
 

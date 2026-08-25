@@ -519,15 +519,35 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   std::unordered_map<std::string, std::vector<std::string>> method_index;
   // Every method node id, for validating same-file member-call bindings below.
   std::unordered_set<std::string> method_node_ids;
+  std::unordered_map<std::string, std::string> method_name_key_by_id;
   for (const auto& node : graph.nodes) {
     const auto tagged = node.properties.find("method");
     if (method_ids.contains(node.id) || (tagged != node.properties.end() && tagged->second == "true")) {
-      method_index[make_id(node.label)].push_back(node.id);
+      auto name_key = make_id(node.label);
+      method_index[name_key].push_back(node.id);
       method_node_ids.insert(node.id);
+      method_name_key_by_id.emplace(node.id, std::move(name_key));
+    }
+  }
+  // owning class id -> (normalized method name -> that class's methods). A
+  // member call whose receiver NAMES a class resolves against this instead of
+  // the project-wide method index: `XML.toJSONObject(s)` says which class it
+  // means, so it must not be dropped merely because seven other files also
+  // declare a `toJSONObject`.
+  std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::string>>>
+      methods_by_owner;
+  for (const auto& edge : graph.edges) {
+    if (edge.relation != "method") {
+      continue;
+    }
+    const auto name_key = method_name_key_by_id.find(edge.target);
+    if (name_key != method_name_key_by_id.end()) {
+      methods_by_owner[edge.source][name_key->second].push_back(edge.target);
     }
   }
   std::unordered_set<std::string> node_ids;
   std::unordered_map<std::string, std::string> source_file_by_id;
+  std::unordered_map<std::string, std::string> label_by_id;
   node_ids.reserve(graph.nodes.size());
   source_file_by_id.reserve(graph.nodes.size());
 
@@ -551,6 +571,7 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   for (const auto& node : graph.nodes) {
     node_ids.insert(node.id);
     source_file_by_id.emplace(node.id, node.source_file);
+    label_by_id.emplace(node.id, node.label);
     if (node.source_file.empty()) {
       continue;
     }
@@ -740,6 +761,80 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     //     name). This is what connects `r.Match(...)` in a test file to the
     //     method's declaration (issue #44) without letting `.map()` bind to a
     //     free function that happens to share the name.
+    // 2a. A member call whose receiver is a bare identifier naming a class in
+    //     the project (`XML.toJSONObject(s)` — a static call, or an instance
+    //     whose name matches its type). The receiver is EVIDENCE, not a guess:
+    //     it says which class owns the method, so the lookup is scoped to that
+    //     class instead of the project-wide method index. Without this, a name
+    //     any other file also declares is dropped as ambiguous even though the
+    //     call site named its class outright — which is why every
+    //     `XML.toJSONObject` call in stleary/JSON-java produced no edge at all
+    //     (`toJSONObject` is declared in eight files there).
+    bool receiver_scoped_hit = false;
+    if (target_id.empty() && raw_call.is_member_call && !raw_call.receiver_label.empty()) {
+      const auto receiver_key = make_id(raw_call.receiver_label);
+      // Resolve the receiver name to the declaration that actually owns a
+      // method by this name. Requiring the receiver label to be globally unique
+      // is too strict: `XML` names both the class and its same-named
+      // constructor node, so a uniqueness test finds two candidates and gives
+      // up. Owning the called method is the sharper test, and it is the
+      // property we actually need. Two owners of the same name would be a real
+      // ambiguity and stay dropped.
+      std::vector<std::string> receiver_candidates;
+      if (const auto file = local_by_file.find(caller_file); file != local_by_file.end()) {
+        if (const auto slot = file->second.find(receiver_key);
+            slot != file->second.end() && !slot->second.empty()) {
+          receiver_candidates.push_back(slot->second);
+        }
+      }
+      if (receiver_candidates.empty()) {
+        if (const auto candidates = index.find(receiver_key); candidates != index.end()) {
+          receiver_candidates = candidates->second;
+        }
+      }
+      // The receiver text must match the declaration's name EXACTLY, case and
+      // all. make_id folds case, which would also bind an instance named after
+      // its type (`jsonWriter.setStrictness()` -> class `JsonWriter`). That is
+      // a naming convention, not evidence: it is usually right, but it equally
+      // binds a `writer` of some other type to an unrelated class `Writer`, and
+      // a wrong CALLS edge is a false dependent in `impact`. Requiring exact
+      // case keeps only the case this tier can actually prove — a receiver that
+      // literally names the declaration, i.e. a static call.
+      //
+      // Measured on the two Java benchmarks: exact-case is worth the whole
+      // JSON-java win (test reachability 0.853 -> 0.929, identical to the
+      // case-folded variant) with 841 fewer edges. Case-folding additionally
+      // lifts gson 0.839 -> 0.879, but on convention rather than proof; that is
+      // a separate, opt-in change if it is ever wanted.
+      std::string receiver_id;
+      std::size_t owning = 0;
+      for (const auto& candidate : receiver_candidates) {
+        const auto owner = methods_by_owner.find(candidate);
+        if (owner == methods_by_owner.end() || !owner->second.contains(key)) {
+          continue;
+        }
+        const auto label = label_by_id.find(candidate);
+        if (label == label_by_id.end() || label->second != raw_call.receiver_label) {
+          continue;
+        }
+        ++owning;
+        receiver_id = candidate;
+      }
+      if (owning == 1) {
+        if (const auto owner = methods_by_owner.find(receiver_id); owner != methods_by_owner.end()) {
+          if (const auto named = owner->second.find(key); named != owner->second.end() &&
+                                                          !named->second.empty()) {
+            // One method, or an overload set on this one class — issue #52's
+            // rule applies within the class exactly as it does within a file.
+            target_id = named->second.front();
+            overload_rest = std::span(named->second).subspan(1);
+            confidence = Confidence::Inferred;
+            receiver_scoped_hit = true;
+          }
+        }
+      }
+    }
+
     bool member_method_hit = false;
     if (target_id.empty() && raw_call.is_member_call) {
       if (const auto methods = method_index.find(key); methods != method_index.end()) {
@@ -785,7 +880,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     }
     if (same_file_hit) {
       ++tally.resolved_same_file;
-    } else if (member_method_hit) {
+    } else if (member_method_hit || receiver_scoped_hit) {
+      // Both are member-call resolutions against methods; the receiver-scoped
+      // tier just had stronger evidence for which class's method it is.
       ++tally.resolved_member_method;
     } else {
       ++tally.resolved_project_unique;

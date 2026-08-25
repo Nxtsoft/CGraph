@@ -21,6 +21,15 @@ struct RawCall {
   // property name. These resolve only against the caller's own file — the
   // receiver type is unknown, so a project-wide name match would be a guess.
   bool is_member_call = false;
+  // The receiver's text when it is a bare identifier (`XML` in
+  // `XML.toJSONObject(s)`). Empty for a complex receiver (a chain, a call
+  // result, an indexed expression) where no single name is being denoted.
+  //
+  // A member call is normally unresolvable project-wide because the receiver's
+  // TYPE is unknown. But a bare identifier naming a class in the project is not
+  // unknown — a static call names its class outright, and that is evidence, not
+  // a guess. Resolution uses it to scope the method lookup to that class.
+  std::string receiver_label;
 };
 
 // A type/heritage relationship discovered during extraction, resolved against
