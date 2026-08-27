@@ -614,12 +614,13 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   };
 
   // Import evidence per caller file id: the set of symbol targets it imports and
-  // the set of module (file) targets it imports from. This only grades the
-  // confidence of a resolved call (EXTRACTED when the callee was imported,
-  // INFERRED otherwise) — it never resolves a call. Resolution is purely by
-  // name, exactly as Graphify does: a call is wired by same-file declaration or
-  // by a project-wide unique label, and an import that is ambiguous or missing
-  // changes only the confidence, not whether the edge exists.
+  // the set of module (file) targets it imports from. This grades the confidence
+  // of a resolved call (EXTRACTED when the callee was imported, INFERRED
+  // otherwise), and — for a SYMBOL import only — narrows an otherwise ambiguous
+  // candidate set to the declaration the caller actually named (issue #70).
+  // A module import stays confidence-only: `import pkg` does not single out a
+  // declaration, and the bare-name call it would rescue is spelled `pkg.fn()`,
+  // a member call this tier never sees.
   std::unordered_map<std::string, std::unordered_set<std::string>> imported_symbols;
   std::unordered_map<std::string, std::unordered_set<std::string>> imported_modules;
   for (const auto& edge : graph.edges) {
@@ -685,6 +686,45 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       return true;
     };
 
+    // Narrow an ambiguous candidate set to the declarations the caller's file
+    // imports by name, then re-apply the ordinary rule to the survivors: one
+    // resolves (EXTRACTED — the import is the proof), several in one file are an
+    // imported overload set, and anything else stays ambiguous. Two imports of
+    // the same name cannot both be what the call meant, so they resolve to
+    // nothing exactly as two unimported declarations do (issue #70).
+    const auto resolve_imported_candidate = [&](const std::vector<std::string>& candidates) {
+      const auto symbols = imported_symbols.find(file_id_for(caller_file));
+      if (symbols == imported_symbols.end()) {
+        return false;
+      }
+      std::vector<std::string> imported;
+      for (const auto& candidate : candidates) {
+        if (symbols->second.contains(candidate)) {
+          imported.push_back(candidate);
+        }
+      }
+      if (imported.empty()) {
+        return false;
+      }
+      if (imported.size() == 1) {
+        target_id = imported.front();
+        confidence = Confidence::Extracted;
+        return true;
+      }
+      // Several imported declarations of one name: an overload set is the only
+      // shape that can legitimately mean all of them, and only when they share a
+      // file. A collision spanning files stays dropped.
+      const auto first_file = source_file_by_id.find(imported.front());
+      if (first_file == source_file_by_id.end() || first_file->second.empty()) {
+        return false;
+      }
+      const bool one_file = std::all_of(imported.begin(), imported.end(), [&](const std::string& id) {
+        const auto it = source_file_by_id.find(id);
+        return it != source_file_by_id.end() && it->second == first_file->second;
+      });
+      return one_file && resolve_overload_set(first_file->second);
+    };
+
     // 1. A symbol declared in the caller's own file (local helper, sibling fn).
     if (const auto file = local_by_file.find(caller_file); file != local_by_file.end()) {
       if (const auto slot = file->second.find(key); slot != file->second.end()) {
@@ -736,8 +776,17 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
               return it != source_file_by_id.end() && it->second == first_file->second;
             });
         if (!single_file_overload_set || !resolve_overload_set(first_file->second)) {
-          ++tally.dropped_ambiguous;
-          continue;
+          // The name collides across files, but the caller may have said which
+          // declaration it meant: an `imports`/`re_exports` edge names a target
+          // id outright. That is evidence, not a guess — the same standard the
+          // receiver tier applies to `XML.toJSONObject` — so narrow the
+          // candidates to the ones this file imports and re-apply the ordinary
+          // rule to what is left. One survivor resolves; several stay dropped,
+          // because an import that names two candidates picks neither (#70).
+          if (!resolve_imported_candidate(targets->second)) {
+            ++tally.dropped_ambiguous;
+            continue;
+          }
         }
       } else {
         target_id = targets->second.front();

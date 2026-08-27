@@ -452,6 +452,18 @@ cgraph_enable_sanitizers(cgraph_graph_builder_test)
 
 add_test(NAME cgraph_graph_builder_test COMMAND cgraph_graph_builder_test)
 
+add_executable(cgraph_import_disambiguation_test
+  import_disambiguation_test.cpp)
+
+target_link_libraries(cgraph_import_disambiguation_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_import_disambiguation_test)
+cgraph_enable_sanitizers(cgraph_import_disambiguation_test)
+
+add_test(NAME cgraph_import_disambiguation_test COMMAND cgraph_import_disambiguation_test)
+
 add_executable(cgraph_tsconfig_aliases_test
   tsconfig_aliases_test.cpp)
 
