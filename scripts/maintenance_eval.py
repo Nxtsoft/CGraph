@@ -158,7 +158,7 @@ def graph_config(config,arm,workspace):
 def index(config,arm,workspace,output):
     if arm == 'search':
         return {'elapsed_seconds':0,'returncode':0,'not_applicable':True,'model_tokens':0,'money_usd':0}
-    command = [config['cgraph'],'--root',str(workspace),'--out',str(workspace/'cgraph-out')] if arm == 'cgraph' else [config['graphify'],'extract',str(workspace),'--no-cluster']
+    command = [config['cgraph'],'--root',str(workspace),'--out',str(workspace/'cgraph-out')] if arm == 'cgraph' else [config['graphify'],'extract',str(workspace),'--no-cluster','--code-only']
     result = measured(command,workspace,output)
     result.update(model_tokens=0,money_usd=0,mode='deterministic source only')
     return result
