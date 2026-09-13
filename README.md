@@ -122,25 +122,48 @@ Plus structured/regex extraction for Apex, Delphi form/source, MSBuild/XML proje
 
 ## Quick start
 
-**Prerequisites:** CMake 3.25+, Ninja, a C++20 compiler, Git, a Fortran compiler (`gfortran` — igraph pulls in `lapack-reference`), and vcpkg. See [Install & Setup](#install--setup) for the full recipe.
+Download the current Linux x64 release, build a graph, and query it through MCP:
 
 ```sh
-git clone --recurse-submodules https://github.com/Nxtsoft/CGraph.git && cd CGraph
-git clone https://github.com/microsoft/vcpkg .vcpkg && ./.vcpkg/bootstrap-vcpkg.sh
-export VCPKG_ROOT="$PWD/.vcpkg"
-cmake --preset release && cmake --build --preset release
+mkdir -p "$HOME/.local/lib/cgraph/bin-v0.3.0" "$HOME/.local/bin"
+curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz \
+  -o "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz"
+tar -xzf "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz" \
+  -C "$HOME/.local/lib/cgraph/bin-v0.3.0"
+for name in cgraph graphd cgraph-client cgraph-mcp; do
+  ln -sf "$HOME/.local/lib/cgraph/bin-v0.3.0/$name" "$HOME/.local/bin/$name"
+done
+export PATH="$HOME/.local/bin:$PATH"
 
-# build a graph of this repo, then open the interactive viewer
-build/release/src/cli/cgraph --root . --out cgraph-out
-open cgraph-out/graph.html
+# Run this from any source repository.
+cgraph --root . --out cgraph-out
+
+# Send a real graph_query request through the MCP server.
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"graph_query","arguments":{"query":"main"}}}' \
+  | cgraph-mcp --root .
 ```
+
+Open `cgraph-out/graph.html` in a browser (`open cgraph-out/graph.html` on macOS). See [Install & Setup](#install--setup) for other architectures and source builds.
 
 ## Install & Setup
 
-> **Status:** early native implementation. The full command surface (CLI, daemon, thin client, MCP server) is present and tested; there is no packaged release yet — you build from source with CMake + vcpkg and run the binaries from the build tree (or symlink them onto your `PATH`).
+Release `bin-v0.3.0` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
+
+| Platform | Architecture | Archive |
+| --- | --- | --- |
+| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz) |
+| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-arm64.tar.gz) |
+| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-macos-arm64.tar.gz) |
+
+Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.3.0` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
+
+### Build from source
 
 <details>
-<summary><strong>📋 Full build recipe — prerequisites · vcpkg · PATH · sanitizer &amp; fuzzer presets</strong></summary>
+<summary><strong>Full build recipe — prerequisites · vcpkg · PATH · sanitizer &amp; fuzzer presets</strong></summary>
 
 ### Prerequisites
 
@@ -219,7 +242,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 
 `graph_context` has two gather modes. The default (`gather: "fixed"`) packs the whole k-hop neighborhood. With a task query in hand, `gather: "adaptive"` keeps the full 2-hop core but expands the third hop only along query-relevant nodes — on the retrieval eval it lifted grade-2 recall **+0.057** for **+13%** candidate tokens, versus the **+96%** a full 3-hop gather costs (needs a `query`/`q`).
 
-The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds); while it runs, results carry `"graph_state": "building"` so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/abs/path/to/CGraph` with this repo's absolute path.
+The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds); while it runs, results carry `"graph_state": "building"` so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/home/you` with your absolute home directory.
 
 <details>
 <summary><strong>🔌 Register with Claude Code · Codex · Cursor / Windsurf / other MCP clients</strong></summary>
@@ -230,8 +253,8 @@ Claude Code sets `CLAUDE_PROJECT_DIR` per session, so a single registration work
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/release/src/daemon/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
 ```
 
 Or commit a project-scoped `.mcp.json` at the repo root to share it with collaborators:
@@ -240,8 +263,8 @@ Or commit a project-scoped `.mcp.json` at the repo root to share it with collabo
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp",
-      "args": ["--daemon", "/abs/path/to/CGraph/build/release/src/daemon/graphd"]
+      "command": "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp",
+      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
     }
   }
 }
@@ -255,16 +278,16 @@ Codex does not set `CLAUDE_PROJECT_DIR`, so the server falls back to the working
 
 ```sh
 codex mcp add cgraph \
-  -- /abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/release/src/daemon/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
 ```
 
 …or edit `~/.codex/config.toml` directly (add `"--root", "/abs/path/to/your/project"` to `args` to pin a project regardless of working directory):
 
 ```toml
 [mcp_servers.cgraph]
-command = "/abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp"
-args = ["--daemon", "/abs/path/to/CGraph/build/release/src/daemon/graphd"]
+command = "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp"
+args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
 ```
 
 Restart Codex and run `/mcp` in the TUI to confirm.
