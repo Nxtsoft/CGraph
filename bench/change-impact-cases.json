@@ -1,0 +1,136 @@
+{
+  "repositories": {
+    "click": {"url": "https://github.com/pallets/click", "license": "BSD-3-Clause"},
+    "flask": {"url": "https://github.com/pallets/flask", "license": "BSD-3-Clause"},
+    "requests": {"url": "https://github.com/psf/requests", "license": "Apache-2.0"}
+  },
+  "cases": [
+    {
+      "id": "click-result-callback-rename",
+      "repository": "click",
+      "base": "e3594e7f8a76dd15109d29570a6f263e56e412f2",
+      "target": "b1e7858cae16957d2d9eb2fc462b29e67cf9d320",
+      "seed_files": ["src/click/core.py"],
+      "symbols": [
+        {"path": "src/click/core.py", "name": "resultcallback"},
+        {"path": "src/click/core.py", "name": "result_callback"}
+      ],
+      "required": [
+        {"path": "examples/imagepipe/imagepipe.py", "revision": "target", "line": 23, "quote": "@cli.result_callback()", "reason": "Example consumer of the renamed decorator."},
+        {"path": "tests/test_chain.py", "revision": "target", "line": 102, "quote": "@cli.result_callback()", "reason": "Behavior test consumer of the renamed decorator."},
+        {"path": "tests/test_chain.py", "revision": "target", "line": 136, "quote": "@cli.result_callback()", "reason": "Pipeline test consumer of the renamed decorator."}
+      ],
+      "negative": [
+        {"path": "src/click/types.py", "revision": "target", "line": 17, "quote": "class ParamType:", "reason": "Unrelated parameter-type implementation."}
+      ],
+      "description": "Rename MultiCommand.resultcallback to result_callback while retaining a deprecated provider shim."
+    },
+    {
+      "id": "click-shell-complete-rename",
+      "repository": "click",
+      "base": "cb5c21ee379ff33318dc32cda5483ed516b918f2",
+      "target": "3faede8b430ef88f36d3efa513f5e4065a3f3a7e",
+      "seed_files": ["src/click/core.py"],
+      "symbols": [
+        {"path": "src/click/core.py", "name": "autocompletion"},
+        {"path": "src/click/core.py", "name": "shell_complete"}
+      ],
+      "required": [
+        {"path": "src/click/types.py", "revision": "target", "line": 110, "quote": "def shell_complete(self, ctx, param, args, incomplete):", "reason": "Parameter type completion interface implements the renamed callback contract."},
+        {"path": "tests/test_shell_completion.py", "revision": "target", "line": 125, "quote": "Argument([\"z\"], shell_complete=custom),", "reason": "Test consumer of the new constructor parameter."},
+        {"path": "tests/test_shell_completion.py", "revision": "target", "line": 139, "quote": "cli = Command(\"cli\", params=[Argument([\"x\"], autocompletion=custom)])", "reason": "Compatibility test consumer of the old constructor parameter."}
+      ],
+      "negative": [
+        {"path": "src/click/termui.py", "revision": "target", "line": 73, "quote": "def prompt(", "reason": "Unrelated terminal prompt implementation."}
+      ],
+      "description": "Rename the parameter completion callback and change its argument contract while retaining compatibility behavior."
+    },
+    {
+      "id": "flask-url-for-migration",
+      "repository": "flask",
+      "base": "92acd05d9bd33419ab885e4472b28a1d5cc15d2e",
+      "target": "39f93632964ecabfcb9c1980e2add922098aad80",
+      "seed_files": ["src/flask/app.py", "src/flask/helpers.py"],
+      "symbols": [
+        {"path": "src/flask/app.py", "name": "url_for"},
+        {"path": "src/flask/helpers.py", "name": "url_for"}
+      ],
+      "required": [
+        {"path": "tests/test_helpers.py", "revision": "target", "line": 109, "quote": "assert flask.url_for(\"index\", _anchor=\"x y\") == \"/#x%20y\"", "reason": "Public helper behavior test downstream of helper-to-app delegation."},
+        {"path": "tests/test_helpers.py", "revision": "target", "line": 117, "quote": "flask.url_for(\"index\", _external=True, _scheme=\"https\")", "reason": "Scheme behavior test downstream of Flask.url_for."},
+        {"path": "tests/test_helpers.py", "revision": "target", "line": 125, "quote": "url = flask.url_for(\"index\", _scheme=\"https\")", "reason": "Error behavior test downstream of Flask.url_for."}
+      ],
+      "negative": [
+        {"path": "src/flask/json/__init__.py", "revision": "target", "line": 109, "quote": "def dumps(obj: t.Any, app: t.Optional[\"Flask\"] = None, **kwargs: t.Any) -> str:", "reason": "Unrelated JSON serialization implementation."}
+      ],
+      "description": "Move URL construction to Flask.url_for and make the public helper delegate to the application method."
+    },
+    {
+      "id": "flask-send-file-cache-policy",
+      "repository": "flask",
+      "base": "15a49e72977d7a44ec4f54de7078053fbfb4f3b6",
+      "target": "dc11cdb4a4627b9f8c79e47e39aa7e1357151896",
+      "seed_files": ["src/flask/app.py"],
+      "symbols": [
+        {"path": "src/flask/app.py", "name": "send_file_max_age_default"},
+        {"path": "src/flask/app.py", "name": "SEND_FILE_MAX_AGE_DEFAULT"}
+      ],
+      "required": [
+        {"path": "src/flask/helpers.py", "revision": "target", "line": 465, "quote": "max_age = current_app.get_send_file_max_age", "reason": "send_file resolves its default cache policy through the application."},
+        {"path": "src/flask/helpers.py", "revision": "target", "line": 937, "quote": "value = current_app.send_file_max_age_default", "reason": "Application cache configuration is consumed by the helper mixin."},
+        {"path": "tests/test_helpers.py", "revision": "target", "line": 35, "quote": "rv = flask.send_file(\"static/index.html\")", "reason": "Default send_file behavior test."},
+        {"path": "tests/test_helpers.py", "revision": "target", "line": 96, "quote": "rv = flask.send_from_directory(\"static\", \"hello.txt\")", "reason": "Directory send behavior test using the same cache policy."}
+      ],
+      "negative": [
+        {"path": "src/flask/json/__init__.py", "revision": "target", "line": 97, "quote": "def dumps(obj, app=None, **kwargs):", "reason": "Unrelated JSON serialization implementation."}
+      ],
+      "description": "Change the default static-file cache policy and retrieve source and test consumers outside the initiating application file."
+    },
+    {
+      "id": "requests-native-string-move",
+      "repository": "requests",
+      "base": "2af059797a33a1ee2132ed13e456413c18bc7aa2",
+      "target": "f002b73026bdc136654ba545296898af9a88007a",
+      "seed_files": ["requests/utils.py", "requests/_internal_utils.py"],
+      "symbols": [
+        {"path": "requests/utils.py", "name": "to_native_string"},
+        {"path": "requests/_internal_utils.py", "name": "to_native_string"}
+      ],
+      "required": [
+        {"path": "requests/cookies.py", "revision": "target", "line": 17, "quote": "from ._internal_utils import to_native_string", "reason": "Direct consumer redirected to the new provider module."},
+        {"path": "requests/cookies.py", "revision": "target", "line": 60, "quote": "host = to_native_string(self._r.headers['Host'], encoding='utf-8')", "reason": "Runtime call to the moved helper."},
+        {"path": "requests/auth.py", "revision": "target", "line": 20, "quote": "from .utils import parse_dict_header, to_native_string", "reason": "Unchanged transitive consumer relying on the compatibility re-export from utils."},
+        {"path": "requests/auth.py", "revision": "target", "line": 30, "quote": "authstr = 'Basic ' + to_native_string(", "reason": "Runtime use reached through the compatibility re-export."}
+      ],
+      "negative": [
+        {"path": "requests/structures.py", "revision": "target", "line": 15, "quote": "class CaseInsensitiveDict(collections.MutableMapping):", "reason": "Unrelated collection implementation."}
+      ],
+      "description": "Move to_native_string into a new internal module to break a circular dependency while retaining a utils re-export."
+    },
+    {
+      "id": "requests-schema-scheme-rename",
+      "repository": "requests",
+      "base": "ea1cbb3a1d9c6fb0edebb1bf0ac222c50054a367",
+      "target": "f8d2fb83a31dadaed875a50f84442e158e199787",
+      "seed_files": ["requests/exceptions.py"],
+      "symbols": [
+        {"path": "requests/exceptions.py", "name": "MissingSchema"},
+        {"path": "requests/exceptions.py", "name": "MissingScheme"},
+        {"path": "requests/exceptions.py", "name": "InvalidSchema"},
+        {"path": "requests/exceptions.py", "name": "InvalidScheme"}
+      ],
+      "required": [
+        {"path": "requests/models.py", "revision": "target", "line": 25, "quote": "HTTPError, MissingScheme, InvalidURL, ChunkedEncodingError,", "reason": "Model module imports the renamed missing-scheme exception."},
+        {"path": "requests/models.py", "revision": "target", "line": 361, "quote": "raise MissingScheme(\"Invalid URL {0!r}: No scheme supplied. \"", "reason": "PreparedRequest raises the renamed exception."},
+        {"path": "requests/sessions.py", "revision": "target", "line": 23, "quote": "TooManyRedirects, InvalidScheme, ChunkedEncodingError, ContentDecodingError)", "reason": "Session module imports the renamed invalid-scheme exception."},
+        {"path": "requests/sessions.py", "revision": "target", "line": 638, "quote": "raise InvalidScheme(\"No connection adapters were found for '%s'\" % url)", "reason": "Session adapter selection raises the renamed exception."},
+        {"path": "test_requests.py", "revision": "target", "line": 22, "quote": "InvalidScheme, InvalidURL, MissingScheme,", "reason": "Tests import both renamed public exception classes."},
+        {"path": "test_requests.py", "revision": "target", "line": 80, "quote": "with pytest.raises(MissingScheme):", "reason": "Behavior test expects the renamed missing-scheme exception."}
+      ],
+      "negative": [
+        {"path": "requests/auth.py", "revision": "target", "line": 36, "quote": "class AuthBase(object):", "reason": "Unrelated authentication implementation."}
+      ],
+      "description": "Rename two public exception classes and retrieve their importers, raising sites, and public behavior tests."
+    }
+  ]
+}
