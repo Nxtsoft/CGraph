@@ -1,0 +1,65 @@
+[
+  {
+    "id": "payments-callers",
+    "fixture": "payments",
+    "language": "python",
+    "kind": "navigation",
+    "prompt": "Identify every direct caller of pricing.amount_due, including cross-file calls. Do not edit files. Return relationships as objects with source and target using module.function names."
+  },
+  {
+    "id": "payments-rename",
+    "fixture": "payments",
+    "language": "python",
+    "kind": "rename",
+    "prompt": "Rename pricing.amount_due to pricing.net_due throughout the project. Remove the old name, preserve current calculation behavior, and update all consumers. Return the direct caller relationships for the new function using module.function names."
+  },
+  {
+    "id": "payments-policy",
+    "fixture": "payments",
+    "language": "python",
+    "kind": "documented_behavior",
+    "prompt": "Make invoice calculations comply with policy.txt through the canonical pricing implementation. Preserve public function names and both consumers. Return the direct caller relationships of pricing.amount_due using module.function names."
+  },
+  {
+    "id": "routing-callers",
+    "fixture": "routing",
+    "language": "javascript",
+    "kind": "navigation",
+    "prompt": "Identify every direct caller of app.routeRequest, including cross-file calls. Do not edit files. Return relationships as objects with source and target using module.function names without extensions."
+  },
+  {
+    "id": "routing-import",
+    "fixture": "routing",
+    "language": "javascript",
+    "kind": "import_redirection",
+    "prompt": "Switch app routing to the canonical modern normalizer so routeRequest, routeBatch and cli.main satisfy contract.txt. Keep legacy.mjs available for other users. Return the direct caller relationship from app.routeRequest to its selected normalizer using module.function names without extensions."
+  },
+  {
+    "id": "routing-delete",
+    "fixture": "routing",
+    "language": "javascript",
+    "kind": "deletion",
+    "prompt": "Retire legacy.mjs entirely and make all public routing entrypoints delegate to modern.normalize under contract.txt. Delete the legacy module and remove references to it. Return the direct caller relationship from app.routeRequest to its selected normalizer using module.function names without extensions."
+  },
+  {
+    "id": "payments-impact",
+    "fixture": "payments",
+    "language": "python",
+    "kind": "directional_impact",
+    "prompt": "Identify every direct and transitive dependent of pricing.amount_due by following caller relationships toward entrypoints. Do not edit files. Return every call edge in that dependent subgraph as source caller and target callee using module.function names. Do not include unrelated dependencies."
+  },
+  {
+    "id": "payments-interface",
+    "fixture": "payments",
+    "language": "python",
+    "kind": "interface_change",
+    "prompt": "Change pricing.amount_due to accept a single invoice mapping with keys subtotal_cents, shipping_cents, discount_percent instead of three positional arguments. Update both direct consumers while preserving their public three-argument APIs and current arithmetic behavior. Preserve api.checkout. Return the direct caller relationships for pricing.amount_due."
+  },
+  {
+    "id": "routing-reexport",
+    "fixture": "routing_reexport",
+    "language": "javascript",
+    "kind": "reexport",
+    "prompt": "Redirect the normalizePath re-export in facade.mjs from legacy.normalize to modern.normalize. Preserve app and CLI imports and public APIs; all routes must satisfy contract.txt. Keep legacy.mjs available. Return the underlying direct call relationship from app.routeRequest to the selected implementation using module.function names without extensions."
+  }
+]
