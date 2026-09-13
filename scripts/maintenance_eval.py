@@ -198,7 +198,7 @@ def update_graph(config,arm,workspace,output):
         client.close()
 
 
-def run_case(config,task,reference,arm,out):
+def run_case(config,task,reference,arm,out, *, gateway_extension=None, extra_tools=(), prepare_gateway=None, prompt_suffix=""):
     case = out/(task['id']+'--'+arm)
     case.mkdir()
     workspace = case/'workspace'
@@ -208,6 +208,10 @@ def run_case(config,task,reference,arm,out):
     support = case/'support'
     support.mkdir()
     shutil.copy(ROOT/'scripts/maintenance_eval_gateway.py',support/'gateway.py')
+    gateway_entry=support/'gateway.py'
+    if gateway_extension is not None:
+        gateway_entry=support/'gateway_extension.py'
+        shutil.copy(gateway_extension,gateway_entry)
     hidden = [str(p) for p in out.parent.iterdir() if p.is_dir() and (p/'results.json').exists() and p != out] + [str(ROOT),str(out/'results.json'),*[str(p) for p in out.iterdir() if p.is_dir() and p != case], *config.get('hidden_paths',[])]
     profile = sandbox_profile(hidden)
     # Exact negative probe under the same profile that wraps the model and all children.
@@ -220,15 +224,18 @@ def run_case(config,task,reference,arm,out):
         return {'task':task['id'],'arm':arm,'cold_index':cold,'status':'index_failed'}
     warm = probe(config,arm,workspace,case/'warm')
     command, names = graph_config(config,arm,workspace)
+    names += list(extra_tools)
     gateway_config = {'workspace':str(workspace),'tool_log':str(case/'tools.jsonl'),
                       'backend_stderr':str(case/'backend.stderr'),'graph_command':command,
                       'graph_tools':names,'sync_command':[config['graphify'],'update',str(workspace),'--no-cluster'] if arm == 'graphify' else None,'max_calls':config.get('max_calls',40)}
+    if prepare_gateway is not None:
+        prepare_gateway(gateway_config,workspace,support)
     (support/'gateway.json').write_text(json.dumps(gateway_config))
     (support/'schema.json').write_text(json.dumps(response_schema()))
     prompt = ('Work only through the maintenance MCP tools. Do not use shell, browser, external services, or any other tools. '
               'The public task workspace is the only allowed information source. '
               'Use search/read tools as needed; if graph tools are available, make at least one graph query before editing. '
-              'Finish within '+str(config.get('max_calls',40))+' tool calls. Return the requested JSON. Task: '+task['prompt'])
+              'Finish within '+str(config.get('max_calls',40))+' tool calls. Return the requested JSON. Task: '+task['prompt']+' '+prompt_suffix)
     model_command = [config['codex'],'exec','--json','--ignore-user-config','--ephemeral','--skip-git-repo-check',
                      '--model',config['model'],'--sandbox','read-only','--cd',str(workspace),
                      '--output-schema',str(support/'schema.json'),'--output-last-message',str(case/'answer.json')]
@@ -240,7 +247,7 @@ def run_case(config,task,reference,arm,out):
         'mcp_servers.maintenance.default_tools_approval_mode':'approve',
         'model_reasoning_effort':config.get('reasoning_effort','low'),
         'mcp_servers.maintenance.command':sys.executable,
-        'mcp_servers.maintenance.args':[str(support/'gateway.py'),'--config',str(support/'gateway.json')],
+        'mcp_servers.maintenance.args':[str(gateway_entry),'--config',str(support/'gateway.json')],
         'mcp_servers.maintenance.startup_timeout_sec':90,
     }.items():
         model_command += ['-c',key+'='+json.dumps(value)]

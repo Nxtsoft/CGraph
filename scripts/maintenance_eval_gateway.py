@@ -73,6 +73,7 @@ class StdioClient:
             except subprocess.TimeoutExpired:
                 self.process.terminate()
                 self.process.wait(timeout=3)
+        self.process.stdout.close()
         self.stderr.close()
 
 
@@ -199,11 +200,8 @@ class Gateway:
         return result
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', required=True)
-    args = parser.parse_args()
-    gateway = Gateway(json.loads(Path(args.config).read_text()))
+def serve(config_path, gateway_type=Gateway):
+    gateway = gateway_type(json.loads(Path(config_path).read_text()))
     try:
         for line in sys.stdin:
             message = json.loads(line)
@@ -217,6 +215,13 @@ def main():
     finally:
         if gateway.backend:
             gateway.backend.close()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', required=True)
+    args = parser.parse_args()
+    serve(args.config)
 
 
 if __name__ == '__main__':
