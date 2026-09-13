@@ -1,0 +1,1 @@
+{"summary":"Updated facade.normalizePath to re-export modern.normalize. App and CLI imports/public APIs remain unchanged, legacy.mjs remains available, and all public routing paths delegate to the contract-required modern implementation.","relationships":[{"source":"app.routeRequest","target":"modern.normalize"}]}

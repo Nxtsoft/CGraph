@@ -1,0 +1,42 @@
+{
+  "not_scored": [
+    "preflight",
+    "preflight-fixed"
+  ],
+  "notes": {
+    "preflight": "Initial bounded model run blocked by MCP approval configuration; retained as qualification spend, not product-task score.",
+    "preflight-fixed": "Successful bounded workspace-only qualification after explicit MCP tool approval; not a scored repeated trial.",
+    "update-microprobe-20260912": "Functional source-update evidence with initial daemon startup overlap; excluded from clean refresh measurement.",
+    "update-microprobe-ready-20260912": "Both tools preconditioned before mutation; single real-edit freshness sample, not a latency distribution or superiority claim."
+  },
+  "usage": {
+    "preflight": [
+      [
+        {
+          "type": "turn.completed",
+          "usage": {
+            "input_tokens": 101199,
+            "cached_input_tokens": 79872,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 482,
+            "reasoning_output_tokens": 187
+          }
+        }
+      ]
+    ],
+    "preflight-fixed": [
+      [
+        {
+          "type": "turn.completed",
+          "usage": {
+            "input_tokens": 117080,
+            "cached_input_tokens": 84352,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 687,
+            "reasoning_output_tokens": 211
+          }
+        }
+      ]
+    ]
+  }
+}

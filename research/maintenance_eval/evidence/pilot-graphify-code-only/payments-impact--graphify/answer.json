@@ -1,0 +1,1 @@
+{"summary":"All direct and transitive caller edges leading to pricing.amount_due.","relationships":[{"source":"receipt.render_receipt","target":"pricing.amount_due"},{"source":"workflow.quote_invoice","target":"pricing.amount_due"},{"source":"api.checkout","target":"workflow.quote_invoice"}]}

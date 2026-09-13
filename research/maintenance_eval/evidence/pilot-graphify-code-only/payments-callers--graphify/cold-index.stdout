@@ -1,0 +1,5 @@
+[graphify extract] scanning /Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/workspace
+[graphify extract] --code-only: skipping 1 non-code file(s) (1 docs, 0 papers, 0 images) — no LLM extraction
+[graphify extract] found 4 code, 0 docs, 0 papers, 0 images
+[graphify extract] AST extraction on 4 code files...
+[graphify extract] wrote /Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/workspace/graphify-out/graph.json — 9 nodes, 14 edges (no clustering)

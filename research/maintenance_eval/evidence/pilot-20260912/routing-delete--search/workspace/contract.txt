@@ -1,0 +1,3 @@
+The modern normalizer collapses repeated slashes, removes trailing slashes,
+lowercases only the pathname, and preserves query text exactly. Public routing
+entrypoints should delegate to that canonical implementation.

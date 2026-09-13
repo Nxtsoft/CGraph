@@ -1,0 +1,14 @@
+--- a/app.mjs
++++ b/app.mjs
+@@ -1,4 +1,4 @@
+-import { normalize } from './legacy.mjs';
++import { normalize } from './modern.mjs';
+ 
+ export function routeRequest(path) {
+   return { route: normalize(path) };
+--- a/legacy.mjs
++++ /dev/null
+@@ -1,3 +0,0 @@
+-export function normalize(path) {
+-  return path.toLowerCase();
+-}

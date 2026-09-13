@@ -1,0 +1,1 @@
+{"summary":"Unable to inspect the public workspace: three maintenance MCP attempts (search for \"pricing.amount_due\", list workspace files, and search for \"amount_due\") were blocked because tool calls require approval while approval policy is \"never\". No callers could be verified.","relationships":[]}

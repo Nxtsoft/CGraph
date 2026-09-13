@@ -1,0 +1,310 @@
+{
+  "directed": true,
+  "graph": {
+    "build_state": 1,
+    "cache_hit_rate": 1.0,
+    "content_root": {
+      "algorithm": "sha256-merkle-v1",
+      "leaf_count": 5,
+      "sha256": "b8eca6a8db67f0e32c6de7c450b5d3a186b29c01a6a264658c8c6a8dd1314e92"
+    }
+  },
+  "links": [
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports_from",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_facade_mjs"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_facade_mjs"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routerequest"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routebatch"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "imports_from",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routerequest"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs_main"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "re_exports",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_facade_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_modern_mjs"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "re_exports",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_facade_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_modern_mjs_normalize"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_legacy_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_legacy_mjs_normalize"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_modern_mjs",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_modern_mjs_normalize"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "CALLS",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs_main",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routerequest"
+    }
+  ],
+  "multigraph": false,
+  "nodes": [
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs",
+      "label": "workspace/app.mjs",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "1.000000",
+        "god_node": "true",
+        "god_node_rank": "1",
+        "x": "1.10",
+        "y": "-0.16"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routerequest",
+      "label": "routeRequest",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.600000",
+        "god_node": "true",
+        "god_node_rank": "3",
+        "x": "0.90",
+        "y": "-1.35"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 5,
+        "start_column": 7,
+        "start_line": 3
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routebatch",
+      "label": "routeBatch",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.200000",
+        "god_node_rank": "8",
+        "x": "2.03",
+        "y": "0.56"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 9,
+        "start_column": 7,
+        "start_line": 7
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs",
+      "label": "workspace/cli.mjs",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.600000",
+        "god_node_rank": "4",
+        "x": "1.72",
+        "y": "-1.22"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/cli.mjs",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs_main",
+      "label": "main",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "5",
+        "x": "1.37",
+        "y": "-2.20"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/cli.mjs",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 5,
+        "start_column": 7,
+        "start_line": 3
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_facade_mjs",
+      "label": "workspace/facade.mjs",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.800000",
+        "god_node": "true",
+        "god_node_rank": "2",
+        "x": "0.27",
+        "y": "0.57"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/facade.mjs",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_legacy_mjs",
+      "label": "workspace/legacy.mjs",
+      "properties": {
+        "community": "2",
+        "degree_centrality": "0.200000",
+        "god_node_rank": "9",
+        "x": "-1.81",
+        "y": "-1.24"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/legacy.mjs",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_legacy_mjs_normalize",
+      "label": "normalize",
+      "properties": {
+        "community": "2",
+        "degree_centrality": "0.200000",
+        "god_node_rank": "10",
+        "x": "-1.34",
+        "y": "-2.03"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/legacy.mjs",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 3,
+        "start_column": 7,
+        "start_line": 1
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_modern_mjs",
+      "label": "workspace/modern.mjs",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "6",
+        "x": "-0.22",
+        "y": "1.51"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/modern.mjs",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_modern_mjs_normalize",
+      "label": "normalize",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "7",
+        "x": "-0.82",
+        "y": "0.87"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/modern.mjs",
+      "source_location": {
+        "end_column": 1,
+        "end_line": 5,
+        "start_column": 7,
+        "start_line": 1
+      },
+      "type": "function"
+    }
+  ]
+}

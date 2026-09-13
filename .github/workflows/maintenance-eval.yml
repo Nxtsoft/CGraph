@@ -1,0 +1,27 @@
+name: Maintenance evaluation harness
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/maintenance_eval*.py'
+      - 'tests/fixtures/maintenance_eval/**'
+      - 'research/maintenance_eval/tasks.json'
+      - 'research/maintenance_eval/references.json'
+      - '.github/workflows/maintenance-eval.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/maintenance_eval*.py'
+      - 'tests/fixtures/maintenance_eval/**'
+      - 'research/maintenance_eval/tasks.json'
+      - 'research/maintenance_eval/references.json'
+      - '.github/workflows/maintenance-eval.yml'
+
+jobs:
+  harness:
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test graders and workspace isolation without model calls
+        run: python3 -m unittest discover -s scripts -p 'maintenance_eval*_test.py' -v

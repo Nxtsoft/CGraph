@@ -1,0 +1,280 @@
+{
+  "directed": true,
+  "graph": {
+    "build_state": 1,
+    "cache_hit_rate": 1.0,
+    "content_root": {
+      "algorithm": "sha256-merkle-v1",
+      "leaf_count": 4,
+      "sha256": "2ee4949819b1c499b74453774f9960737c01c98e2ddac083ede6caeefcbeb83b"
+    }
+  },
+  "links": [
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports_from",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_api_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_api_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py_quote_invoice"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_api_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_api_py_checkout"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py_amount_due"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports_from",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_receipt_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "imports",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_receipt_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py_amount_due"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_receipt_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_receipt_py_render_receipt"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "imports_from",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "imports",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py_amount_due"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "contains",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py_quote_invoice"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "CALLS",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_api_py_checkout",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py_quote_invoice"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {},
+      "relation": "CALLS",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_receipt_py_render_receipt",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py_amount_due"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "properties": {
+        "cross_community": "true",
+        "surprise": "cross-community"
+      },
+      "relation": "CALLS",
+      "source": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py_quote_invoice",
+      "target": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py_amount_due"
+    }
+  ],
+  "multigraph": false,
+  "nodes": [
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_api_py",
+      "label": "workspace/api.py",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.600000",
+        "god_node_rank": "4",
+        "x": "-0.63",
+        "y": "5.18"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/api.py",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_api_py_checkout",
+      "label": "checkout",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "7",
+        "x": "-1.65",
+        "y": "4.85"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/api.py",
+      "source_location": {
+        "end_column": 74,
+        "end_line": 5,
+        "start_column": 0,
+        "start_line": 4
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py",
+      "label": "workspace/pricing.py",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.600000",
+        "god_node_rank": "5",
+        "x": "1.89",
+        "y": "4.01"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/pricing.py",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_pricing_py_amount_due",
+      "label": "amount_due",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "1.000000",
+        "god_node": "true",
+        "god_node_rank": "1",
+        "x": "1.07",
+        "y": "3.30"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/pricing.py",
+      "source_location": {
+        "end_column": 50,
+        "end_line": 5,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_receipt_py",
+      "label": "workspace/receipt.py",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.600000",
+        "god_node_rank": "6",
+        "x": "2.29",
+        "y": "2.90"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/receipt.py",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_receipt_py_render_receipt",
+      "label": "render_receipt",
+      "properties": {
+        "community": "1",
+        "degree_centrality": "0.400000",
+        "god_node_rank": "8",
+        "x": "1.79",
+        "y": "2.01"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/receipt.py",
+      "source_location": {
+        "end_column": 34,
+        "end_line": 11,
+        "start_column": 0,
+        "start_line": 4
+      },
+      "type": "function"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py",
+      "label": "workspace/workflow.py",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.800000",
+        "god_node": "true",
+        "god_node_rank": "2",
+        "x": "0.60",
+        "y": "4.48"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/workflow.py",
+      "source_location": {
+        "end_column": 0,
+        "end_line": 1,
+        "start_column": 0,
+        "start_line": 1
+      },
+      "type": "file"
+    },
+    {
+      "confidence": "EXTRACTED",
+      "id": "users_taylorgagne_local_share_cgraph_eval_pilot_change_context_payments_interface_cgraph_workspace_workflow_py_quote_invoice",
+      "label": "quote_invoice",
+      "properties": {
+        "community": "0",
+        "degree_centrality": "0.800000",
+        "god_node": "true",
+        "god_node_rank": "3",
+        "x": "-0.40",
+        "y": "4.17"
+      },
+      "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph/workspace/workflow.py",
+      "source_location": {
+        "end_column": 47,
+        "end_line": 10,
+        "start_column": 0,
+        "start_line": 4
+      },
+      "type": "function"
+    }
+  ]
+}

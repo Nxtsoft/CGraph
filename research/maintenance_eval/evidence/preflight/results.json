@@ -1,0 +1,159 @@
+[
+  {
+    "task": "payments-callers",
+    "language": "python",
+    "kind": "navigation",
+    "arm": "search",
+    "input_sha256": {
+      "api.py": "f1b7daaaefad429cff0b21327a6f818994c76650b33f7880ddba4a39d5cb04bc",
+      "policy.txt": "54735256bdb4ab4db56dc33409c33066ff5e968ef16dfe6435a6d97c5fb06c76",
+      "pricing.py": "6e7ea003b4e79270cb1d68562c0dfa969b5c630c38756a55770db3f71f2a90cb",
+      "receipt.py": "dca687c86f613d620245d4e9efd974bd096e5d3d4a821e07e7d74b8b670ecf8b",
+      "workflow.py": "70822d25355eed8f23f5e57059da5b708353fb73ae3576702533c094fc064d48"
+    },
+    "isolation_probe": {
+      "command": [
+        "/usr/bin/sandbox-exec",
+        "-p",
+        "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n",
+        "/bin/cat",
+        "/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation/research/maintenance_eval/references.json"
+      ],
+      "returncode": 1,
+      "elapsed_seconds": 0.14295433298684657,
+      "peak_process_tree_rss_bytes_sampled": 4063232,
+      "rss_sample_interval_seconds": 0.1,
+      "timed_out": false,
+      "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/isolation.stdout",
+      "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/isolation.stderr"
+    },
+    "cold_index": {
+      "elapsed_seconds": 0,
+      "returncode": 0,
+      "not_applicable": true,
+      "model_tokens": 0,
+      "money_usd": 0
+    },
+    "warm_mcp": {
+      "not_applicable": true
+    },
+    "agent": {
+      "command": [
+        "/usr/bin/sandbox-exec",
+        "-p",
+        "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n",
+        "/Users/taylorgagne/.agents/.cache/shims/codex",
+        "exec",
+        "--json",
+        "--ignore-user-config",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--model",
+        "gpt-5.6-sol",
+        "--sandbox",
+        "read-only",
+        "--cd",
+        "/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/workspace",
+        "--output-schema",
+        "/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/support/schema.json",
+        "--output-last-message",
+        "/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/answer.json",
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "unified_exec",
+        "--disable",
+        "view_image",
+        "--disable",
+        "apps",
+        "--disable",
+        "browser_use",
+        "--disable",
+        "browser_use_external",
+        "--disable",
+        "computer_use",
+        "--disable",
+        "plugins",
+        "--disable",
+        "multi_agent",
+        "--disable",
+        "skill_search",
+        "-c",
+        "project_doc_max_bytes=0",
+        "-c",
+        "model_reasoning_effort=\"low\"",
+        "-c",
+        "mcp_servers.maintenance.command=\"/opt/homebrew/opt/python@3.14/bin/python3.14\"",
+        "-c",
+        "mcp_servers.maintenance.args=[\"/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/support/gateway.py\", \"--config\", \"/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/support/gateway.json\"]",
+        "-c",
+        "mcp_servers.maintenance.startup_timeout_sec=90",
+        "-"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 50.93964949995279,
+      "peak_process_tree_rss_bytes_sampled": 244383744,
+      "rss_sample_interval_seconds": 0.1,
+      "timed_out": false,
+      "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/agent.stdout",
+      "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/preflight/payments-callers--search/agent.stderr"
+    },
+    "usage_events": [
+      {
+        "type": "turn.completed",
+        "usage": {
+          "input_tokens": 101199,
+          "cached_input_tokens": 79872,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 482,
+          "reasoning_output_tokens": 187
+        }
+      }
+    ],
+    "money_usd": null,
+    "money_note": "Provider billing unavailable; raw usage retained",
+    "grading": {
+      "checks": {
+        "no_edits": true
+      },
+      "completion_basis": "behavioral_or_no_edit_checks_and_agent_reported_relationships; canonical delegation needs independent source review",
+      "completed": false,
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [],
+        "missing": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "false": []
+      },
+      "changed_files": [],
+      "candidate_execution": null
+    },
+    "tool_calls": 0,
+    "graph_calls": 0,
+    "tool_errors": 0,
+    "tool_output_tokens_estimate_char4": 0,
+    "provider_tool_tokens": null,
+    "update": {
+      "not_applicable": true
+    },
+    "status": "finished"
+  }
+]

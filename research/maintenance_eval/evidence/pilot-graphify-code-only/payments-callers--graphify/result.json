@@ -1,0 +1,236 @@
+{
+  "task": "payments-callers",
+  "language": "python",
+  "kind": "navigation",
+  "arm": "graphify",
+  "input_sha256": {
+    "api.py": "f1b7daaaefad429cff0b21327a6f818994c76650b33f7880ddba4a39d5cb04bc",
+    "policy.txt": "54735256bdb4ab4db56dc33409c33066ff5e968ef16dfe6435a6d97c5fb06c76",
+    "pricing.py": "6e7ea003b4e79270cb1d68562c0dfa969b5c630c38756a55770db3f71f2a90cb",
+    "receipt.py": "dca687c86f613d620245d4e9efd974bd096e5d3d4a821e07e7d74b8b670ecf8b",
+    "workflow.py": "70822d25355eed8f23f5e57059da5b708353fb73ae3576702533c094fc064d48"
+  },
+  "isolation_probe": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/bin/cat",
+      "/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation/research/maintenance_eval/references.json"
+    ],
+    "returncode": 1,
+    "elapsed_seconds": 0.1668354170396924,
+    "peak_process_tree_rss_bytes_sampled": 3997696,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/isolation.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/isolation.stderr"
+  },
+  "cold_index": {
+    "command": [
+      "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+      "extract",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/workspace",
+      "--no-cluster",
+      "--code-only"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 0.5110582909546793,
+    "peak_process_tree_rss_bytes_sampled": 56180736,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/cold-index.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/cold-index.stderr",
+    "model_tokens": 0,
+    "money_usd": 0,
+    "mode": "deterministic source only"
+  },
+  "warm_mcp": {
+    "initialization_seconds": 0.8818057908210903,
+    "requests": [
+      {
+        "elapsed_seconds": 0.0028521670028567314,
+        "response": {
+          "content": [
+            {
+              "text": "Graph: graphify-out/graph.json (9 nodes) | Traversal: BFS depth=3 | Start: ['amount_due()'] | 9 nodes found\n\nNODE amount_due() [src=pricing.py loc=L1 community=]\nNODE workflow.py [src=workflow.py loc=L1 community=]\nNODE quote_invoice() [src=workflow.py loc=L4 community=]\nNODE pricing.py [src=pricing.py loc=L1 community=]\nNODE receipt.py [src=receipt.py loc=L1 community=]\nNODE render_receipt() [src=receipt.py loc=L4 community=]\nNODE Return the invoice total in integer cents. [src=pricing.py loc=L2 community=]\nNODE api.py [src=api.py loc=L1 community=]\nNODE checkout() [src=api.py loc=L4 community=]\nEDGE pricing.py --contains [EXTRACTED]--> amount_due() at=pricing.py:L1\nEDGE Return the invoice total in integer cents. --rationale_for [EXTRACTED]--> amount_due() at=pricing.py:L2\nEDGE receipt.py --imports [EXTRACTED context=import]--> amount_due() at=receipt.py:L1\nEDGE render_receipt() --calls [EXTRACTED context=call]--> amount_due() at=receipt.py:L5\nEDGE workflow.py --imports [EXTRACTED context=import]--> amount_due() at=workflow.py:L1\nEDGE quote_invoice() --calls [EXTRACTED context=call]--> amount_due() at=workflow.py:L5\nEDGE api.py --imports_from [EXTRACTED context=import]--> workflow.py at=api.py:L1\nEDGE api.py --imports [EXTRACTED context=import]--> quote_invoice() at=api.py:L1\nEDGE checkout() --calls [EXTRACTED context=call]--> quote_invoice() at=api.py:L5\nEDGE api.py --contains [EXTRACTED]--> checkout() at=api.py:L4\nEDGE receipt.py --imports_from [EXTRACTED context=import]--> pricing.py at=receipt.py:L1\nEDGE workflow.py --imports_from [EXTRACTED context=import]--> pricing.py at=workflow.py:L1\nEDGE receipt.py --contains [EXTRACTED]--> render_receipt() at=receipt.py:L4\nEDGE workflow.py --contains [EXTRACTED]--> quote_invoice() at=workflow.py:L4",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      },
+      {
+        "elapsed_seconds": 0.0020689580123871565,
+        "response": {
+          "content": [
+            {
+              "text": "Graph: graphify-out/graph.json (9 nodes) | Traversal: BFS depth=3 | Start: ['amount_due()'] | 9 nodes found\n\nNODE amount_due() [src=pricing.py loc=L1 community=]\nNODE workflow.py [src=workflow.py loc=L1 community=]\nNODE quote_invoice() [src=workflow.py loc=L4 community=]\nNODE pricing.py [src=pricing.py loc=L1 community=]\nNODE receipt.py [src=receipt.py loc=L1 community=]\nNODE render_receipt() [src=receipt.py loc=L4 community=]\nNODE Return the invoice total in integer cents. [src=pricing.py loc=L2 community=]\nNODE api.py [src=api.py loc=L1 community=]\nNODE checkout() [src=api.py loc=L4 community=]\nEDGE pricing.py --contains [EXTRACTED]--> amount_due() at=pricing.py:L1\nEDGE Return the invoice total in integer cents. --rationale_for [EXTRACTED]--> amount_due() at=pricing.py:L2\nEDGE receipt.py --imports [EXTRACTED context=import]--> amount_due() at=receipt.py:L1\nEDGE render_receipt() --calls [EXTRACTED context=call]--> amount_due() at=receipt.py:L5\nEDGE workflow.py --imports [EXTRACTED context=import]--> amount_due() at=workflow.py:L1\nEDGE quote_invoice() --calls [EXTRACTED context=call]--> amount_due() at=workflow.py:L5\nEDGE api.py --imports_from [EXTRACTED context=import]--> workflow.py at=api.py:L1\nEDGE api.py --imports [EXTRACTED context=import]--> quote_invoice() at=api.py:L1\nEDGE checkout() --calls [EXTRACTED context=call]--> quote_invoice() at=api.py:L5\nEDGE api.py --contains [EXTRACTED]--> checkout() at=api.py:L4\nEDGE receipt.py --imports_from [EXTRACTED context=import]--> pricing.py at=receipt.py:L1\nEDGE workflow.py --imports_from [EXTRACTED context=import]--> pricing.py at=workflow.py:L1\nEDGE receipt.py --contains [EXTRACTED]--> render_receipt() at=receipt.py:L4\nEDGE workflow.py --contains [EXTRACTED]--> quote_invoice() at=workflow.py:L4",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      },
+      {
+        "elapsed_seconds": 0.001431416952982545,
+        "response": {
+          "content": [
+            {
+              "text": "Graph: graphify-out/graph.json (9 nodes) | Traversal: BFS depth=3 | Start: ['amount_due()'] | 9 nodes found\n\nNODE amount_due() [src=pricing.py loc=L1 community=]\nNODE workflow.py [src=workflow.py loc=L1 community=]\nNODE quote_invoice() [src=workflow.py loc=L4 community=]\nNODE pricing.py [src=pricing.py loc=L1 community=]\nNODE receipt.py [src=receipt.py loc=L1 community=]\nNODE render_receipt() [src=receipt.py loc=L4 community=]\nNODE Return the invoice total in integer cents. [src=pricing.py loc=L2 community=]\nNODE api.py [src=api.py loc=L1 community=]\nNODE checkout() [src=api.py loc=L4 community=]\nEDGE pricing.py --contains [EXTRACTED]--> amount_due() at=pricing.py:L1\nEDGE Return the invoice total in integer cents. --rationale_for [EXTRACTED]--> amount_due() at=pricing.py:L2\nEDGE receipt.py --imports [EXTRACTED context=import]--> amount_due() at=receipt.py:L1\nEDGE render_receipt() --calls [EXTRACTED context=call]--> amount_due() at=receipt.py:L5\nEDGE workflow.py --imports [EXTRACTED context=import]--> amount_due() at=workflow.py:L1\nEDGE quote_invoice() --calls [EXTRACTED context=call]--> amount_due() at=workflow.py:L5\nEDGE api.py --imports_from [EXTRACTED context=import]--> workflow.py at=api.py:L1\nEDGE api.py --imports [EXTRACTED context=import]--> quote_invoice() at=api.py:L1\nEDGE checkout() --calls [EXTRACTED context=call]--> quote_invoice() at=api.py:L5\nEDGE api.py --contains [EXTRACTED]--> checkout() at=api.py:L4\nEDGE receipt.py --imports_from [EXTRACTED context=import]--> pricing.py at=receipt.py:L1\nEDGE workflow.py --imports_from [EXTRACTED context=import]--> pricing.py at=workflow.py:L1\nEDGE receipt.py --contains [EXTRACTED]--> render_receipt() at=receipt.py:L4\nEDGE workflow.py --contains [EXTRACTED]--> quote_invoice() at=workflow.py:L4",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    ],
+    "fixed_query": {
+      "name": "query_graph",
+      "arguments": {
+        "question": "amount_due routeRequest",
+        "token_budget": 2000
+      }
+    }
+  },
+  "agent": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/Users/taylorgagne/.agents/.cache/shims/codex",
+      "exec",
+      "--json",
+      "--ignore-user-config",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5.6-sol",
+      "--sandbox",
+      "read-only",
+      "--cd",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/workspace",
+      "--output-schema",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/support/schema.json",
+      "--output-last-message",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/answer.json",
+      "--disable",
+      "shell_tool",
+      "--disable",
+      "unified_exec",
+      "--disable",
+      "view_image",
+      "--disable",
+      "apps",
+      "--disable",
+      "browser_use",
+      "--disable",
+      "browser_use_external",
+      "--disable",
+      "computer_use",
+      "--disable",
+      "plugins",
+      "--disable",
+      "multi_agent",
+      "--disable",
+      "skill_search",
+      "--disable",
+      "hooks",
+      "-c",
+      "project_doc_max_bytes=0",
+      "-c",
+      "web_search=\"disabled\"",
+      "-c",
+      "mcp_servers.maintenance.default_tools_approval_mode=\"approve\"",
+      "-c",
+      "model_reasoning_effort=\"low\"",
+      "-c",
+      "mcp_servers.maintenance.command=\"/opt/homebrew/opt/python@3.14/bin/python3.14\"",
+      "-c",
+      "mcp_servers.maintenance.args=[\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/support/gateway.py\", \"--config\", \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/support/gateway.json\"]",
+      "-c",
+      "mcp_servers.maintenance.startup_timeout_sec=90",
+      "-"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 49.07330800010823,
+    "peak_process_tree_rss_bytes_sampled": 339804160,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/agent.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/agent.stderr"
+  },
+  "usage_events": [
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 74643,
+        "cached_input_tokens": 60672,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 490,
+        "reasoning_output_tokens": 88
+      }
+    }
+  ],
+  "money_usd": null,
+  "money_note": "Provider billing unavailable; raw usage retained",
+  "grading": {
+    "checks": {
+      "no_edits": true
+    },
+    "completion_basis": "behavioral_or_no_edit_checks_and_agent_reported_relationships; canonical delegation needs independent source review",
+    "completed": true,
+    "relationships": {
+      "measurement": "agent_reported_edges_against_independent_reference",
+      "expected": [
+        [
+          "receipt.render_receipt",
+          "pricing.amount_due"
+        ],
+        [
+          "workflow.quote_invoice",
+          "pricing.amount_due"
+        ]
+      ],
+      "reported": [
+        [
+          "receipt.render_receipt",
+          "pricing.amount_due"
+        ],
+        [
+          "workflow.quote_invoice",
+          "pricing.amount_due"
+        ]
+      ],
+      "missing": [],
+      "false": []
+    },
+    "changed_files": [],
+    "candidate_execution": null
+  },
+  "tool_calls": 7,
+  "graph_calls": 1,
+  "tool_errors": 0,
+  "tool_output_tokens_estimate_char4": 573,
+  "provider_tool_tokens": null,
+  "update": {
+    "command": [
+      "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+      "update",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/workspace",
+      "--no-cluster"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 0.4908342498820275,
+    "peak_process_tree_rss_bytes_sampled": 53411840,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/update.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify/update.stderr"
+  },
+  "status": "finished"
+}

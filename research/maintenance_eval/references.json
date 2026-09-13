@@ -1,0 +1,177 @@
+{
+  "payments-callers": {
+    "relationships": [
+      [
+        "workflow.quote_invoice",
+        "pricing.amount_due"
+      ],
+      [
+        "receipt.render_receipt",
+        "pricing.amount_due"
+      ]
+    ],
+    "checks": [
+      "no_edits"
+    ],
+    "evidence": [
+      "payments/workflow.py:5",
+      "payments/receipt.py:5"
+    ]
+  },
+  "payments-rename": {
+    "relationships": [
+      [
+        "workflow.quote_invoice",
+        "pricing.net_due"
+      ],
+      [
+        "receipt.render_receipt",
+        "pricing.net_due"
+      ]
+    ],
+    "checks": [
+      "renamed",
+      "old_behavior"
+    ],
+    "evidence": [
+      "payments/pricing.py:1",
+      "payments/workflow.py:1",
+      "payments/receipt.py:1"
+    ]
+  },
+  "payments-policy": {
+    "relationships": [
+      [
+        "workflow.quote_invoice",
+        "pricing.amount_due"
+      ],
+      [
+        "receipt.render_receipt",
+        "pricing.amount_due"
+      ]
+    ],
+    "checks": [
+      "policy_behavior"
+    ],
+    "evidence": [
+      "payments/policy.txt:1",
+      "payments/policy.txt:2",
+      "payments/policy.txt:3"
+    ]
+  },
+  "routing-callers": {
+    "relationships": [
+      [
+        "app.routeBatch",
+        "app.routeRequest"
+      ],
+      [
+        "cli.main",
+        "app.routeRequest"
+      ]
+    ],
+    "checks": [
+      "no_edits"
+    ],
+    "evidence": [
+      "routing/app.mjs:8",
+      "routing/cli.mjs:4"
+    ]
+  },
+  "routing-import": {
+    "relationships": [
+      [
+        "app.routeRequest",
+        "modern.normalize"
+      ]
+    ],
+    "checks": [
+      "modern_behavior",
+      "legacy_preserved"
+    ],
+    "evidence": [
+      "routing/contract.txt:1",
+      "routing/contract.txt:2",
+      "routing/modern.mjs:1"
+    ]
+  },
+  "routing-delete": {
+    "relationships": [
+      [
+        "app.routeRequest",
+        "modern.normalize"
+      ]
+    ],
+    "checks": [
+      "modern_behavior",
+      "legacy_removed"
+    ],
+    "evidence": [
+      "routing/contract.txt:3",
+      "routing/modern.mjs:1",
+      "tasks.json:routing-delete.prompt"
+    ]
+  },
+  "payments-impact": {
+    "relationships": [
+      [
+        "workflow.quote_invoice",
+        "pricing.amount_due"
+      ],
+      [
+        "receipt.render_receipt",
+        "pricing.amount_due"
+      ],
+      [
+        "api.checkout",
+        "workflow.quote_invoice"
+      ]
+    ],
+    "checks": [
+      "no_edits"
+    ],
+    "evidence": [
+      "payments/workflow.py:5",
+      "payments/receipt.py:5",
+      "payments/api.py:5"
+    ]
+  },
+  "payments-interface": {
+    "relationships": [
+      [
+        "workflow.quote_invoice",
+        "pricing.amount_due"
+      ],
+      [
+        "receipt.render_receipt",
+        "pricing.amount_due"
+      ]
+    ],
+    "checks": [
+      "interface_behavior"
+    ],
+    "evidence": [
+      "tasks.json:payments-interface.prompt",
+      "payments/pricing.py:3",
+      "payments/api.py:5"
+    ]
+  },
+  "routing-reexport": {
+    "relationships": [
+      [
+        "app.routeRequest",
+        "modern.normalize"
+      ]
+    ],
+    "checks": [
+      "modern_behavior",
+      "legacy_preserved",
+      "facade_redirected"
+    ],
+    "evidence": [
+      "tasks.json:routing-reexport.prompt",
+      "routing_reexport/facade.mjs:1",
+      "routing_reexport/contract.txt:1"
+    ]
+  }
+}

@@ -1,0 +1,1 @@
+{"summary":"Deleted legacy.mjs, removed its references, and routed public entrypoints through the contract-compliant modern normalizer.","relationships":[{"source":"app.routeRequest","target":"modern.normalize"}]}

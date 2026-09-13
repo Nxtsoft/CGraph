@@ -1,0 +1,188 @@
+[
+  {
+    "arm": "cgraph",
+    "fixture": "payments",
+    "symbol_added": "maintenance_update_probe",
+    "source_before_sha256": "6e7ea003b4e79270cb1d68562c0dfa969b5c630c38756a55770db3f71f2a90cb",
+    "source_after_sha256": "99e3f23438932ea71575d85010a4dd5e7c79b2029dc72b02b4051a33672c75fb",
+    "cold_index": {
+      "command": [
+        "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+        "--root",
+        "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/cgraph/workspace",
+        "--out",
+        "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/cgraph/workspace/cgraph-out"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.1688790840562433,
+      "peak_process_tree_rss_bytes_sampled": 4653056,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "rss_sample_interval_seconds": 0.1,
+      "timed_out": false,
+      "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/cgraph/cold-index.stdout",
+      "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/cgraph/cold-index.stderr",
+      "model_tokens": 0,
+      "money_usd": 0,
+      "mode": "deterministic source only"
+    },
+    "before_query": {
+      "content": [
+        {
+          "text": "{\"freshness\":{\"algorithm\":\"\",\"content_root\":\"\",\"leaf_count\":0,\"verified\":false},\"graph_state\":\"building\",\"nodes\":[],\"note\":\"graph build in progress; results may be empty or incomplete - retry shortly or poll status\",\"returned\":0,\"route\":\"search\",\"suggestions\":[],\"total\":0}",
+          "type": "text"
+        }
+      ]
+    },
+    "refresh": {
+      "content": [
+        {
+          "text": "{\"accepted\":true,\"bytes_hashed\":825,\"edge_count\":14,\"files_cache_hit\":3,\"files_hashed\":4,\"files_reextracted\":1,\"files_removed\":0,\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"8fd94bae4ad7f25453548249d1a2ece4a69e9254cb7d81c32a5e9c26c8b85c3a\",\"leaf_count\":4,\"verified\":true},\"full_rescan\":true,\"node_count\":9}",
+          "type": "text"
+        }
+      ]
+    },
+    "refresh_call_seconds": 0.00850479188375175,
+    "edit_to_verified_retrieval_seconds": 0.0093745409976691,
+    "after_query": {
+      "content": [
+        {
+          "text": "{\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"8fd94bae4ad7f25453548249d1a2ece4a69e9254cb7d81c32a5e9c26c8b85c3a\",\"leaf_count\":4,\"verified\":true},\"neighbors\":{\"callees\":{\"count\":0,\"top\":[]},\"callers\":{\"count\":0,\"top\":[]},\"references\":{\"count\":0,\"top\":[]}},\"nodes\":[{\"centrality\":0.2,\"id\":\"users_taylorgagne_local_share_cgraph_eval_update_microprobe_20260912_cgraph_workspace_pricing_py_maintenance_update_probe\",\"kind\":\"function\",\"label\":\"maintenance_update_probe\",\"line\":6,\"location\":{\"end_column\":14,\"end_line\":7,\"start_column\":0,\"start_line\":6},\"snippet\":\"def maintenance_update_probe():\\n    return 731\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/cgraph/workspace/pricing.py\",\"source_sha256\":\"99e3f23438932ea71575d85010a4dd5e7c79b2029dc72b02b4051a33672c75fb\"}],\"returned\":1,\"route\":\"entity\",\"total\":1}",
+          "type": "text"
+        }
+      ]
+    },
+    "symbol_evidence": {
+      "freshness": {
+        "algorithm": "sha256-merkle-v1",
+        "content_root": "8fd94bae4ad7f25453548249d1a2ece4a69e9254cb7d81c32a5e9c26c8b85c3a",
+        "leaf_count": 4,
+        "verified": true
+      },
+      "neighbors": {
+        "callees": {
+          "count": 0,
+          "top": []
+        },
+        "callers": {
+          "count": 0,
+          "top": []
+        },
+        "references": {
+          "count": 0,
+          "top": []
+        }
+      },
+      "nodes": [
+        {
+          "centrality": 0.2,
+          "id": "users_taylorgagne_local_share_cgraph_eval_update_microprobe_20260912_cgraph_workspace_pricing_py_maintenance_update_probe",
+          "kind": "function",
+          "label": "maintenance_update_probe",
+          "line": 6,
+          "location": {
+            "end_column": 14,
+            "end_line": 7,
+            "start_column": 0,
+            "start_line": 6
+          },
+          "snippet": "def maintenance_update_probe():\n    return 731",
+          "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/cgraph/workspace/pricing.py",
+          "source_sha256": "99e3f23438932ea71575d85010a4dd5e7c79b2029dc72b02b4051a33672c75fb"
+        }
+      ],
+      "returned": 1,
+      "route": "entity",
+      "total": 1
+    },
+    "verified": true,
+    "model_tokens": 0,
+    "money_usd": 0,
+    "measurement_note": "One deterministic source edit per backend. Edit-to-retrieval includes write, refresh and query, including any resident watcher work. This is a microprobe, not a repeated latency distribution.",
+    "shutdown": {
+      "content": [
+        {
+          "text": "{\"shutdown\":true}",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "arm": "graphify",
+    "fixture": "payments",
+    "symbol_added": "maintenance_update_probe",
+    "source_before_sha256": "6e7ea003b4e79270cb1d68562c0dfa969b5c630c38756a55770db3f71f2a90cb",
+    "source_after_sha256": "99e3f23438932ea71575d85010a4dd5e7c79b2029dc72b02b4051a33672c75fb",
+    "cold_index": {
+      "command": [
+        "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+        "extract",
+        "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/graphify/workspace",
+        "--no-cluster",
+        "--code-only"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.5414315417874604,
+      "peak_process_tree_rss_bytes_sampled": 50675712,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "rss_sample_interval_seconds": 0.1,
+      "timed_out": false,
+      "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/graphify/cold-index.stdout",
+      "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/graphify/cold-index.stderr",
+      "model_tokens": 0,
+      "money_usd": 0,
+      "mode": "deterministic source only"
+    },
+    "before_query": {
+      "content": [
+        {
+          "text": "No matching nodes found.",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "refresh": {
+      "command": [
+        "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+        "update",
+        "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/graphify/workspace",
+        "--no-cluster"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.3511285830754787,
+      "peak_process_tree_rss_bytes_sampled": 48644096,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "rss_sample_interval_seconds": 0.1,
+      "timed_out": false,
+      "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/graphify/update.stdout",
+      "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912/graphify/update.stderr"
+    },
+    "refresh_call_seconds": 0.3511682499665767,
+    "edit_to_verified_retrieval_seconds": 0.35482404194772243,
+    "after_query": {
+      "content": [
+        {
+          "text": "Graph: graphify-out/graph.json (10 nodes) | Traversal: BFS depth=3 | Start: ['maintenance_update_probe()'] | 9 nodes found\n\nNODE maintenance_update_probe() [src=pricing.py loc=L6 community=]\nNODE pricing.py [src=pricing.py loc=L1 community=]\nNODE amount_due() [src=pricing.py loc=L1 community=]\nNODE workflow.py [src=workflow.py loc=L1 community=]\nNODE receipt.py [src=receipt.py loc=L1 community=]\nNODE quote_invoice() [src=workflow.py loc=L4 community=]\nNODE api.py [src=api.py loc=L1 community=]\nNODE render_receipt() [src=receipt.py loc=L4 community=]\nNODE Return the invoice total in integer cents. [src=pricing.py loc=L2 community=]\nEDGE pricing.py --contains [EXTRACTED]--> maintenance_update_probe() at=pricing.py:L6\nEDGE pricing.py --contains [EXTRACTED]--> amount_due() at=pricing.py:L1\nEDGE receipt.py --imports_from [EXTRACTED context=import]--> pricing.py at=receipt.py:L1\nEDGE workflow.py --imports_from [EXTRACTED context=import]--> pricing.py at=workflow.py:L1\nEDGE api.py --imports_from [EXTRACTED context=import]--> workflow.py at=api.py:L1\nEDGE workflow.py --contains [EXTRACTED]--> quote_invoice() at=workflow.py:L4\nEDGE receipt.py --contains [EXTRACTED]--> render_receipt() at=receipt.py:L4\nEDGE Return the invoice total in integer cents. --rationale_for [EXTRACTED]--> amount_due() at=pricing.py:L2\nEDGE render_receipt() --calls [EXTRACTED context=call]--> amount_due() at=receipt.py:L5\nEDGE quote_invoice() --calls [EXTRACTED context=call]--> amount_due() at=workflow.py:L5\nEDGE api.py --imports [EXTRACTED context=import]--> quote_invoice() at=api.py:L1\nEDGE receipt.py --imports [EXTRACTED context=import]--> amount_due() at=receipt.py:L1\nEDGE workflow.py --imports [EXTRACTED context=import]--> amount_due() at=workflow.py:L1",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "symbol_evidence": [
+      {
+        "id": "pricing_maintenance_update_probe",
+        "label": "maintenance_update_probe()",
+        "file_type": "code",
+        "source_file": "pricing.py",
+        "source_location": "L6",
+        "_callable": true,
+        "_origin": "ast"
+      }
+    ],
+    "verified": true,
+    "model_tokens": 0,
+    "money_usd": 0,
+    "measurement_note": "One deterministic source edit per backend. Edit-to-retrieval includes write, refresh and query, including any resident watcher work. This is a microprobe, not a repeated latency distribution."
+  }
+]
