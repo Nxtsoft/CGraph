@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-12",
+  "installed_cli_sha256": "c9aad6a17f9c9dc7900f156fe52aca2b980ac4bc5695327cb4552900b9bb91e1",
+  "installed_mcp_sha256": "21b82a2804b602e5a04b4e9a4446ed1014f35c8f1670d636beb6e741861d2c54",
+  "budget_basis": "ceil(compact operation JSON UTF-8 bytes / 4)",
+  "fixture_root": "tests/fixtures/change_context",
+  "flows": [
+    {
+      "fixture": "deletion",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 2784,
+      "budget": 6000,
+      "base_content_root": "6272ae05eeea915f1a2093b229f9327141dc1c819da0e568a818e6686f3a784e",
+      "target_content_root": "6eead1872e125f5aa54a967215c3bb8e6b23e5bf52e9bbdc03af0fafeefac5b4",
+      "impacts": [
+        {
+          "snapshot": "base",
+          "path": "client.py",
+          "label": "base/client.py",
+          "depth": 1,
+          "witness_edges": 1
+        },
+        {
+          "snapshot": "base",
+          "path": "client.py",
+          "label": "caller",
+          "depth": 1,
+          "witness_edges": 1
+        },
+        {
+          "snapshot": "base",
+          "path": "top.py",
+          "label": "base/top.py",
+          "depth": 2,
+          "witness_edges": 2
+        },
+        {
+          "snapshot": "base",
+          "path": "top.py",
+          "label": "outer",
+          "depth": 2,
+          "witness_edges": 2
+        }
+      ],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "rename",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 1919,
+      "budget": 6000,
+      "base_content_root": "3970e7b392007ae867cb8967695426ba2040d0b163ed7c718f8b58231c7edf19",
+      "target_content_root": "184f1bc5e4b8cf0febb3d2a641d64e989d293d13579ed8e6f7660726ab9f765f",
+      "impacts": [
+        {
+          "snapshot": "target",
+          "path": "api.py",
+          "label": "target/api.py",
+          "depth": 1,
+          "witness_edges": 1
+        }
+      ],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "interface",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 3528,
+      "budget": 6000,
+      "base_content_root": "3c2a00ad6a1a5f9ae84c3f732d06d1eb88e91b7b992f55f6342a2e35b60a1cc9",
+      "target_content_root": "bad8d91fb173892f8df0a2ec39c498445e047d1db76bdac4d0e05954fa99d7bb",
+      "impacts": [
+        {
+          "snapshot": "base",
+          "path": "service.ts",
+          "label": "base/service.ts",
+          "depth": 1,
+          "witness_edges": 1
+        },
+        {
+          "snapshot": "target",
+          "path": "service.ts",
+          "label": "target/service.ts",
+          "depth": 1,
+          "witness_edges": 1
+        }
+      ],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "barrel",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 2349,
+      "budget": 6000,
+      "base_content_root": "31c2eff0f706a2c285f6f3be03cc2b36f226fb2202ca65b331fc586cb321a22f",
+      "target_content_root": "bfae3b893b8e09d3b6cfeac63d259e51eb8c2f8963f9491260e110276cb8bdd4",
+      "impacts": [
+        {
+          "snapshot": "base",
+          "path": "client.ts",
+          "label": "base/client.ts",
+          "depth": 1,
+          "witness_edges": 1
+        },
+        {
+          "snapshot": "target",
+          "path": "client.ts",
+          "label": "target/client.ts",
+          "depth": 1,
+          "witness_edges": 1
+        }
+      ],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "file_rename",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 1226,
+      "budget": 6000,
+      "base_content_root": "01a2eeeb98191944694469f67c9fc0f54d3c77351efb7e71740cdf99377a498c",
+      "target_content_root": "cbb981f080b8dc9142b00f5ae6f379892d143c0712fb39c8771cdb449e360812",
+      "impacts": [],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "insertion",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 2589,
+      "budget": 6000,
+      "base_content_root": "75570b1f0a13328cd24057847e930483d9f52bd791e478c865ea58f3978e571b",
+      "target_content_root": "b933e2e158480f962836428f444704ac090b6bcbca1ef6797446b855ea25bd7d",
+      "impacts": [
+        {
+          "snapshot": "base",
+          "path": "source.py",
+          "label": "base/source.py",
+          "depth": 1,
+          "witness_edges": 1
+        },
+        {
+          "snapshot": "base",
+          "path": "source.py",
+          "label": "caller",
+          "depth": 1,
+          "witness_edges": 1
+        },
+        {
+          "snapshot": "target",
+          "path": "source.py",
+          "label": "target/source.py",
+          "depth": 1,
+          "witness_edges": 1
+        },
+        {
+          "snapshot": "target",
+          "path": "source.py",
+          "label": "caller",
+          "depth": 1,
+          "witness_edges": 1
+        }
+      ],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "owner_change",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 2007,
+      "budget": 6000,
+      "base_content_root": "6ae4c8b6fc8114dd7a642e86978e1f66fc527fb66db4d6b770e6574c182d7aef",
+      "target_content_root": "8d764706132830e67aa28316ff7910bc2e0b72bb61c2ac0c0c01182b130e28b6",
+      "impacts": [],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "mixed",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 1266,
+      "budget": 6000,
+      "base_content_root": "d3a133a524db38ecff612cb6d5a399b5e42fcf3b47f307ae4381ca58d672c54b",
+      "target_content_root": "6f57c47cc2b22c45dff3e068e9ac9b84480ea844c65f6f77e7539b2ee5331a04",
+      "impacts": [],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    },
+    {
+      "fixture": "owner_fields",
+      "cli_exit_code": 0,
+      "mcp_exit_code": 0,
+      "cli_mcp_result_equal": true,
+      "tokens_used": 2747,
+      "budget": 6000,
+      "base_content_root": "695e640e10c0617bd77a29cdcfe197b785bea2325b0441156cbbd5ccc40aa334",
+      "target_content_root": "a42fa559648e14c8a2acdc5b4a51f775133df4c33098464e42abae296b3fc323",
+      "impacts": [
+        {
+          "snapshot": "target",
+          "path": "source.cpp",
+          "label": "target/source.cpp",
+          "depth": 1,
+          "witness_edges": 1
+        }
+      ],
+      "omitted": {
+        "context": 0,
+        "impacts": 0
+      }
+    }
+  ],
+  "release_ctest": {
+    "passed": 77,
+    "failed": 0
+  },
+  "sanitizer_ctest": {
+    "built": true,
+    "passed": 0,
+    "timed_out": 4,
+    "timeout_seconds": 45,
+    "direct_verbose_launch": "timed out after15 seconds; AddressSanitizer: libc interceptors initialized",
+    "installed_resigned_launch": "timed out after15 seconds at same runtime initialization message",
+    "sampled_startup_stack": [
+      "dyld4::APIs::runAllInitializersForMain",
+      "__asan::AsanInitInternal",
+      "__asan::InitializeShadowMemory",
+      "__sanitizer::MemoryMappingLayout::Next",
+      "__sanitizer::get_dyld_hdr",
+      "__sanitizer_mz_malloc",
+      "__asan::AsanInitFromRtl",
+      "__sanitizer::StaticSpinMutex::LockSlow"
+    ]
+  },
+  "limitations": [
+    "Small real-source functional fixtures, not comparative task-quality evidence.",
+    "MCP JSON-RPC transport wrapping is outside the operation JSON budget.",
+    "Sanitizer tests did not execute to completion on this host."
+  ]
+}

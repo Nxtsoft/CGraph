@@ -1,0 +1,10 @@
+--- a/api.py
++++ b/api.py
+@@ -1,5 +1,5 @@
+-def old_name():
++def new_name():
+     return 1
+ 
+ def use():
+-    return old_name()
++    return new_name()

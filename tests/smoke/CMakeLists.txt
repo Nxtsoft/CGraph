@@ -912,3 +912,12 @@ cgraph_set_warnings(cgraph_retrieval_quality_test)
 cgraph_enable_sanitizers(cgraph_retrieval_quality_test)
 
 add_test(NAME cgraph_retrieval_quality_test COMMAND cgraph_retrieval_quality_test)
+
+add_executable(cgraph_change_context_test change_context_test.cpp)
+target_link_libraries(cgraph_change_context_test PRIVATE cgraph::engine cgraph::mcp)
+target_compile_definitions(cgraph_change_context_test PRIVATE
+  CGRAPH_CHANGE_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/change_context"
+  CGRAPH_CHANGE_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/testdata/change_context")
+cgraph_set_warnings(cgraph_change_context_test)
+cgraph_enable_sanitizers(cgraph_change_context_test)
+add_test(NAME cgraph_change_context_test COMMAND cgraph_change_context_test)

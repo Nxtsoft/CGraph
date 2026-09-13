@@ -1,0 +1,5 @@
+--- a/index.ts
++++ b/index.ts
+@@ -1 +1 @@
+-export { value } from './old';
++export { value } from './new';
