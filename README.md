@@ -122,7 +122,7 @@ Plus structured/regex extraction for Apex, Delphi form/source, MSBuild/XML proje
 
 ## Quick start
 
-Download the current Linux x64 release, build a graph, and query it through MCP:
+Download the current Linux x64 release and build your first graph:
 
 ```sh
 mkdir -p "$HOME/.local/lib/cgraph/bin-v0.3.0" "$HOME/.local/bin"
@@ -137,16 +137,9 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # Run this from any source repository.
 cgraph --root . --out cgraph-out
-
-# Send a real graph_query request through the MCP server.
-printf '%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"graph_query","arguments":{"query":"main"}}}' \
-  | cgraph-mcp --root .
 ```
 
-Open `cgraph-out/graph.html` in a browser (`open cgraph-out/graph.html` on macOS). See [Install & Setup](#install--setup) for other architectures and source builds.
+Open `cgraph-out/graph.html` in a browser (`open cgraph-out/graph.html` on macOS), then [register CGraph with your coding agent](#use-with-coding-agents). See [Install & Setup](#install--setup) for other architectures and source builds.
 
 ## Install & Setup
 

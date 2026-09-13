@@ -124,7 +124,7 @@ vendor/           内置的 tree-sitter core 与语法
 
 ## 快速开始
 
-下载当前 Linux x64 版本，构建图谱，并通过 MCP 查询：
+下载当前 Linux x64 版本并构建第一个图谱：
 
 ```sh
 mkdir -p "$HOME/.local/lib/cgraph/bin-v0.3.0" "$HOME/.local/bin"
@@ -139,16 +139,9 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # 在任意源码仓库中运行。
 cgraph --root . --out cgraph-out
-
-# 通过 MCP 服务器发送真实的 graph_query 请求。
-printf '%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"graph_query","arguments":{"query":"main"}}}' \
-  | cgraph-mcp --root .
 ```
 
-在浏览器中打开 `cgraph-out/graph.html`（macOS 可运行 `open cgraph-out/graph.html`）。其他架构与源码构建方法见[安装与配置](#安装与配置)。
+在浏览器中打开 `cgraph-out/graph.html`（macOS 可运行 `open cgraph-out/graph.html`），然后[将 CGraph 注册到编码代理](#与编码代理配合使用)。其他架构与源码构建方法见[安装与配置](#安装与配置)。
 
 ## 安装与配置
 
