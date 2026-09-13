@@ -1,5 +1,6 @@
 add_library(cgraph_engine STATIC
   analysis.cpp
+  change_context.cpp
   daemon_endpoint.cpp
   daemon_server.cpp
   configured_extractors.cpp
