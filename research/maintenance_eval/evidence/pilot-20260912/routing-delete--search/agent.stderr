@@ -1,0 +1,8 @@
+2026-09-13T02:45:43.641892Z ERROR codex_skills_extension::host_service: failed to install system skills: io error while create skills root dir: File exists (os error 17)
+2026-09-13T02:45:43.705693Z ERROR codex_skills_extension::host_service: failed to install system skills: io error while create skills root dir: File exists (os error 17)
+2026-09-13T02:45:43.741911Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills: Operation not permitted (os error 1)
+2026-09-13T02:45:43.743147Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills/.system: Operation not permitted (os error 1)
+2026-09-13T02:45:43.743192Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///Users/taylorgagne/.agents/skills: Operation not permitted (os error 1)
+2026-09-13T02:45:43.799495Z ERROR codex_skills_extension::host_service: failed to install system skills: io error while create skills root dir: File exists (os error 17)
+2026-09-13T02:45:43.805986Z ERROR codex_skills_extension::host_service: failed to install system skills: io error while create skills root dir: File exists (os error 17)
+2026-09-13T02:45:43.839662Z ERROR codex_skills_extension::host_service: failed to install system skills: io error while create skills root dir: File exists (os error 17)

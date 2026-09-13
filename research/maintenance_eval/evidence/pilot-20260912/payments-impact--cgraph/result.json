@@ -1,0 +1,237 @@
+{
+  "task": "payments-impact",
+  "language": "python",
+  "kind": "directional_impact",
+  "arm": "cgraph",
+  "input_sha256": {
+    "api.py": "f1b7daaaefad429cff0b21327a6f818994c76650b33f7880ddba4a39d5cb04bc",
+    "policy.txt": "54735256bdb4ab4db56dc33409c33066ff5e968ef16dfe6435a6d97c5fb06c76",
+    "pricing.py": "6e7ea003b4e79270cb1d68562c0dfa969b5c630c38756a55770db3f71f2a90cb",
+    "receipt.py": "dca687c86f613d620245d4e9efd974bd096e5d3d4a821e07e7d74b8b670ecf8b",
+    "workflow.py": "70822d25355eed8f23f5e57059da5b708353fb73ae3576702533c094fc064d48"
+  },
+  "isolation_probe": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/bin/cat",
+      "/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation/research/maintenance_eval/references.json"
+    ],
+    "returncode": 1,
+    "elapsed_seconds": 0.16992466687224805,
+    "peak_process_tree_rss_bytes_sampled": 4128768,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/isolation.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/isolation.stderr"
+  },
+  "cold_index": {
+    "command": [
+      "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+      "--root",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/workspace",
+      "--out",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/workspace/cgraph-out"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 0.1582588751334697,
+    "peak_process_tree_rss_bytes_sampled": 4505600,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/cold-index.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/cold-index.stderr",
+    "model_tokens": 0,
+    "money_usd": 0,
+    "mode": "deterministic source only"
+  },
+  "warm_mcp": {
+    "initialization_seconds": 0.011660750024020672,
+    "requests": [
+      {
+        "elapsed_seconds": 0.014822999946773052,
+        "response": {
+          "content": [
+            {
+              "text": "{\"budget\":2000,\"focus\":null,\"freshness\":{\"algorithm\":\"\",\"content_root\":\"\",\"leaf_count\":0,\"verified\":false},\"gather\":\"adaptive\",\"graph_state\":\"building\",\"included\":[],\"note\":\"graph build in progress; results may be empty or incomplete - retry shortly or poll status\",\"omitted\":0,\"packing\":\"greedy\",\"suggestions\":[],\"tokens_used\":0}",
+              "type": "text"
+            }
+          ]
+        }
+      },
+      {
+        "elapsed_seconds": 0.00037229200825095177,
+        "response": {
+          "content": [
+            {
+              "text": "{\"budget\":2000,\"focus\":null,\"freshness\":{\"algorithm\":\"\",\"content_root\":\"\",\"leaf_count\":0,\"verified\":false},\"gather\":\"adaptive\",\"graph_state\":\"building\",\"included\":[],\"note\":\"graph build in progress; results may be empty or incomplete - retry shortly or poll status\",\"omitted\":0,\"packing\":\"greedy\",\"suggestions\":[],\"tokens_used\":0}",
+              "type": "text"
+            }
+          ]
+        }
+      },
+      {
+        "elapsed_seconds": 0.0004603751003742218,
+        "response": {
+          "content": [
+            {
+              "text": "{\"budget\":2000,\"focus\":null,\"freshness\":{\"algorithm\":\"\",\"content_root\":\"\",\"leaf_count\":0,\"verified\":false},\"gather\":\"adaptive\",\"graph_state\":\"building\",\"included\":[],\"note\":\"graph build in progress; results may be empty or incomplete - retry shortly or poll status\",\"omitted\":0,\"packing\":\"greedy\",\"suggestions\":[],\"tokens_used\":0}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    ],
+    "fixed_query": {
+      "name": "graph_context",
+      "arguments": {
+        "query": "amount_due routeRequest",
+        "budget": 2000
+      }
+    }
+  },
+  "agent": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--search\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/Users/taylorgagne/.agents/.cache/shims/codex",
+      "exec",
+      "--json",
+      "--ignore-user-config",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5.6-sol",
+      "--sandbox",
+      "read-only",
+      "--cd",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/workspace",
+      "--output-schema",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/support/schema.json",
+      "--output-last-message",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/answer.json",
+      "--disable",
+      "shell_tool",
+      "--disable",
+      "unified_exec",
+      "--disable",
+      "view_image",
+      "--disable",
+      "apps",
+      "--disable",
+      "browser_use",
+      "--disable",
+      "browser_use_external",
+      "--disable",
+      "computer_use",
+      "--disable",
+      "plugins",
+      "--disable",
+      "multi_agent",
+      "--disable",
+      "skill_search",
+      "--disable",
+      "hooks",
+      "-c",
+      "project_doc_max_bytes=0",
+      "-c",
+      "web_search=\"disabled\"",
+      "-c",
+      "mcp_servers.maintenance.default_tools_approval_mode=\"approve\"",
+      "-c",
+      "model_reasoning_effort=\"low\"",
+      "-c",
+      "mcp_servers.maintenance.command=\"/opt/homebrew/opt/python@3.14/bin/python3.14\"",
+      "-c",
+      "mcp_servers.maintenance.args=[\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/support/gateway.py\", \"--config\", \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/support/gateway.json\"]",
+      "-c",
+      "mcp_servers.maintenance.startup_timeout_sec=90",
+      "-"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 49.38587374985218,
+    "peak_process_tree_rss_bytes_sampled": 247037952,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/agent.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--cgraph/agent.stderr"
+  },
+  "usage_events": [
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 70883,
+        "cached_input_tokens": 53376,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 774,
+        "reasoning_output_tokens": 157
+      }
+    }
+  ],
+  "money_usd": null,
+  "money_note": "Provider billing unavailable; raw usage retained",
+  "grading": {
+    "checks": {
+      "no_edits": true
+    },
+    "completion_basis": "behavioral_or_no_edit_checks_and_agent_reported_relationships; canonical delegation needs independent source review",
+    "completed": true,
+    "relationships": {
+      "measurement": "agent_reported_edges_against_independent_reference",
+      "expected": [
+        [
+          "api.checkout",
+          "workflow.quote_invoice"
+        ],
+        [
+          "receipt.render_receipt",
+          "pricing.amount_due"
+        ],
+        [
+          "workflow.quote_invoice",
+          "pricing.amount_due"
+        ]
+      ],
+      "reported": [
+        [
+          "api.checkout",
+          "workflow.quote_invoice"
+        ],
+        [
+          "receipt.render_receipt",
+          "pricing.amount_due"
+        ],
+        [
+          "workflow.quote_invoice",
+          "pricing.amount_due"
+        ]
+      ],
+      "missing": [],
+      "false": []
+    },
+    "changed_files": [],
+    "candidate_execution": null
+  },
+  "tool_calls": 6,
+  "graph_calls": 6,
+  "tool_errors": 0,
+  "tool_output_tokens_estimate_char4": 2054,
+  "provider_tool_tokens": null,
+  "update": {
+    "elapsed_seconds": 0.0026655420660972595,
+    "response": {
+      "content": [
+        {
+          "text": "{\"accepted\":true,\"bytes_hashed\":776,\"edge_count\":13,\"files_cache_hit\":4,\"files_hashed\":4,\"files_reextracted\":0,\"files_removed\":0,\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"217962b8d174e027920df1277980c669f0e6110b20bb960a98d9f04cdbab591e\",\"leaf_count\":4,\"verified\":true},\"full_rescan\":true,\"node_count\":8}",
+          "type": "text"
+        }
+      ]
+    },
+    "method": "graph_update MCP"
+  },
+  "status": "finished"
+}

@@ -1,0 +1,1 @@
+{"summary":"Redirected normalizePath to modern.normalize; app and CLI APIs remain unchanged, and legacy.mjs remains available.","relationships":[{"source":"app.routeRequest","target":"modern.normalize"}]}

@@ -37,7 +37,18 @@ def run_probe(config, arm, output):
     client = StdioClient(command, workspace, output / 'mcp.stderr')
     result = None
     try:
-        before = query(client, arm)
+        readiness_started = time.perf_counter()
+        readiness_attempts = []
+        while True:
+            before = query(client, arm)
+            readiness_attempts.append({'elapsed_seconds': time.perf_counter() - readiness_started,
+                                       'response': before})
+            if arm == 'graphify' or json.loads(before['content'][0]['text']).get('freshness', {}).get('verified') is True:
+                break
+            if time.perf_counter() - readiness_started >= 30:
+                raise RuntimeError('Initial cgraph snapshot did not become verified before the source edit')
+            time.sleep(0.1)
+        readiness_seconds = time.perf_counter() - readiness_started
         if arm == 'cgraph':
             before_nodes = json.loads(before['content'][0]['text'])['nodes']
             already_present = any(node['label'] == SYMBOL for node in before_nodes)
@@ -68,6 +79,9 @@ def run_probe(config, arm, output):
             if payload.get('ok') is False:
                 raise RuntimeError('cgraph query returned an operation error')
             verified = any(node['label'] == SYMBOL for node in payload['nodes'])
+            initial_freshness = json.loads(before['content'][0]['text'])['freshness']
+            verified = verified and payload['freshness']['verified'] is True and (
+                payload['freshness']['content_root'] != initial_freshness['content_root'])
             evidence = payload
         else:
             graph = json.loads((workspace / 'graphify-out/graph.json').read_text())
@@ -88,6 +102,8 @@ def run_probe(config, arm, output):
             'arm': arm, 'fixture': 'payments', 'symbol_added': SYMBOL,
             'source_before_sha256': old_hash, 'source_after_sha256': evaluation.file_hash(source),
             'cold_index': cold, 'before_query': before, 'refresh': refresh,
+            'initial_snapshot_readiness_seconds': readiness_seconds,
+            'initial_snapshot_readiness_attempts': readiness_attempts,
             'refresh_call_seconds': refresh_seconds,
             'edit_to_verified_retrieval_seconds': edit_to_retrieval_seconds,
             'after_query': after, 'symbol_evidence': evidence, 'verified': verified,

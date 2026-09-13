@@ -212,6 +212,7 @@ def run_case(config,task,reference,arm,out, *, gateway_extension=None, extra_too
     if gateway_extension is not None:
         gateway_entry=support/'gateway_extension.py'
         shutil.copy(gateway_extension,gateway_entry)
+    (support/'source-hashes.json').write_text(json.dumps({p.name:file_hash(p) for p in support.glob('*.py')},indent=2))
     hidden = [str(p) for p in out.parent.iterdir() if p.is_dir() and (p/'results.json').exists() and p != out] + [str(ROOT),str(out/'results.json'),*[str(p) for p in out.iterdir() if p.is_dir() and p != case], *config.get('hidden_paths',[])]
     profile = sandbox_profile(hidden)
     # Exact negative probe under the same profile that wraps the model and all children.

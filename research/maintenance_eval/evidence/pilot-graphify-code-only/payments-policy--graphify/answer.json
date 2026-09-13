@@ -1,0 +1,1 @@
+{"summary":"Updated pricing.amount_due to discount only subtotal_cents, then add shipping_cents unchanged, preserving its public name and both consumers.","relationships":[{"source":"workflow.quote_invoice","target":"pricing.amount_due"},{"source":"receipt.render_receipt","target":"pricing.amount_due"}]}

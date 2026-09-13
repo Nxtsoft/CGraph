@@ -39,7 +39,7 @@ def summarize(run_roots):
         manifests.append({'run':root.name,'manifest':json.loads((root/'manifest.json').read_text())})
         for result in json.loads((root/'results.json').read_text()):
             if result['status']=='index_failed':
-                stderr=Path(result['cold_index']['stderr_path']).read_text()
+                stderr=(root/(result['task']+'--'+result['arm'])/Path(result['cold_index']['stderr_path']).name).read_text()
                 if 'no LLM API key found' in stderr and '--code-only' not in result['cold_index']['command']:
                     excluded.append({'run':root.name,'exclusion_reason':'diagnosed pilot configuration: missing deterministic --code-only flag',**result});continue
                 rows.append({'run':root.name,'task':result['task'],'arm':result['arm'],'status':'index_failed','completed_behavior_and_reported_edges':False,'model_usage':None,'usage_complete':False,'relationships':{'missing':None,'false':None},'raw_failure':result})
@@ -60,7 +60,7 @@ def summarize(run_roots):
             successful_warm=[x['elapsed_seconds'] for x in requests[1:] if populated(x['response'])]
             checks=result['grading']['checks']
             rows.append({'run':root.name,'task':result['task'],'arm':result['arm'],'language':result['language'],
-                         'kind':result['kind'],'completed_behavior_and_reported_edges':result['grading']['completed'],
+                         'kind':result['kind'],'advisory_surface_exercised':result.get('advisory_surface_exercised'),'successful_nonempty_change_context_calls':result.get('successful_nonempty_change_context_calls'),'completed_behavior_and_reported_edges':result['grading']['completed'],
                          'behavior_checks':checks,'relationships':result['grading']['relationships'],
                          'tool_calls':result['tool_calls'],'tool_errors':result['tool_errors'],
                          'exact_failed_tool_retries':retries(logs),'provider_retries':None,
@@ -76,7 +76,7 @@ def summarize(run_roots):
                          'agent_wall_seconds':result['agent']['elapsed_seconds'],
                          'peak_process_tree_rss_bytes_sampled':result['agent']['peak_process_tree_rss_bytes_sampled'] or None,
                          'memory_scope':result['agent']['memory_scope'],
-                         'gateway_sha256':__import__('hashlib').sha256((case/'support/gateway.py').read_bytes()).hexdigest(),
+                         'gateway_sha256':json.loads((case/'support/source-hashes.json').read_text())['gateway.py'],
                          'raw_case':str(case)})
     arms={}
     for arm in sorted({r['arm'] for r in rows}):

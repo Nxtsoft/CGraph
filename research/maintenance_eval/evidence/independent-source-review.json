@@ -1,6 +1,5 @@
 {
   "reviewer": "independent graphify_product",
-  "run_root": "pilot-20260912",
   "canonical_reviews": [
     {
       "case": "payments-rename--search",
@@ -174,7 +173,40 @@
       "same_evidence_as": "routing-reexport--search",
       "evidence_source_run": "pilot-20260912",
       "review_note": "Independently read the complete generated workspace; canonical delegation and unchanged public APIs confirmed."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "payments-interface--cgraph",
+      "status": "pass",
+      "same_evidence_as": "payments-interface--cgraph",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "routing-import--cgraph",
+      "status": "pass",
+      "same_evidence_as": "routing-import--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "routing-delete--cgraph",
+      "status": "pass",
+      "same_evidence_as": "routing-delete--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "routing-reexport--cgraph",
+      "status": "pass",
+      "same_evidence_as": "routing-reexport--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
     }
   ],
-  "limitations": "Source review verifies canonical delegation for these outputs; raw executable behavior grades remain separate."
+  "limitations": "Source review verifies canonical delegation for these outputs; raw executable behavior grades remain separate.",
+  "canonical_review_count": 22
 }

@@ -1,0 +1,1 @@
+{"summary":"Updated facade.mjs to re-export normalizePath from modern.mjs. App and CLI imports remain unchanged, legacy.mjs remains available, and graph change context confirms the facade now resolves to the contract-compliant modern implementation.","relationships":[{"source":"app.routeRequest","target":"modern.normalize"}]}

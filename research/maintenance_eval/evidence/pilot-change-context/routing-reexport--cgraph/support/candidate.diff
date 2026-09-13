@@ -1,0 +1,5 @@
+--- a/facade.mjs
++++ b/facade.mjs
+@@ -1 +1 @@
+-export { normalize as normalizePath } from './legacy.mjs';
++export { normalize as normalizePath } from './modern.mjs';

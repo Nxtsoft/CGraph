@@ -1,0 +1,56 @@
+{
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "config": {
+    "cgraph": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+    "cgraph_mcp": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-mcp",
+    "graphd": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/graphd",
+    "cgraph_client": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-client",
+    "graphify": "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+    "graphify_python": "/Users/taylorgagne/.local/share/cgraph-eval/uv-tools/graphifyy/bin/python",
+    "codex": "/Users/taylorgagne/.agents/.cache/shims/codex",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "timeout_seconds": 180,
+    "max_calls": 40,
+    "versions": {
+      "cgraph": "bin-v0.3.0",
+      "cgraph_source": "4a31f3ed2f0d51315e63e74e0a5593ac00db1ddb",
+      "cgraph_archive_sha256": "b344cf3549cc53677487911c45844daae347e17d6ab52b3e56f19c2db332ff3a",
+      "graphify": "0.9.61",
+      "graphify_source": "fe66389083369c3159aa391117185c8f58b4d07c"
+    },
+    "hidden_paths": [
+      "/Users/taylorgagne/tools/cgraph/.agents/planning",
+      "/Users/taylorgagne/tools/cgraph/research/maintenance_eval",
+      "/Users/taylorgagne/.agents/skills",
+      "/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills"
+    ]
+  },
+  "task_file_sha256": "3903cb09a828fe2cc994dc7439149ac53e451e1c80d553562426a891447c49e3",
+  "reference_file_sha256": "49064bd07a69c246435d5cbb635159b84d084b8d8a0a1762e0df69efaac7362c",
+  "harness_sha256": "b2d76b23071fb9a670a543b852799e03e3a82a009f4e29028770f4c514c7b9f1",
+  "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+  "executables_sha256": {
+    "cgraph": "26b0c180a22ba95fae2e3ffb23c77d3ab14336264984e07de75d180fb6c4fa51",
+    "graphd": "00b64c2f47d78c9d36828b28343a27b07e333783f50b03bf4fd7ad929ff0a6e0",
+    "cgraph_mcp": "86e89a2b9af19653f72a551d091f7b478442df6556cfaf4a1488cd2d09dc7c50",
+    "graphify": "d98bccc1fd82e5bf2483457f9e7697018f7706d1c9f2e89d85c5c909c0e5554c",
+    "graphify_python": "77d9800689bafd5dbd5d1ca6290e4fdbd0e2cc9ce60bb34bbf6bb7b0119790a8"
+  },
+  "arms": [
+    "graphify"
+  ],
+  "tasks": [
+    "payments-callers",
+    "payments-rename",
+    "payments-policy",
+    "routing-callers",
+    "routing-import",
+    "routing-delete",
+    "payments-impact",
+    "payments-interface",
+    "routing-reexport"
+  ]
+}

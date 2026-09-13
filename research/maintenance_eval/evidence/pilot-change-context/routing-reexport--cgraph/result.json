@@ -1,0 +1,246 @@
+{
+  "task": "routing-reexport",
+  "language": "javascript",
+  "kind": "reexport",
+  "arm": "cgraph",
+  "input_sha256": {
+    "app.mjs": "00d95f20974a5e16b064993bdb3e90eca40e070a471c86afcb4807972bee10a7",
+    "cli.mjs": "8c15b6ead1d45d7cf01c6a06a1e81e0055d4dd4362ded4819aebe37820e7dc6c",
+    "contract.txt": "3e678233f7883da52cdf6b9d0c228c4f456e14e10397e677dc42b37ce08eb710",
+    "facade.mjs": "f971d033cd27b22fed954b22124c5a0572184f1df54b07d005d1a56a9ba8f38c",
+    "legacy.mjs": "d7fd9938a3d0c1fb8b6819b5293db411ff785f481479fac5e92c78185d536b12",
+    "modern.mjs": "12b4145e1cbab6d3782ba9cc05244ec9d189c14725c2b6b1c5bf3dc62df4c539"
+  },
+  "isolation_probe": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-import--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-delete--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/bin/cat",
+      "/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation/research/maintenance_eval/references.json"
+    ],
+    "returncode": 1,
+    "elapsed_seconds": 0.16213650000281632,
+    "peak_process_tree_rss_bytes_sampled": 4063232,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/isolation.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/isolation.stderr"
+  },
+  "cold_index": {
+    "command": [
+      "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+      "--root",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace",
+      "--out",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/cgraph-out"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 0.16537100006826222,
+    "peak_process_tree_rss_bytes_sampled": 4128768,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/cold-index.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/cold-index.stderr",
+    "model_tokens": 0,
+    "money_usd": 0,
+    "mode": "deterministic source only"
+  },
+  "warm_mcp": {
+    "initialization_seconds": 0.0072955419309437275,
+    "requests": [
+      {
+        "elapsed_seconds": 0.013829916948452592,
+        "response": {
+          "content": [
+            {
+              "text": "{\"budget\":2000,\"focus\":null,\"freshness\":{\"algorithm\":\"\",\"content_root\":\"\",\"leaf_count\":0,\"verified\":false},\"gather\":\"adaptive\",\"graph_state\":\"building\",\"included\":[],\"note\":\"graph build in progress; results may be empty or incomplete - retry shortly or poll status\",\"omitted\":0,\"packing\":\"greedy\",\"suggestions\":[],\"tokens_used\":0}",
+              "type": "text"
+            }
+          ]
+        }
+      },
+      {
+        "elapsed_seconds": 0.0007970838341861963,
+        "response": {
+          "content": [
+            {
+              "text": "{\"budget\":2000,\"budget_basis\":\"measured_serialized_tokens\",\"focus\":{\"centrality\":0.6,\"god_node\":true,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routerequest\",\"kind\":\"function\",\"label\":\"routeRequest\",\"line\":3,\"location\":{\"end_column\":1,\"end_line\":5,\"start_column\":7,\"start_line\":3},\"snippet\":\"export function routeRequest(path) {\\n  return { route: normalizePath(path) };\\n}\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs\",\"source_sha256\":\"00d95f20974a5e16b064993bdb3e90eca40e070a471c86afcb4807972bee10a7\"},\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"a6d78c3990d9ab9a5da5ea6239e3715ad1390aaafb37d9a25b2d4cef8747d6c4\",\"leaf_count\":5,\"verified\":true},\"gather\":\"adaptive\",\"included\":[{\"centrality\":0.2,\"depth\":0,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routebatch\",\"kind\":\"function\",\"label\":\"routeBatch\",\"line\":7,\"location\":{\"end_column\":1,\"end_line\":9,\"start_column\":7,\"start_line\":7},\"snippet\":\"export function routeBatch(paths) {\\n  return paths.map(path => routeRequest(path));\\n}\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs\",\"source_sha256\":\"00d95f20974a5e16b064993bdb3e90eca40e070a471c86afcb4807972bee10a7\"},{\"centrality\":1.0,\"depth\":1,\"god_node\":true,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs\",\"kind\":\"file\",\"label\":\"workspace/app.mjs\",\"line\":1,\"location\":{\"end_column\":0,\"end_line\":1,\"start_column\":0,\"start_line\":1},\"snippet\":\"import { normalizePath } from './facade.mjs';\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs\",\"source_sha256\":\"00d95f20974a5e16b064993bdb3e90eca40e070a471c86afcb4807972bee10a7\",\"via\":\"contains\"},{\"centrality\":0.6,\"depth\":1,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs\",\"kind\":\"file\",\"label\":\"workspace/cli.mjs\",\"line\":1,\"location\":{\"end_column\":0,\"end_line\":1,\"start_column\":0,\"start_line\":1},\"snippet\":\"import { routeRequest } from './app.mjs';\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/cli.mjs\",\"source_sha256\":\"8c15b6ead1d45d7cf01c6a06a1e81e0055d4dd4362ded4819aebe37820e7dc6c\",\"via\":\"imports\"},{\"centrality\":0.4,\"depth\":1,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs_main\",\"kind\":\"function\",\"label\":\"main\",\"line\":3,\"location\":{\"end_column\":1,\"end_line\":5,\"start_column\":7,\"start_line\":3},\"snippet\":\"export function main(path) {\\n  return JSON.stringify(routeRequest(path));\\n}\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/cli.mjs\",\"source_sha256\":\"8c15b6ead1d45d7cf01c6a06a1e81e0055d4dd4362ded4819aebe37820e7dc6c\",\"via\":\"CALLS\"},{\"centrality\":0.8,\"depth\":2,\"god_node\":true,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_facade_mjs\",\"kind\":\"file\",\"label\":\"workspace/facade.mjs\",\"line\":1,\"location\":{\"end_column\":0,\"end_line\":1,\"start_column\":0,\"start_line\":1},\"snippet\":\"export { normalize as normalizePath } from './legacy.mjs';\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/facade.mjs\",\"source_sha256\":\"f971d033cd27b22fed954b22124c5a0572184f1df54b07d005d1a56a9ba8f38c\",\"via\":\"imports_from\"}],\"omitted\":0,\"packing\":\"greedy\",\"reach\":{\"candidates\":5,\"expanded_past_core\":0,\"gated_at_core\":1},\"selection_tokens_used\":839,\"source_files_read\":3,\"tokens_used\":858}",
+              "type": "text"
+            }
+          ]
+        }
+      },
+      {
+        "elapsed_seconds": 0.0006797080859541893,
+        "response": {
+          "content": [
+            {
+              "text": "{\"budget\":2000,\"budget_basis\":\"measured_serialized_tokens\",\"focus\":{\"centrality\":0.6,\"god_node\":true,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routerequest\",\"kind\":\"function\",\"label\":\"routeRequest\",\"line\":3,\"location\":{\"end_column\":1,\"end_line\":5,\"start_column\":7,\"start_line\":3},\"snippet\":\"export function routeRequest(path) {\\n  return { route: normalizePath(path) };\\n}\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs\",\"source_sha256\":\"00d95f20974a5e16b064993bdb3e90eca40e070a471c86afcb4807972bee10a7\"},\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"a6d78c3990d9ab9a5da5ea6239e3715ad1390aaafb37d9a25b2d4cef8747d6c4\",\"leaf_count\":5,\"verified\":true},\"gather\":\"adaptive\",\"included\":[{\"centrality\":0.2,\"depth\":0,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs_routebatch\",\"kind\":\"function\",\"label\":\"routeBatch\",\"line\":7,\"location\":{\"end_column\":1,\"end_line\":9,\"start_column\":7,\"start_line\":7},\"snippet\":\"export function routeBatch(paths) {\\n  return paths.map(path => routeRequest(path));\\n}\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs\",\"source_sha256\":\"00d95f20974a5e16b064993bdb3e90eca40e070a471c86afcb4807972bee10a7\"},{\"centrality\":1.0,\"depth\":1,\"god_node\":true,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_app_mjs\",\"kind\":\"file\",\"label\":\"workspace/app.mjs\",\"line\":1,\"location\":{\"end_column\":0,\"end_line\":1,\"start_column\":0,\"start_line\":1},\"snippet\":\"import { normalizePath } from './facade.mjs';\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/app.mjs\",\"source_sha256\":\"00d95f20974a5e16b064993bdb3e90eca40e070a471c86afcb4807972bee10a7\",\"via\":\"contains\"},{\"centrality\":0.6,\"depth\":1,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs\",\"kind\":\"file\",\"label\":\"workspace/cli.mjs\",\"line\":1,\"location\":{\"end_column\":0,\"end_line\":1,\"start_column\":0,\"start_line\":1},\"snippet\":\"import { routeRequest } from './app.mjs';\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/cli.mjs\",\"source_sha256\":\"8c15b6ead1d45d7cf01c6a06a1e81e0055d4dd4362ded4819aebe37820e7dc6c\",\"via\":\"imports\"},{\"centrality\":0.4,\"depth\":1,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_cli_mjs_main\",\"kind\":\"function\",\"label\":\"main\",\"line\":3,\"location\":{\"end_column\":1,\"end_line\":5,\"start_column\":7,\"start_line\":3},\"snippet\":\"export function main(path) {\\n  return JSON.stringify(routeRequest(path));\\n}\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/cli.mjs\",\"source_sha256\":\"8c15b6ead1d45d7cf01c6a06a1e81e0055d4dd4362ded4819aebe37820e7dc6c\",\"via\":\"CALLS\"},{\"centrality\":0.8,\"depth\":2,\"god_node\":true,\"id\":\"users_taylorgagne_local_share_cgraph_eval_pilot_change_context_routing_reexport_cgraph_workspace_facade_mjs\",\"kind\":\"file\",\"label\":\"workspace/facade.mjs\",\"line\":1,\"location\":{\"end_column\":0,\"end_line\":1,\"start_column\":0,\"start_line\":1},\"snippet\":\"export { normalize as normalizePath } from './legacy.mjs';\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace/facade.mjs\",\"source_sha256\":\"f971d033cd27b22fed954b22124c5a0572184f1df54b07d005d1a56a9ba8f38c\",\"via\":\"imports_from\"}],\"omitted\":0,\"packing\":\"greedy\",\"reach\":{\"candidates\":5,\"expanded_past_core\":0,\"gated_at_core\":1},\"selection_tokens_used\":839,\"source_files_read\":3,\"tokens_used\":858}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    ],
+    "fixed_query": {
+      "name": "graph_context",
+      "arguments": {
+        "query": "amount_due routeRequest",
+        "budget": 2000
+      }
+    }
+  },
+  "agent": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-import--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-delete--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/Users/taylorgagne/.agents/.cache/shims/codex",
+      "exec",
+      "--json",
+      "--ignore-user-config",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5.6-sol",
+      "--sandbox",
+      "read-only",
+      "--cd",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace",
+      "--output-schema",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/support/schema.json",
+      "--output-last-message",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/answer.json",
+      "--disable",
+      "shell_tool",
+      "--disable",
+      "unified_exec",
+      "--disable",
+      "view_image",
+      "--disable",
+      "apps",
+      "--disable",
+      "browser_use",
+      "--disable",
+      "browser_use_external",
+      "--disable",
+      "computer_use",
+      "--disable",
+      "plugins",
+      "--disable",
+      "multi_agent",
+      "--disable",
+      "skill_search",
+      "--disable",
+      "hooks",
+      "-c",
+      "project_doc_max_bytes=0",
+      "-c",
+      "web_search=\"disabled\"",
+      "-c",
+      "mcp_servers.maintenance.default_tools_approval_mode=\"approve\"",
+      "-c",
+      "model_reasoning_effort=\"low\"",
+      "-c",
+      "mcp_servers.maintenance.command=\"/opt/homebrew/opt/python@3.14/bin/python3.14\"",
+      "-c",
+      "mcp_servers.maintenance.args=[\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/support/gateway_extension.py\", \"--config\", \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/support/gateway.json\"]",
+      "-c",
+      "mcp_servers.maintenance.startup_timeout_sec=90",
+      "-"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 70.46658441703767,
+    "peak_process_tree_rss_bytes_sampled": 253968384,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/agent.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/agent.stderr"
+  },
+  "usage_events": [
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 163647,
+        "cached_input_tokens": 122880,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1257,
+        "reasoning_output_tokens": 278
+      }
+    }
+  ],
+  "money_usd": null,
+  "money_note": "Provider billing unavailable; raw usage retained",
+  "grading": {
+    "checks": {
+      "legacy_preserved": true,
+      "app_import_unchanged": true,
+      "cli_import_unchanged": true,
+      "behavior": true
+    },
+    "completion_basis": "behavioral_or_no_edit_checks_and_agent_reported_relationships; canonical delegation needs independent source review",
+    "completed": true,
+    "relationships": {
+      "measurement": "agent_reported_edges_against_independent_reference",
+      "expected": [
+        [
+          "app.routeRequest",
+          "modern.normalize"
+        ]
+      ],
+      "reported": [
+        [
+          "app.routeRequest",
+          "modern.normalize"
+        ]
+      ],
+      "missing": [],
+      "false": []
+    },
+    "changed_files": [
+      "facade.mjs"
+    ],
+    "candidate_execution": {
+      "command": [
+        "/usr/bin/sandbox-exec",
+        "-p",
+        "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-import--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-delete--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/payments-interface--cgraph\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n(deny network*)\n",
+        "node",
+        "--input-type=module",
+        "-e",
+        "import{pathToFileURL}from'node:url';const base=pathToFileURL(process.argv[1]+'/');const app=await import(new URL('app.mjs',base));const cli=await import(new URL('cli.mjs',base));const inputs=['/A//B/?Q=X?Y','///?UP=YES','/','ABC'];console.log(JSON.stringify([inputs.map(x=>app.routeRequest(x)),app.routeBatch(inputs),inputs.map(x=>cli.main(x))]));",
+        "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/workspace"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.17048587510362267,
+      "peak_process_tree_rss_bytes_sampled": 9699328,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "rss_sample_interval_seconds": 0.1,
+      "timed_out": false,
+      "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/candidate.stdout",
+      "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-change-context/routing-reexport--cgraph/candidate.stderr"
+    }
+  },
+  "tool_calls": 19,
+  "graph_calls": 9,
+  "tool_errors": 0,
+  "tool_output_tokens_estimate_char4": 6541,
+  "provider_tool_tokens": null,
+  "update": {
+    "elapsed_seconds": 0.006027290830388665,
+    "response": {
+      "content": [
+        {
+          "text": "{\"accepted\":true,\"bytes_hashed\":696,\"edge_count\":12,\"files_cache_hit\":5,\"files_hashed\":5,\"files_reextracted\":0,\"files_removed\":0,\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"b8eca6a8db67f0e32c6de7c450b5d3a186b29c01a6a264658c8c6a8dd1314e92\",\"leaf_count\":5,\"verified\":true},\"full_rescan\":true,\"node_count\":10}",
+          "type": "text"
+        }
+      ]
+    },
+    "method": "graph_update MCP"
+  },
+  "status": "finished"
+}

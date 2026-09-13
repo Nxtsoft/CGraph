@@ -1,0 +1,252 @@
+{
+  "task": "routing-delete",
+  "language": "javascript",
+  "kind": "deletion",
+  "arm": "graphify",
+  "input_sha256": {
+    "app.mjs": "0cd3a5884dc9c0788c226feddecd742fbb6545a870a8a15f87f0572c9ae5249c",
+    "cli.mjs": "8c15b6ead1d45d7cf01c6a06a1e81e0055d4dd4362ded4819aebe37820e7dc6c",
+    "contract.txt": "3e678233f7883da52cdf6b9d0c228c4f456e14e10397e677dc42b37ce08eb710",
+    "legacy.mjs": "d7fd9938a3d0c1fb8b6819b5293db411ff785f481479fac5e92c78185d536b12",
+    "modern.mjs": "12b4145e1cbab6d3782ba9cc05244ec9d189c14725c2b6b1c5bf3dc62df4c539"
+  },
+  "isolation_probe": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-rename--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-policy--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-import--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/bin/cat",
+      "/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation/research/maintenance_eval/references.json"
+    ],
+    "returncode": 1,
+    "elapsed_seconds": 0.16659066709689796,
+    "peak_process_tree_rss_bytes_sampled": 3981312,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/isolation.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/isolation.stderr"
+  },
+  "cold_index": {
+    "command": [
+      "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+      "extract",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/workspace",
+      "--no-cluster",
+      "--code-only"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 0.327393792103976,
+    "peak_process_tree_rss_bytes_sampled": 47316992,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/cold-index.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/cold-index.stderr",
+    "model_tokens": 0,
+    "money_usd": 0,
+    "mode": "deterministic source only"
+  },
+  "warm_mcp": {
+    "initialization_seconds": 0.7505850419402122,
+    "requests": [
+      {
+        "elapsed_seconds": 0.002675791969522834,
+        "response": {
+          "content": [
+            {
+              "text": "Graph: graphify-out/graph.json (9 nodes) | Traversal: BFS depth=3 | Start: ['routeRequest()'] | 7 nodes found\n\nNODE routeRequest() [src=app.mjs loc=L3 community=]\nNODE app.mjs [src=app.mjs loc=L1 community=]\nNODE cli.mjs [src=cli.mjs loc=L1 community=]\nNODE normalize() [src=legacy.mjs loc=L1 community=]\nNODE routeBatch() [src=app.mjs loc=L7 community=]\nNODE main() [src=cli.mjs loc=L3 community=]\nNODE legacy.mjs [src=legacy.mjs loc=L1 community=]\nEDGE app.mjs --contains [EXTRACTED]--> routeRequest() at=app.mjs:L3\nEDGE routeRequest() --calls [EXTRACTED context=call]--> normalize() at=app.mjs:L4\nEDGE routeBatch() --calls [EXTRACTED context=call]--> routeRequest() at=app.mjs:L8\nEDGE cli.mjs --imports [EXTRACTED context=import]--> routeRequest() at=cli.mjs:L1\nEDGE main() --calls [EXTRACTED context=call]--> routeRequest() at=cli.mjs:L4\nEDGE app.mjs --imports_from [EXTRACTED context=import]--> legacy.mjs at=app.mjs:L1\nEDGE legacy.mjs --contains [EXTRACTED]--> normalize() at=legacy.mjs:L1\nEDGE app.mjs --imports [EXTRACTED context=import]--> normalize() at=app.mjs:L1\nEDGE app.mjs --contains [EXTRACTED]--> routeBatch() at=app.mjs:L7\nEDGE cli.mjs --imports_from [EXTRACTED context=import]--> app.mjs at=cli.mjs:L1\nEDGE cli.mjs --contains [EXTRACTED]--> main() at=cli.mjs:L3",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      },
+      {
+        "elapsed_seconds": 0.0013106658589094877,
+        "response": {
+          "content": [
+            {
+              "text": "Graph: graphify-out/graph.json (9 nodes) | Traversal: BFS depth=3 | Start: ['routeRequest()'] | 7 nodes found\n\nNODE routeRequest() [src=app.mjs loc=L3 community=]\nNODE app.mjs [src=app.mjs loc=L1 community=]\nNODE cli.mjs [src=cli.mjs loc=L1 community=]\nNODE normalize() [src=legacy.mjs loc=L1 community=]\nNODE routeBatch() [src=app.mjs loc=L7 community=]\nNODE main() [src=cli.mjs loc=L3 community=]\nNODE legacy.mjs [src=legacy.mjs loc=L1 community=]\nEDGE app.mjs --contains [EXTRACTED]--> routeRequest() at=app.mjs:L3\nEDGE routeRequest() --calls [EXTRACTED context=call]--> normalize() at=app.mjs:L4\nEDGE routeBatch() --calls [EXTRACTED context=call]--> routeRequest() at=app.mjs:L8\nEDGE cli.mjs --imports [EXTRACTED context=import]--> routeRequest() at=cli.mjs:L1\nEDGE main() --calls [EXTRACTED context=call]--> routeRequest() at=cli.mjs:L4\nEDGE app.mjs --imports_from [EXTRACTED context=import]--> legacy.mjs at=app.mjs:L1\nEDGE legacy.mjs --contains [EXTRACTED]--> normalize() at=legacy.mjs:L1\nEDGE app.mjs --imports [EXTRACTED context=import]--> normalize() at=app.mjs:L1\nEDGE app.mjs --contains [EXTRACTED]--> routeBatch() at=app.mjs:L7\nEDGE cli.mjs --imports_from [EXTRACTED context=import]--> app.mjs at=cli.mjs:L1\nEDGE cli.mjs --contains [EXTRACTED]--> main() at=cli.mjs:L3",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      },
+      {
+        "elapsed_seconds": 0.0011779579799622297,
+        "response": {
+          "content": [
+            {
+              "text": "Graph: graphify-out/graph.json (9 nodes) | Traversal: BFS depth=3 | Start: ['routeRequest()'] | 7 nodes found\n\nNODE routeRequest() [src=app.mjs loc=L3 community=]\nNODE app.mjs [src=app.mjs loc=L1 community=]\nNODE cli.mjs [src=cli.mjs loc=L1 community=]\nNODE normalize() [src=legacy.mjs loc=L1 community=]\nNODE routeBatch() [src=app.mjs loc=L7 community=]\nNODE main() [src=cli.mjs loc=L3 community=]\nNODE legacy.mjs [src=legacy.mjs loc=L1 community=]\nEDGE app.mjs --contains [EXTRACTED]--> routeRequest() at=app.mjs:L3\nEDGE routeRequest() --calls [EXTRACTED context=call]--> normalize() at=app.mjs:L4\nEDGE routeBatch() --calls [EXTRACTED context=call]--> routeRequest() at=app.mjs:L8\nEDGE cli.mjs --imports [EXTRACTED context=import]--> routeRequest() at=cli.mjs:L1\nEDGE main() --calls [EXTRACTED context=call]--> routeRequest() at=cli.mjs:L4\nEDGE app.mjs --imports_from [EXTRACTED context=import]--> legacy.mjs at=app.mjs:L1\nEDGE legacy.mjs --contains [EXTRACTED]--> normalize() at=legacy.mjs:L1\nEDGE app.mjs --imports [EXTRACTED context=import]--> normalize() at=app.mjs:L1\nEDGE app.mjs --contains [EXTRACTED]--> routeBatch() at=app.mjs:L7\nEDGE cli.mjs --imports_from [EXTRACTED context=import]--> app.mjs at=cli.mjs:L1\nEDGE cli.mjs --contains [EXTRACTED]--> main() at=cli.mjs:L3",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    ],
+    "fixed_query": {
+      "name": "query_graph",
+      "arguments": {
+        "question": "amount_due routeRequest",
+        "token_budget": 2000
+      }
+    }
+  },
+  "agent": {
+    "command": [
+      "/usr/bin/sandbox-exec",
+      "-p",
+      "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-rename--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-policy--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-import--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n",
+      "/Users/taylorgagne/.agents/.cache/shims/codex",
+      "exec",
+      "--json",
+      "--ignore-user-config",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5.6-sol",
+      "--sandbox",
+      "read-only",
+      "--cd",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/workspace",
+      "--output-schema",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/support/schema.json",
+      "--output-last-message",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/answer.json",
+      "--disable",
+      "shell_tool",
+      "--disable",
+      "unified_exec",
+      "--disable",
+      "view_image",
+      "--disable",
+      "apps",
+      "--disable",
+      "browser_use",
+      "--disable",
+      "browser_use_external",
+      "--disable",
+      "computer_use",
+      "--disable",
+      "plugins",
+      "--disable",
+      "multi_agent",
+      "--disable",
+      "skill_search",
+      "--disable",
+      "hooks",
+      "-c",
+      "project_doc_max_bytes=0",
+      "-c",
+      "web_search=\"disabled\"",
+      "-c",
+      "mcp_servers.maintenance.default_tools_approval_mode=\"approve\"",
+      "-c",
+      "model_reasoning_effort=\"low\"",
+      "-c",
+      "mcp_servers.maintenance.command=\"/opt/homebrew/opt/python@3.14/bin/python3.14\"",
+      "-c",
+      "mcp_servers.maintenance.args=[\"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/support/gateway.py\", \"--config\", \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/support/gateway.json\"]",
+      "-c",
+      "mcp_servers.maintenance.startup_timeout_sec=90",
+      "-"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 66.94153458299115,
+    "peak_process_tree_rss_bytes_sampled": 339591168,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/agent.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/agent.stderr"
+  },
+  "usage_events": [
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 103960,
+        "cached_input_tokens": 75136,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 944,
+        "reasoning_output_tokens": 240
+      }
+    }
+  ],
+  "money_usd": null,
+  "money_note": "Provider billing unavailable; raw usage retained",
+  "grading": {
+    "checks": {
+      "legacy_removed": true,
+      "legacy_references_removed": true,
+      "behavior": true
+    },
+    "completion_basis": "behavioral_or_no_edit_checks_and_agent_reported_relationships; canonical delegation needs independent source review",
+    "completed": true,
+    "relationships": {
+      "measurement": "agent_reported_edges_against_independent_reference",
+      "expected": [
+        [
+          "app.routeRequest",
+          "modern.normalize"
+        ]
+      ],
+      "reported": [
+        [
+          "app.routeRequest",
+          "modern.normalize"
+        ]
+      ],
+      "missing": [],
+      "false": []
+    },
+    "changed_files": [
+      "app.mjs",
+      "legacy.mjs"
+    ],
+    "candidate_execution": {
+      "command": [
+        "/usr/bin/sandbox-exec",
+        "-p",
+        "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight-fixed\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/preflight\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/worktrees/cgr-2-evaluation\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/results.json\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-rename--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-policy--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/payments-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-callers--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-import--graphify\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/.agents/planning\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/tools/cgraph/research/maintenance_eval\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/skills\"))\n(deny file-read* file-write* (subpath \"/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills\"))\n(deny network*)\n",
+        "node",
+        "--input-type=module",
+        "-e",
+        "import{pathToFileURL}from'node:url';const base=pathToFileURL(process.argv[1]+'/');const app=await import(new URL('app.mjs',base));const cli=await import(new URL('cli.mjs',base));const inputs=['/A//B/?Q=X?Y','///?UP=YES','/','ABC'];console.log(JSON.stringify([inputs.map(x=>app.routeRequest(x)),app.routeBatch(inputs),inputs.map(x=>cli.main(x))]));",
+        "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/workspace"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.16122766700573266,
+      "peak_process_tree_rss_bytes_sampled": 3981312,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "rss_sample_interval_seconds": 0.1,
+      "timed_out": false,
+      "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/candidate.stdout",
+      "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/candidate.stderr"
+    }
+  },
+  "tool_calls": 13,
+  "graph_calls": 2,
+  "tool_errors": 0,
+  "tool_output_tokens_estimate_char4": 1020,
+  "provider_tool_tokens": null,
+  "update": {
+    "command": [
+      "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+      "update",
+      "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/workspace",
+      "--no-cluster"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 0.4982171661686152,
+    "peak_process_tree_rss_bytes_sampled": 51658752,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/update.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-graphify-code-only/routing-delete--graphify/update.stderr"
+  },
+  "status": "finished"
+}

@@ -1,0 +1,2441 @@
+{
+  "schema_version": 1,
+  "arms": {
+    "cgraph": {
+      "tasks": 9,
+      "completed_behavior_and_reported_edges": 9,
+      "missing_reported_edges": 0,
+      "false_reported_edges": 0,
+      "input_tokens": 1114082,
+      "cached_input_tokens_subset": 901888,
+      "output_tokens": 9794,
+      "usage_complete": true,
+      "money_usd": null
+    },
+    "cgraph_change_context": {
+      "tasks": 4,
+      "completed_behavior_and_reported_edges": 4,
+      "missing_reported_edges": 0,
+      "false_reported_edges": 0,
+      "input_tokens": 688568,
+      "cached_input_tokens_subset": 524800,
+      "output_tokens": 5297,
+      "usage_complete": true,
+      "money_usd": null
+    },
+    "graphify": {
+      "tasks": 9,
+      "completed_behavior_and_reported_edges": 9,
+      "missing_reported_edges": 0,
+      "false_reported_edges": 0,
+      "input_tokens": 854702,
+      "cached_input_tokens_subset": 684416,
+      "output_tokens": 7939,
+      "usage_complete": true,
+      "money_usd": null
+    },
+    "search": {
+      "tasks": 9,
+      "completed_behavior_and_reported_edges": 9,
+      "missing_reported_edges": 0,
+      "false_reported_edges": 0,
+      "input_tokens": 782616,
+      "cached_input_tokens_subset": 628096,
+      "output_tokens": 7084,
+      "usage_complete": true,
+      "money_usd": null
+    }
+  },
+  "rows": [
+    {
+      "run": "pilot-20260912",
+      "task": "payments-callers",
+      "arm": "search",
+      "language": "python",
+      "kind": "navigation",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 367,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 70704,
+        "cached_input_tokens": 57472,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 507,
+        "reasoning_output_tokens": 151
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 47.26722429180518,
+      "peak_process_tree_rss_bytes_sampled": 257818624,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-callers--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-callers",
+      "arm": "cgraph",
+      "language": "python",
+      "kind": "navigation",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 1376,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 115771,
+        "cached_input_tokens": 84224,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 717,
+        "reasoning_output_tokens": 174
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.15969879203476012,
+      "mcp_initialization_seconds": 0.0077972919680178165,
+      "first_mcp_request_seconds": 2.5789338750764728,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0008244368946179748,
+      "end_of_case_synchronization_seconds": 0.007203166838735342,
+      "agent_wall_seconds": 49.65778833418153,
+      "peak_process_tree_rss_bytes_sampled": 335282176,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-callers--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-rename",
+      "arm": "search",
+      "language": "python",
+      "kind": "rename",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "old_name_removed": true,
+        "new_name_defined": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.net_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.net_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.net_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.net_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 12,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 611,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 91863,
+        "cached_input_tokens": 76544,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 815,
+        "reasoning_output_tokens": 196
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 58.35649829218164,
+      "peak_process_tree_rss_bytes_sampled": 250363904,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-rename--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-rename",
+      "arm": "cgraph",
+      "language": "python",
+      "kind": "rename",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "old_name_removed": true,
+        "new_name_defined": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.net_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.net_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.net_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.net_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 19,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 2700,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 164602,
+        "cached_input_tokens": 129408,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1622,
+        "reasoning_output_tokens": 387
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.16273662517778575,
+      "mcp_initialization_seconds": 0.012910458957776427,
+      "first_mcp_request_seconds": 0.01637958292849362,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": 0.01370295905508101,
+      "agent_wall_seconds": 85.4830371660646,
+      "peak_process_tree_rss_bytes_sampled": 199393280,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-rename--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-policy",
+      "arm": "search",
+      "language": "python",
+      "kind": "documented_behavior",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 9,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 549,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 83938,
+        "cached_input_tokens": 70016,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 778,
+        "reasoning_output_tokens": 168
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 88.33598320907913,
+      "peak_process_tree_rss_bytes_sampled": 167231488,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-policy--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-policy",
+      "arm": "cgraph",
+      "language": "python",
+      "kind": "documented_behavior",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 13,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 2918,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 100472,
+        "cached_input_tokens": 67584,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1044,
+        "reasoning_output_tokens": 258
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.22813466587103903,
+      "mcp_initialization_seconds": 0.014426874928176403,
+      "first_mcp_request_seconds": 0.023674708092585206,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": 0.005857791053131223,
+      "agent_wall_seconds": 67.37856887513772,
+      "peak_process_tree_rss_bytes_sampled": 248348672,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-policy--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-callers",
+      "arm": "search",
+      "language": "javascript",
+      "kind": "navigation",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeBatch",
+            "app.routeRequest"
+          ],
+          [
+            "cli.main",
+            "app.routeRequest"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeBatch",
+            "app.routeRequest"
+          ],
+          [
+            "cli.main",
+            "app.routeRequest"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 380,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 58854,
+        "cached_input_tokens": 45952,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 497,
+        "reasoning_output_tokens": 174
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 59.31218754197471,
+      "peak_process_tree_rss_bytes_sampled": 339148800,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-callers--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-callers",
+      "arm": "cgraph",
+      "language": "javascript",
+      "kind": "navigation",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeBatch",
+            "app.routeRequest"
+          ],
+          [
+            "cli.main",
+            "app.routeRequest"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeBatch",
+            "app.routeRequest"
+          ],
+          [
+            "cli.main",
+            "app.routeRequest"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 5,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 866,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 84704,
+        "cached_input_tokens": 68352,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 683,
+        "reasoning_output_tokens": 226
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.4599515409208834,
+      "mcp_initialization_seconds": 0.017416000133380294,
+      "first_mcp_request_seconds": 0.041151707991957664,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.00157256203237921,
+      "end_of_case_synchronization_seconds": 0.06264137499965727,
+      "agent_wall_seconds": 68.0795253328979,
+      "peak_process_tree_rss_bytes_sampled": 239321088,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-callers--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-import",
+      "arm": "search",
+      "language": "javascript",
+      "kind": "import_redirection",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 18,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 795,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 84891,
+        "cached_input_tokens": 58496,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 802,
+        "reasoning_output_tokens": 196
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 68.40704966592602,
+      "peak_process_tree_rss_bytes_sampled": 200065024,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-import--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-import",
+      "arm": "cgraph",
+      "language": "javascript",
+      "kind": "import_redirection",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 16,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 2615,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 120991,
+        "cached_input_tokens": 109312,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1054,
+        "reasoning_output_tokens": 263
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.16851108404807746,
+      "mcp_initialization_seconds": 0.0128475830424577,
+      "first_mcp_request_seconds": 0.014555374858900905,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": 0.026973417028784752,
+      "agent_wall_seconds": 74.55364195909351,
+      "peak_process_tree_rss_bytes_sampled": 249987072,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-import--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-delete",
+      "arm": "search",
+      "language": "javascript",
+      "kind": "deletion",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_removed": true,
+        "legacy_references_removed": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 17,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 927,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 105881,
+        "cached_input_tokens": 89984,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1004,
+        "reasoning_output_tokens": 224
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 65.53808045806363,
+      "peak_process_tree_rss_bytes_sampled": 158449664,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-delete--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-delete",
+      "arm": "cgraph",
+      "language": "javascript",
+      "kind": "deletion",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_removed": true,
+        "legacy_references_removed": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 15,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 1065,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 156252,
+        "cached_input_tokens": 120448,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1059,
+        "reasoning_output_tokens": 261
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.16954299993813038,
+      "mcp_initialization_seconds": 0.011061582947149873,
+      "first_mcp_request_seconds": 0.015054792165756226,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": 0.0026297918520867825,
+      "agent_wall_seconds": 58.96089729107916,
+      "peak_process_tree_rss_bytes_sampled": 348717056,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-delete--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-impact",
+      "arm": "search",
+      "language": "python",
+      "kind": "directional_impact",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "api.checkout",
+            "workflow.quote_invoice"
+          ],
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "api.checkout",
+            "workflow.quote_invoice"
+          ],
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 585,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 75135,
+        "cached_input_tokens": 60800,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 579,
+        "reasoning_output_tokens": 187
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 55.47667179093696,
+      "peak_process_tree_rss_bytes_sampled": 244498432,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-impact--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-impact",
+      "arm": "cgraph",
+      "language": "python",
+      "kind": "directional_impact",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "api.checkout",
+            "workflow.quote_invoice"
+          ],
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "api.checkout",
+            "workflow.quote_invoice"
+          ],
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 2054,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 70883,
+        "cached_input_tokens": 53376,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 774,
+        "reasoning_output_tokens": 157
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.1582588751334697,
+      "mcp_initialization_seconds": 0.011660750024020672,
+      "first_mcp_request_seconds": 0.014822999946773052,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": 0.0026655420660972595,
+      "agent_wall_seconds": 49.38587374985218,
+      "peak_process_tree_rss_bytes_sampled": 247037952,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-impact--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-interface",
+      "arm": "search",
+      "language": "python",
+      "kind": "interface_change",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 21,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 1127,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 114134,
+        "cached_input_tokens": 86144,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1249,
+        "reasoning_output_tokens": 214
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 69.4174996248912,
+      "peak_process_tree_rss_bytes_sampled": 248856576,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-interface--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "payments-interface",
+      "arm": "cgraph",
+      "language": "python",
+      "kind": "interface_change",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 17,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 2249,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 138720,
+        "cached_input_tokens": 119424,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1439,
+        "reasoning_output_tokens": 288
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.33058224990963936,
+      "mcp_initialization_seconds": 0.04106154106557369,
+      "first_mcp_request_seconds": 0.05905020795762539,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.005455937585793436,
+      "end_of_case_synchronization_seconds": 0.007698459085077047,
+      "agent_wall_seconds": 158.0224038749002,
+      "peak_process_tree_rss_bytes_sampled": 247300096,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/payments-interface--cgraph"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-reexport",
+      "arm": "search",
+      "language": "javascript",
+      "kind": "reexport",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "app_import_unchanged": true,
+        "cli_import_unchanged": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 18,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 845,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 97216,
+        "cached_input_tokens": 82688,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 853,
+        "reasoning_output_tokens": 215
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0,
+      "mcp_initialization_seconds": null,
+      "first_mcp_request_seconds": null,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": null,
+      "agent_wall_seconds": 61.34443916706368,
+      "peak_process_tree_rss_bytes_sampled": 266944512,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-reexport--search"
+    },
+    {
+      "run": "pilot-20260912",
+      "task": "routing-reexport",
+      "arm": "cgraph",
+      "language": "javascript",
+      "kind": "reexport",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "app_import_unchanged": true,
+        "cli_import_unchanged": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 18,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 2149,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 161687,
+        "cached_input_tokens": 149760,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1402,
+        "reasoning_output_tokens": 383
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.17541350005194545,
+      "mcp_initialization_seconds": 0.012129792012274265,
+      "first_mcp_request_seconds": 0.038454791996628046,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0007363335462287068,
+      "end_of_case_synchronization_seconds": 0.01297462498769164,
+      "agent_wall_seconds": 87.31612595892511,
+      "peak_process_tree_rss_bytes_sampled": 239484928,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-20260912/routing-reexport--cgraph"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "payments-callers",
+      "arm": "graphify",
+      "language": "python",
+      "kind": "navigation",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 573,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 74643,
+        "cached_input_tokens": 60672,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 490,
+        "reasoning_output_tokens": 88
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.5110582909546793,
+      "mcp_initialization_seconds": 0.8818057908210903,
+      "first_mcp_request_seconds": 0.0028521670028567314,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0017501874826848507,
+      "end_of_case_synchronization_seconds": 0.4908342498820275,
+      "agent_wall_seconds": 49.07330800010823,
+      "peak_process_tree_rss_bytes_sampled": 339804160,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/payments-callers--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "payments-rename",
+      "arm": "graphify",
+      "language": "python",
+      "kind": "rename",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "old_name_removed": true,
+        "new_name_defined": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.net_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.net_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.net_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.net_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 18,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 1202,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 104083,
+        "cached_input_tokens": 74368,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1207,
+        "reasoning_output_tokens": 196
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.3532149998936802,
+      "mcp_initialization_seconds": 0.7460010419599712,
+      "first_mcp_request_seconds": 0.004920500097796321,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0017224374460056424,
+      "end_of_case_synchronization_seconds": 0.5348404578398913,
+      "agent_wall_seconds": 68.38102962519042,
+      "peak_process_tree_rss_bytes_sampled": 359071744,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/payments-rename--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "payments-policy",
+      "arm": "graphify",
+      "language": "python",
+      "kind": "documented_behavior",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 11,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 802,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 88784,
+        "cached_input_tokens": 74112,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 866,
+        "reasoning_output_tokens": 201
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.33222816698253155,
+      "mcp_initialization_seconds": 1.0030925839673728,
+      "first_mcp_request_seconds": 0.0028577910270541906,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0015451040817424655,
+      "end_of_case_synchronization_seconds": 0.5417757499963045,
+      "agent_wall_seconds": 93.35040879086591,
+      "peak_process_tree_rss_bytes_sampled": 321175552,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/payments-policy--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "routing-callers",
+      "arm": "graphify",
+      "language": "javascript",
+      "kind": "navigation",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeBatch",
+            "app.routeRequest"
+          ],
+          [
+            "cli.main",
+            "app.routeRequest"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeBatch",
+            "app.routeRequest"
+          ],
+          [
+            "cli.main",
+            "app.routeRequest"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 8,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 556,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 76645,
+        "cached_input_tokens": 62208,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 590,
+        "reasoning_output_tokens": 161
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 3.8343973748851568,
+      "mcp_initialization_seconds": 1.126932208891958,
+      "first_mcp_request_seconds": 0.0035035000182688236,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0016722084255889058,
+      "end_of_case_synchronization_seconds": 0.6058039588388056,
+      "agent_wall_seconds": 53.29096283391118,
+      "peak_process_tree_rss_bytes_sampled": 313507840,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/routing-callers--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "routing-import",
+      "arm": "graphify",
+      "language": "javascript",
+      "kind": "import_redirection",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 12,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 1036,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 95312,
+        "cached_input_tokens": 64896,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 927,
+        "reasoning_output_tokens": 207
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.6738182089757174,
+      "mcp_initialization_seconds": 1.5458214168902487,
+      "first_mcp_request_seconds": 0.013024834217503667,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.012844500131905079,
+      "end_of_case_synchronization_seconds": 0.48246270907111466,
+      "agent_wall_seconds": 64.90605954197235,
+      "peak_process_tree_rss_bytes_sampled": 263733248,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/routing-import--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "routing-delete",
+      "arm": "graphify",
+      "language": "javascript",
+      "kind": "deletion",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_removed": true,
+        "legacy_references_removed": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 13,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 1020,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 103960,
+        "cached_input_tokens": 75136,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 944,
+        "reasoning_output_tokens": 240
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.327393792103976,
+      "mcp_initialization_seconds": 0.7505850419402122,
+      "first_mcp_request_seconds": 0.002675791969522834,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0012443119194358587,
+      "end_of_case_synchronization_seconds": 0.4982171661686152,
+      "agent_wall_seconds": 66.94153458299115,
+      "peak_process_tree_rss_bytes_sampled": 339591168,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/routing-delete--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "payments-impact",
+      "arm": "graphify",
+      "language": "python",
+      "kind": "directional_impact",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "no_edits": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "api.checkout",
+            "workflow.quote_invoice"
+          ],
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "api.checkout",
+            "workflow.quote_invoice"
+          ],
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 14,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 820,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 89176,
+        "cached_input_tokens": 77568,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 821,
+        "reasoning_output_tokens": 225
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.3748772500548512,
+      "mcp_initialization_seconds": 0.8134757080115378,
+      "first_mcp_request_seconds": 0.002669957932084799,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0013582705287262797,
+      "end_of_case_synchronization_seconds": 0.5520695829764009,
+      "agent_wall_seconds": 65.26664016698487,
+      "peak_process_tree_rss_bytes_sampled": 317259776,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/payments-impact--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "payments-interface",
+      "arm": "graphify",
+      "language": "python",
+      "kind": "interface_change",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 15,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 979,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 111010,
+        "cached_input_tokens": 100992,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1185,
+        "reasoning_output_tokens": 253
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.3469193330965936,
+      "mcp_initialization_seconds": 0.7772733750753105,
+      "first_mcp_request_seconds": 0.002796584041789174,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0013541459338739514,
+      "end_of_case_synchronization_seconds": 0.48747712513431907,
+      "agent_wall_seconds": 64.45337766688317,
+      "peak_process_tree_rss_bytes_sampled": 254001152,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/payments-interface--graphify"
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "task": "routing-reexport",
+      "arm": "graphify",
+      "language": "javascript",
+      "kind": "reexport",
+      "advisory_surface_exercised": null,
+      "successful_nonempty_change_context_calls": null,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "app_import_unchanged": true,
+        "cli_import_unchanged": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 14,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 1288,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 111089,
+        "cached_input_tokens": 94464,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 909,
+        "reasoning_output_tokens": 153
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.32874308293685317,
+      "mcp_initialization_seconds": 0.8028186669107527,
+      "first_mcp_request_seconds": 0.0029899170622229576,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0015027704648673534,
+      "end_of_case_synchronization_seconds": 0.5932942081708461,
+      "agent_wall_seconds": 58.63075916701928,
+      "peak_process_tree_rss_bytes_sampled": 309231616,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+      "raw_case": "research/maintenance_eval/evidence/pilot-graphify-code-only/routing-reexport--graphify"
+    },
+    {
+      "run": "pilot-change-context",
+      "task": "routing-import",
+      "arm": "cgraph_change_context",
+      "language": "javascript",
+      "kind": "import_redirection",
+      "advisory_surface_exercised": true,
+      "successful_nonempty_change_context_calls": 1,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 14,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 4756,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 158494,
+        "cached_input_tokens": 102528,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1208,
+        "reasoning_output_tokens": 263
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.16480362508445978,
+      "mcp_initialization_seconds": 1.8863577500451356,
+      "first_mcp_request_seconds": 0.014260750031098723,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": 0.0034984590020030737,
+      "agent_wall_seconds": 71.21850020880811,
+      "peak_process_tree_rss_bytes_sampled": 343310336,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "a3795c505443ae39aa2edc6ee7b000b14be320c8968e47e3e3053f6d49d70bee",
+      "raw_case": "research/maintenance_eval/evidence/pilot-change-context/routing-import--cgraph"
+    },
+    {
+      "run": "pilot-change-context",
+      "task": "routing-delete",
+      "arm": "cgraph_change_context",
+      "language": "javascript",
+      "kind": "deletion",
+      "advisory_surface_exercised": true,
+      "successful_nonempty_change_context_calls": 1,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_removed": true,
+        "legacy_references_removed": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 17,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 5561,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 190998,
+        "cached_input_tokens": 150912,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1272,
+        "reasoning_output_tokens": 219
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.16023612511344254,
+      "mcp_initialization_seconds": 0.009188625030219555,
+      "first_mcp_request_seconds": 0.014615708962082863,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0006984160281717777,
+      "end_of_case_synchronization_seconds": 0.005660583032295108,
+      "agent_wall_seconds": 73.73955408297479,
+      "peak_process_tree_rss_bytes_sampled": 250855424,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "a3795c505443ae39aa2edc6ee7b000b14be320c8968e47e3e3053f6d49d70bee",
+      "raw_case": "research/maintenance_eval/evidence/pilot-change-context/routing-delete--cgraph"
+    },
+    {
+      "run": "pilot-change-context",
+      "task": "payments-interface",
+      "arm": "cgraph_change_context",
+      "language": "python",
+      "kind": "interface_change",
+      "advisory_surface_exercised": true,
+      "successful_nonempty_change_context_calls": 1,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "reported": [
+          [
+            "receipt.render_receipt",
+            "pricing.amount_due"
+          ],
+          [
+            "workflow.quote_invoice",
+            "pricing.amount_due"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 19,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 7849,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 175429,
+        "cached_input_tokens": 148480,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1560,
+        "reasoning_output_tokens": 260
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.17446991708129644,
+      "mcp_initialization_seconds": 0.0077282090205699205,
+      "first_mcp_request_seconds": 0.01329670799896121,
+      "warm_populated_requests": 0,
+      "warm_mcp_median_seconds": null,
+      "end_of_case_synchronization_seconds": 0.0073948330245912075,
+      "agent_wall_seconds": 73.8107478339225,
+      "peak_process_tree_rss_bytes_sampled": 259080192,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "a3795c505443ae39aa2edc6ee7b000b14be320c8968e47e3e3053f6d49d70bee",
+      "raw_case": "research/maintenance_eval/evidence/pilot-change-context/payments-interface--cgraph"
+    },
+    {
+      "run": "pilot-change-context",
+      "task": "routing-reexport",
+      "arm": "cgraph_change_context",
+      "language": "javascript",
+      "kind": "reexport",
+      "advisory_surface_exercised": true,
+      "successful_nonempty_change_context_calls": 1,
+      "completed_behavior_and_reported_edges": true,
+      "behavior_checks": {
+        "legacy_preserved": true,
+        "app_import_unchanged": true,
+        "cli_import_unchanged": true,
+        "behavior": true
+      },
+      "relationships": {
+        "measurement": "agent_reported_edges_against_independent_reference",
+        "expected": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "reported": [
+          [
+            "app.routeRequest",
+            "modern.normalize"
+          ]
+        ],
+        "missing": [],
+        "false": []
+      },
+      "tool_calls": 19,
+      "tool_errors": 0,
+      "exact_failed_tool_retries": 0,
+      "provider_retries": null,
+      "provider_retries_note": "The CLI event stream does not expose an authoritative provider retry counter",
+      "tool_output_tokens_estimate_char4": 6541,
+      "tool_output_provider_tokens": null,
+      "model_usage": {
+        "input_tokens": 163647,
+        "cached_input_tokens": 122880,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1257,
+        "reasoning_output_tokens": 278
+      },
+      "usage_complete": true,
+      "money_usd": null,
+      "cold_index_seconds": 0.16537100006826222,
+      "mcp_initialization_seconds": 0.0072955419309437275,
+      "first_mcp_request_seconds": 0.013829916948452592,
+      "warm_populated_requests": 2,
+      "warm_mcp_median_seconds": 0.0007383959600701928,
+      "end_of_case_synchronization_seconds": 0.006027290830388665,
+      "agent_wall_seconds": 70.46658441703767,
+      "peak_process_tree_rss_bytes_sampled": 253968384,
+      "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+      "gateway_sha256": "a3795c505443ae39aa2edc6ee7b000b14be320c8968e47e3e3053f6d49d70bee",
+      "raw_case": "research/maintenance_eval/evidence/pilot-change-context/routing-reexport--cgraph"
+    }
+  ],
+  "excluded_infrastructure_rows": [
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "payments-callers",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 1.2379575830418617,
+        "peak_process_tree_rss_bytes_sampled": 43614208,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-callers--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "payments-rename",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 0.7879985000472516,
+        "peak_process_tree_rss_bytes_sampled": 28180480,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-rename--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "payments-policy",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 0.18162491684779525,
+        "peak_process_tree_rss_bytes_sampled": 4096000,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-policy--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "routing-callers",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 1.331410791957751,
+        "peak_process_tree_rss_bytes_sampled": 23445504,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-callers--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "routing-import",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 0.3808977499138564,
+        "peak_process_tree_rss_bytes_sampled": 24117248,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-import--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "routing-delete",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 0.3878617079462856,
+        "peak_process_tree_rss_bytes_sampled": 29704192,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-delete--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "payments-impact",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 0.32301683304831386,
+        "peak_process_tree_rss_bytes_sampled": 28278784,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-impact--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "payments-interface",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-interface--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 0.15951550006866455,
+        "peak_process_tree_rss_bytes_sampled": 4685824,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-interface--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/payments-interface--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    },
+    {
+      "run": "pilot-20260912",
+      "exclusion_reason": "diagnosed pilot configuration: missing deterministic --code-only flag",
+      "task": "routing-reexport",
+      "arm": "graphify",
+      "cold_index": {
+        "command": [
+          "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "extract",
+          "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-reexport--graphify/workspace",
+          "--no-cluster"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 0.33000883320346475,
+        "peak_process_tree_rss_bytes_sampled": 28000256,
+        "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+        "rss_sample_interval_seconds": 0.1,
+        "timed_out": false,
+        "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-reexport--graphify/cold-index.stdout",
+        "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/pilot-20260912/routing-reexport--graphify/cold-index.stderr",
+        "model_tokens": 0,
+        "money_usd": 0,
+        "mode": "deterministic source only"
+      },
+      "status": "index_failed"
+    }
+  ],
+  "manifests": [
+    {
+      "run": "pilot-20260912",
+      "manifest": {
+        "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
+        "config": {
+          "cgraph": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+          "cgraph_mcp": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-mcp",
+          "graphd": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/graphd",
+          "cgraph_client": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-client",
+          "graphify": "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "graphify_python": "/Users/taylorgagne/.local/share/cgraph-eval/uv-tools/graphifyy/bin/python",
+          "codex": "/Users/taylorgagne/.agents/.cache/shims/codex",
+          "model": "gpt-5.6-sol",
+          "reasoning_effort": "low",
+          "timeout_seconds": 180,
+          "max_calls": 40,
+          "versions": {
+            "cgraph": "bin-v0.3.0",
+            "cgraph_source": "4a31f3ed2f0d51315e63e74e0a5593ac00db1ddb",
+            "cgraph_archive_sha256": "b344cf3549cc53677487911c45844daae347e17d6ab52b3e56f19c2db332ff3a",
+            "graphify": "0.9.61",
+            "graphify_source": "fe66389083369c3159aa391117185c8f58b4d07c"
+          },
+          "hidden_paths": [
+            "/Users/taylorgagne/tools/cgraph/.agents/planning",
+            "/Users/taylorgagne/tools/cgraph/research/maintenance_eval",
+            "/Users/taylorgagne/.agents/skills",
+            "/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills"
+          ]
+        },
+        "task_file_sha256": "3903cb09a828fe2cc994dc7439149ac53e451e1c80d553562426a891447c49e3",
+        "reference_file_sha256": "49064bd07a69c246435d5cbb635159b84d084b8d8a0a1762e0df69efaac7362c",
+        "harness_sha256": "8b34c1e7ddb43b11baa2a4135b768533d1d38aa489af9e3822857a386777cbb0",
+        "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+        "executables_sha256": {
+          "cgraph": "26b0c180a22ba95fae2e3ffb23c77d3ab14336264984e07de75d180fb6c4fa51",
+          "graphd": "00b64c2f47d78c9d36828b28343a27b07e333783f50b03bf4fd7ad929ff0a6e0",
+          "cgraph_mcp": "86e89a2b9af19653f72a551d091f7b478442df6556cfaf4a1488cd2d09dc7c50",
+          "graphify": "d98bccc1fd82e5bf2483457f9e7697018f7706d1c9f2e89d85c5c909c0e5554c",
+          "graphify_python": "77d9800689bafd5dbd5d1ca6290e4fdbd0e2cc9ce60bb34bbf6bb7b0119790a8"
+        },
+        "arms": [
+          "search",
+          "cgraph",
+          "graphify"
+        ],
+        "tasks": [
+          "payments-callers",
+          "payments-rename",
+          "payments-policy",
+          "routing-callers",
+          "routing-import",
+          "routing-delete",
+          "payments-impact",
+          "payments-interface",
+          "routing-reexport"
+        ]
+      }
+    },
+    {
+      "run": "pilot-graphify-code-only",
+      "manifest": {
+        "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
+        "config": {
+          "cgraph": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+          "cgraph_mcp": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-mcp",
+          "graphd": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/graphd",
+          "cgraph_client": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-client",
+          "graphify": "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "graphify_python": "/Users/taylorgagne/.local/share/cgraph-eval/uv-tools/graphifyy/bin/python",
+          "codex": "/Users/taylorgagne/.agents/.cache/shims/codex",
+          "model": "gpt-5.6-sol",
+          "reasoning_effort": "low",
+          "timeout_seconds": 180,
+          "max_calls": 40,
+          "versions": {
+            "cgraph": "bin-v0.3.0",
+            "cgraph_source": "4a31f3ed2f0d51315e63e74e0a5593ac00db1ddb",
+            "cgraph_archive_sha256": "b344cf3549cc53677487911c45844daae347e17d6ab52b3e56f19c2db332ff3a",
+            "graphify": "0.9.61",
+            "graphify_source": "fe66389083369c3159aa391117185c8f58b4d07c"
+          },
+          "hidden_paths": [
+            "/Users/taylorgagne/tools/cgraph/.agents/planning",
+            "/Users/taylorgagne/tools/cgraph/research/maintenance_eval",
+            "/Users/taylorgagne/.agents/skills",
+            "/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills"
+          ]
+        },
+        "task_file_sha256": "3903cb09a828fe2cc994dc7439149ac53e451e1c80d553562426a891447c49e3",
+        "reference_file_sha256": "49064bd07a69c246435d5cbb635159b84d084b8d8a0a1762e0df69efaac7362c",
+        "harness_sha256": "b2d76b23071fb9a670a543b852799e03e3a82a009f4e29028770f4c514c7b9f1",
+        "gateway_sha256": "b0f7dddfcdb283e9eb29345fc63fab6e602e804c8cf83ccc352f2ca2a15f5d00",
+        "executables_sha256": {
+          "cgraph": "26b0c180a22ba95fae2e3ffb23c77d3ab14336264984e07de75d180fb6c4fa51",
+          "graphd": "00b64c2f47d78c9d36828b28343a27b07e333783f50b03bf4fd7ad929ff0a6e0",
+          "cgraph_mcp": "86e89a2b9af19653f72a551d091f7b478442df6556cfaf4a1488cd2d09dc7c50",
+          "graphify": "d98bccc1fd82e5bf2483457f9e7697018f7706d1c9f2e89d85c5c909c0e5554c",
+          "graphify_python": "77d9800689bafd5dbd5d1ca6290e4fdbd0e2cc9ce60bb34bbf6bb7b0119790a8"
+        },
+        "arms": [
+          "graphify"
+        ],
+        "tasks": [
+          "payments-callers",
+          "payments-rename",
+          "payments-policy",
+          "routing-callers",
+          "routing-import",
+          "routing-delete",
+          "payments-impact",
+          "payments-interface",
+          "routing-reexport"
+        ]
+      }
+    },
+    {
+      "run": "pilot-change-context",
+      "manifest": {
+        "config": {
+          "cgraph": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+          "cgraph_mcp": "/Users/taylorgagne/.local/share/cgraph-eval/change-context-21b82a2804b602e5/cgraph-mcp",
+          "graphd": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/graphd",
+          "cgraph_client": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-client",
+          "graphify": "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+          "graphify_python": "/Users/taylorgagne/.local/share/cgraph-eval/uv-tools/graphifyy/bin/python",
+          "codex": "/Users/taylorgagne/.agents/.cache/shims/codex",
+          "model": "gpt-5.6-sol",
+          "reasoning_effort": "low",
+          "timeout_seconds": 180,
+          "max_calls": 40,
+          "versions": {
+            "cgraph": "bin-v0.3.0",
+            "cgraph_source": "4a31f3ed2f0d51315e63e74e0a5593ac00db1ddb",
+            "cgraph_archive_sha256": "b344cf3549cc53677487911c45844daae347e17d6ab52b3e56f19c2db332ff3a",
+            "graphify": "0.9.61",
+            "graphify_source": "fe66389083369c3159aa391117185c8f58b4d07c"
+          },
+          "hidden_paths": [
+            "/Users/taylorgagne/tools/cgraph/.agents/planning",
+            "/Users/taylorgagne/tools/cgraph/research/maintenance_eval",
+            "/Users/taylorgagne/.agents/skills",
+            "/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills"
+          ]
+        },
+        "arm": "cgraph_change_context",
+        "tasks": [
+          "routing-import",
+          "routing-delete",
+          "payments-interface",
+          "routing-reexport"
+        ],
+        "extra_tool": "graph_change_context after edits using actual candidate diff",
+        "mcp_sha256_before": "21b82a2804b602e5a04b4e9a4446ed1014f35c8f1670d636beb6e741861d2c54",
+        "wrapper_sha256": "845410ddfee80a9415accb993fe52dbd60ce44e9b3845611ea4bb556972507b4",
+        "extension_sha256": "17a8e961675fa3ff83919b98334eccf7aa3c1926e4c0310a4db1e1345fefe56b",
+        "baseline_harness_sha256": "026ac31d48e60445fdd69eaae26e3c2a96ca8c6ece80930d352a81632f63b9d8",
+        "gateway_sha256": "a3795c505443ae39aa2edc6ee7b000b14be320c8968e47e3e3053f6d49d70bee",
+        "mcp_sha256_after": "21b82a2804b602e5a04b4e9a4446ed1014f35c8f1670d636beb6e741861d2c54",
+        "executable_unchanged": true
+      }
+    }
+  ],
+  "limitations": [
+    "Small independently reviewed Python and JavaScript fixtures; not production repositories or a statistically powered comparison.",
+    "Relationship errors compare agent-reported answers with independent references, not exhaustive extractor edge precision/recall.",
+    "Maintenance completion here combines hidden behavior tests and reported relationships; separate independent source review checks canonical delegation.",
+    "Graphify uses deterministic code-only indexing; docs remain equally available through workspace tools. This does not evaluate semantic model ingestion.",
+    "Post-task synchronization may be a no-op after watcher or query-triggered refresh; separate controlled mutation evidence measures freshness.",
+    "First MCP request is separated from subsequent populated warm requests; failed or empty retrieval is not a speed success.",
+    "Graph MCP tools provide different context representations. Timings do not establish equal output quality or overall superiority.",
+    "Memory is sampled every 100 milliseconds, may miss transient peaks, and includes task-matched detached graphd processes.",
+    "Tool token counts are explicitly char/4 estimates; provider model usage is retained separately. Cached input is a subset, not an extra input charge.",
+    "Dollar costs and provider retry counts are unavailable rather than inferred from undocumented billing.",
+    "The optional change-context arm is a four-task post-edit advisory subset, not a full fourth-arm trial."
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "arm": "cgraph",
+  "fixture": "payments",
+  "symbol_added": "maintenance_update_probe",
+  "source_before_sha256": "6e7ea003b4e79270cb1d68562c0dfa969b5c630c38756a55770db3f71f2a90cb",
+  "source_after_sha256": "99e3f23438932ea71575d85010a4dd5e7c79b2029dc72b02b4051a33672c75fb",
+  "cold_index": {
+    "command": [
+      "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+      "--root",
+      "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-ready-20260912/cgraph/workspace",
+      "--out",
+      "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-ready-20260912/cgraph/workspace/cgraph-out"
+    ],
+    "returncode": 0,
+    "elapsed_seconds": 0.3524984170217067,
+    "peak_process_tree_rss_bytes_sampled": 245760,
+    "memory_scope": "sampled process descendants plus graphd processes matching exact task workspace argument",
+    "rss_sample_interval_seconds": 0.1,
+    "timed_out": false,
+    "stdout_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-ready-20260912/cgraph/cold-index.stdout",
+    "stderr_path": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-ready-20260912/cgraph/cold-index.stderr",
+    "model_tokens": 0,
+    "money_usd": 0,
+    "mode": "deterministic source only"
+  },
+  "before_query": {
+    "content": [
+      {
+        "text": "{\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"217962b8d174e027920df1277980c669f0e6110b20bb960a98d9f04cdbab591e\",\"leaf_count\":4,\"verified\":true},\"nodes\":[],\"returned\":0,\"route\":\"search\",\"suggestions\":[],\"total\":0}",
+        "type": "text"
+      }
+    ]
+  },
+  "refresh": {
+    "content": [
+      {
+        "text": "{\"accepted\":true,\"bytes_hashed\":825,\"edge_count\":14,\"files_cache_hit\":3,\"files_hashed\":4,\"files_reextracted\":1,\"files_removed\":0,\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"8fd94bae4ad7f25453548249d1a2ece4a69e9254cb7d81c32a5e9c26c8b85c3a\",\"leaf_count\":4,\"verified\":true},\"full_rescan\":true,\"node_count\":9}",
+        "type": "text"
+      }
+    ]
+  },
+  "initial_snapshot_readiness_seconds": 0.03747808397747576,
+  "initial_snapshot_readiness_attempts": [
+    {
+      "elapsed_seconds": 0.037421708926558495,
+      "response": {
+        "content": [
+          {
+            "text": "{\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"217962b8d174e027920df1277980c669f0e6110b20bb960a98d9f04cdbab591e\",\"leaf_count\":4,\"verified\":true},\"nodes\":[],\"returned\":0,\"route\":\"search\",\"suggestions\":[],\"total\":0}",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  ],
+  "refresh_call_seconds": 0.004895291989669204,
+  "edit_to_verified_retrieval_seconds": 0.005844957893714309,
+  "after_query": {
+    "content": [
+      {
+        "text": "{\"freshness\":{\"algorithm\":\"sha256-merkle-v1\",\"content_root\":\"8fd94bae4ad7f25453548249d1a2ece4a69e9254cb7d81c32a5e9c26c8b85c3a\",\"leaf_count\":4,\"verified\":true},\"neighbors\":{\"callees\":{\"count\":0,\"top\":[]},\"callers\":{\"count\":0,\"top\":[]},\"references\":{\"count\":0,\"top\":[]}},\"nodes\":[{\"centrality\":0.2,\"id\":\"users_taylorgagne_local_share_cgraph_eval_update_microprobe_ready_20260912_cgraph_workspace_pricing_py_maintenance_update_probe\",\"kind\":\"function\",\"label\":\"maintenance_update_probe\",\"line\":6,\"location\":{\"end_column\":14,\"end_line\":7,\"start_column\":0,\"start_line\":6},\"snippet\":\"def maintenance_update_probe():\\n    return 731\",\"source_file\":\"/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-ready-20260912/cgraph/workspace/pricing.py\",\"source_sha256\":\"99e3f23438932ea71575d85010a4dd5e7c79b2029dc72b02b4051a33672c75fb\"}],\"returned\":1,\"route\":\"entity\",\"total\":1}",
+        "type": "text"
+      }
+    ]
+  },
+  "symbol_evidence": {
+    "freshness": {
+      "algorithm": "sha256-merkle-v1",
+      "content_root": "8fd94bae4ad7f25453548249d1a2ece4a69e9254cb7d81c32a5e9c26c8b85c3a",
+      "leaf_count": 4,
+      "verified": true
+    },
+    "neighbors": {
+      "callees": {
+        "count": 0,
+        "top": []
+      },
+      "callers": {
+        "count": 0,
+        "top": []
+      },
+      "references": {
+        "count": 0,
+        "top": []
+      }
+    },
+    "nodes": [
+      {
+        "centrality": 0.2,
+        "id": "users_taylorgagne_local_share_cgraph_eval_update_microprobe_ready_20260912_cgraph_workspace_pricing_py_maintenance_update_probe",
+        "kind": "function",
+        "label": "maintenance_update_probe",
+        "line": 6,
+        "location": {
+          "end_column": 14,
+          "end_line": 7,
+          "start_column": 0,
+          "start_line": 6
+        },
+        "snippet": "def maintenance_update_probe():\n    return 731",
+        "source_file": "/Users/taylorgagne/.local/share/cgraph-eval/update-microprobe-ready-20260912/cgraph/workspace/pricing.py",
+        "source_sha256": "99e3f23438932ea71575d85010a4dd5e7c79b2029dc72b02b4051a33672c75fb"
+      }
+    ],
+    "returned": 1,
+    "route": "entity",
+    "total": 1
+  },
+  "verified": true,
+  "model_tokens": 0,
+  "money_usd": 0,
+  "measurement_note": "One deterministic source edit per backend. Edit-to-retrieval includes write, refresh and query, including any resident watcher work. This is a microprobe, not a repeated latency distribution.",
+  "shutdown": {
+    "content": [
+      {
+        "text": "{\"shutdown\":true}",
+        "type": "text"
+      }
+    ]
+  }
+}

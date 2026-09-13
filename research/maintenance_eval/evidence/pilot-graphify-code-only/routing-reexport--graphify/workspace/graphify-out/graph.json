@@ -1,0 +1,266 @@
+{
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "nodes": [
+    {
+      "id": "app",
+      "label": "app.mjs",
+      "file_type": "code",
+      "source_file": "app.mjs",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "app_routerequest",
+      "label": "routeRequest()",
+      "file_type": "code",
+      "source_file": "app.mjs",
+      "source_location": "L3",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "app_routebatch",
+      "label": "routeBatch()",
+      "file_type": "code",
+      "source_file": "app.mjs",
+      "source_location": "L7",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "cli",
+      "label": "cli.mjs",
+      "file_type": "code",
+      "source_file": "cli.mjs",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "cli_main",
+      "label": "main()",
+      "file_type": "code",
+      "source_file": "cli.mjs",
+      "source_location": "L3",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "facade",
+      "label": "facade.mjs",
+      "file_type": "code",
+      "source_file": "facade.mjs",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "legacy",
+      "label": "legacy.mjs",
+      "file_type": "code",
+      "source_file": "legacy.mjs",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "legacy_normalize",
+      "label": "normalize()",
+      "file_type": "code",
+      "source_file": "legacy.mjs",
+      "source_location": "L1",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "modern",
+      "label": "modern.mjs",
+      "file_type": "code",
+      "source_file": "modern.mjs",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "modern_normalize",
+      "label": "normalize()",
+      "file_type": "code",
+      "source_file": "modern.mjs",
+      "source_location": "L1",
+      "_callable": true,
+      "_origin": "ast"
+    }
+  ],
+  "links": [
+    {
+      "source": "app",
+      "target": "facade",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "app.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "facade_normalizepath",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "app.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "app_routerequest",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "app.mjs",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "app_routebatch",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "app.mjs",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app_routebatch",
+      "target": "app_routerequest",
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "app.mjs",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "cli",
+      "target": "app",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "cli.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "cli",
+      "target": "app_routerequest",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "cli.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "cli",
+      "target": "cli_main",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "cli.mjs",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "facade",
+      "target": "modern",
+      "relation": "imports_from",
+      "context": "re-export",
+      "confidence": "EXTRACTED",
+      "source_file": "facade.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "facade",
+      "target": "modern_normalize",
+      "relation": "re_exports",
+      "context": "re-export",
+      "confidence": "EXTRACTED",
+      "source_file": "facade.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "legacy",
+      "target": "legacy_normalize",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "legacy.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "modern",
+      "target": "modern_normalize",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "modern.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "facade",
+      "target": "modern",
+      "relation": "re_exports",
+      "context": "export",
+      "confidence": "EXTRACTED",
+      "source_file": "facade.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "modern_normalize",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "app.mjs",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app_routerequest",
+      "target": "modern_normalize",
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "app.mjs",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "cli_main",
+      "target": "app_routerequest",
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "cli.mjs",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast"
+    }
+  ],
+  "directed": false
+}

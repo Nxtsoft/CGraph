@@ -1,0 +1,1 @@
+{"summary":"Found 2 direct callers of pricing.amount_due.","relationships":[{"source":"receipt.render_receipt","target":"pricing.amount_due"},{"source":"workflow.quote_invoice","target":"pricing.amount_due"}]}

@@ -1,0 +1,43 @@
+{
+  "config": {
+    "cgraph": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+    "cgraph_mcp": "/Users/taylorgagne/.local/share/cgraph-eval/change-context-21b82a2804b602e5/cgraph-mcp",
+    "graphd": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/graphd",
+    "cgraph_client": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-client",
+    "graphify": "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+    "graphify_python": "/Users/taylorgagne/.local/share/cgraph-eval/uv-tools/graphifyy/bin/python",
+    "codex": "/Users/taylorgagne/.agents/.cache/shims/codex",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "timeout_seconds": 180,
+    "max_calls": 40,
+    "versions": {
+      "cgraph": "bin-v0.3.0",
+      "cgraph_source": "4a31f3ed2f0d51315e63e74e0a5593ac00db1ddb",
+      "cgraph_archive_sha256": "b344cf3549cc53677487911c45844daae347e17d6ab52b3e56f19c2db332ff3a",
+      "graphify": "0.9.61",
+      "graphify_source": "fe66389083369c3159aa391117185c8f58b4d07c"
+    },
+    "hidden_paths": [
+      "/Users/taylorgagne/tools/cgraph/.agents/planning",
+      "/Users/taylorgagne/tools/cgraph/research/maintenance_eval",
+      "/Users/taylorgagne/.agents/skills",
+      "/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills"
+    ]
+  },
+  "arm": "cgraph_change_context",
+  "tasks": [
+    "routing-import",
+    "routing-delete",
+    "payments-interface",
+    "routing-reexport"
+  ],
+  "extra_tool": "graph_change_context after edits using actual candidate diff",
+  "mcp_sha256_before": "21b82a2804b602e5a04b4e9a4446ed1014f35c8f1670d636beb6e741861d2c54",
+  "wrapper_sha256": "845410ddfee80a9415accb993fe52dbd60ce44e9b3845611ea4bb556972507b4",
+  "extension_sha256": "17a8e961675fa3ff83919b98334eccf7aa3c1926e4c0310a4db1e1345fefe56b",
+  "baseline_harness_sha256": "026ac31d48e60445fdd69eaae26e3c2a96ca8c6ece80930d352a81632f63b9d8",
+  "gateway_sha256": "a3795c505443ae39aa2edc6ee7b000b14be320c8968e47e3e3053f6d49d70bee",
+  "mcp_sha256_after": "21b82a2804b602e5a04b4e9a4446ed1014f35c8f1670d636beb6e741861d2c54",
+  "executable_unchanged": true
+}
