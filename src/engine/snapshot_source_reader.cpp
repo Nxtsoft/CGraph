@@ -41,21 +41,9 @@ SnapshotSourceSnippet SnapshotSourceReader::read_snippet(
   }
 
   const auto path = normalized_source_path(node.source_file);
-  const auto* expected = expected_hash(path);
-  if (pinned_ && expected == nullptr) {
-    throw_mismatch(path, "the selected snapshot has no source hash");
-  }
-
+  if (pinned_) (void)read_verified_source(path);
   auto& source = read_source(path);
-  if (!source.available) {
-    if (pinned_) {
-      throw_mismatch(path, source.failure);
-    }
-    return result;
-  }
-  if (pinned_ && source.source_sha256 != *expected) {
-    throw_mismatch(path, "the source bytes changed after synchronization");
-  }
+  if (!source.available) return result;
 
   result.source_sha256 = source.source_sha256;
   if (max_lines == 0 || max_chars == 0 || source.contents.empty()) {
@@ -104,6 +92,18 @@ SnapshotSourceSnippet SnapshotSourceReader::read_snippet(
     result.truncated = true;
   }
   return result;
+}
+
+const std::string& SnapshotSourceReader::read_verified_source(const std::string& path) {
+  const auto normalized = normalized_source_path(path);
+  const auto* expected = expected_hash(normalized);
+  if (pinned_ && expected == nullptr)
+    throw_mismatch(normalized, "the selected snapshot has no source hash");
+  auto& source = read_source(normalized);
+  if (!source.available) throw_mismatch(normalized, source.failure);
+  if (pinned_ && source.source_sha256 != *expected)
+    throw_mismatch(normalized, "the source bytes changed after synchronization");
+  return source.contents;
 }
 
 std::size_t SnapshotSourceReader::files_read() const noexcept {

@@ -33,6 +33,8 @@ class SnapshotSourceReader {
       const Node& node,
       std::size_t max_lines,
       std::size_t max_chars);
+  // Strict whole-file read for diff validation and final snapshot verification.
+  [[nodiscard]] const std::string& read_verified_source(const std::string& path);
   [[nodiscard]] std::size_t files_read() const noexcept;
 
  private:
