@@ -1,8 +1,8 @@
 {
   "repositories": {
-    "click": {"url": "https://github.com/pallets/click", "license": "BSD-3-Clause"},
-    "flask": {"url": "https://github.com/pallets/flask", "license": "BSD-3-Clause"},
-    "requests": {"url": "https://github.com/psf/requests", "license": "Apache-2.0"}
+    "click": {"url": "https://github.com/pallets/click.git", "license": "BSD-3-Clause"},
+    "flask": {"url": "https://github.com/pallets/flask.git", "license": "BSD-3-Clause"},
+    "requests": {"url": "https://github.com/psf/requests.git", "license": "Apache-2.0"}
   },
   "cases": [
     {
