@@ -27,13 +27,17 @@ evidence, and it was thrown away before the rule ran.
   byte-identical to before.
 - `resolve_raw_calls`, tier 2b (member call, unknown receiver, unique project method): a bare
   name every standard library defines on its containers, strings, iterators, smart pointers and
-  option types (`size`, `find`, `empty`, `begin`, `value`, `unwrap`, ...) is refused and counted as
-  `dropped_library_member`. Names a project plausibly owns (`open`, `get`, `add`, `apply`) are
+  option types (`size`, `find`, `empty`, `begin`, `value`, `unwrap`, ...) is refused. The check is
+  on the make_id-normalized key, so `.Count()` and `.count()` both match. It is counted as
+  `dropped_library_member` only when a project method existed to refuse; otherwise the call stays
+  `dropped_unknown`. Names a project plausibly owns (`open`, `get`, `add`, `apply`) are
   deliberately not on the list.
-- `resolve_raw_calls`, after a target is chosen by the existing tiers and before the edge is
-  emitted: when the call carries a qualifier, the target's `scope` must end with the qualifier's
-  innermost segment, or the target must be a method of a class bearing that name
-  (`proj::Stats::size_of()`). Otherwise the call is refused and counted as the new
+- `resolve_raw_calls`, after the existing tiers produce a target (and any overload siblings) and
+  before edges are emitted: when the call carries a qualifier, every candidate is kept only if
+  the qualifier's segments are a suffix of its `scope` segments (anonymous namespaces are
+  transparent), or it is a method of a class bearing the last segment whose own scope carries
+  the rest (`proj::Stats::size_of()`). Segments, never text: a template scope `Outer<proj::Beast>`
+  is recorded as `Outer`. A set with no survivor is refused and counted as the new
   `dropped_scope_mismatch`, which `CallResolution::balances()` includes.
 
 ### Non-goals

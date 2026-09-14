@@ -219,7 +219,11 @@ std::string cpp_callee_name(const TSNode& node, const ExtractionContext& context
 
 std::string cpp_callee_scope(const TSNode& node, const ExtractionContext& context) {
   // `a::b::f` parses as qualified_identifier(scope: a, name: qualified_identifier(
-  // scope: b, name: f)): collect each scope while descending to the leaf.
+  // scope: b, name: f)): collect each scope while descending to the leaf. A
+  // scope is recorded as its bare identifier only -- `Outer<proj::Beast>` is
+  // recorded as `Outer` -- so every segment is `::`-free and the resolver can
+  // split the joined qualifier on `::` without ever cutting inside a template
+  // argument (the fabricated-name failure callee_leaf_name exists to prevent).
   std::string scope;
   TSNode current = node;
   for (int depth = 0; depth < 24 && !ts_node_is_null(current); ++depth) {
@@ -233,10 +237,25 @@ std::string cpp_callee_scope(const TSNode& node, const ExtractionContext& contex
     }
     const auto scope_node = ts_node_child_by_field_name(current, "scope", 5);
     if (!ts_node_is_null(scope_node)) {
+      std::string segment;
+      const std::string_view scope_type = ts_node_type(scope_node);
+      if (scope_type == "template_type") {
+        if (const auto name = ts_node_child_by_field_name(scope_node, "name", 4); !ts_node_is_null(name)) {
+          segment = std::string(node_text(name, context.source));
+        }
+      } else if (scope_type == "namespace_identifier" || scope_type == "type_identifier" ||
+                 scope_type == "identifier") {
+        segment = std::string(node_text(scope_node, context.source));
+      }
+      // Anything else (`decltype(x)::f`, a dependent name) names no scope a
+      // declaration could carry: refuse the whole qualifier rather than guess.
+      if (segment.empty() || segment.find("::") != std::string::npos || segment.find('<') != std::string::npos) {
+        return {};
+      }
       if (!scope.empty()) {
         scope += "::";
       }
-      scope += node_text(scope_node, context.source);
+      scope += segment;
     }
     current = ts_node_child_by_field_name(current, "name", 4);
   }

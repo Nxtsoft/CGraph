@@ -3,6 +3,7 @@
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
+#include <cstdio>
 
 namespace {
 
@@ -357,9 +358,12 @@ int test_qualified_scope() {
                          .properties = {{"scope", "proj"}}});
   graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
                          .properties = {{"scope", "proj::detail"}}});
-  graph.nodes.push_back({.id = stats, .label = "Stats", .source_file = "/p/stats.hpp", .kind = "class"});
+  // The class carries its own namespace, so `proj::Stats::size_of` checks `proj`
+  // against the class and `Stats` against the method's owner.
+  graph.nodes.push_back({.id = stats, .label = "Stats", .source_file = "/p/stats.hpp", .kind = "class",
+                         .properties = {{"scope", "proj"}}});
   graph.nodes.push_back({.id = size_of, .label = "size_of", .source_file = "/p/stats.hpp", .kind = "function",
-                         .properties = {{"method", "true"}}});
+                         .properties = {{"method", "true"}, {"scope", "proj"}}});
   graph.nodes.push_back({.id = local_exists, .label = "exists", .source_file = "/p/use.cpp", .kind = "function"});
   graph.edges.push_back({.source = stats, .target = size_of, .relation = "method"});
 
@@ -392,6 +396,55 @@ int test_qualified_scope() {
     return 1;
   }
   if (outcomes.dropped_scope_mismatch != 2 || !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// The scope gate reasons in segments, not text: a qualifier must be a suffix of
+// the declaration's scope (so `other::detail::helper` does not reach
+// `proj::detail::helper`), an anonymous namespace is transparent to a qualified
+// call from the same translation unit, and an overload set is gated as a whole
+// -- only the members in the named scope get an edge, whichever was declared
+// first, and a set with no survivor is not counted as resolved.
+int test_qualified_scope_segments() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto hidden = cgraph::make_id("/p/hidden.cpp:hidden");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto dup_alpha = cgraph::make_id("/p/dup.cpp:dup");
+  const auto dup_file = cgraph::make_id("/p/dup.cpp:dup:2");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = hidden, .label = "hidden", .source_file = "/p/hidden.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::(anonymous)"}}});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  // File-scope declaration FIRST, so the overload head is the wrong one.
+  graph.nodes.push_back({.id = dup_file, .label = "dup", .source_file = "/p/dup.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = dup_alpha, .label = "dup", .source_file = "/p/dup.cpp", .kind = "function",
+                         .properties = {{"scope", "alpha"}}});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "hidden", .source_file = "/p/use.cpp", .qualifier = "proj"},
+      {.caller_id = caller, .callee_label = "helper", .source_file = "/p/use.cpp", .qualifier = "other::detail"},
+      {.caller_id = caller, .callee_label = "dup", .source_file = "/p/use.cpp", .qualifier = "alpha"},
+      {.caller_id = caller, .callee_label = "dup", .source_file = "/p/use.cpp", .qualifier = "beta"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, hidden, "CALLS")) {
+    return 1;  // anonymous namespace is transparent
+  }
+  if (has_edge(graph, caller, helper, "CALLS")) {
+    return 1;  // a different root does not match on the innermost segment alone
+  }
+  if (!has_edge(graph, caller, dup_alpha, "CALLS") || has_edge(graph, caller, dup_file, "CALLS")) {
+    return 1;  // the overload set is gated as a whole, regardless of declaration order
+  }
+  // `beta::dup` matched neither member: refused, and not counted as an overload hit.
+  if (outcomes.dropped_scope_mismatch != 2 || outcomes.resolved_overload_first != 1 || !outcomes.balances()) {
     return 1;
   }
   return 0;
@@ -458,21 +511,31 @@ int test_library_member_names() {
 
 int main() {
   if (test_qualified_scope() != 0) {
+    std::fprintf(stderr, "FAIL test_qualified_scope\n");
     return 1;
   }
   if (test_library_member_names() != 0) {
+    std::fprintf(stderr, "FAIL test_library_member_names\n");
+    return 1;
+  }
+  if (test_qualified_scope_segments() != 0) {
+    std::fprintf(stderr, "FAIL test_qualified_scope_segments\n");
     return 1;
   }
   if (test_resolve_rust_imports() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_rust_imports\n");
     return 1;
   }
   if (test_resolve_imports() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_imports\n");
     return 1;
   }
   if (test_call_scoping() != 0) {
+    std::fprintf(stderr, "FAIL test_call_scoping\n");
     return 1;
   }
   if (test_resolve_relations() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_relations\n");
     return 1;
   }
 

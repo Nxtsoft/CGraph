@@ -243,6 +243,24 @@ int main() {
              "  bool there = std::filesystem::exists(\"x\");\n"
              "  return (it != v.end()) + there + proj::detail::helper() + proj::Stats::size_of() + n;\n"
              "}\n");
+  // The qualifier is reasoned about in segments, through real grammar shapes:
+  // a static call through a class template, a qualified call to a symbol in an
+  // anonymous namespace, and an overload set split across a namespace and file
+  // scope with the file-scope declaration first.
+  write_file(root / "scope_shapes.hpp",
+             "#pragma once\n"
+             "namespace proj {\n"
+             "struct Beast { int n; };\n"
+             "template <typename T> struct Outer { static int make() { return 1; } };\n"
+             "namespace { int hidden() { return 3; } }\n"
+             "int hidden_user() { return proj::hidden(); }\n"
+             "}\n"
+             "int dup(int a) { return a; }\n"
+             "namespace alpha { int dup(double a) { return 0; } }\n");
+  write_file(root / "scope_shapes.cpp",
+             "#include \"scope_shapes.hpp\"\n"
+             "int template_user() { return proj::Outer<int>::make() + proj::Outer<proj::Beast>::make(); }\n"
+             "int alpha_user() { return alpha::dup(1.0); }\n");
 
   const auto graph = cgraph::run_one_shot(root).graph;
 
@@ -374,6 +392,40 @@ int main() {
   check(has_edge(graph, "stdlib_user", "count_of", "CALLS"), "proj::Stats::count_of resolves through its class");
   // `v.size()` on an unknown receiver must not reach the project's only method named `size`.
   check(!has_edge(graph, "stdlib_user", "size", "CALLS"), "v.size() must not bind to proj::Stats::size");
+  check(has_edge(graph, "template_user", "make", "CALLS"), "proj::Outer<int>::make() resolves through the template's class");
+  check(has_edge(graph, "hidden_user", "hidden", "CALLS"), "proj::hidden() reaches a symbol in an anonymous namespace");
+  {
+    // Exactly one `dup` edge, and it is the one declared in namespace alpha.
+    int alpha_edges = 0;
+    int file_scope_edges = 0;
+    for (const auto& edge : graph.edges) {
+      if (edge.relation != "CALLS") {
+        continue;
+      }
+      for (const auto& node : graph.nodes) {
+        if (node.id != edge.target || node.label != "dup") {
+          continue;
+        }
+        const auto scope = node.properties.find("scope");
+        if (scope != node.properties.end() && scope->second == "alpha") {
+          ++alpha_edges;
+        } else {
+          ++file_scope_edges;
+        }
+      }
+    }
+    check(alpha_edges == 1 && file_scope_edges == 0, "alpha::dup() edges only to the alpha member of the overload set");
+  }
+  {
+    bool anonymous_scope = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "hidden" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        anonymous_scope = scope != node.properties.end() && scope->second == "proj::(anonymous)";
+      }
+    }
+    check(anonymous_scope, "an anonymous namespace is spelled (anonymous) in scope");
+  }
   {
     bool scoped = false;
     for (const auto& node : graph.nodes) {
