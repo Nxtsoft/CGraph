@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <set>
 #include <string>
 
 namespace {
@@ -174,6 +175,20 @@ int test_cycles() {
   const auto svg = cgraph::render_modules_svg(report);
   if (svg.find("stroke-dasharray") == std::string::npos || svg.find("cycles: 1") == std::string::npos) {
     return fail("svg draws cycle edges dashed and counts cycles in the caption");
+  }
+  // Drawing only: the cycle's two members are spread into sub-columns (three
+  // distinct box x positions for three modules, one "layer 1" caption).
+  std::set<std::string> box_xs;
+  for (std::size_t at = svg.find("<rect x=\""); at != std::string::npos; at = svg.find("<rect x=\"", at + 1)) {
+    const auto start = at + 9;
+    box_xs.insert(svg.substr(start, svg.find('"', start) - start));
+  }
+  std::size_t layer_captions = 0;
+  for (std::size_t at = svg.find(">layer "); at != std::string::npos; at = svg.find(">layer ", at + 1)) {
+    ++layer_captions;
+  }
+  if (box_xs.size() != 3 || layer_captions != 2) {
+    return fail("svg spreads a cycle's members over sub-columns under one layer caption");
   }
   return 0;
 }

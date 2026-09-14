@@ -709,17 +709,80 @@ std::string render_modules_svg(const ModulesReport& report) {
   // Columns are layers; within a column, modules start in report order
   // (heaviest first) and are then reordered by the barycenter of their
   // neighbors in adjacent columns so edges cross as little as a sweep affords.
-  std::vector<int> column_layer;  // column index -> layer number (shed layers leave no gap)
-  std::unordered_map<int, std::size_t> column_of_layer;
+  // A cycle's members share one semantic layer, but drawn in one column their
+  // edges become a pile of loops. For drawing only, each cycle is spread into
+  // sub-columns: members are ordered by net outgoing weight (Eades-Lin-Smyth
+  // style, so the edges pointing along the order are the many and the back
+  // edges the few), then ranked by longest path over the forward edges.
+  std::vector<int> sub_rank(report.modules.size(), 0);
+  for (const auto& cycle : report.cycles) {
+    std::vector<std::size_t> members;
+    for (const auto& name : cycle) {
+      if (const auto it = index.find(name); it != index.end()) {
+        members.push_back(it->second);
+      }
+    }
+    std::unordered_map<std::size_t, long long> net;
+    for (const auto m : members) {
+      net.emplace(m, 0);
+    }
+    for (const auto& edge : report.edges) {
+      const auto from = index.find(edge.from);
+      const auto to = index.find(edge.to);
+      if (from == index.end() || to == index.end() || !net.contains(from->second) || !net.contains(to->second)) {
+        continue;
+      }
+      net[from->second] += static_cast<long long>(edge.weight());
+      net[to->second] -= static_cast<long long>(edge.weight());
+    }
+    std::sort(members.begin(), members.end(), [&](std::size_t a, std::size_t b) {
+      if (net.at(a) != net.at(b)) {
+        return net.at(a) > net.at(b);
+      }
+      return report.modules[a].name < report.modules[b].name;
+    });
+    std::unordered_map<std::size_t, std::size_t> position;
+    for (std::size_t i = 0; i < members.size(); ++i) {
+      position.emplace(members[i], i);
+    }
+    // Longest path over forward edges, in order (a forward edge always points
+    // to a later member, so one pass in member order suffices).
+    for (const auto m : members) {
+      for (const auto& edge : report.edges) {
+        const auto from = index.find(edge.from);
+        const auto to = index.find(edge.to);
+        if (from == index.end() || to == index.end() || from->second != m || !position.contains(to->second)) {
+          continue;
+        }
+        if (position.at(to->second) > position.at(m)) {
+          sub_rank[to->second] = std::max(sub_rank[to->second], sub_rank[m] + 1);
+        }
+      }
+    }
+  }
+
+  // Columns: one per semantic layer, widened by that layer's largest sub-rank.
+  std::vector<int> column_layer;  // column index -> layer number (-1 = continuation of the previous layer)
+  std::unordered_map<int, std::size_t> first_column_of_layer;
   for (std::size_t layer = 0; layer < report.layers.size(); ++layer) {
-    if (!report.layers[layer].empty()) {
-      column_of_layer.emplace(static_cast<int>(layer), column_layer.size());
-      column_layer.push_back(static_cast<int>(layer));
+    if (report.layers[layer].empty()) {
+      continue;
+    }
+    int width = 1;
+    for (const auto& name : report.layers[layer]) {
+      width = std::max(width, sub_rank[index.at(name)] + 1);
+    }
+    first_column_of_layer.emplace(static_cast<int>(layer), column_layer.size());
+    column_layer.push_back(static_cast<int>(layer));
+    for (int extra = 1; extra < width; ++extra) {
+      column_layer.push_back(-1);
     }
   }
   std::vector<std::vector<std::size_t>> columns(column_layer.size());
+  std::vector<std::size_t> column_of(report.modules.size(), 0);
   for (std::size_t i = 0; i < report.modules.size(); ++i) {
-    columns[column_of_layer.at(report.modules[i].layer)].push_back(i);
+    column_of[i] = first_column_of_layer.at(report.modules[i].layer) + static_cast<std::size_t>(sub_rank[i]);
+    columns[column_of[i]].push_back(i);
   }
   std::vector<std::vector<std::size_t>> predecessors(report.modules.size());
   std::vector<std::vector<std::size_t>> successors(report.modules.size());
@@ -822,6 +885,9 @@ std::string render_modules_svg(const ModulesReport& report) {
     svg << "<text x=\"" << kMarginX << "\" y=\"" << kMarginTop << "\" font-size=\"13\" fill=\"#64748b\">no modules in scope</text>\n";
   }
   for (std::size_t c = 0; c < columns.size(); ++c) {
+    if (column_layer[c] < 0) {
+      continue;  // a cycle's extra sub-column: same layer as the column before it
+    }
     svg << "<text x=\"" << column_x[c] << "\" y=\"" << (kMarginTop - 12.0) << "\" font-size=\"11\" fill=\"#94a3b8\">layer "
         << column_layer[c] << "</text>\n";
   }
@@ -845,12 +911,12 @@ std::string render_modules_svg(const ModulesReport& report) {
     double x2 = 0.0;
     double x3 = 0.0;
     const double bend = kColumnGap * 0.5;
-    if (report.modules[t].layer > report.modules[s].layer) {
+    if (column_of[t] > column_of[s]) {
       x0 = box_x[s] + box_w[s];
       x3 = box_x[t];
       x1 = x0 + bend;
       x2 = x3 - bend;
-    } else if (report.modules[t].layer < report.modules[s].layer) {
+    } else if (column_of[t] < column_of[s]) {
       x0 = box_x[s];
       x3 = box_x[t] + box_w[t];
       x1 = x0 - bend;
