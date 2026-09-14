@@ -217,6 +217,82 @@ std::string cpp_callee_name(const TSNode& node, const ExtractionContext& context
   return callee_leaf_name(node, context.source, 0);
 }
 
+std::string cpp_callee_scope(const TSNode& node, const ExtractionContext& context) {
+  // `a::b::f` parses as qualified_identifier(scope: a, name: qualified_identifier(
+  // scope: b, name: f)): collect each scope while descending to the leaf.
+  std::string scope;
+  TSNode current = node;
+  for (int depth = 0; depth < 24 && !ts_node_is_null(current); ++depth) {
+    const std::string_view type = ts_node_type(current);
+    if (type == "template_function" || type == "template_method") {
+      current = ts_node_child_by_field_name(current, "name", 4);
+      continue;
+    }
+    if (type != "qualified_identifier") {
+      break;
+    }
+    const auto scope_node = ts_node_child_by_field_name(current, "scope", 5);
+    if (!ts_node_is_null(scope_node)) {
+      if (!scope.empty()) {
+        scope += "::";
+      }
+      scope += node_text(scope_node, context.source);
+    }
+    current = ts_node_child_by_field_name(current, "name", 4);
+  }
+  return scope;
+}
+
+namespace {
+
+// The `::`-joined names of the namespaces enclosing `node`, outermost first, or
+// empty at file scope. An anonymous namespace contributes "(anonymous)".
+[[nodiscard]] std::string enclosing_namespace_scope(const TSNode& node, std::string_view source) {
+  std::vector<std::string> names;
+  for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
+    if (std::string_view(ts_node_type(parent)) != "namespace_definition") {
+      continue;
+    }
+    const auto name = ts_node_child_by_field_name(parent, "name", 4);
+    names.push_back(ts_node_is_null(name) ? std::string("(anonymous)") : std::string(node_text(name, source)));
+  }
+  std::string scope;
+  for (auto it = names.rbegin(); it != names.rend(); ++it) {
+    if (!scope.empty()) {
+      scope += "::";
+    }
+    scope += *it;
+  }
+  return scope;
+}
+
+// Stamps `scope` on the symbol node the walk just added for `node`, so call
+// resolution can check a qualified callee against the declaration's namespace.
+// Nothing is stamped at file scope, keeping namespace-free graphs byte-identical.
+void stamp_namespace_scope(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
+  const std::string_view node_type = ts_node_type(node);
+  if (node_type != "function_definition" && node_type != "class_specifier" && node_type != "struct_specifier" &&
+      node_type != "union_specifier" && node_type != "enum_specifier") {
+    return;
+  }
+  const auto scope = enclosing_namespace_scope(node, context.source);
+  if (scope.empty()) {
+    return;
+  }
+  const auto location = source_location(node);
+  for (auto it = fragment.nodes.rbegin(); it != fragment.nodes.rend(); ++it) {
+    if (it->source_file != context.source_file || !it->source_location.has_value() ||
+        it->kind == "field" || it->source_location->start_line != location.start_line ||
+        it->source_location->start_column != location.start_column) {
+      continue;
+    }
+    it->properties["scope"] = scope;
+    return;
+  }
+}
+
+}  // namespace
+
 void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
   if (std::string_view(ts_node_type(node)) != "preproc_include") {
     return;
@@ -372,6 +448,7 @@ void cpp_relation_handler(const TSNode& node, const ExtractionContext& context, 
 }
 
 void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/, Fragment& fragment, std::vector<RawCall>&) {
+  stamp_namespace_scope(node, context, fragment);
   const std::string_view node_type = ts_node_type(node);
   if (node_type != "class_specifier" && node_type != "struct_specifier") {
     return;

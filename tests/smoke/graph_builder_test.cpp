@@ -338,7 +338,131 @@ int test_resolve_relations() {
 
 }  // namespace
 
+// A qualified callee names its scope, and that scope must agree with the
+// resolved declaration. `std::find` resolves by leaf name to the project's only
+// `find`, but nothing in the project is declared in `std`, so the edge is
+// refused. `proj::helper` binds because `helper` carries scope "proj", and
+// `proj::Stats::size_of` binds because `size_of` is a method of class `Stats`.
+int test_qualified_scope() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto find_fn = cgraph::make_id("/p/find.cpp:find");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto stats = cgraph::make_id("/p/stats.hpp:Stats");
+  const auto size_of = cgraph::make_id("/p/stats.hpp:Stats::size_of");
+  const auto local_exists = cgraph::make_id("/p/use.cpp:exists");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = find_fn, .label = "find", .source_file = "/p/find.cpp", .kind = "function",
+                         .properties = {{"scope", "proj"}}});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  graph.nodes.push_back({.id = stats, .label = "Stats", .source_file = "/p/stats.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = size_of, .label = "size_of", .source_file = "/p/stats.hpp", .kind = "function",
+                         .properties = {{"method", "true"}}});
+  graph.nodes.push_back({.id = local_exists, .label = "exists", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.edges.push_back({.source = stats, .target = size_of, .relation = "method"});
+
+  const cgraph::RawCall calls[] = {
+      // std::find: leaf name matches the unique project `find`, scope does not.
+      {.caller_id = caller, .callee_label = "find", .source_file = "/p/use.cpp", .qualifier = "std"},
+      // proj::detail::helper: the innermost qualifier matches the declared scope.
+      {.caller_id = caller, .callee_label = "helper", .source_file = "/p/use.cpp", .qualifier = "proj::detail"},
+      // proj::Stats::size_of: a class-qualified static call binds to the class's method.
+      {.caller_id = caller, .callee_label = "size_of", .source_file = "/p/use.cpp", .qualifier = "proj::Stats"},
+      // std::filesystem::exists: a same-file `exists` must not capture it either.
+      {.caller_id = caller, .callee_label = "exists", .source_file = "/p/use.cpp", .qualifier = "std::filesystem"},
+      // Unqualified `find` keeps the ordinary unique-name rule.
+      {.caller_id = caller, .callee_label = "find", .source_file = "/p/use.cpp"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, helper, "CALLS")) {
+    return 1;
+  }
+  if (!has_edge(graph, caller, size_of, "CALLS")) {
+    return 1;
+  }
+  if (has_edge(graph, caller, local_exists, "CALLS")) {
+    return 1;
+  }
+  // The unqualified call produced the one edge to `find`; the std-qualified one did not add a second.
+  if (!has_edge(graph, caller, find_fn, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.dropped_scope_mismatch != 2 || !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// A member call with an unknown receiver binds project-wide only to a unique
+// METHOD (tier 2b) -- but not when the bare name is one every standard library
+// defines. `v.size()` must not reach the project's only method named `size`,
+// while `r.Match()` (issue #44) still does. The same-file tier is untouched.
+int test_library_member_names() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto stats = cgraph::make_id("/p/stats.hpp:Stats");
+  const auto size = cgraph::make_id("/p/stats.hpp:Stats::size");
+  const auto regex = cgraph::make_id("/p/regex.go:Regex");
+  const auto match = cgraph::make_id("/p/regex.go:Regex::Match");
+  const auto local_owner = cgraph::make_id("/p/use.cpp:Local");
+  const auto local_size = cgraph::make_id("/p/use.cpp:Local::size");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = stats, .label = "Stats", .source_file = "/p/stats.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = size, .label = "size", .source_file = "/p/stats.hpp", .kind = "function"});
+  graph.nodes.push_back({.id = regex, .label = "Regex", .source_file = "/p/regex.go", .kind = "class"});
+  graph.nodes.push_back({.id = match, .label = "Match", .source_file = "/p/regex.go", .kind = "function"});
+  graph.edges.push_back({.source = stats, .target = size, .relation = "method"});
+  graph.edges.push_back({.source = regex, .target = match, .relation = "method"});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .is_member_call = true},
+      {.caller_id = caller, .callee_label = "Match", .source_file = "/p/use.cpp", .is_member_call = true},
+      // A receiver that names the class is evidence: `Stats::size()` still binds.
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .is_member_call = true,
+       .receiver_label = "Stats"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, match, "CALLS")) {
+    return 1;
+  }
+  // The receiver-named call produced the one edge to `size`; the bare one was refused.
+  if (!has_edge(graph, caller, size, "CALLS") || outcomes.dropped_library_member != 1) {
+    return 1;
+  }
+  if (!outcomes.balances()) {
+    return 1;
+  }
+
+  // Same file: the sibling tier resolves `size` to the local method as before.
+  cgraph::GraphSnapshot local;
+  local.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  local.nodes.push_back({.id = local_owner, .label = "Local", .source_file = "/p/use.cpp", .kind = "class"});
+  local.nodes.push_back({.id = local_size, .label = "size", .source_file = "/p/use.cpp", .kind = "function"});
+  local.edges.push_back({.source = local_owner, .target = local_size, .relation = "method"});
+  const cgraph::RawCall local_calls[] = {
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .is_member_call = true},
+  };
+  cgraph::resolve_raw_calls(local, local_calls);
+  if (!has_edge(local, caller, local_size, "CALLS")) {
+    return 1;
+  }
+  return 0;
+}
+
 int main() {
+  if (test_qualified_scope() != 0) {
+    return 1;
+  }
+  if (test_library_member_names() != 0) {
+    return 1;
+  }
   if (test_resolve_rust_imports() != 0) {
     return 1;
   }

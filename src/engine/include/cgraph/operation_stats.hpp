@@ -64,10 +64,18 @@ struct CallResolution {
   std::size_t dropped_unknown = 0;    // nothing callable bears the name
   std::size_t dropped_ambiguous = 0;  // candidates span more than one file
   std::size_t dropped_self = 0;       // resolved to the caller itself
+  // A qualified callee (`std::find`) whose name resolved, but to a declaration
+  // outside the named scope: the qualifier is evidence the call meant something
+  // else, so the edge is refused rather than fabricated.
+  std::size_t dropped_scope_mismatch = 0;
+  // A member call with an unknown receiver whose bare name every standard
+  // library defines (`.size()`, `.find()`): the method-only project-wide tier
+  // refuses it, because a unique project method of that name is not evidence.
+  std::size_t dropped_library_member = 0;
 
   [[nodiscard]] bool balances() const {
     return resolved_same_file + resolved_project_unique + resolved_member_method + dropped_unknown +
-               dropped_ambiguous + dropped_self ==
+               dropped_ambiguous + dropped_self + dropped_scope_mismatch + dropped_library_member ==
            total;  // resolved_overload_first is a subset of same_file + project_unique
   }
 

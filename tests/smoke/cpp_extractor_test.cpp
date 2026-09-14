@@ -214,6 +214,36 @@ int main() {
              "struct Holder { int field_value; };\n"
              "}  // namespace demo\n");
 
+  // A qualified callee's scope is evidence. `std::find` reduces to the leaf
+  // `find`, which names exactly one project function -- but that function is
+  // declared in `proj`, not `std`, so the call must not bind (every call into
+  // the standard library used to become a dependent of a same-named project
+  // symbol). `proj::helper` and the class-qualified `proj::Stats::size_of` bind.
+  write_file(root / "stdlib_decls.hpp",
+             "#pragma once\n"
+             "#include <vector>\n"
+             "namespace proj {\n"
+             "int find(int x) { return x; }\n"
+             "int exists(int x) { return x; }\n"
+             "struct Stats { static int size_of() { return 1; } int size() const { return 0; }\n"
+             "               static int count_of(std::vector<int>& v) { return (int)v.size(); } };\n"
+             "namespace detail { int helper() { return 2; } }\n"
+             "}\n");
+  // The caller lives in another file: `v.size()` on an unknown receiver must not
+  // reach the project's only method named `size` (same-file binding is a
+  // different tier and stays), and `std::find` must not reach `proj::find`.
+  write_file(root / "stdlib_user.cpp",
+             "#include \"stdlib_decls.hpp\"\n"
+             "#include <algorithm>\n"
+             "#include <filesystem>\n"
+             "#include <vector>\n"
+             "int stdlib_user(std::vector<int>& v) {\n"
+             "  auto it = std::find(v.begin(), v.end(), 3);\n"
+             "  auto n = v.size() + proj::Stats::count_of(v);\n"
+             "  bool there = std::filesystem::exists(\"x\");\n"
+             "  return (it != v.end()) + there + proj::detail::helper() + proj::Stats::size_of() + n;\n"
+             "}\n");
+
   const auto graph = cgraph::run_one_shot(root).graph;
 
   int failures = 0;
@@ -336,5 +366,24 @@ int main() {
   }
 
   fs::remove_all(root);
+  // Qualified callees: scope must agree with the declaration.
+  check(!has_edge(graph, "stdlib_user", "find", "CALLS"), "std::find must not bind to proj::find");
+  check(!has_edge(graph, "stdlib_user", "exists", "CALLS"), "std::filesystem::exists must not bind to proj::exists");
+  check(has_edge(graph, "stdlib_user", "helper", "CALLS"), "proj::detail::helper resolves through its namespace");
+  check(has_edge(graph, "stdlib_user", "size_of", "CALLS"), "proj::Stats::size_of resolves through its class");
+  check(has_edge(graph, "stdlib_user", "count_of", "CALLS"), "proj::Stats::count_of resolves through its class");
+  // `v.size()` on an unknown receiver must not reach the project's only method named `size`.
+  check(!has_edge(graph, "stdlib_user", "size", "CALLS"), "v.size() must not bind to proj::Stats::size");
+  {
+    bool scoped = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "helper" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        scoped = scope != node.properties.end() && scope->second == "proj::detail";
+      }
+    }
+    check(scoped, "a symbol declared inside namespaces carries its scope");
+  }
+
   return failures == 0 ? 0 : 1;
 }

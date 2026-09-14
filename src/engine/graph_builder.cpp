@@ -36,6 +36,37 @@ constexpr std::string_view kCallRelation = "CALLS";
 // Language built-in callables. Graphify never resolves a call to one of these
 // names to a project node (a `new Map()` or `console`/`parseInt` call must not
 // be wired to a coincidentally same-named user symbol), so we skip them too.
+// Member names that every standard library defines on its containers, strings,
+// iterators, smart pointers and option types. A member call to one of these
+// with an unknown receiver (`v.size()`, `m.find(k)`, `opt.value()`) is far more
+// likely to be the library's member than the project's, so the method-only
+// project-wide tier refuses to bind it: on CGraph's own source the one project
+// method named `size` received 141 CALLS edges, one per `.size()` in the tree,
+// and `find` received 68, every one a false dependent in `impact`. A receiver
+// that names the class (`Stats::size()`, tier 2a) or a same-file declaration
+// (tier 1) is evidence and still binds. Deliberately excludes names a project
+// plausibly owns (`open`, `close`, `read`, `write`, `get`, `set`, `add`,
+// `apply`, `merge`, `load`, `store`): losing those edges would cost more recall
+// than the precision is worth.
+[[nodiscard]] bool is_library_member_name(std::string_view label) {
+  static const std::unordered_set<std::string_view> names = {
+      // containers and strings: C++, Java, JS, Python, Rust
+      "size", "length", "len", "empty", "is_empty", "isEmpty", "clear", "capacity", "reserve", "resize",
+      "begin", "end", "cbegin", "cend", "rbegin", "rend", "front", "back", "first", "second", "at",
+      "count", "contains", "has", "insert", "erase", "emplace", "emplace_back", "emplace_front",
+      "try_emplace", "insert_or_assign", "push_back", "pop_back", "push_front", "pop_front", "append",
+      "swap", "data", "c_str", "str", "substr", "substring", "find", "rfind", "find_first_of",
+      "find_last_of", "lower_bound", "upper_bound", "equal_range", "starts_with", "ends_with",
+      "startswith", "endswith", "keys", "values", "entries", "items", "iter", "into_iter", "collect",
+      "indexOf", "lastIndexOf", "includes", "slice", "splice", "forEach", "for_each", "toString",
+      "hashCode", "equals", "to_string", "to_owned", "as_str", "as_ref", "as_mut", "clone",
+      // optionals, results, smart pointers, locks
+      "value", "has_value", "value_or", "unwrap", "unwrap_or", "expect", "is_some", "is_none", "is_ok",
+      "is_err", "reset", "release", "lock", "unlock", "try_lock",
+  };
+  return names.contains(label);
+}
+
 [[nodiscard]] bool is_builtin_global(std::string_view label) {
   static const std::unordered_set<std::string_view> names = {
       // JavaScript / TypeScript ECMAScript built-ins
@@ -545,9 +576,27 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       methods_by_owner[edge.source][name_key->second].push_back(edge.target);
     }
   }
+  // The class that owns each method (by label), for checking a class-qualified
+  // callee (`Stats::size()`) against the resolved method's owner.
+  std::unordered_map<std::string, std::string> owner_label_by_method;
+  {
+    std::unordered_map<std::string, std::string> label_of;
+    for (const auto& node : graph.nodes) {
+      label_of.emplace(node.id, node.label);
+    }
+    for (const auto& edge : graph.edges) {
+      if (edge.relation == "method") {
+        if (const auto owner = label_of.find(edge.source); owner != label_of.end()) {
+          owner_label_by_method.emplace(edge.target, owner->second);
+        }
+      }
+    }
+  }
   std::unordered_set<std::string> node_ids;
   std::unordered_map<std::string, std::string> source_file_by_id;
   std::unordered_map<std::string, std::string> label_by_id;
+  // Declared namespace scope per node (`scope` property, C-family only today).
+  std::unordered_map<std::string, std::string> scope_by_id;
   node_ids.reserve(graph.nodes.size());
   source_file_by_id.reserve(graph.nodes.size());
 
@@ -572,6 +621,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     node_ids.insert(node.id);
     source_file_by_id.emplace(node.id, node.source_file);
     label_by_id.emplace(node.id, node.label);
+    if (const auto scope = node.properties.find("scope"); scope != node.properties.end()) {
+      scope_by_id.emplace(node.id, scope->second);
+    }
     if (node.source_file.empty()) {
       continue;
     }
@@ -885,6 +937,12 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     }
 
     bool member_method_hit = false;
+    if (target_id.empty() && raw_call.is_member_call && is_library_member_name(raw_call.callee_label)) {
+      // The bare name is one every standard library defines: with the receiver
+      // unknown, a unique project method of that name is not evidence.
+      ++tally.dropped_library_member;
+      continue;
+    }
     if (target_id.empty() && raw_call.is_member_call) {
       if (const auto methods = method_index.find(key); methods != method_index.end()) {
         if (methods->second.size() == 1) {
@@ -922,6 +980,34 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       // method: the receiver type is unknown, so no wider guess applies.
       ++tally.dropped_unknown;
       continue;
+    }
+    // A qualified callee names its scope outright, and that is evidence about
+    // which declaration the call means. The resolved declaration must be
+    // declared in that namespace (its `scope` property ends with the qualifier's
+    // last segment) or be a method of a class bearing that name (`Stats::size`).
+    // `std::find` therefore never binds to a project `find`: nothing in the
+    // project is declared in `std`, so the edge is refused instead of invented.
+    if (!raw_call.qualifier.empty()) {
+      const std::string_view qualifier = raw_call.qualifier;
+      const auto separator = qualifier.rfind("::");
+      const std::string_view innermost =
+          separator == std::string_view::npos ? qualifier : qualifier.substr(separator + 2);
+      const auto in_scope = [&](const std::string& id) {
+        if (const auto scope = scope_by_id.find(id); scope != scope_by_id.end()) {
+          const std::string_view declared = scope->second;
+          if (declared == innermost ||
+              (declared.size() > innermost.size() && declared.ends_with(innermost) &&
+               declared[declared.size() - innermost.size() - 1] == ':')) {
+            return true;
+          }
+        }
+        const auto owner = owner_label_by_method.find(id);
+        return owner != owner_label_by_method.end() && owner->second == innermost;
+      };
+      if (!in_scope(target_id)) {
+        ++tally.dropped_scope_mismatch;
+        continue;
+      }
     }
     if (target_id == raw_call.caller_id) {
       ++tally.dropped_self;

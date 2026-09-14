@@ -62,6 +62,7 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       .call_member_node_types = {"field_expression"},
       .call_member_field = "field",
       .resolve_callee_name = cpp_callee_name,
+      .resolve_callee_scope = cpp_callee_scope,
       // Grammar-driven callee naming. A text rule cannot do this job: `::` shows up
       // in nine distinct callee node types, and `ns::make<zoo::Beast>` reduced at
       // its last `::` yields `Beast>` -- a fabricated call to an unrelated struct.

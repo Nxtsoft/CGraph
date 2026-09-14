@@ -37,6 +37,12 @@ void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fr
 // a call to an unrelated struct. Returns empty for an explicitly global callee
 // (`::stat(...)`), which names a platform symbol rather than a project one.
 [[nodiscard]] std::string cpp_callee_name(const TSNode& node, const ExtractionContext& context);
+// cpp_callee_scope is the `resolve_callee_scope` hook for the C family: the
+// qualifier chain of a qualified callee joined with `::` (`std::filesystem` for
+// `std::filesystem::exists(p)`), empty for an unqualified callee. Paired with
+// the `scope` property cpp_field_walk stamps on every symbol declared inside a
+// namespace, it lets resolution refuse `std::find` -> project `find`.
+[[nodiscard]] std::string cpp_callee_scope(const TSNode& node, const ExtractionContext& context);
 void cpp_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id, std::vector<RawRelation>& out);
 void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id, Fragment& fragment, std::vector<RawCall>& raw_calls);
 
