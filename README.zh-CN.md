@@ -124,22 +124,38 @@ vendor/           内置的 tree-sitter core 与语法
 
 ## 快速开始
 
-**前置条件：** CMake 3.25+、Ninja、C++20 编译器、Git、Fortran 编译器（`gfortran`——igraph 会引入 `lapack-reference`），以及 vcpkg。完整步骤见 [安装与配置](#安装与配置)。
+下载当前 Linux x64 版本并构建第一个图谱：
 
 ```sh
-git clone --recurse-submodules https://github.com/taylor009/CGraph.git && cd CGraph
-git clone https://github.com/microsoft/vcpkg .vcpkg && ./.vcpkg/bootstrap-vcpkg.sh
-export VCPKG_ROOT="$PWD/.vcpkg"
-cmake --preset default && cmake --build --preset default
+mkdir -p "$HOME/.local/lib/cgraph/bin-v0.3.0" "$HOME/.local/bin"
+curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz \
+  -o "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz"
+tar -xzf "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz" \
+  -C "$HOME/.local/lib/cgraph/bin-v0.3.0"
+for name in cgraph graphd cgraph-client cgraph-mcp; do
+  ln -sf "$HOME/.local/lib/cgraph/bin-v0.3.0/$name" "$HOME/.local/bin/$name"
+done
+export PATH="$HOME/.local/bin:$PATH"
 
-# 为本仓库构建图谱，然后打开交互视图
-build/default/src/cli/cgraph --root . --out cgraph-out
-open cgraph-out/graph.html
+# 在任意源码仓库中运行。
+cgraph --root . --out cgraph-out
 ```
+
+在浏览器中打开 `cgraph-out/graph.html`（macOS 可运行 `open cgraph-out/graph.html`），然后[将 CGraph 注册到编码代理](#与编码代理配合使用)。其他架构与源码构建方法见[安装与配置](#安装与配置)。
 
 ## 安装与配置
 
-> **状态：** 早期原生实现。完整命令面（CLI、守护进程、瘦客户端、MCP 服务器）均已具备并经过测试；尚无打包发布——需用 CMake + vcpkg 从源码构建，并从构建目录运行二进制（或将其软链接到 `PATH`）。
+`bin-v0.3.0` 发布版的每个压缩包都包含四个可执行文件（`cgraph`、`graphd`、`cgraph-client` 和 `cgraph-mcp`）：
+
+| 平台 | 架构 | 压缩包 |
+| --- | --- | --- |
+| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz) |
+| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-arm64.tar.gz) |
+| macOS | Apple 芯片 / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-macos-arm64.tar.gz) |
+
+用 `uname -s` 和 `uname -m` 选择压缩包。快速开始把带版本的文件安装到 `~/.local/lib/cgraph/bin-v0.3.0`，并在 `~/.local/bin` 中创建稳定的软链接；如有需要，请把该目录加入 `PATH`。MCP 客户端配置应使用带版本的绝对路径，因为客户端未必继承 shell 的 `PATH`。
+
+### 从源码构建
 
 ### 前置条件
 
@@ -153,7 +169,7 @@ open cgraph-out/graph.html
 ### 1. 克隆（含子模块）
 
 ```sh
-git clone --recurse-submodules https://github.com/taylor009/CGraph.git && cd CGraph
+git clone --recurse-submodules https://github.com/Nxtsoft/CGraph.git && cd CGraph
 # 已经克隆但没带子模块？
 git submodule update --init --recursive
 ```
@@ -215,7 +231,7 @@ fuzzer 预设需要带 libFuzzer 运行时的 Clang 工具链；若 Apple 命令
 
 `graph_context` 有两种聚合模式。默认（`gather: "fixed"`）打包整个 k 跳邻域。带上任务查询时，`gather: "adaptive"` 保留完整的 2 跳核心，仅沿与查询相关的节点扩展第三跳——在检索评测中，它以 **+13%** 的候选 token 换来 grade-2 召回率 **+0.057**，而完整 3 跳需要多付 **+96%**（需提供 `query`/`q`）。
 
-服务器按 `--root`、`CLAUDE_PROJECT_DIR`、当前工作目录的顺序解析项目根，并自动定位 `graphd`（显式 `--daemon` 优先，其次 `CGRAPH_DAEMON_PATH`，再次与 `cgraph-mcp` 相邻的 `graphd`）。首次调用触发一次性构建（数秒）；期间结果带 `"graph_state": "building"`，因此空结果绝不会被误当作“无匹配”。后续查询为 warm（~10 毫秒）。下方示例中，请将 `/abs/path/to/CGraph` 替换为本仓库的绝对路径。
+服务器按 `--root`、`CLAUDE_PROJECT_DIR`、当前工作目录的顺序解析项目根，并自动定位 `graphd`（显式 `--daemon` 优先，其次 `CGRAPH_DAEMON_PATH`，再次与 `cgraph-mcp` 相邻的 `graphd`）。首次调用触发一次性构建（数秒）；期间结果带 `"graph_state": "building"`，因此空结果绝不会被误当作“无匹配”。后续查询为 warm（~10 毫秒）。下方示例中，请将 `/home/you` 替换为你的绝对主目录。
 
 ### Claude Code
 
@@ -223,8 +239,8 @@ Claude Code 会按会话设置 `CLAUDE_PROJECT_DIR`，因此一次注册即可�
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/default/src/daemon/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
 ```
 
 或在仓库根目录提交一个按项目作用域的 `.mcp.json`，以便与协作者共享：
@@ -233,8 +249,8 @@ claude mcp add --scope user --transport stdio cgraph \
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp",
-      "args": ["--daemon", "/abs/path/to/CGraph/build/default/src/daemon/graphd"]
+      "command": "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp",
+      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
     }
   }
 }
@@ -248,16 +264,16 @@ Codex 不设置 `CLAUDE_PROJECT_DIR`，因此服务器回退到 Codex 启动它�
 
 ```sh
 codex mcp add cgraph \
-  -- /abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/default/src/daemon/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
 ```
 
 ……或直接编辑 `~/.codex/config.toml`（在 `args` 中加入 `"--root", "/abs/path/to/your/project"` 可无视工作目录锁定某个项目）：
 
 ```toml
 [mcp_servers.cgraph]
-command = "/abs/path/to/CGraph/build/default/src/mcp/cgraph-mcp"
-args = ["--daemon", "/abs/path/to/CGraph/build/default/src/daemon/graphd"]
+command = "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp"
+args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
 ```
 
 编辑后重启 Codex，在 TUI 中运行 `/mcp` 确认。
