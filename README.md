@@ -212,6 +212,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 | `graph_impact` | Transitive blast radius of changing a node |
 | `graph_path` | Shortest path between two nodes |
 | `graph_context` | Token-budgeted source bundle for a node/query (with adaptive gather) |
+| `graph_report` | Module dependency map (`view: "modules"`): layers, cycles, import/call counts, sized to a budget |
 | `graph_update` | Content-verified sync; returns a `content_root` to pin reads |
 | `graph_status` | Daemon, graph, and enrichment status |
 | `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after |
@@ -305,6 +306,26 @@ build/release/src/cli/cgraph enrich-plan --root /path/to/project --out /tmp/cgra
 build/release/src/cli/cgraph enrich-ingest --root /path/to/project --out /tmp/cgraph-out
 ```
 
+### Reports
+
+`cgraph report modules` draws the module dependency map of a project from the resident daemon
+(spawned if absent): files grouped into modules by directory depth, `imports`/`CALLS` between
+modules with counts, layers ranked by longest dependency path (layer 0 = nothing depends on it),
+and every cycle listed. Test roots are excluded unless `--include-tests`.
+
+```sh
+cgraph report modules --root /path/to/project --scope src            # Mermaid `graph LR` on stdout
+cgraph report modules --root /path/to/project --format json          # modules / edges / layers / cycles
+cgraph report modules --root /path/to/project --format svg > modules.svg
+cgraph report modules --root /path/to/project --depth 1 --budget 2000
+```
+
+The output is sized to a token budget (default 6000, `--budget 0` for all of it): when it
+overflows, whole low-weight edges or modules are dropped and `omitted` says how many. One-shot
+builds write the same diagram as `modules.mmd` and `modules.svg` next to `graph.json`. The same
+report is the `graph_report` MCP tool and the daemon `report` op; views `design`, `clones`,
+`types` are reserved and answer "not implemented".
+
 ### Daemon & thin client
 
 ```sh
@@ -328,6 +349,7 @@ build/release/src/client/cgraph-client --root /path/to/project status
 build/release/src/client/cgraph-client --root /path/to/project query '{"q":"Parser"}'
 build/release/src/client/cgraph-client --root /path/to/project explain '{"id":"Parser"}'
 build/release/src/client/cgraph-client --root /path/to/project path '{"source":"A","target":"B"}'
+build/release/src/client/cgraph-client --root /path/to/project report '{"view":"modules","format":"mermaid","scope":"src"}'
 build/release/src/client/cgraph-client --root /path/to/project update '{"path":"."}'
 build/release/src/client/cgraph-client --root /path/to/project shutdown
 ```

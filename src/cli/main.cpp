@@ -1,3 +1,4 @@
+#include "cgraph/client_runtime.hpp"
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
@@ -12,6 +13,7 @@
 #include "cgraph/operation_stats.hpp"
 #include "cgraph/pipeline.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 #include "cgraph/seam.hpp"
 #include "cgraph/semantic_orchestration.hpp"
 #include "cgraph/skills_install.hpp"
@@ -46,6 +48,10 @@ void print_usage() {
       "  cgraph enrich-ingest [--root PATH] [--out PATH] [--drop DIR]\n"
       "        merge host-dropped chunk_NN.json fragments and re-export\n"
       "  cgraph stats [--root PATH] [--since all|today|<ISO8601>|<N>h|<N>d]   (default: all)\n"
+      "  cgraph report modules [--root PATH] [--format json|mermaid|svg|markdown] [--scope PREFIX]\n"
+      "                        [--depth N] [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        module dependency diagram from the resident daemon (spawned if absent);\n"
+      "        views design|clones|types are reserved\n"
       "        roll up the durable op-stats ledger (counts + zero-hit rate) and show live daemon stats\n"
       "  cgraph seam gen --seam SPEC.json --graphs NAME=graph.json [--graphs ...] --out DROPDIR\n"
       "        resolve a cross-service seam spec against consumer graphs into a contract fragment\n"
@@ -93,7 +99,7 @@ struct Args {
 
 int run_build(const Args& args) {
   const auto result = cgraph::run_one_shot(args.root);
-  cgraph::write_exports(result.graph, args.output);
+  cgraph::write_exports(result.graph, args.output, args.root);
 
   // Sidecar stats.json (durable, diffable) deliberately kept out of graph.json
   // so the Graphify node-link parity golden stays byte-identical.
@@ -123,7 +129,7 @@ int run_enrich_plan(const Args& args) {
 
 int run_enrich_ingest(const Args& args) {
   const auto ingest = cgraph::ingest_enrichment(args.root, args.drop);
-  cgraph::write_exports(ingest.graph, args.output);
+  cgraph::write_exports(ingest.graph, args.output, args.root);
   std::cerr << "enrichment: " << ingest.fragments_ingested << " fragment(s) merged, "
             << ingest.fragments_rejected << " rejected\n";
   std::cerr << "nodes: " << ingest.deterministic_nodes << " deterministic -> "
@@ -231,6 +237,78 @@ int run_stats(const Args& args) {
   } else {
     std::cout << "LIVE: no running daemon for this root (durable view only)\n";
   }
+  return 0;
+}
+
+// cgraph report <view> [--root PATH] [--format F] [--scope PREFIX] [--depth N] [--budget N]
+//                      [--include-tests] [--daemon PATH]
+// A thin-client op like cgraph-client's: connects to the per-root graphd,
+// spawning it when absent. Prints the rendered diagram (mermaid/svg/markdown)
+// or the JSON payload to stdout; `omitted` counts go to stderr so a piped
+// diagram stays clean.
+int run_report(int argc, char** argv) {
+  const std::string view = argc >= 3 ? argv[2] : "";
+  if (view.empty() || view.starts_with("--")) {
+    std::cerr << "usage: cgraph report <modules|design|clones|types> [--root PATH] [--format json|mermaid|svg|markdown]\n"
+                 "                     [--scope PREFIX] [--depth N] [--budget N] [--include-tests] [--daemon PATH]\n";
+    return 2;
+  }
+  cgraph::ClientRequest request{
+      .project_root = std::filesystem::current_path(),
+      .operation = "report",
+      .params = {{"view", view}, {"format", "mermaid"}},
+  };
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    const bool has_value = index + 1 < argc;
+    if ((arg == "--root" || arg == "-r") && has_value) {
+      request.project_root = argv[++index];
+    } else if (arg == "--format" && has_value) {
+      request.params["format"] = argv[++index];
+    } else if (arg == "--scope" && has_value) {
+      request.params["scope"] = argv[++index];
+    } else if (arg == "--depth" && has_value) {
+      request.params["depth"] = std::stoi(argv[++index]);
+    } else if (arg == "--budget" && has_value) {
+      request.params["budget"] = std::stoll(argv[++index]);
+    } else if (arg == "--include-tests") {
+      request.params["include_tests"] = true;
+    } else if (arg == "--daemon" && has_value) {
+      request.daemon_path = argv[++index];
+    } else {
+      std::cerr << "report: unknown argument: " << arg << '\n';
+      return 2;
+    }
+  }
+  const auto hooks = cgraph::default_client_runtime_hooks(request);
+  const auto result = cgraph::send_thin_client_request(request, hooks);
+  if (!result.response) {
+    std::cerr << "report: " << result.error << '\n';
+    return 1;
+  }
+  const auto& response = *result.response;
+  if (const auto hint = cgraph::report_upgrade_hint(response)) {
+    std::cerr << "report: " << *hint << '\n';
+    return 3;
+  }
+  if (!response.value("ok", false)) {
+    std::cerr << "report: " << response.value("error", std::string{"daemon request failed"}) << '\n';
+    return 1;
+  }
+  const auto& payload = response["result"];
+  if (payload.value("graph_state", std::string{}) == "building") {
+    std::cerr << "report: the graph is still building; the report below may be empty -- retry in a few seconds\n";
+  }
+  if (payload.contains("rendered")) {
+    std::cout << payload["rendered"].get<std::string>();
+  } else {
+    std::cout << payload.dump(2) << '\n';
+  }
+  const auto& omitted = payload["omitted"];
+  std::cerr << "report: " << payload["totals"].value("modules", 0) << " modules, " << payload["totals"].value("edges", 0)
+            << " edges; omitted " << omitted.value("modules", 0) << " modules, " << omitted.value("edges", 0)
+            << " edges (budget " << payload.value("budget", 0) << ", ~" << payload.value("estimated_tokens", 0)
+            << " tokens)\n";
   return 0;
 }
 
@@ -800,6 +878,9 @@ int main(int argc, char** argv) {
         return run_enrich_ingest(args);
       }
       return run_stats(args);
+    }
+    if (first == "report") {
+      return run_report(argc, argv);
     }
     if (first == "seam") {
       const std::string sub = argc >= 3 ? argv[2] : "";

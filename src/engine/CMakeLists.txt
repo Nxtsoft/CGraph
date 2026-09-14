@@ -33,6 +33,7 @@ add_library(cgraph_engine STATIC
   pipeline.cpp
   protocol.cpp
   python_extractor.cpp
+  report.cpp
   seam.cpp
   semantic_chunk_plan.cpp
   semantic_cache.cpp

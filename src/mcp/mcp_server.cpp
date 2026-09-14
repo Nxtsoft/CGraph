@@ -2,6 +2,7 @@
 
 #include "cgraph/engine.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 
 #include <string>
 #include <utility>
@@ -165,6 +166,31 @@ namespace {
           "reload bounded code context. The fastest way to resume a long session.",
           {{"query", string_param("optional filter over checkpoint titles/tags")},
            {"limit", integer_param("max checkpoints returned (default 10)")}}),
+      tool_schema(
+          "graph_report",
+          "Structural report over the whole graph, sized to a token budget. view \"modules\" is the "
+          "architecture map: files grouped into modules by directory depth (default 2), the "
+          "imports/calls between modules with counts, layers ranked by longest dependency path "
+          "(layer 0 = nothing depends on it), and every dependency cycle listed. Use it when asked "
+          "for the architecture, a module map, what depends on what at the package level, or where "
+          "a new file belongs -- before graph_query, which works symbol by symbol. Test roots are "
+          "excluded unless include_tests is set. When the report exceeds the budget whole edges or "
+          "modules are dropped (lightest first) and `omitted` says how many. Views design, clones "
+          "and types are reserved and answer \"not implemented\".",
+          {{"view", {{"type", "string"}, {"enum", {"modules", "design", "clones", "types"}},
+                     {"description", "which report (default modules; only modules is implemented)"}}},
+           {"format", {{"type", "string"}, {"enum", {"json", "mermaid", "markdown", "svg"}},
+                       {"description", "json (default) = structured modules/edges/layers/cycles; mermaid = a "
+                                       "`graph LR` diagram in `rendered`; markdown = tables; svg = a drawn diagram"}}},
+           {"scope", string_param("root-relative path prefix, e.g. \"src\": only modules under it report "
+                                  "their dependencies (targets outside it still appear)")},
+           {"depth", integer_param("directory components per module (default 2: src/engine/x.cpp -> src/engine)")},
+           {"include_tests", {{"type", "boolean"}, {"description", "also report test roots (tests/, spec/, e2e/...) as sources (default false)"}}},
+           {"budget", integer_param("token budget for the response (default 6000; 0 = unlimited)")},
+           {"expected_content_root",
+            string_param("content root returned by graph_update; if supplied, the response comes "
+                         "only from the matching snapshot and errors if the daemon has published "
+                         "a different root")}}),
       tool_schema("graph_shutdown", "Ask the per-project graph daemon to shut down", nlohmann::json::object()),
   });
 }
@@ -190,6 +216,10 @@ namespace {
     // Forward arguments verbatim; the daemon op applies budget/depth defaults and
     // resolves the focal node from id, label, or query.
     return make_request("context", arguments);
+  }
+  if (name == "graph_report") {
+    // Forward arguments verbatim; the daemon op applies view/format/depth/budget defaults.
+    return make_request("report", arguments.empty() ? nlohmann::json::object() : arguments);
   }
   if (name == "graph_remember") {
     return make_request("remember", arguments);
@@ -248,6 +278,11 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
 
   const auto daemon_response = forwarder(daemon_request);
   if (!daemon_response.value("ok", false)) {
+    if (name == "graph_report") {
+      if (const auto hint = report_upgrade_hint(daemon_response)) {
+        return error_response(id, -32603, *hint);
+      }
+    }
     return error_response(id, -32603, daemon_response.value("error", std::string{"daemon request failed"}));
   }
   return response(id, text_content(daemon_response.value("result", nlohmann::json::object())));

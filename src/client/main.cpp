@@ -7,7 +7,7 @@
 namespace {
 
 void print_usage() {
-  std::cout << "Usage: cgraph-client [--root PATH] [--daemon PATH] <query|path|explain|update|status|shutdown> [JSON params]\n";
+  std::cout << "Usage: cgraph-client [--root PATH] [--daemon PATH] <query|path|explain|impact|context|report|update|status|shutdown|remember|recall> [JSON params]\n";
 }
 
 }  // namespace

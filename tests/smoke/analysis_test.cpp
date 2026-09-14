@@ -1,5 +1,9 @@
 #include "cgraph/analysis.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <string>
+
 int main() {
   cgraph::GraphSnapshot graph;
   graph.nodes.push_back(cgraph::Node{.id = "a", .label = "A"});
@@ -16,6 +20,27 @@ int main() {
   for (const auto& node : graph.nodes) {
     if (!node.properties.contains("community")) {
       return 1;
+    }
+  }
+  // The embedded layout is canvas-scale: the wider axis spans the 720px
+  // minimum side (igraph's raw unit-scale output would span a few units and
+  // render as one blob), centered on the origin.
+  {
+    double min_x = 1e9, max_x = -1e9, min_y = 1e9, max_y = -1e9;
+    for (const auto& node : graph.nodes) {
+      if (!node.properties.contains("x") || !node.properties.contains("y")) {
+        return 6;
+      }
+      const double x = std::stod(node.properties.at("x"));
+      const double y = std::stod(node.properties.at("y"));
+      min_x = std::min(min_x, x);
+      max_x = std::max(max_x, x);
+      min_y = std::min(min_y, y);
+      max_y = std::max(max_y, y);
+    }
+    const double span = std::max(max_x - min_x, max_y - min_y);
+    if (span < 719.0 || span > 721.0 || std::abs(min_x + max_x) > 0.02 || std::abs(min_y + max_y) > 0.02) {
+      return 7;
     }
   }
 

@@ -1,6 +1,6 @@
 ---
 name: cgraph
-description: "Use FIRST for any question about THIS codebase's structure, symbols, or relationships — where a function/class/file is defined, what calls or imports it, what breaks if you change it, how two parts connect, or to load focused source context before editing or reviewing. Routes to the cgraph MCP tools (graph_query / graph_explain / graph_impact / graph_path / graph_context), which serve ranked file:line results, node neighborhoods, transitive blast radius, and token-budgeted source bundles from a resident per-project graph daemon in ~10ms — far cheaper than grepping and reading files. Prefer over blind grep/read for code navigation, dependency tracing, and impact analysis."
+description: "Use FIRST for any question about THIS codebase's structure, symbols, or relationships — where a function/class/file is defined, what calls or imports it, what breaks if you change it, how two parts connect, or to load focused source context before editing or reviewing. Routes to the cgraph MCP tools (graph_query / graph_explain / graph_impact / graph_path / graph_context / graph_report), which serve ranked file:line results, node neighborhoods, transitive blast radius, token-budgeted source bundles, and module dependency maps from a resident per-project graph daemon in ~10ms — far cheaper than grepping and reading files. Prefer over blind grep/read for code navigation, dependency tracing, and impact analysis."
 trigger: /cgraph
 ---
 
@@ -25,6 +25,7 @@ grep/read calls that burn context.
 | "What does X rely on?" | `graph_impact` `{id, direction:"dependencies"}` |
 | "How does A connect to B?" | `graph_path` `{source, target}` — shortest path, with `path_nodes` briefs |
 | "Load context on X" / before editing or reviewing X | `graph_context` `{query or id, budget}` — focal node + most-relevant neighbors with snippets, packed to a token budget |
+| "What's the architecture? Give me a module map / what depends on what at the package level / where does a new file belong?" | `graph_report` `{view:"modules", format:"mermaid", scope?, depth?}` — files grouped into modules, imports/calls between them with counts, layers (0 = nothing depends on it), cycles listed; whole rows shed to the budget with `omitted` reported |
 | "Verify the graph is current before I rely on it" | `graph_update {path:"."}` — blocking content-verified synchronization; returns `freshness.content_root`. Pin subsequent reads by passing the root as `expected_content_root`. |
 | "Is the graph current? / I just changed files" | Nothing for ordinary reads — the daemon watches the tree and folds edits in within seconds. Use `graph_update` when you need a verified content_root to pin reads. |
 
@@ -61,6 +62,14 @@ grep/read calls that burn context.
 - `graph_impact` with `dependents` is the safety check before changing a
   signature or deleting a symbol: it lists everything that would be affected,
   by depth.
+- `graph_report` answers architecture questions before any symbol-level call:
+  `format:"mermaid"` returns a `graph LR` diagram in `rendered` (paste it as-is
+  in a reply), `format:"json"` returns `modules` / `edges` / `layers` / `cycles`.
+  Pass `scope:"src"` to leave out unrelated roots and `depth` to zoom (1 =
+  top-level directories, 3 = sub-packages). Test roots are excluded unless
+  `include_tests:true`. Check `omitted` -- a nonzero count means the budget
+  dropped the lightest edges or modules; raise `budget` or narrow `scope` to see
+  them. Views `design`, `clones`, `types` are reserved and answer "not implemented".
 
 ## Freshness-sensitive navigation
 

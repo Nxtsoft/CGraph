@@ -78,6 +78,15 @@ int main() {
     return 1;
   }
 
+  // Large graphs open community-collapsed (report-modules): a super-node per
+  // community above the threshold, expanded by click/search/"Expand all".
+  if (html.find("COLLAPSE_THRESHOLD = 500") == std::string::npos ||
+      html.find("function rebuildSuperNodes(") == std::string::npos ||
+      html.find("function expandCommunity(") == std::string::npos ||
+      html.find("id=\"collapse-toggle\"") == std::string::npos) {
+    return 1;
+  }
+
   // Legend is a dynamic per-community color key, not two hardcoded rows.
   if (html.find("buildLegend(") == std::string::npos ||
       html.find("id=\"legend\"") == std::string::npos) {

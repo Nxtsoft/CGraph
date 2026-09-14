@@ -15,6 +15,10 @@ struct PipelineResult {
 };
 
 [[nodiscard]] PipelineResult run_one_shot(const std::filesystem::path& root);
-void write_exports(const GraphSnapshot& graph, const std::filesystem::path& output_dir);
+// Writes graph.json and every derived export, including the module dependency
+// diagram (modules.mmd / modules.svg, whole project, no budget). Module names
+// are relative to `project_root`.
+void write_exports(const GraphSnapshot& graph, const std::filesystem::path& output_dir,
+                   const std::filesystem::path& project_root);
 
 }  // namespace cgraph
