@@ -122,16 +122,28 @@ Plus structured/regex extraction for Apex, Delphi form/source, MSBuild/XML proje
 
 ### Type members
 
-C, C++, TypeScript/TSX, Go, Rust, Python and Java emit a `field` node per declared member of a class,
-struct, interface, record, enum or object type alias, with a `defines` edge from the owner. Outside
-C and C++, a field also carries the declared type as a `type_text` property, plus `optional` and
-`readonly` where the grammar states them. Members are declared members only: no inherited-member
-expansion, no alias flattening, no runtime attribute inference. A declaration that is already a node
-of its own — a TypeScript `method_signature`, a Rust trait method or type alias — keeps its function
-or type node and is not also a field.
+Seven languages emit a `field` node per declared member, with a `defines` edge from the owner:
+
+| Language | Owners with members | Field properties |
+| --- | --- | --- |
+| C, C++ | `class`, `struct` only — not `enum` or `union` | none |
+| TypeScript, TSX | interface, object type alias, class (constructor parameter properties included), enum | `type_text`, `optional`, `readonly` |
+| Go | struct, including multi-name and embedded fields | `type_text` |
+| Rust | named and tuple struct, union, enum variant, trait associated type and constant | `type_text` |
+| Python | class-body assignment, including chained and tuple targets | `type_text` when annotated |
+| Java | class, record, enum | `type_text`, `readonly` |
+
+Members are declared members only: no inherited-member expansion, no alias flattening, no runtime
+attribute inference. A declaration that is already a node of its own — a TypeScript
+`method_signature`, a Rust trait method or type alias — keeps its function or type node and is not
+also a field. A field never takes the id a function or type holds; it moves instead, so a symbol's
+id stays stable.
 
 A class-like declaration without a body (`struct FileCacheEntry;`) is a forward declaration and mints
 no node; only the body-bearing definition does.
+
+Fields are members, not navigation targets: `graph_context` packs the owner (whose snippet spans its
+members) rather than the members, and `report modules` symbol counts exclude them.
 
 ## Quick start
 

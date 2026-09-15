@@ -20,6 +20,18 @@ When member extraction is enabled for a language, the extractor SHALL emit a fie
 - **WHEN** a class has class-body assignments and method-local assignments
 - **THEN** only class-body declarations become members; local variables do not.
 
+#### Scenario: A field never takes a symbol's id
+- **WHEN** a member and a function or type in the same file normalize to one id (`First::size` and `first_size`, `Config::path` and `config_path`)
+- **THEN** the function or type keeps the unsuffixed id and the field is relocated, both nodes exist, and the owner's `defines` edge points at the field.
+
+#### Scenario: Two same-named owners keep separate members
+- **WHEN** one file declares two owners with the same name and the same member name (TypeScript declaration merging, `#[cfg]` twins)
+- **THEN** each owner has its own field node and its own `defines` edge, not one shared field.
+
+#### Scenario: Fields are members, not context candidates
+- **WHEN** `graph_context` is asked about a type with many members
+- **THEN** the members do not enter the candidate pool and do not displace the type's callers and callees; asking about a member directly still resolves it as the focal node.
+
 #### Scenario: Members never overwrite a declaration's own node
 - **WHEN** a declaration inside a type body is already a function or type node (a TypeScript `method_signature`, a Rust trait `function_signature_item`, a Rust `type_item`)
 - **THEN** no field node is emitted for it, and its `interface_method` tag and dispatch edges survive.
