@@ -50,7 +50,7 @@ Reading a large repo to answer **"what calls this?"** or **"what breaks if I cha
 
 <div align="center"><img src="assets/architecture.svg" alt="CGraph architecture" width="100%"></div>
 
-- **`cgraph`** — one-shot scan → portable disk exports (`graph.json`, `graph.html`, `graph.svg`, `obsidian.md`, `cypher.txt`, `call-flow.html`).
+- **`cgraph`** — one-shot scan → portable disk exports (`graph.json`, `graph.html`, `graph.svg`, `obsidian.md`, `cypher.txt`, `call-flow.html`, `modules.mmd`, `modules.svg`).
 - **`graphd` + `cgraph-client`** — a resident per-project daemon with live file-watching; warm `query` / `path` / `explain` / `impact` / `context` in ~10 ms.
 - **`cgraph-mcp`** — a Model Context Protocol server so agents navigate the graph directly.
 
@@ -87,6 +87,8 @@ A single scan turns a source tree into an interactive, explorable graph — comm
 - `obsidian.md` — markdown export for Obsidian-style navigation
 - `cypher.txt` — Neo4j Cypher statements
 - `call-flow.html` — browser-readable call-flow view
+- `modules.mmd` — module dependency diagram as Mermaid
+- `modules.svg` — module dependency diagram as a layered static image
 
 ## Performance
 
