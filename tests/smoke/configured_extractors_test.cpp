@@ -554,6 +554,37 @@ int main() {
     }
   }
 
+  // A field must never take the id a function wants: `Config::path` and
+  // `config_path` normalize to the same id, and before the shared guard the
+  // field claimed it and the function was renamed to `..._2_0` -- a stable
+  // function id changing because a struct one line up has a matching member.
+  {
+    const auto result = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Rust,
+        {.source_file = "c.rs",
+         .source = "pub struct Config { pub path: String }\npub fn config_path() -> u8 { 0 }\n"});
+    if (!result) return 1;
+    const cgraph::Node* function = nullptr;
+    const cgraph::Node* field = nullptr;
+    for (const auto& node : result->fragment.nodes) {
+      if (node.kind == "function" && node.label == "config_path") function = &node;
+      if (node.kind == "field" && node.label == "path") field = &node;
+    }
+    if (function == nullptr || field == nullptr) return 1;
+    if (function->id != cgraph::make_id("c.rs:config_path")) {
+      std::cerr << "rust: function id moved to " << function->id << '\n';
+      return 1;
+    }
+    if (field->id == function->id) return 1;
+    bool defines_the_field = false;
+    for (const auto& edge : result->fragment.edges) {
+      if (edge.relation != "defines" || edge.source != cgraph::make_id("c.rs:Config")) continue;
+      if (edge.target == function->id) return 1;
+      defines_the_field = defines_the_field || edge.target == field->id;
+    }
+    if (!defines_the_field) return 1;
+  }
+
   const auto languages = {
       cgraph::DetectedLanguage::C,
       cgraph::DetectedLanguage::Cpp,

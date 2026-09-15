@@ -46,20 +46,13 @@ void emit_member(const TSNode& member, const ExtractionContext& context,
                  const std::string& owner_id, const std::string& owner_name,
                  std::string name, std::string type_text, Fragment& fragment,
                  Properties properties = {}) {
-  if (name.empty()) return;
+  if (!type_text.empty()) properties.emplace("type_text", std::move(type_text));
   const auto start = ts_node_start_point(member);
   const auto end = ts_node_end_point(member);
-  const auto id = make_id(context.source_file + ":" + owner_name + "::" + name);
-  if (!type_text.empty()) properties.emplace("type_text", std::move(type_text));
-  fragment.nodes.push_back(Node{
-      .id = id, .label = std::move(name), .source_file = context.source_file,
-      .source_location = SourceLocation{.start_line = start.row + 1, .start_column = start.column,
-                                        .end_line = end.row + 1, .end_column = end.column},
-      .kind = "field", .confidence = Confidence::Extracted, .properties = std::move(properties),
-  });
-  fragment.edges.push_back(Edge{
-      .source = owner_id, .target = id, .relation = "defines", .confidence = Confidence::Extracted,
-  });
+  add_field_node(context, owner_id, owner_name, std::move(name),
+                 SourceLocation{.start_line = start.row + 1, .start_column = start.column,
+                                .end_line = end.row + 1, .end_column = end.column},
+                 std::move(properties), fragment);
 }
 
 void go_member_handler(const TSNode& node, const ExtractionContext& context,
