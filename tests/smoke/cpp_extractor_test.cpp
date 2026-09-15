@@ -214,6 +214,54 @@ int main() {
              "struct Holder { int field_value; };\n"
              "}  // namespace demo\n");
 
+  // A qualified callee's scope is evidence. `std::find` reduces to the leaf
+  // `find`, which names exactly one project function -- but that function is
+  // declared in `proj`, not `std`, so the call must not bind (every call into
+  // the standard library used to become a dependent of a same-named project
+  // symbol). `proj::helper` and the class-qualified `proj::Stats::size_of` bind.
+  write_file(root / "stdlib_decls.hpp",
+             "#pragma once\n"
+             "#include <vector>\n"
+             "namespace proj {\n"
+             "int find(int x) { return x; }\n"
+             "int exists(int x) { return x; }\n"
+             "struct Stats { static int size_of() { return 1; } int size() const { return 0; }\n"
+             "               static int count_of(std::vector<int>& v) { return (int)v.size(); } };\n"
+             "namespace detail { int helper() { return 2; } }\n"
+             "}\n");
+  // The caller lives in another file: `v.size()` on an unknown receiver must not
+  // reach the project's only method named `size` (same-file binding is a
+  // different tier and stays), and `std::find` must not reach `proj::find`.
+  write_file(root / "stdlib_user.cpp",
+             "#include \"stdlib_decls.hpp\"\n"
+             "#include <algorithm>\n"
+             "#include <filesystem>\n"
+             "#include <vector>\n"
+             "int stdlib_user(std::vector<int>& v) {\n"
+             "  auto it = std::find(v.begin(), v.end(), 3);\n"
+             "  auto n = v.size() + proj::Stats::count_of(v);\n"
+             "  bool there = std::filesystem::exists(\"x\");\n"
+             "  return (it != v.end()) + there + proj::detail::helper() + proj::Stats::size_of() + n;\n"
+             "}\n");
+  // The qualifier is reasoned about in segments, through real grammar shapes:
+  // a static call through a class template, a qualified call to a symbol in an
+  // anonymous namespace, and an overload set split across a namespace and file
+  // scope with the file-scope declaration first.
+  write_file(root / "scope_shapes.hpp",
+             "#pragma once\n"
+             "namespace proj {\n"
+             "struct Beast { int n; };\n"
+             "template <typename T> struct Outer { static int make() { return 1; } };\n"
+             "namespace { int hidden() { return 3; } }\n"
+             "int hidden_user() { return proj::hidden(); }\n"
+             "}\n"
+             "int dup(int a) { return a; }\n"
+             "namespace alpha { int dup(double a) { return 0; } }\n");
+  write_file(root / "scope_shapes.cpp",
+             "#include \"scope_shapes.hpp\"\n"
+             "int template_user() { return proj::Outer<int>::make() + proj::Outer<proj::Beast>::make(); }\n"
+             "int alpha_user() { return alpha::dup(1.0); }\n");
+
   const auto graph = cgraph::run_one_shot(root).graph;
 
   int failures = 0;
@@ -336,5 +384,58 @@ int main() {
   }
 
   fs::remove_all(root);
+  // Qualified callees: scope must agree with the declaration.
+  check(!has_edge(graph, "stdlib_user", "find", "CALLS"), "std::find must not bind to proj::find");
+  check(!has_edge(graph, "stdlib_user", "exists", "CALLS"), "std::filesystem::exists must not bind to proj::exists");
+  check(has_edge(graph, "stdlib_user", "helper", "CALLS"), "proj::detail::helper resolves through its namespace");
+  check(has_edge(graph, "stdlib_user", "size_of", "CALLS"), "proj::Stats::size_of resolves through its class");
+  check(has_edge(graph, "stdlib_user", "count_of", "CALLS"), "proj::Stats::count_of resolves through its class");
+  // `v.size()` on an unknown receiver must not reach the project's only method named `size`.
+  check(!has_edge(graph, "stdlib_user", "size", "CALLS"), "v.size() must not bind to proj::Stats::size");
+  check(has_edge(graph, "template_user", "make", "CALLS"), "proj::Outer<int>::make() resolves through the template's class");
+  check(has_edge(graph, "hidden_user", "hidden", "CALLS"), "proj::hidden() reaches a symbol in an anonymous namespace");
+  {
+    // Exactly one `dup` edge, and it is the one declared in namespace alpha.
+    int alpha_edges = 0;
+    int file_scope_edges = 0;
+    for (const auto& edge : graph.edges) {
+      if (edge.relation != "CALLS") {
+        continue;
+      }
+      for (const auto& node : graph.nodes) {
+        if (node.id != edge.target || node.label != "dup") {
+          continue;
+        }
+        const auto scope = node.properties.find("scope");
+        if (scope != node.properties.end() && scope->second == "alpha") {
+          ++alpha_edges;
+        } else {
+          ++file_scope_edges;
+        }
+      }
+    }
+    check(alpha_edges == 1 && file_scope_edges == 0, "alpha::dup() edges only to the alpha member of the overload set");
+  }
+  {
+    bool anonymous_scope = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "hidden" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        anonymous_scope = scope != node.properties.end() && scope->second == "proj::(anonymous)";
+      }
+    }
+    check(anonymous_scope, "an anonymous namespace is spelled (anonymous) in scope");
+  }
+  {
+    bool scoped = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "helper" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        scoped = scope != node.properties.end() && scope->second == "proj::detail";
+      }
+    }
+    check(scoped, "a symbol declared inside namespaces carries its scope");
+  }
+
   return failures == 0 ? 0 : 1;
 }

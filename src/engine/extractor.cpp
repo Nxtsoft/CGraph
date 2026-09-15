@@ -166,6 +166,7 @@ void add_raw_call(
     const std::string& caller_id,
     std::vector<RawCall>& raw_calls) {
   std::string label;
+  std::string qualifier;
   bool is_member_call = false;
   bool callee_resolver_ran = false;
   // A grammar that names the receiver in a field on the call node itself
@@ -211,6 +212,9 @@ void add_raw_call(
       if (config.resolve_callee_name) {
         label = config.resolve_callee_name(*child, context);
         callee_resolver_ran = true;
+        if (config.resolve_callee_scope) {
+          qualifier = config.resolve_callee_scope(*child, context);
+        }
       } else {
         label = node_text(*child, context.source);
       }
@@ -244,6 +248,7 @@ void add_raw_call(
       .source_location = source_location(node),
       .is_member_call = is_member_call || has_receiver_field,
       .receiver_label = std::move(receiver_label),
+      .qualifier = std::move(qualifier),
   });
 }
 

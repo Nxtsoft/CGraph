@@ -77,6 +77,35 @@ int main() {
       {cgraph::DetectedLanguage::McpConfig, "mcp.json", R"json({"mcpServers":{"filesystem":{"command":"npx"}}})json", "filesystem"},
   };
 
+  // Graphify parity: a C-family symbol declared inside namespaces carries its
+  // enclosing namespace chain as the `scope` property, and nothing else about
+  // the node changes. A file-scope symbol carries no such property.
+  {
+    auto result = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Cpp,
+        cgraph::ExtractionContext{
+            .source_file = "scoped.cpp",
+            .source = "namespace proj { namespace detail { int helper() { return 1; } } }\nint top() { return 0; }\n",
+        });
+    bool scoped = false;
+    bool top_unscoped = false;
+    if (result.has_value()) {
+      for (const auto& node : result->fragment.nodes) {
+        if (node.label == "helper") {
+          const auto scope = node.properties.find("scope");
+          scoped = scope != node.properties.end() && scope->second == "proj::detail";
+        }
+        if (node.label == "top") {
+          top_unscoped = !node.properties.contains("scope");
+        }
+      }
+    }
+    if (!scoped || !top_unscoped) {
+      std::cerr << "scope property golden failed: helper scoped=" << scoped << " top unscoped=" << top_unscoped << '\n';
+      return 1;
+    }
+  }
+
   for (const auto& test_case : cases) {
     if (!check(test_case.language, test_case.file, test_case.source, test_case.expected_label)) {
       return 1;

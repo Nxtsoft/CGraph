@@ -33,6 +33,45 @@ constexpr std::string_view kCallRelation = "CALLS";
   return edge.source + "\n" + edge.relation + "\n" + edge.target;
 }
 
+// Member names that every standard library defines on its containers, strings,
+// iterators, smart pointers and option types. A member call to one of these
+// with an unknown receiver (`v.size()`, `m.find(k)`, `opt.value()`) is far more
+// likely to be the library's member than the project's, so the method-only
+// project-wide tier refuses to bind it: on CGraph's own source the one project
+// method named `size` received 141 CALLS edges, one per `.size()` in the tree,
+// and `find` received 68, every one a false dependent in `impact`. A receiver
+// that names the class (`Stats::size()`, tier 2a) or a same-file declaration
+// (tier 1) is evidence and still binds. Deliberately excludes names a project
+// plausibly owns (`open`, `close`, `read`, `write`, `get`, `set`, `add`,
+// `apply`, `merge`, `load`, `store`): losing those edges would cost more recall
+// than the precision is worth.
+// Keys are make_id-normalized, so `.Count()` (Go, C#) and `.count()` both match.
+[[nodiscard]] bool is_library_member_key(const std::string& key) {
+  static const std::unordered_set<std::string> keys = [] {
+    static constexpr std::string_view names[] = {
+      // containers and strings: C++, Java, JS, Python, Rust
+      "size", "length", "len", "empty", "is_empty", "isEmpty", "clear", "capacity", "reserve", "resize",
+      "begin", "end", "cbegin", "cend", "rbegin", "rend", "front", "back", "first", "second", "at",
+      "count", "contains", "has", "insert", "erase", "emplace", "emplace_back", "emplace_front",
+      "try_emplace", "insert_or_assign", "push_back", "pop_back", "push_front", "pop_front", "append",
+      "swap", "data", "c_str", "str", "substr", "substring", "find", "rfind", "find_first_of",
+      "find_last_of", "lower_bound", "upper_bound", "equal_range", "starts_with", "ends_with",
+      "startswith", "endswith", "keys", "values", "entries", "items", "iter", "into_iter", "collect",
+      "indexOf", "lastIndexOf", "includes", "slice", "splice", "forEach", "for_each", "toString",
+      "hashCode", "equals", "to_string", "to_owned", "as_str", "as_ref", "as_mut", "clone",
+      // optionals, results, smart pointers, locks
+      "value", "has_value", "value_or", "unwrap", "unwrap_or", "expect", "is_some", "is_none", "is_ok",
+      "is_err", "reset", "release", "lock", "unlock", "try_lock",
+    };
+    std::unordered_set<std::string> normalized;
+    for (const auto name : names) {
+      normalized.insert(make_id(name));
+    }
+    return normalized;
+  }();
+  return keys.contains(key);
+}
+
 // Language built-in callables. Graphify never resolves a call to one of these
 // names to a project node (a `new Map()` or `console`/`parseInt` call must not
 // be wired to a coincidentally same-named user symbol), so we skip them too.
@@ -545,9 +584,20 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       methods_by_owner[edge.source][name_key->second].push_back(edge.target);
     }
   }
+  // The class node that owns each method, for checking a class-qualified callee
+  // (`proj::Stats::size()`) against the resolved method's owner and that owner's
+  // own namespace.
+  std::unordered_map<std::string, std::string> owner_id_by_method;
+  for (const auto& edge : graph.edges) {
+    if (edge.relation == "method") {
+      owner_id_by_method.emplace(edge.target, edge.source);
+    }
+  }
   std::unordered_set<std::string> node_ids;
   std::unordered_map<std::string, std::string> source_file_by_id;
   std::unordered_map<std::string, std::string> label_by_id;
+  // Declared namespace scope per node (`scope` property, C-family only today).
+  std::unordered_map<std::string, std::string> scope_by_id;
   node_ids.reserve(graph.nodes.size());
   source_file_by_id.reserve(graph.nodes.size());
 
@@ -572,6 +622,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     node_ids.insert(node.id);
     source_file_by_id.emplace(node.id, node.source_file);
     label_by_id.emplace(node.id, node.label);
+    if (const auto scope = node.properties.find("scope"); scope != node.properties.end()) {
+      scope_by_id.emplace(node.id, scope->second);
+    }
     if (node.source_file.empty()) {
       continue;
     }
@@ -662,6 +715,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     // Sibling targets beyond target_id, filled only for an overload set: the
     // call edges to EVERY member, because any of them may be the callee.
     std::span<const std::string> overload_rest;
+    // Survivors of the scope gate below, when it narrows an overload set.
+    std::vector<std::string> gated_rest;
+    bool overload_counted = false;
 
     // Resolve an overload set: target the first declaration and remember the
     // rest, all graded INFERRED. Which member a call means cannot be known
@@ -683,6 +739,7 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       overload_rest = std::span(members->second).subspan(1);
       confidence = Confidence::Inferred;
       ++tally.resolved_overload_first;
+      overload_counted = true;
       return true;
     };
 
@@ -887,6 +944,14 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     bool member_method_hit = false;
     if (target_id.empty() && raw_call.is_member_call) {
       if (const auto methods = method_index.find(key); methods != method_index.end()) {
+        if (is_library_member_key(key)) {
+          // The bare name is one every standard library defines: with the
+          // receiver unknown, a project method of that name is not evidence.
+          // Counted only here, where a candidate existed to refuse; a name with
+          // no project method at all is an ordinary unknown below.
+          ++tally.dropped_library_member;
+          continue;
+        }
         if (methods->second.size() == 1) {
           target_id = methods->second.front();
           confidence = Confidence::Inferred;
@@ -922,6 +987,77 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       // method: the receiver type is unknown, so no wider guess applies.
       ++tally.dropped_unknown;
       continue;
+    }
+    // A qualified callee names its scope outright, and that is evidence about
+    // which declaration the call means. Every candidate the tiers produced --
+    // the target and any overload siblings -- must be declared in that scope:
+    // the qualifier's segments are a suffix of the declaration's `scope`
+    // segments (`detail::helper()` from inside `proj` matches `proj::detail`;
+    // `other::detail::helper()` does not), with anonymous namespaces transparent
+    // because a qualified name from the same translation unit sees through
+    // them. A class-qualified callee (`proj::Stats::size()`) matches a method
+    // of a class bearing the last segment whose own scope carries the rest.
+    // `std::find` therefore never binds to a project `find`: nothing in the
+    // project is declared in `std`, so the edge is refused instead of invented.
+    if (!raw_call.qualifier.empty()) {
+      const auto split_scope = [](std::string_view text) {
+        std::vector<std::string_view> segments;
+        while (!text.empty()) {
+          const auto separator = text.find("::");
+          const auto segment = text.substr(0, separator);
+          if (segment != "(anonymous)") {
+            segments.push_back(segment);
+          }
+          if (separator == std::string_view::npos) {
+            break;
+          }
+          text.remove_prefix(separator + 2);
+        }
+        return segments;
+      };
+      const auto wanted = split_scope(raw_call.qualifier);
+      const auto declared_scope_of = [&](const std::string& id) -> std::string_view {
+        const auto scope = scope_by_id.find(id);
+        return scope == scope_by_id.end() ? std::string_view{} : std::string_view(scope->second);
+      };
+      const auto is_suffix = [&](std::string_view declared, std::span<const std::string_view> prefix) {
+        const auto have = split_scope(declared);
+        if (prefix.size() > have.size()) {
+          return false;
+        }
+        return std::equal(prefix.rbegin(), prefix.rend(), have.rbegin());
+      };
+      const auto in_scope = [&](const std::string& id) {
+        if (!wanted.empty() && is_suffix(declared_scope_of(id), wanted)) {
+          return true;
+        }
+        const auto owner = owner_id_by_method.find(id);
+        if (owner == owner_id_by_method.end() || wanted.empty()) {
+          return false;
+        }
+        const auto owner_label = label_by_id.find(owner->second);
+        if (owner_label == label_by_id.end() || owner_label->second != wanted.back()) {
+          return false;
+        }
+        return is_suffix(declared_scope_of(owner->second), std::span(wanted).first(wanted.size() - 1));
+      };
+      for (const auto& sibling : overload_rest) {
+        if (in_scope(sibling)) {
+          gated_rest.push_back(sibling);
+        }
+      }
+      if (!in_scope(target_id)) {
+        if (gated_rest.empty()) {
+          if (overload_counted) {
+            --tally.resolved_overload_first;  // the set produced no edge after all
+          }
+          ++tally.dropped_scope_mismatch;
+          continue;
+        }
+        target_id = gated_rest.front();
+        gated_rest.erase(gated_rest.begin());
+      }
+      overload_rest = std::span(gated_rest);
     }
     if (target_id == raw_call.caller_id) {
       ++tally.dropped_self;

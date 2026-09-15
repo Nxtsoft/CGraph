@@ -30,6 +30,12 @@ struct RawCall {
   // unknown — a static call names its class outright, and that is evidence, not
   // a guess. Resolution uses it to scope the method lookup to that class.
   std::string receiver_label;
+  // The scope a qualified callee names, as written (`std` in `std::find(...)`,
+  // `a::b` in `a::b::f()`), empty for an unqualified or member callee. A
+  // qualifier is evidence about which declaration the call means: the leaf
+  // name alone binds `std::find` to any project function called `find`,
+  // which is a false dependent on every call into the standard library.
+  std::string qualifier;
 };
 
 // A type/heritage relationship discovered during extraction, resolved against
@@ -55,6 +61,9 @@ struct ExtractionContext {
 using ImportHandler = std::function<void(const TSNode&, const ExtractionContext&, Fragment&)>;
 using ResolveFunctionName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
 using ResolveCalleeName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
+// The scope text of a qualified callee (`std::filesystem` for
+// `std::filesystem::exists(p)`), or empty when the callee is unqualified.
+using ResolveCalleeScope = std::function<std::string(const TSNode&, const ExtractionContext&)>;
 // The third argument is the innermost enclosing function scope (empty at file /
 // class / type scope) — the caller id for any RawCall the walk emits. Handlers
 // that emit no calls ignore it.
@@ -132,6 +141,9 @@ struct LanguageConfig {
   // which make_id normalizes to `Beast` -- fabricating a call to an unrelated
   // struct while losing the real call. Returning empty drops the call.
   ResolveCalleeName resolve_callee_name;
+  // Returns the qualifier of a qualified callee so resolution can require the
+  // resolved declaration to live in that scope (see RawCall::qualifier).
+  ResolveCalleeScope resolve_callee_scope;
   ImportHandler import_handler;
   ResolveFunctionName resolve_function_name;
   ExtraWalk extra_walk;
