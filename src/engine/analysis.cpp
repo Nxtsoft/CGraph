@@ -143,8 +143,6 @@ void write_layout(GraphSnapshot& snapshot, const igraph_t& graph) {
       min_y = std::min(min_y, MATRIX(coords, row, 1));
       max_y = std::max(max_y, MATRIX(coords, row, 1));
     }
-    constexpr double kMinCanvasSide = 720.0;
-    constexpr double kPixelsPerSqrtNode = 30.0;
     const double side = std::max(kMinCanvasSide, kPixelsPerSqrtNode * std::sqrt(static_cast<double>(snapshot.nodes.size())));
     const double span = std::max({max_x - min_x, max_y - min_y, 1e-9});
     const double scale = side / span;

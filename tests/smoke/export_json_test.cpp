@@ -104,22 +104,32 @@ int main() {
     return 1;
   }
 
-  // The viewer maps an arbitrary coordinate scale (unit or pixel): a precomputed
-  // layout's span is normalized onto the canvas, fitToScreen is unclamped, and
-  // the zoom bounds are relative to the fit. Without the normalization a
-  // unit-scale graph.json paints as one blob or as overlapping giant discs.
+  // A precomputed layout's span is restated in write_layout's own terms, so a
+  // graph.json carrying raw igraph coordinates renders like a written one and
+  // ink per node does not follow the window. The constants come from the
+  // producer, so changing kPixelsPerSqrtNode moves both.
   if (html.find("function normalizeLayoutSpan(") == std::string::npos ||
-      html.find("    normalizeLayoutSpan();") == std::string::npos ||
-      html.find("fitScale = scale;") == std::string::npos ||
-      html.find("Math.min(4,") != std::string::npos ||
-      html.find("Math.min(fitScale * 4, transform.scale * factor)") == std::string::npos) {
+      html.find("normalizeLayoutSpan();") == std::string::npos ||
+      html.find("const LAYOUT_MIN_SIDE = 720;") == std::string::npos ||
+      html.find("const LAYOUT_PIXELS_PER_SQRT_NODE = 30;") == std::string::npos ||
+      html.find("Math.max(LAYOUT_MIN_SIDE, LAYOUT_PIXELS_PER_SQRT_NODE * Math.sqrt(nodes.length)) / span")
+          == std::string::npos) {
     return 1;
   }
 
-  // Super-node labels are screen-constant like every other label: divided by
-  // the current zoom, not fixed px inside the scaled transform.
+  // Fit maps the whole span whatever it is, and the zoom bounds are relative to
+  // the fit rather than to an absolute zoom the layout scale has to live under.
+  if (html.find("fitScale = scale;") == std::string::npos ||
+      html.find("Math.max(fitScale * 0.25, Math.min(fitScale * 4, transform.scale * factor))") == std::string::npos ||
+      html.find("transform.scale >= fitScale * 1.6") == std::string::npos) {
+    return 1;
+  }
+
+  // Every label is screen-constant: divided by the current zoom, not fixed px
+  // inside the scaled transform, discs and ordinary nodes alike.
   if (html.find("\"bold \" + (12 / transform.scale) + \"px") == std::string::npos ||
-      html.find("(11 / transform.scale) + \"px") == std::string::npos) {
+      html.find("(11 / transform.scale) + \"px") == std::string::npos ||
+      html.find("node.y + r + 9 / transform.scale") == std::string::npos) {
     return 1;
   }
 
