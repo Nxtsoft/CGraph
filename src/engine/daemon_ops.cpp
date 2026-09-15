@@ -1149,6 +1149,16 @@ struct StructuralIntent {
       continue;
     }
     if (const auto it = by_id.find(node_id); it != by_id.end()) {
+      // A `field` is a depth-1 neighbour of its owner, and depth beats
+      // centrality in the ranking below, so a wide type crowds every real
+      // caller and callee out of the budget -- `operations` in turing-webapp's
+      // api-types.d.ts has 490 fields and one other neighbour. The member names
+      // are already inside the owner's own packed snippet, which spans the whole
+      // declaration, so packing them again buys nothing. Asking about a field
+      // directly still works: then it is the focal node, not a neighbour.
+      if (it->second->kind == "field" && focal->kind != "field") {
+        continue;
+      }
       candidates.push_back(it->second);
       if (info.depth >= 3) {
         ++expanded_past_core;

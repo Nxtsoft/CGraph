@@ -1686,5 +1686,53 @@ int main() {
     }
   }
 
+  // A wide type's members must not crowd its real neighbours out of the budget.
+  // Every `field` is a depth-1 neighbour of its owner and depth outranks
+  // centrality, so before fields were excluded a type with 40 members returned
+  // 40 member names and dropped the function that calls it.
+  {
+    cgraph::DaemonState wide_state;
+    wide_state.pid = 909;
+    cgraph::GraphSnapshot wide;
+    wide.build_state = cgraph::BuildState::DeterministicReady;
+    wide.nodes.push_back(cgraph::Node{
+        .id = "EditorState", .label = "EditorState", .source_file = src.string(),
+        .source_location = cgraph::SourceLocation{.start_line = 2, .end_line = 4}, .kind = "type"});
+    wide.nodes.push_back(cgraph::Node{
+        .id = "useEditor", .label = "useEditor", .source_file = src.string(),
+        .source_location = cgraph::SourceLocation{.start_line = 3, .end_line = 3}, .kind = "function"});
+    wide.edges.push_back(cgraph::Edge{.source = "useEditor", .target = "EditorState", .relation = "CALLS"});
+    for (int i = 0; i < 40; ++i) {
+      const auto field_id = "EditorState::member" + std::to_string(i);
+      wide.nodes.push_back(cgraph::Node{
+          .id = field_id, .label = "member" + std::to_string(i), .source_file = src.string(),
+          .source_location = cgraph::SourceLocation{.start_line = 3, .end_line = 3}, .kind = "field"});
+      wide.edges.push_back(cgraph::Edge{.source = "EditorState", .target = field_id, .relation = "defines"});
+    }
+    cgraph::publish_graph_snapshot(wide_state, std::move(wide));
+
+    const auto wide_ctx = cgraph::handle_daemon_request(
+        wide_state, cgraph::make_request("context", {{"id", "EditorState"}, {"budget", 3000}}))["result"];
+    bool saw_caller = false;
+    for (const auto& entry : wide_ctx.value("included", nlohmann::json::array())) {
+      const auto entry_id = entry.value("id", std::string{});
+      if (entry_id.starts_with("EditorState::")) {
+        return 110;  // a member spent budget the caller needed
+      }
+      saw_caller = saw_caller || entry_id == "useEditor";
+    }
+    if (!saw_caller) {
+      return 111;
+    }
+
+    // Asking about the member itself still answers: then it is the focal node.
+    const auto field_ctx = cgraph::handle_daemon_request(
+        wide_state,
+        cgraph::make_request("context", {{"id", "EditorState::member7"}, {"budget", 3000}}))["result"];
+    if (field_ctx["focus"].value("id", std::string{}) != "EditorState::member7") {
+      return 112;
+    }
+  }
+
   return 0;
 }
