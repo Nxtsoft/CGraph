@@ -487,7 +487,11 @@ ModulesReport build_modules_report(const GraphSnapshot& graph, const ReportReque
 }
 
 std::size_t estimate_report_tokens(std::string_view text) {
-  return (text.size() + 3) / 4;
+  return estimate_report_tokens(text.size());
+}
+
+std::size_t estimate_report_tokens(std::size_t byte_length) {
+  return (byte_length + 3) / 4;
 }
 
 void shed_to_budget(ModulesReport& report, ReportFormat format, std::size_t budget) {

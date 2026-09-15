@@ -60,16 +60,6 @@ constexpr int kKnapsackContextDepth = 3;
 // never blow up the O(n*capacity) table.
 constexpr std::size_t kMaxKnapsackCapacity = 50000;
 
-// Rough token estimate: ~4 characters per token. Good enough to pack a context
-// bundle under a budget without pulling in a real tokenizer.
-[[nodiscard]] std::size_t estimate_tokens(const std::string& text) {
-  return (text.size() + 3) / 4;
-}
-
-[[nodiscard]] std::size_t estimate_tokens_for_length(std::size_t byte_length) {
-  return (byte_length + 3) / 4;
-}
-
 [[nodiscard]] nlohmann::json error_response(std::string message) {
   return nlohmann::json{{"ok", false}, {"error", std::move(message)}};
 }
@@ -373,7 +363,7 @@ constexpr std::size_t kSameFileCandidateCap = 5;
 [[nodiscard]] std::size_t slice_token_cost(const Node& node) {
   if (node.source_file.empty() || !node.source_location ||
       node.source_location->start_line == 0) {
-    return std::max<std::size_t>(1, estimate_tokens(node.label));
+    return std::max<std::size_t>(1, estimate_report_tokens(node.label));
   }
 
   constexpr std::size_t kEstimatedSourceLineChars = 40;
@@ -390,7 +380,7 @@ constexpr std::size_t kSameFileCandidateCap = 5;
       kMaxSnippetChars,
       std::max(node.label.size(),
                (line_count - 1) * kEstimatedSourceLineChars + final_line_chars));
-  return std::max<std::size_t>(1, (estimated_chars + 3) / 4);
+  return std::max<std::size_t>(1, estimate_report_tokens(estimated_chars));
 }
 
 // Project the serialized cost of a source-bearing entry without opening its
@@ -414,7 +404,7 @@ constexpr std::size_t kSameFileCandidateCap = 5;
       entry["snippet_truncated"] = true;
     }
   }
-  return estimate_tokens(entry.dump());
+  return estimate_report_tokens(entry.dump());
 }
 
 [[nodiscard]] std::size_t emitted_entry_tokens(
@@ -424,7 +414,7 @@ constexpr std::size_t kSameFileCandidateCap = 5;
   // misses the array's own framing (brackets, separators) and was observed to
   // overshoot a 3000 budget by a token. This is the number reported as
   // tokens_used and tested against the budget in both packing modes.
-  return estimate_tokens(focus.dump()) + estimate_tokens(included.dump());
+  return estimate_report_tokens(focus.dump()) + estimate_report_tokens(included.dump());
 }
 
 // A returned row without a snippet is marked so a caller can tell a failed
@@ -1268,7 +1258,7 @@ struct StructuralIntent {
     struct Selected {
       nlohmann::json entry;
       std::size_t bytes = 0;  // compact-serialized entry length
-      std::size_t cost = 0;   // estimate_tokens over that length
+      std::size_t cost = 0;   // estimate_report_tokens over that length
       double value = 0.0;
       std::size_t order = 0;
     };
@@ -1285,7 +1275,7 @@ struct StructuralIntent {
       annotate_snippet_absence(full, *node);
       const auto bytes = full.dump().size();
       selected.push_back(Selected{
-          std::move(full), bytes, estimate_tokens_for_length(bytes), value_by_id[node->id], i});
+          std::move(full), bytes, estimate_report_tokens(bytes), value_by_id[node->id], i});
     }
 
     // The focal entry is charged first and is never dropped: a small budget
@@ -1294,7 +1284,7 @@ struct StructuralIntent {
     // outlives an expensive marginal one -- shedding by raw value systematically
     // protected snippet-less depth-1 rows over depth-2 code (the four-arm
     // comparison lives in openspec/changes/honest-context-budget).
-    const std::size_t focus_cost = estimate_tokens(focus.dump());
+    const std::size_t focus_cost = estimate_report_tokens(focus.dump());
     const auto density = [](const Selected& item) {
       return item.value / static_cast<double>(std::max<std::size_t>(1, item.cost));
     };
@@ -1312,7 +1302,7 @@ struct StructuralIntent {
     }
     const auto suffix_cost = [&](std::size_t kept, std::size_t bytes) {
       const std::size_t array_len = kept > 0 ? 2 + bytes + (kept - 1) : 2;
-      return focus_cost + estimate_tokens_for_length(array_len);
+      return focus_cost + estimate_report_tokens(array_len);
     };
     std::size_t dropped_over_budget = 0;
     while (dropped_over_budget < selected.size() &&
@@ -1388,7 +1378,7 @@ struct StructuralIntent {
 
     // Full snippet overflows: keep a brief-only entry if it still fits.
     brief["snippet_omitted"] = true;
-    const auto brief_cost = estimate_tokens(brief.dump());
+    const auto brief_cost = estimate_report_tokens(brief.dump());
     if (projected_used <= budget && brief_cost <= budget - projected_used) {
       projected_used += brief_cost;
       planned.push_back({node, std::move(brief), false});
@@ -1416,7 +1406,7 @@ struct StructuralIntent {
   // documented cost of keeping greedy's ordering byte-stable. O(n) via prefix
   // byte sums (see the knapsack shed above for the arithmetic).
   {
-    const std::size_t greedy_focus_cost = estimate_tokens(focus.dump());
+    const std::size_t greedy_focus_cost = estimate_report_tokens(focus.dump());
     std::vector<std::size_t> entry_bytes;
     entry_bytes.reserve(included.size());
     std::size_t total_bytes = 0;
@@ -1427,7 +1417,7 @@ struct StructuralIntent {
     std::size_t kept = included.size();
     while (kept > 0) {
       const std::size_t array_len = 2 + total_bytes + (kept - 1);
-      if (greedy_focus_cost + estimate_tokens_for_length(array_len) <= budget) {
+      if (greedy_focus_cost + estimate_report_tokens(array_len) <= budget) {
         break;
       }
       --kept;
