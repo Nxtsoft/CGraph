@@ -121,6 +121,7 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
            {"resolved_project_unique", stats.calls.resolved_project_unique},
            {"resolved_member_method", stats.calls.resolved_member_method},
            {"resolved_overload_first", stats.calls.resolved_overload_first},
+           {"resolved_qualifier_unchecked", stats.calls.resolved_qualifier_unchecked},
            {"dropped_unknown", stats.calls.dropped_unknown},
            {"dropped_ambiguous", stats.calls.dropped_ambiguous},
            {"dropped_self", stats.calls.dropped_self},
