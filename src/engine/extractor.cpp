@@ -323,7 +323,8 @@ void walk_node(
   std::string child_scope = scope_id;
   std::string_view child_kind = scope_kind;
   std::string child_function_scope = function_scope_id;
-  if (contains_symbol(config.symbols.class_nodes, symbol)) {
+  if (contains_symbol(config.symbols.class_nodes, symbol) &&
+      (!config.class_requires_body || !ts_node_is_null(ts_node_child_by_field_name(node, "body", 4)))) {
     if (auto id = add_symbol_node(node, config, context, "class", fragment); !id.empty()) {
       // Mark contract declarations (Java's `interface_declaration`). Java reuses
       // `method_declaration` inside an interface, so the methods below are
@@ -337,6 +338,9 @@ void walk_node(
       add_containment_edge(scope_id, scope_kind, id, "class", fragment);
       if (config.relation_handler) {
         config.relation_handler(node, context, id, raw_relations);
+      }
+      if (config.extract_members && config.member_handler) {
+        config.member_handler(node, context, id, fragment);
       }
       child_scope = std::move(id);
       child_kind = "class";
@@ -384,6 +388,9 @@ void walk_node(
       add_containment_edge(scope_id, scope_kind, id, "type", fragment);
       if (config.relation_handler) {
         config.relation_handler(node, context, id, raw_relations);
+      }
+      if (config.extract_members && config.member_handler) {
+        config.member_handler(node, context, id, fragment);
       }
       child_scope = std::move(id);
       child_kind = "type";

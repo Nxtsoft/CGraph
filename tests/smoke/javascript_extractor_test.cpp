@@ -1,6 +1,8 @@
 #include "cgraph/javascript_extractor.hpp"
 
 #include <string_view>
+#include "cgraph/normalize.hpp"
+#include <set>
 
 namespace {
 
@@ -21,6 +23,29 @@ namespace {
 }  // namespace
 
 int main() {
+  const auto members = cgraph::extract_typescript({.source_file = "members.ts", .source = R"ts(
+interface First { readonly id: string; value?: number; nested: { hidden: boolean }; }
+interface Second { readonly id: string; value?: number; nested: { hidden: boolean }; }
+type Alias = { readonly id: string; value?: number };
+enum Choice { One, Two = "two" }
+)ts"});
+  for (const std::string owner : {"First", "Second", "Alias", "Choice"}) {
+    std::set<std::string> labels;
+    for (const auto& edge : members.fragment.edges) {
+      if (edge.source != cgraph::make_id("members.ts:" + owner) || edge.relation != "defines") continue;
+      for (const auto& field : members.fragment.nodes) {
+        if (field.id != edge.target) continue;
+        if (field.kind != "field" || field.id != cgraph::make_id("members.ts:" + owner + "::" + field.label)) return 1;
+        labels.insert(field.label);
+        if (field.label == "id" && (field.properties.at("type_text") != "string" || field.properties.at("readonly") != "true")) return 1;
+        if (field.label == "value" && (field.properties.at("type_text") != "number" || field.properties.at("optional") != "true")) return 1;
+      }
+    }
+    const std::set<std::string> expected = owner == "Choice" ? std::set<std::string>{"One", "Two"} :
+        owner == "Alias" ? std::set<std::string>{"id", "value"} : std::set<std::string>{"id", "value", "nested"};
+    if (labels != expected) return 1;
+  }
+
   constexpr auto js_source = R"js(
 import fs from "fs";
 

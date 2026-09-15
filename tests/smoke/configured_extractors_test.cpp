@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string_view>
 #include <vector>
+#include <set>
 
 namespace {
 
@@ -530,6 +531,29 @@ bool check_kotlin_extraction() {
 }  // namespace
 
 int main() {
+  struct MemberCase { cgraph::DetectedLanguage language; std::string source; };
+  for (const auto& test : std::vector<MemberCase>{
+      {cgraph::DetectedLanguage::Go, "package main\ntype First struct { Size, Count int; Name string }\ntype Second struct { Size, Count int; Name string }"},
+      {cgraph::DetectedLanguage::Rust, "struct First { Size: i32, Count: i32, Name: String } struct Second { Size: i32, Count: i32, Name: String }"},
+      {cgraph::DetectedLanguage::Java, "class First { int Size, Count; String Name; } record Second(int Size, int Count, String Name) {}"},
+  }) {
+    const auto result = cgraph::extract_configured_language(test.language, {.source_file = "members", .source = test.source});
+    if (!result) return 1;
+    for (const std::string owner : {"First", "Second"}) {
+      std::set<std::string> labels;
+      for (const auto& edge : result->fragment.edges) {
+        if (edge.relation != "defines" || edge.source != cgraph::make_id("members:" + owner)) continue;
+        for (const auto& field : result->fragment.nodes) {
+          if (field.id != edge.target) continue;
+          if (field.kind != "field" || field.id != cgraph::make_id("members:" + owner + "::" + field.label)) return 1;
+          if (!field.properties.contains("type_text")) return 1;
+          labels.insert(field.label);
+        }
+      }
+      if (labels != std::set<std::string>{"Size", "Count", "Name"}) { std::cerr << "missing members on " << owner << '\n'; return 1; }
+    }
+  }
+
   const auto languages = {
       cgraph::DetectedLanguage::C,
       cgraph::DetectedLanguage::Cpp,

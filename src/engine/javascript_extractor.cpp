@@ -485,6 +485,59 @@ void ts_relation_handler(const TSNode& node, const ExtractionContext& context, c
   }
 }
 
+void ts_member_handler(const TSNode& node, const ExtractionContext& context,
+                       const std::string& owner_id, Fragment& fragment) {
+  const auto owner_name = field_text(node, "name", context.source);
+  auto body = ts_node_child_by_field_name(node, "body", 4);
+  if (std::string_view(ts_node_type(node)) == "type_alias_declaration") {
+    body = ts_node_child_by_field_name(node, "value", 5);
+    if (ts_node_is_null(body) || std::string_view(ts_node_type(body)) != "object_type") return;
+  }
+  if (owner_name.empty() || ts_node_is_null(body)) return;
+  const bool is_enum = std::string_view(ts_node_type(node)) == "enum_declaration";
+  for (std::uint32_t i = 0; i < ts_node_named_child_count(body); ++i) {
+    const auto member = ts_node_named_child(body, i);
+    const std::string_view kind = ts_node_type(member);
+    // `method_signature` and `abstract_method_signature` are function nodes
+    // already (typescript_language_config below), and a member node would reuse
+    // their id and overwrite them.
+    if (!is_enum && kind != "property_signature" && kind != "public_field_definition") continue;
+    auto name = field_text(member, "name", context.source);
+    if (is_enum && (kind == "property_identifier" || kind == "string" || kind == "number" ||
+                    kind == "computed_property_name" || kind == "private_property_identifier")) {
+      name = node_text(member, context.source);
+    }
+    if (name.empty()) continue;
+    auto annotation = ts_node_child_by_field_name(member, "type", 4);
+    std::string type_text;
+    if (!ts_node_is_null(annotation) && ts_node_named_child_count(annotation) > 0) {
+      type_text = node_text(ts_node_named_child(annotation, 0), context.source);
+    }
+    Properties properties;
+    if (!type_text.empty()) properties.emplace("type_text", type_text);
+    if (!is_enum) {
+      bool optional = false;
+      bool readonly = false;
+      for (std::uint32_t j = 0; j < ts_node_child_count(member); ++j) {
+        const std::string_view token = ts_node_type(ts_node_child(member, j));
+        optional = optional || token == "?";
+        readonly = readonly || token == "readonly";
+      }
+      properties.emplace("optional", optional ? "true" : "false");
+      properties.emplace("readonly", readonly ? "true" : "false");
+    }
+    const auto id = make_id(context.source_file + ":" + owner_name + "::" + name);
+    fragment.nodes.push_back(Node{
+        .id = id, .label = name, .source_file = context.source_file,
+        .source_location = source_location(member), .kind = "field",
+        .confidence = Confidence::Extracted, .properties = std::move(properties),
+    });
+    fragment.edges.push_back(Edge{
+        .source = owner_id, .target = id, .relation = "defines", .confidence = Confidence::Extracted,
+    });
+  }
+}
+
 [[nodiscard]] LanguageConfig base_config(std::string name, std::string grammar, std::vector<std::string> extensions) {
   return LanguageConfig{
       .name = std::move(name),
@@ -519,6 +572,8 @@ LanguageConfig javascript_language_config() {
 
 LanguageConfig typescript_language_config() {
   auto config = base_config("typescript", "tree-sitter-typescript", {".ts"});
+  config.extract_members = true;
+  config.member_handler = ts_member_handler;
   config.type_node_types = {"interface_declaration", "type_alias_declaration", "enum_declaration"};
   config.class_node_types.push_back("abstract_class_declaration");
   config.function_node_types.push_back("abstract_method_signature");
