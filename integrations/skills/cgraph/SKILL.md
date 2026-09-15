@@ -32,8 +32,8 @@ grep/read calls that burn context.
 ## How to use the results
 
 - `graph_query` matches case-insensitively and can be narrowed with `kind`
-  (e.g. `"function"`, `"class"`, `"file"`), `file` (source-path substring), and
-  `limit`. On zero matches it returns `suggestions` — the closest symbol names —
+  (e.g. `"function"`, `"class"`, `"type"`, `"field"`, `"file"`), `file` (source-path
+  substring), and `limit`. On zero matches it returns `suggestions` — the closest symbol names —
   so correct the spelling and retry instead of falling back to grep.
 - Every id-taking tool (`graph_explain` / `graph_impact` / `graph_path` /
   `graph_context`) also accepts a bare symbol name (e.g. `"merge_fragments"`);
