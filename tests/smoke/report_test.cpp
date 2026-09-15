@@ -196,7 +196,6 @@ int test_cycles() {
 int test_scope_and_depth() {
   const auto graph = fixture();
   auto scoped = request_for();
-  scoped.scope = "b/";  // a trailing slash is tolerated by the daemon parser; here it must match exactly
   scoped.scope = "b";
   auto report = cgraph::build_modules_report(graph, scoped);
   if (report.modules.size() != 2 || module_named(report, "b") == nullptr || module_named(report, "a/x") == nullptr ||
