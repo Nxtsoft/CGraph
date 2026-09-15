@@ -127,12 +127,35 @@ void write_layout(GraphSnapshot& snapshot, const igraph_t& graph) {
   if (error == IGRAPH_SUCCESS &&
       static_cast<std::size_t>(igraph_matrix_nrow(&coords)) == snapshot.nodes.size() &&
       igraph_matrix_ncol(&coords) >= 2) {
+    // igraph returns unit-scale coordinates (a 1,600-node graph spans about
+    // 20 units). The viewer adopts them verbatim as pixels and clamps its fit
+    // zoom, so unscaled every node landed in one blob. Rescale to a canvas-
+    // sized square that grows with sqrt(n), centered on the origin, keeping
+    // the layout's shape and determinism.
+    double min_x = MATRIX(coords, 0, 0);
+    double max_x = min_x;
+    double min_y = MATRIX(coords, 0, 1);
+    double max_y = min_y;
+    for (std::size_t index = 1; index < snapshot.nodes.size(); ++index) {
+      const auto row = static_cast<igraph_int_t>(index);
+      min_x = std::min(min_x, MATRIX(coords, row, 0));
+      max_x = std::max(max_x, MATRIX(coords, row, 0));
+      min_y = std::min(min_y, MATRIX(coords, row, 1));
+      max_y = std::max(max_y, MATRIX(coords, row, 1));
+    }
+    constexpr double kMinCanvasSide = 720.0;
+    constexpr double kPixelsPerSqrtNode = 30.0;
+    const double side = std::max(kMinCanvasSide, kPixelsPerSqrtNode * std::sqrt(static_cast<double>(snapshot.nodes.size())));
+    const double span = std::max({max_x - min_x, max_y - min_y, 1e-9});
+    const double scale = side / span;
+    const double center_x = (min_x + max_x) / 2.0;
+    const double center_y = (min_y + max_y) / 2.0;
     for (std::size_t index = 0; index < snapshot.nodes.size(); ++index) {
       const auto row = static_cast<igraph_int_t>(index);
       std::ostringstream x_value;
       std::ostringstream y_value;
-      x_value << std::fixed << std::setprecision(2) << MATRIX(coords, row, 0);
-      y_value << std::fixed << std::setprecision(2) << MATRIX(coords, row, 1);
+      x_value << std::fixed << std::setprecision(2) << (MATRIX(coords, row, 0) - center_x) * scale;
+      y_value << std::fixed << std::setprecision(2) << (MATRIX(coords, row, 1) - center_y) * scale;
       snapshot.nodes[index].properties["x"] = x_value.str();
       snapshot.nodes[index].properties["y"] = y_value.str();
     }

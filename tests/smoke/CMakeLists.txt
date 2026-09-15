@@ -912,3 +912,15 @@ cgraph_set_warnings(cgraph_retrieval_quality_test)
 cgraph_enable_sanitizers(cgraph_retrieval_quality_test)
 
 add_test(NAME cgraph_retrieval_quality_test COMMAND cgraph_retrieval_quality_test)
+
+add_executable(cgraph_report_test
+  report_test.cpp)
+
+target_link_libraries(cgraph_report_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_report_test)
+cgraph_enable_sanitizers(cgraph_report_test)
+
+add_test(NAME cgraph_report_test COMMAND cgraph_report_test)

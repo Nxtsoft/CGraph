@@ -18,6 +18,13 @@ Supported operations:
 - `shutdown`: Ask the per-root daemon to exit cleanly.
 - `remember`: Persist a session-memory checkpoint (title, tags, markdown body).
 - `recall`: List or filter persisted checkpoints.
+- `report`: Structural report sized to a token budget. `view: "modules"` (the only implemented
+  view; `design`, `clones`, `types` answer `code: "report_view_not_implemented"`) groups files
+  into modules by directory depth, aggregates imports/calls between them, ranks layers by
+  longest path, lists cycles, and renders `json` | `mermaid` | `markdown` | `svg`. Whole rows are
+  shed to fit `budget`; `omitted` always reports how many. A daemon that predates the op answers
+  `unknown op: report`; hosts should surface that as "upgrade the daemon". Hosts also call
+  `graph_report` when asked for the architecture or a module map.
 
 Hosts should prefer the thin client command surface unless they are implementing an MCP or always-on bridge that already speaks local JSON frames.
 

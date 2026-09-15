@@ -7,6 +7,7 @@
 #include "cgraph/dedup.hpp"
 #include "cgraph/detect.hpp"
 #include "cgraph/export_json.hpp"
+#include "cgraph/report.hpp"
 #include "cgraph/file_extraction.hpp"
 #include "cgraph/graph_builder.hpp"
 
@@ -112,7 +113,8 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
   return result;
 }
 
-void write_exports(const GraphSnapshot& graph, const std::filesystem::path& output_dir) {
+void write_exports(const GraphSnapshot& graph, const std::filesystem::path& output_dir,
+                   const std::filesystem::path& project_root) {
   std::filesystem::create_directories(output_dir);
   write_text(output_dir / "graph.json", to_node_link_json(graph).dump(2));
   write_text(output_dir / "graph.html", export_graph_html(graph));
@@ -120,6 +122,12 @@ void write_exports(const GraphSnapshot& graph, const std::filesystem::path& outp
   write_text(output_dir / "obsidian.md", export_obsidian_markdown(graph));
   write_text(output_dir / "cypher.txt", export_neo4j_cypher(graph));
   write_text(output_dir / "call-flow.html", export_call_flow_html(graph));
+  ReportRequest modules_request;
+  modules_request.budget = 0;
+  modules_request.project_root = project_root;
+  const auto modules = build_modules_report(graph, modules_request);
+  write_text(output_dir / "modules.mmd", render_modules_mermaid(modules));
+  write_text(output_dir / "modules.svg", render_modules_svg(modules));
 }
 
 }  // namespace cgraph

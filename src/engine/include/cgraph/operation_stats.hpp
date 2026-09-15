@@ -113,9 +113,10 @@ struct BuildStats {
 };
 
 // The daemon request types, in dispatch order. Count is the array sentinel.
-// Remember/Recall (session memory) are appended before Count so the durable
-// ledger's kSubstantiveOps (Query..Context) and its schema stay unchanged.
-enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Count };
+// Remember/Recall (session memory) and Report (structural reports) are appended
+// before Count so the durable ledger's kSubstantiveOps (Query..Context) and its
+// schema stay unchanged.
+enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Report, Count };
 
 inline constexpr std::size_t kDaemonOpCount = static_cast<std::size_t>(DaemonOp::Count);
 

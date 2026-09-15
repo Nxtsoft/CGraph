@@ -6,6 +6,7 @@
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 #include "cgraph/semantic_connectivity.hpp"
 #include "cgraph/snapshot_source_reader.hpp"
 
@@ -85,6 +86,7 @@ constexpr std::size_t kMaxKnapsackCapacity = 50000;
     case DaemonOp::Impact:
     case DaemonOp::Context:
     case DaemonOp::Recall:
+    case DaemonOp::Report:
       return true;
     case DaemonOp::Update:
     case DaemonOp::Status:
@@ -2139,6 +2141,17 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
                   .count());
           response = ok_response(decorate_freshness(
               annotate_build_state(std::move(result), *graph), *graph));
+          break;
+        }
+        case DaemonOp::Report: {
+          // report_response returns a full ok/error envelope (unknown view/format,
+          // or a reserved view answering "not implemented"), so only a success is
+          // decorated. Zero-hit = nothing in scope grouped into a module.
+          response = report_response(*graph, params, state.project_root);
+          if (response.value("ok", false)) {
+            zero_hit = response["result"]["totals"].value("modules", std::size_t{0}) == 0;
+            response["result"] = decorate_freshness(annotate_build_state(response["result"], *graph), *graph);
+          }
           break;
         }
         case DaemonOp::Count:
