@@ -178,16 +178,8 @@ void python_member_handler(const TSNode& node, const ExtractionContext& context,
         if (ts_node_is_null(target)) return;
         const std::string_view kind = ts_node_type(target);
         if (kind == "identifier") {
-          const auto label = node_text(target, context.source);
-          const auto id = make_id(context.source_file + ":" + owner_name + "::" + label);
-          fragment.nodes.push_back(Node{
-              .id = id, .label = label, .source_file = context.source_file,
-              .source_location = source_location(member), .kind = "field",
-              .confidence = Confidence::Extracted, .properties = properties,
-          });
-          fragment.edges.push_back(Edge{
-              .source = owner_id, .target = id, .relation = "defines", .confidence = Confidence::Extracted,
-          });
+          add_field_node(context, owner_id, owner_name, node_text(target, context.source),
+                         source_location(member), properties, fragment);
         } else if (kind == "pattern_list" || kind == "tuple_pattern" || kind == "list_pattern" || kind == "list_splat_pattern") {
           for (std::uint32_t j = 0; j < ts_node_named_child_count(target); ++j) emit_target(ts_node_named_child(target, j));
         }

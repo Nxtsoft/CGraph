@@ -485,6 +485,43 @@ void ts_relation_handler(const TSNode& node, const ExtractionContext& context, c
   }
 }
 
+// `constructor(public readonly x: number)` declares a member, the same way a
+// Java record component does (java_member_handler). The grammar wraps the
+// parameter in `required_parameter`/`optional_parameter` with an accessibility
+// modifier; without one it is an ordinary parameter and declares nothing.
+void ts_parameter_properties(const TSNode& method, const ExtractionContext& context,
+                             const std::string& owner_id, const std::string& owner_name,
+                             Fragment& fragment) {
+  if (field_text(method, "name", context.source) != "constructor") return;
+  const auto parameters = ts_node_child_by_field_name(method, "parameters", 10);
+  if (ts_node_is_null(parameters)) return;
+  for (std::uint32_t i = 0; i < ts_node_named_child_count(parameters); ++i) {
+    const auto parameter = ts_node_named_child(parameters, i);
+    const std::string_view kind = ts_node_type(parameter);
+    if (kind != "required_parameter" && kind != "optional_parameter") continue;
+    bool declared = false;
+    bool readonly = false;
+    for (std::uint32_t j = 0; j < ts_node_child_count(parameter); ++j) {
+      const auto child = ts_node_child(parameter, j);
+      const std::string_view token = ts_node_type(child);
+      declared = declared || token == "accessibility_modifier";
+      readonly = readonly || token == "readonly";
+    }
+    if (!declared) continue;
+    auto name = field_text(parameter, "pattern", context.source);
+    if (name.empty()) continue;
+    const auto annotation = ts_node_child_by_field_name(parameter, "type", 4);
+    Properties properties;
+    if (!ts_node_is_null(annotation) && ts_node_named_child_count(annotation) > 0) {
+      properties.emplace("type_text", node_text(ts_node_named_child(annotation, 0), context.source));
+    }
+    properties.emplace("optional", kind == "optional_parameter" ? "true" : "false");
+    properties.emplace("readonly", readonly ? "true" : "false");
+    add_field_node(context, owner_id, owner_name, std::move(name), source_location(parameter),
+                   std::move(properties), fragment);
+  }
+}
+
 void ts_member_handler(const TSNode& node, const ExtractionContext& context,
                        const std::string& owner_id, Fragment& fragment) {
   const auto owner_name = field_text(node, "name", context.source);
@@ -501,6 +538,10 @@ void ts_member_handler(const TSNode& node, const ExtractionContext& context,
     // `method_signature` and `abstract_method_signature` are function nodes
     // already (typescript_language_config below), and a member node would reuse
     // their id and overwrite them.
+    if (kind == "method_definition") {
+      ts_parameter_properties(member, context, owner_id, owner_name, fragment);
+      continue;
+    }
     if (!is_enum && kind != "property_signature" && kind != "public_field_definition") continue;
     auto name = field_text(member, "name", context.source);
     if (is_enum && (kind == "property_identifier" || kind == "string" || kind == "number" ||
@@ -526,15 +567,8 @@ void ts_member_handler(const TSNode& node, const ExtractionContext& context,
       properties.emplace("optional", optional ? "true" : "false");
       properties.emplace("readonly", readonly ? "true" : "false");
     }
-    const auto id = make_id(context.source_file + ":" + owner_name + "::" + name);
-    fragment.nodes.push_back(Node{
-        .id = id, .label = name, .source_file = context.source_file,
-        .source_location = source_location(member), .kind = "field",
-        .confidence = Confidence::Extracted, .properties = std::move(properties),
-    });
-    fragment.edges.push_back(Edge{
-        .source = owner_id, .target = id, .relation = "defines", .confidence = Confidence::Extracted,
-    });
+    add_field_node(context, owner_id, owner_name, std::move(name), source_location(member),
+                   std::move(properties), fragment);
   }
 }
 

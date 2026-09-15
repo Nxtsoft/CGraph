@@ -159,4 +159,33 @@ struct LanguageConfig {
 void intern_node_symbols(LanguageConfig& config, const TSLanguage* language);
 [[nodiscard]] bool contains_symbol(const std::vector<TSSymbol>& symbols, TSSymbol symbol);
 
+// The one id-collision guard for extracted nodes. `seed` is the id's natural
+// spelling (`file:label` for a symbol, `file:Owner::member` for a field);
+// make_id collapses it, so unrelated spellings land on one id -- `First::size`
+// and `first_size` both normalize to `first_size`. merge_fragments keeps the
+// first node with a given id and drops the rest without a warning
+// (graph_builder.cpp), so a collision silently loses a symbol. When the natural
+// id is taken, fall back to the declaration's line, then its column, then a
+// counter, all stable for a given file so the id stays deterministic.
+[[nodiscard]] std::string unique_node_id(
+    const std::string& seed, const SourceLocation& location, const Fragment& fragment);
+
+// The one field emitter: every language's members become `field` nodes and
+// `defines` edges here, through unique_node_id, so a member never lands on an
+// id another declaration in the file already holds.
+//
+// A field yields to a symbol, never the reverse: add_symbol_node relocates an
+// already-emitted field that holds the id a function or type wants, because a
+// function's id is what an agent asks impact and explain about, and it must not
+// change because a struct one line up happens to have a snake_case-equivalent
+// member.
+std::string add_field_node(
+    const ExtractionContext& context,
+    const std::string& owner_id,
+    std::string_view owner_name,
+    std::string label,
+    const SourceLocation& location,
+    Properties properties,
+    Fragment& fragment);
+
 }  // namespace cgraph

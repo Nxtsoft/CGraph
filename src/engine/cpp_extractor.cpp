@@ -627,21 +627,7 @@ void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const 
     if (field_name.empty()) {
       continue;
     }
-    const auto field_id = make_id(context.source_file + ":" + class_name + "::" + field_name);
-    fragment.nodes.push_back(Node{
-        .id = field_id,
-        .label = field_name,
-        .source_file = context.source_file,
-        .source_location = source_location(member),
-        .kind = "field",
-        .confidence = Confidence::Extracted,
-    });
-    fragment.edges.push_back(Edge{
-        .source = class_id,
-        .target = field_id,
-        .relation = "defines",
-        .confidence = Confidence::Extracted,
-    });
+    add_field_node(context, class_id, class_name, field_name, source_location(member), {}, fragment);
   }
 }
 

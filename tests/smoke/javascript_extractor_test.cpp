@@ -3,6 +3,8 @@
 #include <string_view>
 #include "cgraph/normalize.hpp"
 #include <set>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -45,6 +47,54 @@ enum Choice { One, Two = "two" }
         owner == "Alias" ? std::set<std::string>{"id", "value"} : std::set<std::string>{"id", "value", "nested"};
     if (labels != expected) return 1;
   }
+
+  // TypeScript declaration merging: two owners with one name in one file. Each
+  // owner's members must be its own nodes, not one shared node that both owners
+  // point a `defines` edge at.
+  const auto merged = cgraph::extract_typescript({.source_file = "c.ts", .source = R"ts(
+interface Window { locale: string; }
+interface Window { locale: string; theme: string; }
+)ts"});
+  std::vector<std::string> window_owners;
+  for (const auto& node : merged.fragment.nodes) {
+    if (node.kind == "type" && node.label == "Window") window_owners.push_back(node.id);
+  }
+  if (window_owners.size() != 2 || window_owners[0] == window_owners[1]) return 1;
+  std::set<std::string> locale_targets;
+  for (const auto& owner : window_owners) {
+    std::size_t locales = 0;
+    for (const auto& edge : merged.fragment.edges) {
+      if (edge.relation != "defines" || edge.source != owner) continue;
+      for (const auto& field : merged.fragment.nodes) {
+        if (field.id != edge.target || field.label != "locale") continue;
+        ++locales;
+        locale_targets.insert(field.id);
+      }
+    }
+    if (locales != 1) return 1;
+  }
+  if (locale_targets.size() != 2) return 1;
+
+  // `constructor(public readonly x: number)` declares a member; a parameter
+  // with no accessibility modifier declares nothing.
+  const auto parameters = cgraph::extract_typescript({.source_file = "p.ts", .source = R"ts(
+class Point {
+  constructor(public readonly x: number, private y?: string, plain: boolean = true) {}
+}
+)ts"});
+  std::set<std::string> declared;
+  for (const auto& edge : parameters.fragment.edges) {
+    if (edge.relation != "defines" || edge.source != cgraph::make_id("p.ts:Point")) continue;
+    for (const auto& field : parameters.fragment.nodes) {
+      if (field.id != edge.target || field.kind != "field") continue;
+      declared.insert(field.label);
+      if (field.label == "x" && (field.properties.at("readonly") != "true" ||
+                                 field.properties.at("type_text") != "number")) return 1;
+      if (field.label == "y" && (field.properties.at("optional") != "true" ||
+                                 field.properties.at("type_text") != "string")) return 1;
+    }
+  }
+  if (declared != std::set<std::string>{"x", "y"}) return 1;
 
   constexpr auto js_source = R"js(
 import fs from "fs";
