@@ -774,6 +774,96 @@ int main() {
     return 1;
   }
 
+  // --- node lookup fails loud (CGR-4 follow-up) ---
+  // An empty key is a typed error, never a fuzzy match; a label several nodes
+  // share is reported as ambiguous with the exact candidates, never resolved
+  // to whichever copy the graph listed first.
+  {
+    cgraph::DaemonState s;
+    cgraph::GraphSnapshot g;
+    g.build_state = cgraph::BuildState::DeterministicReady;
+    // A label with no leading token: `label_symbol` of "(anonymous)" is "", which
+    // the old bare-name tier matched against an empty id.
+    g.nodes.push_back(cgraph::Node{.id = "anon", .label = "(anonymous)", .kind = "class",
+                                   .properties = {{"degree_centrality", "1.000000"}}});
+    g.nodes.push_back(cgraph::Node{.id = "t1:write_file", .label = "write_file", .source_file = "t1.cpp", .kind = "function",
+                                   .properties = {{"degree_centrality", "0.200000"}}});
+    g.nodes.push_back(cgraph::Node{.id = "t2:write_file", .label = "write_file", .source_file = "t2.cpp", .kind = "function",
+                                   .properties = {{"degree_centrality", "0.500000"}}});
+    g.nodes.push_back(cgraph::Node{.id = "u", .label = "Unique(int)", .kind = "function"});
+    g.nodes.push_back(cgraph::Node{.id = "v", .label = "unique", .kind = "variable"});
+    g.edges.push_back(cgraph::Edge{.source = "t1:write_file", .target = "u", .relation = "CALLS"});
+    cgraph::publish_graph_snapshot(s, std::move(g));
+
+    // Empty or missing id: a typed error, and the request never reaches the lookup.
+    for (const auto& params : {nlohmann::json::object(), nlohmann::json{{"id", ""}}, nlohmann::json{{"id", nullptr}}}) {
+      for (const char* op : {"explain", "impact"}) {
+        const auto r = cgraph::handle_daemon_request(s, cgraph::make_request(op, params));
+        if (r.value("ok", true) || r.value("error", std::string{}).find("id is required") == std::string::npos ||
+            r.contains("result")) {
+          return 40;
+        }
+      }
+    }
+    const auto path_missing = cgraph::handle_daemon_request(s, cgraph::make_request("path", {{"source", "u"}}));
+    if (path_missing.value("ok", true) || path_missing.value("error", std::string{}).find("source and target") == std::string::npos) {
+      return 41;
+    }
+    const auto context_missing = cgraph::handle_daemon_request(s, cgraph::make_request("context", {{"budget", 100}}));
+    if (context_missing.value("ok", true) || context_missing.value("error", std::string{}).find("id or query") == std::string::npos) {
+      return 42;
+    }
+    // A free-text context request still needs no id.
+    const auto context_query = cgraph::handle_daemon_request(s, cgraph::make_request("context", {{"query", "write_file"}}));
+    if (!context_query.value("ok", false)) {
+      return 43;
+    }
+
+    // An ambiguous label: found:false, ambiguous:true, the exact candidates as
+    // suggestions ordered most central first, and the full count.
+    const auto dup = cgraph::handle_daemon_request(s, cgraph::make_request("explain", {{"id", "write_file"}}));
+    const auto& dup_result = dup["result"];
+    if (!dup.value("ok", false) || dup_result.value("found", true) || !dup_result.value("ambiguous", false) ||
+        dup_result.value("candidate_count", 0U) != 2U || dup_result["suggestions"].size() != 2 ||
+        dup_result["suggestions"][0].value("id", std::string{}) != "t2:write_file" ||
+        dup_result["suggestions"][1].value("id", std::string{}) != "t1:write_file") {
+      return 44;
+    }
+    const auto dup_impact = cgraph::handle_daemon_request(s, cgraph::make_request("impact", {{"id", "WRITE_FILE"}}));
+    if (dup_impact["result"].value("found", true) || !dup_impact["result"].value("ambiguous", false)) {
+      return 45;  // the case-insensitive bare-name tier is gated the same way
+    }
+    const auto dup_context = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"id", "write_file"}, {"query", "unique"}}));
+    if (!dup_context["result"]["focus"].is_null() || !dup_context["result"].value("ambiguous", false)) {
+      return 46;  // the free-text fallback does not paper over an ambiguous id
+    }
+    const auto dup_path = cgraph::handle_daemon_request(s, cgraph::make_request("path", {{"source", "write_file"}, {"target", "u"}}));
+    if (!dup_path["result"].value("source_ambiguous", false) || dup_path["result"].value("source_found", true) ||
+        dup_path["result"]["source_suggestions"].size() != 2 || dup_path["result"].contains("target_found")) {
+      return 47;
+    }
+    // The canonical id always wins, even when a label tier would be ambiguous.
+    const auto by_id = cgraph::handle_daemon_request(s, cgraph::make_request("explain", {{"id", "t1:write_file"}}));
+    if (by_id["result"].value("id", std::string{}) != "t1:write_file" || by_id["result"].contains("ambiguous") ||
+        by_id["result"]["neighbors"].size() != 1) {
+      return 48;
+    }
+    // Exact label outranks the bare-name tier: "unique" names the variable exactly,
+    // although "Unique(int)" also matches it case-insensitively by symbol.
+    const auto exact_label = cgraph::handle_daemon_request(s, cgraph::make_request("explain", {{"id", "unique"}}));
+    if (exact_label["result"].value("id", std::string{}) != "v") {
+      return 49;
+    }
+    // No exact label spells "UNIQUE", so the bare-name tier runs and finds two
+    // symbols ("Unique" and "unique"): ambiguous, not the more central one.
+    const auto bare = cgraph::handle_daemon_request(s, cgraph::make_request("explain", {{"id", "UNIQUE"}}));
+    if (bare["result"].value("found", true) || !bare["result"].value("ambiguous", false) ||
+        bare["result"].value("candidate_count", 0U) != 2U) {
+      return 50;
+    }
+  }
+
   // --- operation stats: counts, latency, zero-hit rate, uptime, window ---
   {
     cgraph::DaemonState s;

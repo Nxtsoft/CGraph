@@ -349,11 +349,14 @@ void walk_node(
   if (contains_symbol(config.symbols.function_nodes, symbol)) {
     // Named function declarations and methods are always graph nodes and call
     // scopes (at any nesting). An arrow is one only when it is a module-level
-    // `const Foo = () => {}`. Every other arrow — a handler defined inside a
-    // component, an inline `.map(x => f(x))` callback, a JSX `onClick={() => …}`
-    // — is a local: Graphify emits no node for it and seeds no call scope, so we
-    // neither create a node nor attribute its calls (the body is a boundary).
-    if (std::string_view(ts_node_type(node)) == "arrow_function" && !is_module_level_arrow(node)) {
+    // `const Foo = () => {}`, or a shape the language opts back in through
+    // `nested_function_scope` (an HTTP route's inline handler). Every other
+    // arrow — a handler defined inside a component, an inline `.map(x => f(x))`
+    // callback, a JSX `onClick={() => …}` — is a local: Graphify emits no node
+    // for it and seeds no call scope, so we neither create a node nor attribute
+    // its calls (the body is a boundary).
+    const bool nested_scope = config.nested_function_scope && config.nested_function_scope(node, context);
+    if (std::string_view(ts_node_type(node)) == "arrow_function" && !is_module_level_arrow(node) && !nested_scope) {
       child_function_scope.clear();
     } else {
       auto id = add_symbol_node(node, config, context, "function", fragment);

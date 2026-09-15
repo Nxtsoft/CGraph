@@ -38,7 +38,11 @@ grep/read calls that burn context.
 - Every id-taking tool (`graph_explain` / `graph_impact` / `graph_path` /
   `graph_context`) also accepts a bare symbol name (e.g. `"merge_fragments"`);
   the response echoes the canonical `id` it resolved. A miss comes back with
-  `found: false` plus `suggestions`.
+  `found: false` plus `suggestions`. A name several symbols share (`write_file`
+  defined in many test files) is never resolved to one of them silently: the
+  response is `found: false`, `ambiguous: true`, and `suggestions` holds the
+  exact candidates (most central first, `candidate_count` in total) — pick the
+  `id` you meant and call again. An empty or missing id is an error, not a search.
 - `graph_query` returns ids and `source_file`:`line`. Open the file at `line`
   directly — no second search needed.
 - `graph_explain` takes `direction` (`"in"` = callers/importers, `"out"` =

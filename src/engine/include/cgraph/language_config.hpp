@@ -73,6 +73,13 @@ using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, co
 // type alone cannot tell a method from a free function). Complements
 // method_node_types, which handles grammar-shape methods (Go).
 using MethodPredicate = std::function<bool(const TSNode&, const ExtractionContext&)>;
+// Decides whether a nested anonymous function -- an arrow that is not a
+// module-level `const Foo = () => {}` -- is nonetheless a graph node and a call
+// scope. The walker treats every such arrow as a boundary (Graphify seeds no
+// calls from callbacks); a language opts specific shapes back in, such as the
+// handler an HTTP route registration passes inline. The name still comes from
+// `resolve_function_name`, which must return one for the same node.
+using NestedFunctionScope = std::function<bool(const TSNode&, const ExtractionContext&)>;
 // Invoked for each class/interface node (with its already-assigned node id) to
 // emit heritage and member type-reference facts.
 using RelationHandler = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, std::vector<RawRelation>&)>;
@@ -149,6 +156,7 @@ struct LanguageConfig {
   ExtraWalk extra_walk;
   RelationHandler relation_handler;
   MethodPredicate method_predicate;
+  NestedFunctionScope nested_function_scope;
   PreprocessSource preprocess_source;
   InternedSymbols symbols;
   bool extract_members = false;

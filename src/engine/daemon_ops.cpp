@@ -564,33 +564,90 @@ void annotate_snippet_absence(nlohmann::json& entry, const Node& node) {
 
 // Resolve a node by exact id, exact label, or bare symbol name (the label's
 // leading token, case-insensitive) — every id-taking op accepts any of these,
-// so an agent can pass a symbol name without a prior query round-trip. When a
-// bare name is ambiguous, the highest-centrality match wins; the response
-// echoes the resolved id so the agent sees which one.
+// so an agent can pass a symbol name without a prior query round-trip. Each
+// tier must name exactly one node. A label or bare name several nodes share
+// (`write_file` in 35 test files) resolves to none of them and the candidates
+// are reported, so the agent picks an id instead of receiving whichever copy
+// the graph listed first, or the most central one, as if it had been asked
+// for. An empty key names nothing: it used to reach the bare-name tier, where
+// a label with no leading token matched the empty string.
+struct NodeLookup {
+  const Node* node = nullptr;            // the single match, or null
+  std::vector<const Node*> candidates;   // the exact matches when the key named several
+  [[nodiscard]] bool ambiguous() const { return node == nullptr && !candidates.empty(); }
+};
+
+[[nodiscard]] NodeLookup lookup_node(
+    const GraphSnapshot& graph,
+    const std::unordered_map<std::string, const Node*>& by_id,
+    const std::string& key) {
+  NodeLookup out;
+  if (key.empty()) {
+    return out;
+  }
+  if (const auto it = by_id.find(key); it != by_id.end()) {
+    out.node = it->second;
+    return out;
+  }
+  std::vector<const Node*> matches;
+  for (const auto& node : graph.nodes) {
+    if (node.label == key) {
+      matches.push_back(&node);
+    }
+  }
+  if (matches.empty()) {
+    const auto lower_key = ascii_lower(key);
+    for (const auto& node : graph.nodes) {
+      if (ascii_lower(label_symbol(node)) == lower_key) {
+        matches.push_back(&node);
+      }
+    }
+  }
+  if (matches.size() == 1) {
+    out.node = matches.front();
+    return out;
+  }
+  // Ambiguous: most important first so the likeliest pick leads, then a total
+  // order so the list is deterministic across runs.
+  std::ranges::sort(matches, [](const Node* lhs, const Node* rhs) {
+    const auto lc = node_centrality(*lhs);
+    const auto rc = node_centrality(*rhs);
+    if (lc != rc) {
+      return lc > rc;
+    }
+    if (lhs->label != rhs->label) {
+      return lhs->label < rhs->label;
+    }
+    return lhs->id < rhs->id;
+  });
+  out.candidates = std::move(matches);
+  return out;
+}
+
 [[nodiscard]] const Node* resolve_node(
     const GraphSnapshot& graph,
     const std::unordered_map<std::string, const Node*>& by_id,
     const std::string& key) {
-  if (const auto it = by_id.find(key); it != by_id.end()) {
-    return it->second;
+  return lookup_node(graph, by_id, key).node;
+}
+
+// The not-found tail every id-taking op appends. A miss carries did-you-mean
+// `suggestions`; an ambiguous key carries the exact matches in that same list,
+// flagged `ambiguous` so the agent knows they are the answer set, not
+// near-misses, plus the full `candidate_count` when the list is capped.
+void describe_miss(nlohmann::json& result, const GraphSnapshot& graph, const std::string& key,
+                   const NodeLookup& lookup) {
+  if (!lookup.ambiguous()) {
+    result["suggestions"] = suggest_similar(graph, key);
+    return;
   }
-  for (const auto& node : graph.nodes) {
-    if (node.label == key) {
-      return &node;
-    }
+  auto candidates = nlohmann::json::array();
+  for (std::size_t i = 0; i < lookup.candidates.size() && i < kMaxSuggestions; ++i) {
+    candidates.push_back(node_brief(*lookup.candidates[i]));
   }
-  const auto lower_key = ascii_lower(key);
-  const Node* best = nullptr;
-  for (const auto& node : graph.nodes) {
-    if (ascii_lower(label_symbol(node)) != lower_key) {
-      continue;
-    }
-    if (best == nullptr || node_centrality(node) > node_centrality(*best) ||
-        (node_centrality(node) == node_centrality(*best) && node.label < best->label)) {
-      best = &node;
-    }
-  }
-  return best;
+  result["ambiguous"] = true;
+  result["candidate_count"] = lookup.candidates.size();
+  result["suggestions"] = std::move(candidates);
 }
 
 // ---- query intent routing (route-query-by-intent) ---------------------------
@@ -842,11 +899,13 @@ struct StructuralIntent {
   const auto limit = params.value("limit", kDefaultImpactLimit);
 
   const auto by_id = index_nodes(graph);
-  const auto* seed = resolve_node(graph, by_id, id);
+  const auto lookup = lookup_node(graph, by_id, id);
+  const auto* seed = lookup.node;
   if (seed == nullptr) {
-    return {{"id", id}, {"found", false}, {"direction", direction}, {"max_depth", max_depth},
-            {"total", 0}, {"returned", 0}, {"nodes", nlohmann::json::array()},
-            {"suggestions", suggest_similar(graph, id)}};
+    nlohmann::json miss{{"id", id}, {"found", false}, {"direction", direction}, {"max_depth", max_depth},
+                        {"total", 0}, {"returned", 0}, {"nodes", nlohmann::json::array()}};
+    describe_miss(miss, graph, id, lookup);
+    return miss;
   }
   // The canonical id (the requested key may have been a label).
   const auto& seed_id = seed->id;
@@ -993,13 +1052,15 @@ struct StructuralIntent {
   // a free-text query.
   const auto id = params.value("id", std::string{});
   const auto needle = params.value("q", params.value("query", std::string{}));
-  const Node* focal = id.empty() ? nullptr : resolve_node(graph, by_id, id);
+  const auto focal_lookup = lookup_node(graph, by_id, id);
+  const Node* focal = focal_lookup.node;
   // The gather is seeded from `seeds`. For an exact/substring/id resolution that is
   // just the focal; a free-text query that resolves only via lexical overlap seeds
   // from the top-N matches and unions their ego graphs (the dominant recall lever —
   // a single lexical seed is the right symbol only ~23% of the time).
+  // An ambiguous id is reported, never papered over by the free-text fallback.
   std::vector<const Node*> seeds;
-  if (focal == nullptr && !needle.empty()) {
+  if (focal == nullptr && !focal_lookup.ambiguous() && !needle.empty()) {
     for (const auto* match : matching_nodes(graph, needle)) {
       if (is_enrichment_node_id(match->id)) {
         continue;  // prose about code never becomes the code focus
@@ -1017,10 +1078,11 @@ struct StructuralIntent {
     }
   }
   if (focal == nullptr) {
-    return {{"focus", nullptr}, {"budget", budget}, {"tokens_used", 0},
-            {"packing", use_knapsack ? "knapsack" : "greedy"}, {"gather", adaptive ? "adaptive" : "fixed"},
-            {"included", nlohmann::json::array()}, {"omitted", 0},
-            {"suggestions", suggest_similar(graph, id.empty() ? needle : id)}};
+    nlohmann::json miss{{"focus", nullptr}, {"budget", budget}, {"tokens_used", 0},
+                        {"packing", use_knapsack ? "knapsack" : "greedy"}, {"gather", adaptive ? "adaptive" : "fixed"},
+                        {"included", nlohmann::json::array()}, {"omitted", 0}};
+    describe_miss(miss, graph, id.empty() ? needle : id, focal_lookup);
+    return miss;
   }
   if (seeds.empty()) {
     seeds.push_back(focal);  // exact / substring / id resolution stays single-seed
@@ -1479,10 +1541,12 @@ struct StructuralIntent {
   const auto limit = params.value("limit", kDefaultExplainNeighborLimit);
 
   const auto by_id = index_nodes(graph);
-  const auto* node = resolve_node(graph, by_id, id);
+  const auto lookup = lookup_node(graph, by_id, id);
+  const auto* node = lookup.node;
   if (node == nullptr) {
-    return {{"id", id}, {"found", false}, {"neighbors", nlohmann::json::array()},
-            {"suggestions", suggest_similar(graph, id)}};
+    nlohmann::json miss{{"id", id}, {"found", false}, {"neighbors", nlohmann::json::array()}};
+    describe_miss(miss, graph, id, lookup);
+    return miss;
   }
 
   struct NeighborEntry {
@@ -1544,24 +1608,30 @@ struct StructuralIntent {
 
 [[nodiscard]] nlohmann::json shortest_path(const GraphSnapshot& graph, const nlohmann::json& params) {
   const auto by_id_nodes = index_nodes(graph);
-  const auto resolve_endpoint = [&](const std::string& key) {
-    const auto* node = resolve_node(graph, by_id_nodes, key);
-    return node == nullptr ? key : node->id;
-  };
-  // Endpoints accept labels too; flag the missing one(s) with suggestions so an
-  // empty path is distinguishable from "no route exists".
+  // Endpoints accept labels too; flag the missing or ambiguous one(s) with
+  // suggestions so an empty path is distinguishable from "no route exists".
   const auto source_key = params.value("source", std::string{});
   const auto target_key = params.value("target", std::string{});
-  const auto source = resolve_endpoint(source_key);
-  const auto target = resolve_endpoint(target_key);
+  const auto source_lookup = lookup_node(graph, by_id_nodes, source_key);
+  const auto target_lookup = lookup_node(graph, by_id_nodes, target_key);
+  const auto source = source_lookup.node == nullptr ? source_key : source_lookup.node->id;
+  const auto target = target_lookup.node == nullptr ? target_key : target_lookup.node->id;
   nlohmann::json missing = nlohmann::json::object();
+  const auto describe_endpoint = [&](const char* prefix, const std::string& key, const NodeLookup& lookup) {
+    nlohmann::json miss;
+    describe_miss(miss, graph, key, lookup);
+    missing[std::string(prefix) + "_found"] = false;
+    if (miss.value("ambiguous", false)) {
+      missing[std::string(prefix) + "_ambiguous"] = true;
+      missing[std::string(prefix) + "_candidate_count"] = miss["candidate_count"];
+    }
+    missing[std::string(prefix) + "_suggestions"] = std::move(miss["suggestions"]);
+  };
   if (!by_id_nodes.contains(source)) {
-    missing["source_found"] = false;
-    missing["source_suggestions"] = suggest_similar(graph, source_key);
+    describe_endpoint("source", source_key, source_lookup);
   }
   if (!by_id_nodes.contains(target)) {
-    missing["target_found"] = false;
-    missing["target_suggestions"] = suggest_similar(graph, target_key);
+    describe_endpoint("target", target_key, target_lookup);
   }
   std::unordered_map<std::string, std::vector<std::string>> adjacency;
   for (const auto& edge : graph.edges) {
@@ -2057,6 +2127,38 @@ void mutate_graph_snapshot(DaemonState& state, const std::function<void(GraphSna
   publish_graph_snapshot(state, std::move(graph));
 }
 
+// An id-taking read with no key names nothing. `explain {}` (a mistyped
+// parameter name, say) once reached the bare-name lookup tier, where a label
+// with no leading token matched the empty string and an unrelated node came
+// back as if it had been asked for. Refused before dispatch, as a typed error,
+// so the CLI exits non-zero and an agent sees the parameter it forgot.
+[[nodiscard]] std::optional<std::string> missing_key_error(DaemonOp op, const nlohmann::json& params) {
+  const auto present = [&](const char* key) {
+    const auto it = params.find(key);
+    return it != params.end() && it->is_string() && !it->get<std::string>().empty();
+  };
+  switch (op) {
+    case DaemonOp::Explain:
+    case DaemonOp::Impact:
+      if (!present("id")) {
+        return "id is required: pass a node id or exact symbol name";
+      }
+      return std::nullopt;
+    case DaemonOp::Path:
+      if (!present("source") || !present("target")) {
+        return "source and target are required: pass node ids or exact symbol names";
+      }
+      return std::nullopt;
+    case DaemonOp::Context:
+      if (!present("id") && !present("q") && !present("query")) {
+        return "id or query is required: pass a node id, exact symbol name, or free-text query";
+      }
+      return std::nullopt;
+    default:
+      return std::nullopt;
+  }
+}
+
 nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& request) {
   if (!protocol_version_matches(request)) {
     return error_response("protocol version mismatch");
@@ -2074,6 +2176,9 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
   }
   if (!root_pin_matches_snapshot(*known_op, params, *graph)) {
     return error_response("expected_content_root does not match the selected graph snapshot");
+  }
+  if (auto missing = missing_key_error(*known_op, params)) {
+    return error_response(std::move(*missing));
   }
 
   // Time the op at the dispatch boundary and record into op_stats. A query with
