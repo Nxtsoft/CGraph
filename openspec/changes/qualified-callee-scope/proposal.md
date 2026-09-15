@@ -25,7 +25,9 @@ evidence, and it was thrown away before the rule ran.
   whatever T is instantiated with, which no declaration carries); a scope that names a namespace
   alias is rewritten to the namespace itself (`pd::helper()` under `namespace pd = proj::detail`
   is gated as `proj::detail::helper()`, and `fs::exists` under `namespace fs = std::filesystem`
-  is refused as the `std::` call it is).
+  is refused as the `std::` call it is). The lookup is file-local and walks backwards from the
+  call, as C++ binding does: an alias declared in a header the caller includes is not seen, and
+  the qualifier stays as written.
 - `cpp_field_walk` stamps a `scope` property on every function, class, struct, union and enum
   node declared inside a namespace: the `::`-joined enclosing namespace names, `(anonymous)` for
   an unnamed namespace, plus whatever the declarator itself qualifies -- an out-of-line
@@ -48,11 +50,20 @@ evidence, and it was thrown away before the rule ran.
   is recorded as `Outer`. A set with no survivor is refused and counted as the new
   `dropped_scope_mismatch`, which `CallResolution::balances()` includes.
 - The gate refuses a CONTRADICTION, never an absence of evidence: it runs only where the
-  qualifier has something to contradict -- its outermost segment is `std`, or at least one
-  candidate records a `scope` or an owning class. A call whose candidates record neither is a
-  qualifier checked against nothing, and binds as an unqualified call would. Requiring positive
-  proof instead dropped every call to an out-of-line member definition, a nested class, a
-  namespace alias, an inline namespace and a dependent `T::make()`.
+  qualifier has something to contradict. A root the project declares nowhere -- no `scope`
+  property in the graph starts with it -- contradicts every candidate, because no declaration
+  here can be inside it; that is what refuses `std::find`, `fmt::format`,
+  `boost::algorithm::trim`, `absl::strings_internal::size` and `QString::find` alike, with no
+  list of library namespaces in the resolver. Under a root the project does own, at least one
+  candidate must record a `scope` or an owning class; when none does, the qualifier is checked
+  against nothing and the call binds as an unqualified one would. Requiring positive proof
+  instead dropped every call to an out-of-line member definition, a nested class, a namespace
+  alias, an inline namespace and a dependent `T::make()`.
+- `CallResolution::resolved_qualifier_unchecked` counts exactly those bindings -- a qualified
+  call that resolved with its qualifier never checked -- as a subset of the resolved fields,
+  serialized alongside the rest. Without it, an edge admitted on no evidence is indistinguishable
+  from one the scope proved, and a before/after table on a repo that only calls `std::` cannot
+  see what the relaxation costs.
 
 ### Non-goals
 - `using namespace` directives. An unqualified call keeps the ordinary rules.
@@ -62,6 +73,8 @@ evidence, and it was thrown away before the rule ran.
   either is tracked separately, not done here.
 - A call that spells an inline namespace explicitly (`proj::v1::versioned()`). The declaration
   records `proj`, the spelling most code uses; the explicit one no longer matches.
+- A namespace alias declared in a header and used in a file that includes it. The alias lookup is
+  file-local, so that qualifier stays as written and the call is refused, exactly as on `main`.
 
 ## Impact
 
@@ -78,11 +91,12 @@ same machine, same source:
 | `dropped_scope_mismatch` | - | 17 |
 | Partitions balance | yes | yes |
 
-Follow-up (the review of #76, CGR-4): making the gate refuse only a contradiction changes nothing
-on this repo -- origin/main's `src/` (104 files, 1300 nodes) resolves to a byte-identical partition
-before and after (`resolved_project_unique` 403, `resolved_member_method` 24,
-`dropped_library_member` 616, `dropped_scope_mismatch` 18, 940 CALLS edges, partitions balance),
-because every mismatch here is a genuine `std::` contradiction. What it recovers is the six shapes
+Follow-up (the reviews of #76 and #80, CGR-4): making the gate refuse only a contradiction changes
+nothing on this repo -- origin/main's `src/` (104 files, 1300 nodes) resolves to a byte-identical
+partition before and after (`resolved_project_unique` 403, `resolved_member_method` 24,
+`dropped_library_member` 616, `dropped_scope_mismatch` 18, 940 CALLS edges,
+`resolved_qualifier_unchecked` 0, partitions balance), because every qualifier here is rooted in
+`std` or in `cgraph`, which the project declares. What it recovers is the six shapes
 an arbitrary C++ repo is made of, each asserted in `cpp_extractor_test.cpp` and each failing
 before the fix: an out-of-line member definition, a nested class, a namespace alias, an inline
 namespace, a dependent `T::make()`, against the in-class control that already bound.
