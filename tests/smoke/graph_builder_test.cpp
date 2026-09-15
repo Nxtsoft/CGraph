@@ -450,6 +450,40 @@ int test_qualified_scope_segments() {
   return 0;
 }
 
+// The gate refuses a CONTRADICTION, not an absence of evidence. A project
+// declaration that records neither a scope nor an owning class -- an out-of-line
+// C++ definition, a C file's file-scope function -- is checked against nothing,
+// so a project-qualified call still binds to it, while a `std::` qualifier
+// refuses it with no record to contradict at all.
+int test_qualified_scope_no_evidence() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto reload = cgraph::make_id("/p/cache.cpp:reload");
+  const auto remove_fn = cgraph::make_id("/p/paths.cpp:remove");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = reload, .label = "reload", .source_file = "/p/cache.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = remove_fn, .label = "remove", .source_file = "/p/paths.cpp", .kind = "function"});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "reload", .source_file = "/p/use.cpp", .qualifier = "proj::Cache"},
+      {.caller_id = caller, .callee_label = "remove", .source_file = "/p/use.cpp", .qualifier = "std::filesystem"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, reload, "CALLS")) {
+    return 1;
+  }
+  if (has_edge(graph, caller, remove_fn, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.dropped_scope_mismatch != 1 || !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
 // A member call with an unknown receiver binds project-wide only to a unique
 // METHOD (tier 2b) -- but not when the bare name is one every standard library
 // defines. `v.size()` must not reach the project's only method named `size`,
@@ -516,6 +550,10 @@ int main() {
   }
   if (test_library_member_names() != 0) {
     std::fprintf(stderr, "FAIL test_library_member_names\n");
+    return 1;
+  }
+  if (test_qualified_scope_no_evidence() != 0) {
+    std::fprintf(stderr, "FAIL test_qualified_scope_no_evidence\n");
     return 1;
   }
   if (test_qualified_scope_segments() != 0) {

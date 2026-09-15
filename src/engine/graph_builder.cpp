@@ -33,18 +33,26 @@ constexpr std::string_view kCallRelation = "CALLS";
   return edge.source + "\n" + edge.relation + "\n" + edge.target;
 }
 
+// The one qualifier root that refuses a project declaration on its own, with no
+// evidence from the declaration: nothing in a project is declared in `std`, so
+// `std::find(v...)` and `std::filesystem::remove(p)` must not bind to a project
+// `find` or `remove` even when neither records a scope.
+constexpr std::string_view kStdNamespace = "std";
+
 // Member names that every standard library defines on its containers, strings,
 // iterators, smart pointers and option types. A member call to one of these
 // with an unknown receiver (`v.size()`, `m.find(k)`, `opt.value()`) is far more
 // likely to be the library's member than the project's, so the method-only
 // project-wide tier refuses to bind it: on CGraph's own source the one project
 // method named `size` received 141 CALLS edges, one per `.size()` in the tree,
-// and `find` received 68, every one a false dependent in `impact`. A receiver
-// that names the class (`Stats::size()`, tier 2a) or a same-file declaration
-// (tier 1) is evidence and still binds. Deliberately excludes names a project
-// plausibly owns (`open`, `close`, `read`, `write`, `get`, `set`, `add`,
-// `apply`, `merge`, `load`, `store`): losing those edges would cost more recall
-// than the precision is worth.
+// and `find` received 68, every one a false dependent in `impact`. A same-file
+// declaration (tier 1) is evidence and still binds; so does a receiver that
+// names the class (`Stats::size()`, tier 2a), but only where the language config
+// fills `receiver_label` through `call_receiver_field` -- java_config alone
+// today -- so for the C family the same-file tier is the only one left.
+// Deliberately excludes names a project plausibly owns (`open`, `close`,
+// `read`, `write`, `get`, `set`, `add`, `apply`, `merge`, `load`, `store`):
+// losing those edges would cost more recall than the precision is worth.
 // Keys are make_id-normalized, so `.Count()` (Go, C#) and `.count()` both match.
 [[nodiscard]] bool is_library_member_key(const std::string& key) {
   static const std::unordered_set<std::string> keys = [] {
@@ -575,22 +583,18 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   // declare a `toJSONObject`.
   std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::string>>>
       methods_by_owner;
-  for (const auto& edge : graph.edges) {
-    if (edge.relation != "method") {
-      continue;
-    }
-    const auto name_key = method_name_key_by_id.find(edge.target);
-    if (name_key != method_name_key_by_id.end()) {
-      methods_by_owner[edge.source][name_key->second].push_back(edge.target);
-    }
-  }
   // The class node that owns each method, for checking a class-qualified callee
   // (`proj::Stats::size()`) against the resolved method's owner and that owner's
   // own namespace.
   std::unordered_map<std::string, std::string> owner_id_by_method;
   for (const auto& edge : graph.edges) {
-    if (edge.relation == "method") {
-      owner_id_by_method.emplace(edge.target, edge.source);
+    if (edge.relation != "method") {
+      continue;
+    }
+    owner_id_by_method.emplace(edge.target, edge.source);
+    const auto name_key = method_name_key_by_id.find(edge.target);
+    if (name_key != method_name_key_by_id.end()) {
+      methods_by_owner[edge.source][name_key->second].push_back(edge.target);
     }
   }
   std::unordered_set<std::string> node_ids;
@@ -989,16 +993,22 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       continue;
     }
     // A qualified callee names its scope outright, and that is evidence about
-    // which declaration the call means. Every candidate the tiers produced --
-    // the target and any overload siblings -- must be declared in that scope:
-    // the qualifier's segments are a suffix of the declaration's `scope`
-    // segments (`detail::helper()` from inside `proj` matches `proj::detail`;
+    // which declaration the call means -- evidence that can only ever REFUSE a
+    // candidate the tiers already produced. A candidate survives when the
+    // qualifier's segments are a suffix of its `scope` segments
+    // (`detail::helper()` from inside `proj` matches `proj::detail`;
     // `other::detail::helper()` does not), with anonymous namespaces transparent
     // because a qualified name from the same translation unit sees through
-    // them. A class-qualified callee (`proj::Stats::size()`) matches a method
-    // of a class bearing the last segment whose own scope carries the rest.
-    // `std::find` therefore never binds to a project `find`: nothing in the
-    // project is declared in `std`, so the edge is refused instead of invented.
+    // them; or when it is a method of a class bearing the last segment whose own
+    // scope carries the rest (`proj::Stats::size()`).
+    //
+    // The gate runs only where the qualifier has something to contradict: a
+    // root of `std` contradicts any project declaration by itself, and
+    // otherwise at least one candidate must record a scope or an owning class.
+    // Against candidates that record neither, the qualifier is checked against
+    // nothing -- so refusing would drop a real edge (a project scope the
+    // extractor never stamped) to buy no precision, and the call binds as an
+    // unqualified one would.
     if (!raw_call.qualifier.empty()) {
       const auto split_scope = [](std::string_view text) {
         std::vector<std::string_view> segments;
@@ -1027,6 +1037,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
         }
         return std::equal(prefix.rbegin(), prefix.rend(), have.rbegin());
       };
+      const auto records_scope = [&](const std::string& id) {
+        return scope_by_id.contains(id) || owner_id_by_method.contains(id);
+      };
       const auto in_scope = [&](const std::string& id) {
         if (!wanted.empty() && is_suffix(declared_scope_of(id), wanted)) {
           return true;
@@ -1041,23 +1054,28 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
         }
         return is_suffix(declared_scope_of(owner->second), std::span(wanted).first(wanted.size() - 1));
       };
-      for (const auto& sibling : overload_rest) {
-        if (in_scope(sibling)) {
-          gated_rest.push_back(sibling);
-        }
-      }
-      if (!in_scope(target_id)) {
-        if (gated_rest.empty()) {
-          if (overload_counted) {
-            --tally.resolved_overload_first;  // the set produced no edge after all
+      const bool contradictable = (!wanted.empty() && wanted.front() == kStdNamespace) ||
+                                  records_scope(target_id) ||
+                                  std::any_of(overload_rest.begin(), overload_rest.end(), records_scope);
+      if (contradictable) {
+        for (const auto& sibling : overload_rest) {
+          if (in_scope(sibling)) {
+            gated_rest.push_back(sibling);
           }
-          ++tally.dropped_scope_mismatch;
-          continue;
         }
-        target_id = gated_rest.front();
-        gated_rest.erase(gated_rest.begin());
+        if (!in_scope(target_id)) {
+          if (gated_rest.empty()) {
+            if (overload_counted) {
+              --tally.resolved_overload_first;  // the set produced no edge after all
+            }
+            ++tally.dropped_scope_mismatch;
+            continue;
+          }
+          target_id = gated_rest.front();
+          gated_rest.erase(gated_rest.begin());
+        }
+        overload_rest = std::span(gated_rest);
       }
-      overload_rest = std::span(gated_rest);
     }
     if (target_id == raw_call.caller_id) {
       ++tally.dropped_self;
