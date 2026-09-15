@@ -291,7 +291,11 @@ ModulesReport build_modules_report(const GraphSnapshot& graph, const ReportReque
     module_of_node.emplace(node.id, module);
     auto& group = groups[module];
     group.files.insert(node.source_file);
-    if (node.kind != "file") {
+    // A `field` is a member of a symbol, not a symbol of its own: nobody
+    // navigates a module by its struct members, and counting them made a
+    // module's symbol count jump the moment type members were extracted
+    // (turing-webapp: 9,307 fields against 5,338 functions, classes and types).
+    if (node.kind != "file" && node.kind != "field") {
       ++group.symbols;
     }
   }
