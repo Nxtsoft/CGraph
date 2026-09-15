@@ -719,9 +719,9 @@ void ts_member_handler(const TSNode& node, const ExtractionContext& context,
       .call_member_field = "property",
       .import_handler = module_import_handler,
       .resolve_function_name = resolve_js_function_name,
-      .nested_function_scope = is_route_handler,
       .extra_walk = module_const_handler,
       .relation_handler = ts_relation_handler,
+      .nested_function_scope = is_route_handler,
   };
 }
 
