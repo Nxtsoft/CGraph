@@ -105,8 +105,10 @@ void shed_to_budget(ModulesReport& report, ReportFormat format, std::size_t budg
 // diagram. Budget accounting measures exactly this string.
 [[nodiscard]] std::string render_modules_report(const ModulesReport& report, ReportFormat format);
 
-// ~4 characters per token, the same estimate the context op packs against.
+// ~4 characters per token: the one estimate the report and context ops pack
+// against. The length overload costs text that is not materialized yet.
 [[nodiscard]] std::size_t estimate_report_tokens(std::string_view text);
+[[nodiscard]] std::size_t estimate_report_tokens(std::size_t byte_length);
 
 // The daemon `report` op: a full {ok, result|error} envelope. A reserved view
 // answers ok:false with code "report_view_not_implemented" so a host can tell
