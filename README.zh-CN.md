@@ -53,7 +53,7 @@
 
 <div align="center"><img src="assets/architecture.svg" alt="CGraph 架构" width="100%"></div>
 
-- **`cgraph`** —— 一次性扫描 → 可移植的磁盘导出（`graph.json`、`graph.html`、`graph.svg`、`obsidian.md`、`cypher.txt`、`call-flow.html`）。
+- **`cgraph`** —— 一次性扫描 → 可移植的磁盘导出（`graph.json`、`graph.html`、`graph.svg`、`obsidian.md`、`cypher.txt`、`call-flow.html`、`modules.mmd`、`modules.svg`）。
 - **`graphd` + `cgraph-client`** —— 常驻的按项目守护进程，实时监听文件变化；warm 状态下 `query`／`path`／`explain`／`impact`／`context` 均为 ~10 毫秒。
 - **`cgraph-mcp`** —— Model Context Protocol 服务器，让代理直接在图谱上导航。
 
@@ -90,6 +90,8 @@ vendor/           内置的 tree-sitter core 与语法
 - `obsidian.md` —— 面向 Obsidian 式导航的 markdown 导出
 - `cypher.txt` —— Neo4j Cypher 语句
 - `call-flow.html` —— 浏览器可读的调用流视图
+- `modules.mmd` —— Mermaid 格式的模块依赖图
+- `modules.svg` —— 分层静态图像格式的模块依赖图
 
 ## 性能
 
@@ -224,6 +226,7 @@ fuzzer 预设需要带 libFuzzer 运行时的 Clang 工具链；若 Apple 命令
 | `graph_impact` | 改动某节点的传递影响范围 |
 | `graph_path` | 两个节点之间的最短路径 |
 | `graph_context` | 受 token 预算约束的源码打包（支持自适应聚合） |
+| `graph_report` | 模块依赖图（`view: "modules"`）：分层、环、导入/调用计数，按预算裁剪 |
 | `graph_update` | 内容校验式同步；返回 `content_root` 用于锁定后续读取 |
 | `graph_status` | 守护进程、图谱与增强状态 |
 | `graph_remember` / `graph_recall` | 会话记忆——`/compact` 前存档，之后恢复 |

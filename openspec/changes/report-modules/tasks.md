@@ -34,11 +34,11 @@
 - [x] 4.2 The viewer starts community-collapsed above 500 nodes; click or search expands.
 
 ## 5. Measure
-- [ ] 5.1 `cgraph report modules --root . --depth 2 --format mermaid` on CGraph at origin/main
+- [x] 5.1 `cgraph report modules --root . --depth 2 --format mermaid` on CGraph at origin/main
       (scope src, then `--include-tests`); quote counts in the proposal and PR.
-- [ ] 5.2 Render `modules.svg` for CGraph, turing-webapp, and a Python corpus; screenshots on the PR.
-- [ ] 5.3 graph.html before/after first-paint screenshots on the CGraph graph.
-- [ ] 5.4 Full suite green (`ctest --preset default`); `cgraph_file_watcher_test` is a known
+- [x] 5.2 Render `modules.svg` for CGraph, turing-webapp, and a Python corpus; screenshots on the PR.
+- [x] 5.3 graph.html before/after first-paint screenshots on the CGraph graph.
+- [x] 5.4 Full suite green (`ctest --preset default`); `cgraph_file_watcher_test` is a known
       tmpfs failure on this host.
 
 ## 6. Docs
