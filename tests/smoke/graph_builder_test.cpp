@@ -450,12 +450,12 @@ int test_qualified_scope_segments() {
   return 0;
 }
 
-// The gate refuses a CONTRADICTION, not an absence of evidence. A project
-// declaration that records neither a scope nor an owning class -- an out-of-line
-// C++ definition, a C file's file-scope function -- is checked against nothing,
-// so a project-qualified call still binds to it, while a `std::` qualifier
-// refuses it with no record to contradict at all.
-int test_qualified_scope_no_evidence() {
+// The qualifier's root is the first thing checked, and the project's own
+// declared scopes are what it is checked against. This project records no scope
+// anywhere, so `proj` is a root it does not own: `proj::Cache::reload()` names a
+// scope no declaration here can be in and is refused exactly as `std::` is,
+// with no allowlist of library namespaces anywhere in the resolver.
+int test_qualifier_root_unknown_to_project() {
   const auto caller = cgraph::make_id("/p/use.cpp:use");
   const auto reload = cgraph::make_id("/p/cache.cpp:reload");
   const auto remove_fn = cgraph::make_id("/p/paths.cpp:remove");
@@ -472,13 +472,102 @@ int test_qualified_scope_no_evidence() {
   cgraph::CallResolution outcomes;
   cgraph::resolve_raw_calls(graph, calls, &outcomes);
 
+  if (has_edge(graph, caller, reload, "CALLS") || has_edge(graph, caller, remove_fn, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.dropped_scope_mismatch != 2 || outcomes.resolved_qualifier_unchecked != 0 ||
+      !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// Under a root the project DOES own, the gate refuses only a contradiction. The
+// project declares `proj::detail`, so `proj` is its own namespace: a call into
+// it binds a candidate that records no scope of its own (an out-of-line
+// definition the extractor did not stamp), counted as
+// `resolved_qualifier_unchecked` because the qualifier proved nothing. A root
+// the project does not own refuses the same candidate shape outright.
+int test_qualifier_root_is_project_namespace() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto reload = cgraph::make_id("/p/cache.cpp:reload");
+  const auto format_fn = cgraph::make_id("/p/text.cpp:format");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  graph.nodes.push_back({.id = reload, .label = "reload", .source_file = "/p/cache.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = format_fn, .label = "format", .source_file = "/p/text.cpp", .kind = "function"});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "reload", .source_file = "/p/use.cpp", .qualifier = "proj::Cache"},
+      {.caller_id = caller, .callee_label = "format", .source_file = "/p/use.cpp", .qualifier = "fmt"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
   if (!has_edge(graph, caller, reload, "CALLS")) {
     return 1;
   }
-  if (has_edge(graph, caller, remove_fn, "CALLS")) {
+  if (has_edge(graph, caller, format_fn, "CALLS")) {
     return 1;
   }
-  if (outcomes.dropped_scope_mismatch != 1 || !outcomes.balances()) {
+  if (outcomes.resolved_qualifier_unchecked != 1 || outcomes.dropped_scope_mismatch != 1 ||
+      !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// The shape the review measured: a project whose file-scope helpers share their
+// names with library functions (`find`, `remove`, `size`, `format`, `trim`),
+// called through library namespaces the project declares nowhere. Every one of
+// these bound to the project function while the contradiction test was an
+// allowlist holding `std` alone. The project's own `proj::detail::helper()`
+// still resolves, so the rule refuses library roots without refusing the
+// project.
+int test_library_qualified_calls() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto find_fn = cgraph::make_id("/p/text.cpp:find");
+  const auto remove_fn = cgraph::make_id("/p/text.cpp:remove");
+  const auto size_fn = cgraph::make_id("/p/text.cpp:size");
+  const auto format_fn = cgraph::make_id("/p/text.cpp:format");
+  const auto trim_fn = cgraph::make_id("/p/text.cpp:trim");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  for (const auto& [id, label] : {std::pair{find_fn, "find"}, std::pair{remove_fn, "remove"},
+                                  std::pair{size_fn, "size"}, std::pair{format_fn, "format"},
+                                  std::pair{trim_fn, "trim"}}) {
+    graph.nodes.push_back({.id = id, .label = label, .source_file = "/p/text.cpp", .kind = "function"});
+  }
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "format", .source_file = "/p/use.cpp", .qualifier = "fmt"},
+      {.caller_id = caller, .callee_label = "trim", .source_file = "/p/use.cpp", .qualifier = "boost::algorithm"},
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .qualifier = "absl::strings_internal"},
+      {.caller_id = caller, .callee_label = "find", .source_file = "/p/use.cpp", .qualifier = "QString"},
+      {.caller_id = caller, .callee_label = "remove", .source_file = "/p/use.cpp", .qualifier = "std::filesystem"},
+      {.caller_id = caller, .callee_label = "helper", .source_file = "/p/use.cpp", .qualifier = "proj::detail"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  for (const auto& target : {find_fn, remove_fn, size_fn, format_fn, trim_fn}) {
+    if (has_edge(graph, caller, target, "CALLS")) {
+      return 1;
+    }
+  }
+  if (!has_edge(graph, caller, helper, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.dropped_scope_mismatch != 5 || outcomes.resolved_qualifier_unchecked != 0 ||
+      !outcomes.balances()) {
     return 1;
   }
   return 0;
@@ -552,8 +641,16 @@ int main() {
     std::fprintf(stderr, "FAIL test_library_member_names\n");
     return 1;
   }
-  if (test_qualified_scope_no_evidence() != 0) {
-    std::fprintf(stderr, "FAIL test_qualified_scope_no_evidence\n");
+  if (test_qualifier_root_unknown_to_project() != 0) {
+    std::fprintf(stderr, "FAIL test_qualifier_root_unknown_to_project\n");
+    return 1;
+  }
+  if (test_qualifier_root_is_project_namespace() != 0) {
+    std::fprintf(stderr, "FAIL test_qualifier_root_is_project_namespace\n");
+    return 1;
+  }
+  if (test_library_qualified_calls() != 0) {
+    std::fprintf(stderr, "FAIL test_library_qualified_calls\n");
     return 1;
   }
   if (test_qualified_scope_segments() != 0) {

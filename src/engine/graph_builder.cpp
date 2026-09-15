@@ -33,12 +33,6 @@ constexpr std::string_view kCallRelation = "CALLS";
   return edge.source + "\n" + edge.relation + "\n" + edge.target;
 }
 
-// The one qualifier root that refuses a project declaration on its own, with no
-// evidence from the declaration: nothing in a project is declared in `std`, so
-// `std::find(v...)` and `std::filesystem::remove(p)` must not bind to a project
-// `find` or `remove` even when neither records a scope.
-constexpr std::string_view kStdNamespace = "std";
-
 // Member names that every standard library defines on its containers, strings,
 // iterators, smart pointers and option types. A member call to one of these
 // with an unknown receiver (`v.size()`, `m.find(k)`, `opt.value()`) is far more
@@ -602,6 +596,12 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   std::unordered_map<std::string, std::string> label_by_id;
   // Declared namespace scope per node (`scope` property, C-family only today).
   std::unordered_map<std::string, std::string> scope_by_id;
+  // The outermost segment of every declared scope: the namespace roots this
+  // project actually owns. A qualifier rooted anywhere else (`std::find`,
+  // `fmt::format`, `boost::algorithm::trim`, `QString::number`) names a scope no
+  // declaration here can be in, which is what makes it evidence against every
+  // candidate rather than only against the ones that recorded something.
+  std::unordered_set<std::string> project_scope_roots;
   node_ids.reserve(graph.nodes.size());
   source_file_by_id.reserve(graph.nodes.size());
 
@@ -627,6 +627,11 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     source_file_by_id.emplace(node.id, node.source_file);
     label_by_id.emplace(node.id, node.label);
     if (const auto scope = node.properties.find("scope"); scope != node.properties.end()) {
+      const std::string_view text = scope->second;
+      const auto separator = text.find("::");
+      if (const auto root = text.substr(0, separator); root != "(anonymous)" && !root.empty()) {
+        project_scope_roots.emplace(root);
+      }
       scope_by_id.emplace(node.id, scope->second);
     }
     if (node.source_file.empty()) {
@@ -722,6 +727,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     // Survivors of the scope gate below, when it narrows an overload set.
     std::vector<std::string> gated_rest;
     bool overload_counted = false;
+    // The call carried a qualifier the project gave nothing to check it
+    // against; counted only once the call actually produces an edge.
+    bool qualifier_unchecked = false;
 
     // Resolve an overload set: target the first declaration and remember the
     // rest, all graded INFERRED. Which member a call means cannot be known
@@ -1002,13 +1010,15 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     // them; or when it is a method of a class bearing the last segment whose own
     // scope carries the rest (`proj::Stats::size()`).
     //
-    // The gate runs only where the qualifier has something to contradict: a
-    // root of `std` contradicts any project declaration by itself, and
-    // otherwise at least one candidate must record a scope or an owning class.
-    // Against candidates that record neither, the qualifier is checked against
-    // nothing -- so refusing would drop a real edge (a project scope the
-    // extractor never stamped) to buy no precision, and the call binds as an
-    // unqualified one would.
+    // The gate runs where the qualifier has something to contradict. A root the
+    // project declares nowhere (`std`, `fmt`, `boost`, `QString`) contradicts
+    // every candidate by itself -- no declaration here is in that scope. Under a
+    // root the project does own, at least one candidate must record a scope or
+    // an owning class for the qualifier to check against; when none does, the
+    // qualifier is checked against nothing, so refusing would drop a real edge
+    // (a project scope the extractor never stamped) to buy no precision. Those
+    // bindings are the ones the qualifier could not confirm, and they are
+    // counted as `resolved_qualifier_unchecked`.
     if (!raw_call.qualifier.empty()) {
       const auto split_scope = [](std::string_view text) {
         std::vector<std::string_view> segments;
@@ -1054,10 +1064,13 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
         }
         return is_suffix(declared_scope_of(owner->second), std::span(wanted).first(wanted.size() - 1));
       };
-      const bool contradictable = (!wanted.empty() && wanted.front() == kStdNamespace) ||
-                                  records_scope(target_id) ||
+      const bool foreign_root =
+          !wanted.empty() && !project_scope_roots.contains(std::string(wanted.front()));
+      const bool contradictable = foreign_root || records_scope(target_id) ||
                                   std::any_of(overload_rest.begin(), overload_rest.end(), records_scope);
-      if (contradictable) {
+      if (!contradictable) {
+        qualifier_unchecked = true;
+      } else {
         for (const auto& sibling : overload_rest) {
           if (in_scope(sibling)) {
             gated_rest.push_back(sibling);
@@ -1080,6 +1093,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     if (target_id == raw_call.caller_id) {
       ++tally.dropped_self;
       continue;
+    }
+    if (qualifier_unchecked) {
+      ++tally.resolved_qualifier_unchecked;
     }
     if (same_file_hit) {
       ++tally.resolved_same_file;

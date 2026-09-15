@@ -61,6 +61,14 @@ struct CallResolution {
   // which overload a call means needs types we do not have. Counted once per
   // call, not per edge.
   std::size_t resolved_overload_first = 0;
+  // A qualified call that bound without its qualifier ever being checked: the
+  // qualifier's root names a scope the project itself declares, yet no
+  // candidate recorded a scope or an owning class to check it against, so the
+  // call resolved as an unqualified one would. Every edge this admits is a
+  // guess the qualifier could not confirm, so it is counted separately --
+  // without it, an edge bound on no evidence is indistinguishable from one the
+  // scope proved. Counted once per call, a subset of the resolved fields.
+  std::size_t resolved_qualifier_unchecked = 0;
   std::size_t dropped_unknown = 0;    // nothing callable bears the name
   std::size_t dropped_ambiguous = 0;  // candidates span more than one file
   std::size_t dropped_self = 0;       // resolved to the caller itself
@@ -76,7 +84,8 @@ struct CallResolution {
   [[nodiscard]] bool balances() const {
     return resolved_same_file + resolved_project_unique + resolved_member_method + dropped_unknown +
                dropped_ambiguous + dropped_self + dropped_scope_mismatch + dropped_library_member ==
-           total;  // resolved_overload_first is a subset of same_file + project_unique
+           total;  // resolved_overload_first and resolved_qualifier_unchecked are
+                   // subsets of same_file + project_unique + member_method
   }
 
   [[nodiscard]] double resolved_rate() const {

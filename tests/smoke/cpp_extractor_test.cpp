@@ -293,6 +293,20 @@ int main() {
              "int via_inline_ns() { return proj::versioned(); }\n"
              "int user_inline() { return proj::Inline::inline_reload(); }\n");
 
+  // Library namespaces the project declares nowhere, against file-scope project
+  // functions of the same name. While the contradiction test was an allowlist
+  // holding `std` alone, all four of these bound (CGR-4 review of #80).
+  write_file(root / "library_roots.cpp",
+             "int format(int a) { return a; }\n"
+             "int trim(int a) { return a; }\n"
+             "int capacity() { return 0; }\n"
+             "int number(int a) { return a; }\n");
+  write_file(root / "library_roots_user.cpp",
+             "int library_user(int a) {\n"
+             "  return fmt::format(a) + boost::algorithm::trim(a) + absl::strings_internal::capacity() +\n"
+             "         QString::number(a);\n"
+             "}\n");
+
   const auto graph = cgraph::run_one_shot(root).graph;
 
   int failures = 0;
@@ -484,6 +498,13 @@ int main() {
         "a dependent call T::make() names no scope and resolves on its leaf name");
   check(has_edge(graph, "user_inline", "inline_reload", "CALLS"),
         "an in-class definition still resolves through its class");
+  // A qualifier rooted in a namespace the project does not declare names a
+  // scope no declaration here can be in, whatever the leaf name matches.
+  check(!has_edge(graph, "library_user", "format", "CALLS"), "fmt::format does not bind a project format");
+  check(!has_edge(graph, "library_user", "trim", "CALLS"), "boost::algorithm::trim does not bind a project trim");
+  check(!has_edge(graph, "library_user", "capacity", "CALLS"),
+        "absl::strings_internal::capacity does not bind a project capacity");
+  check(!has_edge(graph, "library_user", "number", "CALLS"), "QString::number does not bind a project number");
   {
     bool qualified = false;
     for (const auto& node : graph.nodes) {
