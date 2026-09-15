@@ -6,6 +6,8 @@ TBD - created by archiving change improve-graph-html-view. Update Purpose after 
 ### Requirement: Interactive HTML view reveals community structure
 The interactive `graph.html` export SHALL position nodes so that computed community assignments are visible as spatially distinct regions, rather than using community only for color while leaving the layout a uniform frame-filling cloud. The layout SHALL remain deterministic for a given graph (no use of `Math.random`).
 
+The engine-side layout (`write_layout`) SHALL emit coordinates rescaled to a canvas-sized square that grows with the square root of the node count, so the viewer's first paint spreads the graph across the canvas instead of collapsing igraph's unit-scale output into one blob. Above 500 nodes the viewer SHALL open community-collapsed: each community drawn once as a sized super-node with aggregated edges, expanded by clicking it, by a search match, or by the expand-all control.
+
 #### Scenario: Communities render as separated regions
 - **WHEN** the pipeline exports `graph.html` for a graph with multiple detected communities and the view settles
 - **THEN** nodes of the same community are drawn closer to one another than to nodes of other communities, so distinct communities read as separate regions
@@ -17,6 +19,10 @@ The interactive `graph.html` export SHALL position nodes so that computed commun
 #### Scenario: Layout is deterministic
 - **WHEN** `graph.html` is generated twice for the same graph
 - **THEN** the generated layout logic uses only seeded placement (no `Math.random`), so the same graph produces the same layout each load
+
+#### Scenario: Large graphs first paint readable
+- **WHEN** `graph.html` opens on a graph of more than 500 nodes
+- **THEN** the first paint shows one node per community with edges between communities, labelled and readable without zooming, and clicking a community reveals its members at their precomputed positions
 
 ### Requirement: Interactive HTML view bounds on-screen labels
 The interactive `graph.html` export SHALL limit always-on node labels to a bounded set (the highest-degree nodes) and SHALL reveal additional labels progressively on hover, selection, active highlight, search match, and zoom-in, so an overview of a large graph is not an unreadable wall of overlapping text.
@@ -611,44 +617,45 @@ Resolution SHALL NOT be performed by reducing the callee's text at a scope separ
 
 A callee that names explicitly global scope (a qualified identifier with no scope, `::stat(...)`) SHALL resolve to nothing: it names a platform symbol, not a project one. Resolution order SHALL remain a symbol declared in the caller's own file, then a project-wide symbol whose name is unique. The exactly-one-candidate rule SHALL continue to govern the project-wide tier. A member call SHALL remain scoped to the caller's own file, because the receiver type is unknown. Confidence grading is unchanged: `EXTRACTED` when the caller's file imports the resolved symbol or its module, `INFERRED` when it is only a name match.
 
+When the project-wide tier finds several candidates and they are not a single-file overload set, the candidate set SHALL first be narrowed to those the caller's file imports **by name** — the target of an `imports` or `re_exports` edge — and the ordinary rule re-applied to the survivors. Exactly one survivor SHALL resolve, graded `EXTRACTED`, because the import names the declaration outright. Several survivors sharing one file SHALL resolve as an overload set. Any other outcome SHALL remain `dropped_ambiguous`. A module-level `imports_from` edge SHALL NOT narrow the set: it names a file, not a declaration, and the call it would justify is spelled as a member access this tier never sees.
+
 #### Scenario: A cross-file call to a parameterized function resolves
 - **GIVEN** `graph_builder.cpp` declares `merge_fragments`
 - **AND** `pipeline.cpp` contains the call site `merge_fragments(fragments)`
 - **THEN** a `CALLS` edge exists from the enclosing symbol in `pipeline.cpp` to the `merge_fragments` node
 
-#### Scenario: A qualified call resolves
-- **WHEN** `cli/main.cpp` contains `cgraph::run_one_shot(args.root)`
-- **THEN** a `CALLS` edge exists to the `run_one_shot` node
+#### Scenario: An import names which of two same-named declarations a call meant
+- **GIVEN** `storage.py` and `cache.py` each declare `write_text`
+- **AND** `report.py` has an `imports` edge to `storage.py`'s `write_text`
+- **WHEN** a call to `write_text` in `report.py` is resolved
+- **THEN** a `CALLS` edge to `storage.py`'s `write_text` is emitted with `EXTRACTED` confidence
+- **AND** no `CALLS` edge to `cache.py`'s `write_text` is emitted
+- **AND** `dropped_ambiguous` is not incremented
 
-#### Scenario: A C++ member call resolves within its own file
-- **GIVEN** a struct declares a method `is_live`
-- **AND** another function in the same file calls `handle->is_live()`
-- **THEN** a `CALLS` edge exists to that method node
-- **AND** the call is never matched project-wide
-
-#### Scenario: A template argument is never mistaken for the callee
-- **GIVEN** calls `wrapper<zoo::Beast>(1)` and `ns::made<zoo::Beast>(2)`
-- **THEN** no `CALLS` edge to `Beast` is emitted
-- **AND** edges to `wrapper` and `made` are emitted
-
-#### Scenario: An explicitly global callee resolves to nothing
-- **WHEN** a function calls `::stat_local_probe(p)` and a local symbol of that name exists
-- **THEN** no `CALLS` edge to the local symbol is emitted
-
-#### Scenario: A same-file overload set resolves to its first declaration
-- **GIVEN** two declarations in one file share the name `add`
-- **WHEN** a call to `add` in that file is resolved
-- **THEN** a `CALLS` edge to the first declaration is emitted with `INFERRED` confidence
-- **AND** `resolved_overload_first` is incremented
-
-#### Scenario: A project-wide ambiguous name resolves to nothing and is counted
-- **GIVEN** two files each declare `write_text` and neither is the caller's file
-- **WHEN** a call to `write_text` is resolved
+#### Scenario: Without an import the same call stays ambiguous
+- **GIVEN** `storage.py` and `cache.py` each declare `write_text`
+- **AND** `audit.py` imports neither
+- **WHEN** a call to `write_text` in `audit.py` is resolved
 - **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
 
-#### Scenario: Overloads sharing one line remain distinct nodes
-- **GIVEN** three declarations of `triple` on a single line
-- **THEN** the graph holds three distinct `triple` nodes
+#### Scenario: Importing both declarations of a name picks neither
+- **GIVEN** a file has `imports` edges to two declarations that share a name and live in different files
+- **WHEN** a call to that name is resolved
+- **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
+
+#### Scenario: An imported overload set edges to every member
+- **GIVEN** two declarations of `add` in `Sum.java` and an unrelated `add` in `Other.java`
+- **AND** the caller's file imports both `Sum.java` declarations
+- **WHEN** a call to `add` is resolved
+- **THEN** a `CALLS` edge is emitted to each `Sum.java` declaration
+- **AND** `resolved_overload_first` is incremented
+- **AND** no `CALLS` edge to `Other.java`'s `add` is emitted
+
+#### Scenario: A module import alone does not break a tie
+- **GIVEN** two files declare `write_text`
+- **AND** the caller's file has only an `imports_from` edge to one of those files
+- **WHEN** a bare call to `write_text` is resolved
+- **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
 
 ### Requirement: A call target must be callable
 Project-wide call resolution SHALL only consider candidates whose kind can be invoked, and that set SHALL be the same one the per-file table admits: `function`, `class`, `type`, and `variable`. `class` is eligible because `Foo()` is a constructor call in Python and JavaScript, and `type`/`variable` because a module-level binding can hold a callable. A `field` node SHALL NOT be the target of a `CALLS` edge.
@@ -685,12 +692,12 @@ Ids are per-file, so a namespace-as-class minted one node per file all bearing t
 - **AND** no member is left without an incoming containment edge
 
 ### Requirement: Call resolution is measurable from a committed artifact
-`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `dropped_unknown`, `dropped_ambiguous`, and `dropped_self`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`. `resolved_overload_first` SHALL also be reported as a subset of `resolved_same_file`.
+`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `resolved_member_method`, `dropped_unknown`, `dropped_ambiguous`, `dropped_self`, `dropped_scope_mismatch`, and `dropped_library_member`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`. `resolved_overload_first` and `resolved_qualifier_unchecked` SHALL also be reported, each a subset of the resolved fields.
 
 #### Scenario: The resolution rate is readable without instrumenting a build
 - **WHEN** `cgraph --root PATH --out DIR` completes
 - **THEN** `DIR/stats.json` contains every field
-- **AND** the five partition fields sum to `raw_calls_total`
+- **AND** the eight partition fields sum to `raw_calls_total`
 
 ### Requirement: An enrichment node's identity includes the file it came from
 A node of an enrichment kind -- `document` and `media`, matched case-insensitively because `kind` is unvalidated host input -- SHALL NOT be merged by label similarity with ANY node unless both nodes share the SAME non-empty `source_file`. A document's identity is scoped by the file it was written from: a differing file keeps them apart, a shared non-empty file may still merge (a genuine re-extraction), and a MISSING file is no proof of shared identity and also keeps them apart. This holds against any counterpart, enrichment or code symbol alike; unlike a `file` node (excluded from dedup entirely), a document still participates in dedup within its own file.
@@ -795,4 +802,105 @@ In JavaScript and TypeScript, the last function-valued argument of a call whose 
 #### Scenario: Non-route callbacks stay boundaries
 - **GIVEN** `app.use('/static', (req, res, next) => next());`, `router.route('/x').get((req, res) => res.end());`, `list.map(x => transform(x));`, `describe('suite', () => { run(); });`
 - **THEN** no function node is emitted for any of those arrows and their calls are dropped
+
+### Requirement: One-shot builds write the module diagram
+`write_exports` SHALL take the project root and write `modules.mmd` (Mermaid) and `modules.svg` next to `graph.json`, built from the whole project with no budget and test roots excluded, so a human can open the architecture map without a running daemon.
+
+#### Scenario: Exports include the module diagram
+- **WHEN** `cgraph --root PATH --out DIR` completes
+- **THEN** `DIR/modules.mmd` and `DIR/modules.svg` exist alongside `graph.json`
+
+### Requirement: Type definitions expose declared members
+
+When member extraction is enabled for a language, the extractor SHALL emit a field node for each supported directly declared member and a defines edge from its named owning class/type. Field IDs SHALL use `make_id(source_file + ":" + TypeName + "::" + member)` and source locations SHALL refer to the declaration. Declared type text SHALL be preserved when available. Optional and readonly grammar flags SHALL be string properties where applicable.
+
+#### Scenario: Identical shapes have independent member lists
+- **WHEN** two TypeScript interfaces, Go structs or Rust structs have different names and identical member declarations
+- **THEN** both owners have complete identical member-label sets with distinct owner-qualified field IDs.
+
+#### Scenario: Nested fields remain nested
+- **WHEN** a TypeScript field has an inline object type or a class contains a nested class
+- **THEN** nested declarations are not flattened into the outer owner's member list.
+
+#### Scenario: Language-specific member shapes
+- **WHEN** a Go declaration names multiple fields, a Rust tuple struct has positional fields, or Java declares multiple variables or record components
+- **THEN** each declaration yields all its members with their declared type text.
+
+#### Scenario: Python methods have local variables
+- **WHEN** a class has class-body assignments and method-local assignments
+- **THEN** only class-body declarations become members; local variables do not.
+
+#### Scenario: A field never takes a symbol's id
+- **WHEN** a member and a function or type in the same file normalize to one id (`First::size` and `first_size`, `Config::path` and `config_path`)
+- **THEN** the function or type keeps the unsuffixed id and the field is relocated, both nodes exist, and the owner's `defines` edge points at the field.
+
+#### Scenario: Two same-named owners keep separate members
+- **WHEN** one file declares two owners with the same name and the same member name (TypeScript declaration merging, `#[cfg]` twins)
+- **THEN** each owner has its own field node and its own `defines` edge, not one shared field.
+
+#### Scenario: Fields are members, not context candidates
+- **WHEN** `graph_context` is asked about a type with many members
+- **THEN** the members do not enter the candidate pool and do not displace the type's callers and callees; asking about a member directly still resolves it as the focal node.
+
+#### Scenario: Members never overwrite a declaration's own node
+- **WHEN** a declaration inside a type body is already a function or type node (a TypeScript `method_signature`, a Rust trait `function_signature_item`, a Rust `type_item`)
+- **THEN** no field node is emitted for it, and its `interface_method` tag and dispatch edges survive.
+
+#### Scenario: Extraction remains opt-in
+- **WHEN** member extraction is disabled
+- **THEN** the new handler emits no nodes or edges and existing graph.json output remains byte-identical.
+
+### Requirement: C/C++ forward declarations are not definitions
+
+A named class, struct, union or enum specifier without a body SHALL NOT emit a class node. A later body-bearing definition SHALL emit the normal class node and members.
+
+#### Scenario: FileCacheEntry forward declaration
+- **WHEN** a source tree contains a forward declaration and one body-bearing FileCacheEntry definition
+- **THEN** the graph contains exactly one FileCacheEntry class node.
+
+### Requirement: Kotlin source files are extracted through the configured tree-sitter path
+The system SHALL detect `.kt` / `.kts` files as Kotlin and extract, via the grammar-driven
+configured extractor, class and object nodes, function nodes, and call edges — with the same
+Graphify-compatible fragment shape as other configured languages — despite the `tree-sitter-kotlin`
+grammar exposing no named fields on its declarations or `call_expression`. A name SHALL be resolved
+positionally (a class/object by its `type_identifier` child, a function by its `simple_identifier`
+child). A callee SHALL be reduced to its bare leaf name (a `recv.member()` navigation call to the
+member name, a `Name()` call to the identifier) and kept eligible for project-wide resolution.
+
+#### Scenario: Kotlin classes, objects, and functions become nodes
+- **GIVEN** a `.kt` file declaring a `class`, an `object`, an `interface`, and named functions
+- **WHEN** the one-shot pipeline runs
+- **THEN** the class, object, and interface are `class` nodes, the functions are `function` nodes, and each type `contains`/owns its members
+
+#### Scenario: Kotlin calls become edges
+- **GIVEN** a function that calls a local function `helper()` and a navigation call `Registry.lookup()`
+- **WHEN** extraction runs
+- **THEN** a `CALLS` edge is produced for `helper`, and the navigation call is reduced to the bare name `lookup` and resolved by name (not left as the whole call's text)
+
+#### Scenario: A previously empty Kotlin graph now carries symbols and edges
+- **GIVEN** a Kotlin project that extracted zero nodes and zero edges before this change
+- **WHEN** the one-shot pipeline runs
+- **THEN** its classes, functions, and call edges appear in `graph.json`
+
+### Requirement: Java constructor calls resolve to the constructed class
+The system SHALL extract a Java `new Foo()` / `new Foo<T>()` / `new pkg.Foo()`
+(`object_creation_expression`) as a call whose callee is the bare simple class name, so it resolves
+project-wide to that class node — reconnecting a test to the classes it constructs (and, through the
+class's `method`/`contains` edges, to their members). A `method_invocation` callee SHALL continue to
+resolve by its `name` field, unchanged.
+
+#### Scenario: A plain constructor call resolves to its class
+- **GIVEN** a method that calls `new Widget()`
+- **WHEN** extraction runs
+- **THEN** the callee is `Widget`, and it resolves to the `Widget` class node
+
+#### Scenario: Generic and qualified constructors reduce to the simple name
+- **GIVEN** calls `new ArrayList<String>()` and `new java.util.HashMap<String, Integer>()`
+- **WHEN** extraction runs
+- **THEN** the callees are reduced to `ArrayList` and `HashMap` (not `ArrayList<String>` or `java.util.HashMap`)
+
+#### Scenario: Method calls are unaffected
+- **GIVEN** a plain method call `helper()`
+- **WHEN** extraction runs
+- **THEN** it still resolves by its `name` field exactly as before
 
