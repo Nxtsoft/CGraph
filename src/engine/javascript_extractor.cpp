@@ -2,6 +2,9 @@
 
 #include "cgraph/normalize.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -41,11 +44,124 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   return ts_node_is_null(child) ? std::string{} : node_text(child, source);
 }
 
+[[nodiscard]] std::string strip_string_quotes(std::string value);
+
+// The verbs a router DSL exposes as methods. Elysia, Express, Hono, Fastify and
+// koa-router all register a route as `<router>.<verb>('<path>', ..., handler)`.
+constexpr std::array<std::string_view, 8> kRouteVerbs = {
+    "get", "post", "put", "patch", "delete", "head", "options", "all",
+};
+
+[[nodiscard]] bool is_function_value(const TSNode& node) {
+  const std::string_view type = ts_node_type(node);
+  return type == "arrow_function" || type == "function_expression";
+}
+
+[[nodiscard]] bool is_string_value(const TSNode& node) {
+  const std::string_view type = ts_node_type(node);
+  return type == "string" || type == "template_string";
+}
+
+// The identifier a fluent chain hangs off. `app.get(...)` and
+// `app.use(x).get(...)` both reduce to `app`; a chain rooted in a constructor
+// (`new Elysia({...}).use(x).get(...)`) has no identifier, so the variable the
+// whole chain is assigned to names it (`const notebookRoutes = ...`). Empty when
+// neither exists (an unassigned `new Hono().get(...)` expression statement).
+[[nodiscard]] std::string chain_root_name(const TSNode& call, const ExtractionContext& context) {
+  TSNode base = call;
+  for (;;) {
+    const std::string_view type = ts_node_type(base);
+    TSNode next;
+    if (type == "call_expression") {
+      next = ts_node_child_by_field_name(base, "function", 8);
+    } else if (type == "member_expression") {
+      next = ts_node_child_by_field_name(base, "object", 6);
+    } else {
+      break;
+    }
+    if (ts_node_is_null(next)) {
+      break;
+    }
+    base = next;
+  }
+  if (std::string_view(ts_node_type(base)) == "identifier") {
+    return node_text(base, context.source);
+  }
+  TSNode top = call;
+  for (TSNode parent = ts_node_parent(top); !ts_node_is_null(parent); parent = ts_node_parent(top)) {
+    const std::string_view type = ts_node_type(parent);
+    if (type != "member_expression" && type != "call_expression") {
+      if (type == "variable_declarator") {
+        return field_text(parent, "name", context.source);
+      }
+      break;
+    }
+    top = parent;
+  }
+  return {};
+}
+
+// Names the inline handler of an HTTP route registration from the call that
+// registers it. In `notebookRoutes.get('/starred-notes', async (ctx) => {...},
+// {detail})` the last function-valued argument is the handler and is labelled
+// `notebookRoutes.get /starred-notes`; earlier function arguments (Express
+// middleware) stay anonymous. Before this, an Elysia module was one `variable`
+// node spanning every route (turing-api's `notebookRoutes`, 220 lines), so a
+// source anchor could name the module but never the handler, and the calls
+// inside every handler were dropped at the arrow boundary. Returns empty for a
+// call that is not a route registration: the callee must be `<x>.<verb>` with
+// an HTTP verb, the first argument a string, and `node` the last function
+// argument.
+[[nodiscard]] std::string route_handler_name(const TSNode& node, const ExtractionContext& context) {
+  if (!is_function_value(node)) {
+    return {};
+  }
+  const TSNode arguments = ts_node_parent(node);
+  if (ts_node_is_null(arguments) || std::string_view(ts_node_type(arguments)) != "arguments") {
+    return {};
+  }
+  const TSNode call = ts_node_parent(arguments);
+  if (ts_node_is_null(call) || std::string_view(ts_node_type(call)) != "call_expression") {
+    return {};
+  }
+  const TSNode callee = ts_node_child_by_field_name(call, "function", 8);
+  if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "member_expression") {
+    return {};
+  }
+  const auto verb = field_text(callee, "property", context.source);
+  if (std::ranges::find(kRouteVerbs, std::string_view(verb)) == kRouteVerbs.end()) {
+    return {};
+  }
+  const auto argument_count = ts_node_named_child_count(arguments);
+  if (argument_count < 2) {
+    return {};
+  }
+  const TSNode path = ts_node_named_child(arguments, 0);
+  if (!is_string_value(path)) {
+    return {};
+  }
+  TSNode handler;
+  for (std::uint32_t index = argument_count; index-- > 1;) {
+    const TSNode argument = ts_node_named_child(arguments, index);
+    if (is_function_value(argument)) {
+      handler = argument;
+      break;
+    }
+  }
+  if (ts_node_is_null(handler) || !ts_node_eq(handler, node)) {
+    return {};
+  }
+  const auto root = chain_root_name(call, context);
+  const auto route = strip_string_quotes(node_text(path, context.source));
+  return (root.empty() ? verb : root + "." + verb) + " " + route;
+}
+
 // Names an arrow function / function expression from the construct it is bound
 // to (`const Foo = () => {}`, `{ handler: () => {} }`, `this.x = () => {}`,
-// class fields). Returns empty for genuinely anonymous functions so the caller
-// skips them. Named function declarations and methods return empty here and are
-// named by the generic name_fields path instead.
+// class fields, an HTTP route's inline handler). Returns empty for genuinely
+// anonymous functions so the caller skips them. Named function declarations and
+// methods return empty here and are named by the generic name_fields path
+// instead.
 [[nodiscard]] std::string resolve_js_function_name(const TSNode& node, const ExtractionContext& context) {
   const std::string_view type = ts_node_type(node);
   if (type != "arrow_function" && type != "function_expression") {
@@ -69,7 +185,17 @@ extern "C" const TSLanguage* tree_sitter_tsx();
     auto name = field_text(parent, "name", context.source);
     return name.empty() ? field_text(parent, "property", context.source) : name;
   }
+  if (parent_type == "arguments") {
+    return route_handler_name(node, context);
+  }
   return {};
+}
+
+// A route's inline handler is the one nested arrow that is a call scope: its
+// body is the endpoint's implementation, and attributing `s.listNotebooks()`
+// to the handler instead of dropping it is what makes the route reachable.
+[[nodiscard]] bool is_route_handler(const TSNode& node, const ExtractionContext& context) {
+  return !route_handler_name(node, context).empty();
 }
 
 [[nodiscard]] std::string strip_string_quotes(std::string value) {
@@ -593,6 +719,7 @@ void ts_member_handler(const TSNode& node, const ExtractionContext& context,
       .call_member_field = "property",
       .import_handler = module_import_handler,
       .resolve_function_name = resolve_js_function_name,
+      .nested_function_scope = is_route_handler,
       .extra_walk = module_const_handler,
       .relation_handler = ts_relation_handler,
   };

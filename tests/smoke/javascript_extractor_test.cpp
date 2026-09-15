@@ -270,5 +270,87 @@ interface Handler extends Listener {
     return 1;  // primitive types must be filtered
   }
 
+  // HTTP route handlers (CGR-4 follow-up). An Elysia module used to be one
+  // `variable` node spanning every route; each inline handler is now a named
+  // function node and a call scope, so a source anchor lands on the handler and
+  // the calls inside it are attributed instead of dropped at the arrow boundary.
+  {
+    const auto routes = cgraph::extract_typescript({.source_file = "notebooks/index.ts", .source = R"ts(
+import { Elysia } from 'elysia';
+const notebookRoutes = new Elysia({ prefix: '/notebooks' })
+  .use(authWithDbUser)
+  .get('/', async ({ dbUser }) => {
+    return listNotebooks(dbUser);
+  }, { detail: { summary: 'List' } })
+  .post('/:id/notes', async ({ dbUser, body }) => {
+    return createNote(dbUser, body);
+  });
+app.get('/health', (req, res) => res.send(ping()));
+app.use('/static', (req, res, next) => next());
+router.route('/x').get((req, res) => res.end());
+const items = list.map(x => transform(x));
+describe('suite', () => { run(); });
+)ts"});
+    const auto find_node = [&](std::string_view label) -> const cgraph::Node* {
+      for (const auto& node : routes.fragment.nodes) {
+        if (node.label == label) return &node;
+      }
+      return nullptr;
+    };
+    // The chain is rooted in a constructor, so the assigned variable names it.
+    const auto* list_route = find_node("notebookRoutes.get /");
+    const auto* create_route = find_node("notebookRoutes.post /:id/notes");
+    // An existing identifier roots the chain directly.
+    const auto* health_route = find_node("app.get /health");
+    if (list_route == nullptr || create_route == nullptr || health_route == nullptr) return 1;
+    for (const auto* handler : {list_route, create_route, health_route}) {
+      if (handler->kind != "function" || !handler->source_location) return 1;
+    }
+    // The handler's extent is the arrow, not the chain: `.get('/', ...)` opens on
+    // line 5 and its handler closes on line 7, while the module spans 3-10.
+    if (list_route->source_location->start_line != 5 || list_route->source_location->end_line != 7) return 1;
+    if (list_route->id != cgraph::make_id("notebooks/index.ts:notebookRoutes.get /")) return 1;
+    // The module `variable` node is unchanged: Graphify parity for module consts.
+    const auto* module_node = find_node("notebookRoutes");
+    if (module_node == nullptr || module_node->kind != "variable") return 1;
+    // Each handler is contained by the file and is the caller of its body's calls.
+    if (!has_edge(routes.fragment, "contains", "notebookRoutes.get /")) return 1;
+    std::set<std::string> callers_of;
+    for (const auto& call : routes.raw_calls) {
+      if (call.callee_label == "listNotebooks" || call.callee_label == "createNote" || call.callee_label == "ping") {
+        callers_of.insert(call.caller_id + "->" + call.callee_label);
+      }
+    }
+    if (callers_of != std::set<std::string>{list_route->id + "->listNotebooks",
+                                            create_route->id + "->createNote",
+                                            health_route->id + "->ping"}) return 1;
+    // Not a route registration: `use` is not a verb, `.route('/x').get(handler)`
+    // has no path argument, and `.map` / `describe` callbacks stay boundaries.
+    for (const auto& node : routes.fragment.nodes) {
+      if (node.kind != "function") continue;
+      if (node.label.rfind("app.use", 0) == 0 || node.label.rfind("router", 0) == 0 ||
+          node.label.find("map") != std::string::npos || node.label.find("describe") != std::string::npos) return 1;
+    }
+    for (const auto& call : routes.raw_calls) {
+      if (call.callee_label == "transform" || call.callee_label == "run" || call.callee_label == "next") return 1;
+    }
+  }
+
+  // Express-style middleware: only the last function argument is the handler;
+  // middleware before it stays anonymous. A template-literal path is a path.
+  {
+    const auto express = cgraph::extract_javascript({.source_file = "server.js", .source = R"js(
+app.post(`/users`, authenticate, (req, res) => { save(req.body); });
+)js"});
+    std::size_t handlers = 0;
+    for (const auto& node : express.fragment.nodes) {
+      if (node.kind != "function") continue;
+      if (node.label != "app.post /users") return 1;
+      ++handlers;
+    }
+    if (handlers != 1 || express.raw_calls.size() != 1 || express.raw_calls.front().callee_label != "save" ||
+        express.raw_calls.front().caller_id != cgraph::make_id("server.js:app.post /users")) return 1;
+  }
+
   return 0;
 }
