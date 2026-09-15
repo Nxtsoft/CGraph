@@ -549,6 +549,10 @@ let selectedId = "";
 let hoverId = "";
 let searchTerm = "";
 let transform = {x: 0, y: 0, scale: 1};
+// The zoom fitToScreen last computed. Zoom bounds and the zoomed-in label
+// threshold are relative to it, so a layout in unit coordinates and one in
+// pixels behave the same.
+let fitScale = 1;
 let dragging = false;
 let draggingNodeId = "";
 let dragStart = {x: 0, y: 0, tx: 0, ty: 0, nodeX: 0, nodeY: 0};
@@ -632,6 +636,7 @@ function rebuildSuperNodes() {
   // layout; push overlapping discs apart (with room for their two label lines)
   // so every community and its label stay readable at first paint.
   const discs = [...superNodes.values()];
+  const centroid = discs.map(disc => ({x: disc.x, y: disc.y}));
   for (let pass = 0; pass < 40; ++pass) {
     let moved = false;
     for (let i = 0; i < discs.length; ++i) {
@@ -650,10 +655,25 @@ function rebuildSuperNodes() {
     }
     if (!moved) break;
   }
+  // Members follow their disc, so expanding one reveals them where it sat
+  // rather than back under its neighbour.
+  discs.forEach((disc, i) => {
+    const dx = disc.x - centroid[i].x;
+    const dy = disc.y - centroid[i].y;
+    if (dx === 0 && dy === 0) return;
+    for (const member of communityMembers.get(disc.community) || []) {
+      member.x += dx;
+      member.y += dy;
+    }
+  });
 }
+const COMMUNITY_ID_PREFIX = "community:";
 function isCollapsed(node) { return collapsed.has(node.community); }
 // The thing drawn for a node: itself, or its community's super-node.
 function drawnFor(node) { return isCollapsed(node) ? superNodes.get(node.community) : node; }
+// Its identity for edge aggregation and hover: a collapsed node's edges merge
+// into its community's disc, an expanded one's stay its own.
+function drawnKey(node) { return isCollapsed(node) ? COMMUNITY_ID_PREFIX + node.community : node.id; }
 function expandCommunity(community) {
   if (!collapsed.delete(community)) return;
   syncCollapseButton();
@@ -762,6 +782,30 @@ function hasEmbeddedLayout() {
   return true;
 }
 
+// A precomputed layout arrives in whatever scale its producer used (igraph
+// returns unit coordinates; write_layout emits canvas-sized ones). Node radii,
+// label offsets and edge geometry are all world-space, so the span is mapped
+// onto the canvas once here rather than left for the zoom to absorb -- at a
+// zoom of 28 a 12-unit radius would paint as a 336 px disc.
+function normalizeLayoutSpan() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const node of nodes) {
+    minX = Math.min(minX, node.x);
+    maxX = Math.max(maxX, node.x);
+    minY = Math.min(minY, node.y);
+    maxY = Math.max(maxY, node.y);
+  }
+  const span = Math.max(maxX - minX, maxY - minY);
+  if (span <= 0) return;
+  const scale = (Math.min(sim.width, sim.height) - 80) / span;
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  for (const node of nodes) {
+    node.x = (node.x - centerX) * scale + sim.width / 2;
+    node.y = (node.y - centerY) * scale + sim.height / 2;
+  }
+}
+
 function layout() {
   if (layoutReady) return;
   const box = canvas.getBoundingClientRect();
@@ -779,6 +823,7 @@ function layout() {
       node.x = Number(node.properties.x);
       node.y = Number(node.properties.y);
     }
+    normalizeLayoutSpan();
     sim.alpha = 0;
     layoutReady = true;
     return;
@@ -916,6 +961,15 @@ function relatedIds(id) {
 
 function highlightIdsFor(id) {
   if (!id) return new Set();
+  // A super-node stands for its whole community: highlight every member and
+  // everything they touch.
+  if (id.startsWith(COMMUNITY_ID_PREFIX)) {
+    const highlighted = new Set();
+    for (const member of communityMembers.get(id.slice(COMMUNITY_ID_PREFIX.length)) || []) {
+      for (const related of relatedIds(member.id)) highlighted.add(related);
+    }
+    return highlighted;
+  }
   const node = nodeById.get(id);
   const highlighted = relatedIds(id);
   const community = communityFor(node);
@@ -1001,7 +1055,7 @@ function draw() {
       const a = drawnFor(source);
       const b = drawnFor(target);
       if (!a || !b || a === b) continue;
-      const key = (a.community || a.id) + "\u0000" + (b.community || b.id);
+      const key = drawnKey(source) + "\u0000" + drawnKey(target);
       let acc = aggregated.get(key);
       if (!acc) { acc = {a, b, count: 0, source}; aggregated.set(key, acc); }
       acc.count += 1;
@@ -1125,7 +1179,7 @@ function draw() {
     // else progressively on hover, selection, active highlight, search match,
     // or when zoomed in, so the overview stays legible but no label is ever
     // permanently hidden.
-    const zoomedIn = transform.scale >= 1.6;
+    const zoomedIn = transform.scale >= fitScale * 1.6;
     const labelled = !dim && (
       labelBudget.has(node.id) || hovered || selected || inHighlight ||
       zoomedIn || searchMatch);
@@ -1142,7 +1196,7 @@ function draw() {
   for (const sup of superNodes.values()) {
     const point = screenPoint(sup.x, sup.y);
     if (!visibleCircle(point, (sup.r + 4) * transform.scale, bounds)) continue;
-    const hovered = hoverId === "community:" + sup.community;
+    const hovered = hoverId === COMMUNITY_ID_PREFIX + sup.community;
     ctx.globalAlpha = 1;
     ctx.beginPath();
     ctx.fillStyle = colorFor(sup.rep);
@@ -1153,11 +1207,11 @@ function draw() {
     ctx.stroke();
     ctx.fillStyle = palette.text;
     ctx.globalAlpha = 0.95;
-    ctx.font = "bold 12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
-    ctx.fillText(shortLabel(sup.rep.label || sup.rep.id), sup.x, sup.y + sup.r + 10);
-    ctx.font = "11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+    ctx.font = "bold " + (12 / transform.scale) + "px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+    ctx.fillText(shortLabel(sup.rep.label || sup.rep.id), sup.x, sup.y + sup.r + 10 / transform.scale);
+    ctx.font = (11 / transform.scale) + "px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
     ctx.fillStyle = palette.muted;
-    ctx.fillText(sup.count + " nodes", sup.x, sup.y + sup.r + 24);
+    ctx.fillText(sup.count + " nodes", sup.x, sup.y + sup.r + 24 / transform.scale);
   }
   ctx.restore();
   ctx.globalAlpha = 1;
@@ -1337,8 +1391,8 @@ function fitToScreen() {
   const margin = 40;
   const spanX = Math.max(maxX - minX, 1);
   const spanY = Math.max(maxY - minY, 1);
-  const scale = Math.max(0.25, Math.min(4,
-    Math.min((box.width - margin * 2) / spanX, (box.height - margin * 2) / spanY)));
+  const scale = Math.min((box.width - margin * 2) / spanX, (box.height - margin * 2) / spanY);
+  fitScale = scale;
   transform.scale = scale;
   transform.x = box.width / 2 - ((minX + maxX) / 2) * scale;
   transform.y = box.height / 2 - ((minY + maxY) / 2) * scale;
@@ -1392,7 +1446,7 @@ canvas.addEventListener("pointermove", event => {
   } else {
     const sup = hitSuperNode(event);
     const node = sup ? null : hitNode(event);
-    hoverId = sup ? "community:" + sup.community : node ? node.id : "";
+    hoverId = sup ? COMMUNITY_ID_PREFIX + sup.community : node ? node.id : "";
   }
   draw();
 });
@@ -1416,7 +1470,7 @@ canvas.addEventListener("wheel", event => {
   const rect = canvas.getBoundingClientRect();
   const before = worldPoint(event.clientX - rect.left, event.clientY - rect.top);
   const factor = event.deltaY < 0 ? 1.12 : 0.89;
-  transform.scale = Math.max(0.25, Math.min(4, transform.scale * factor));
+  transform.scale = Math.max(fitScale * 0.25, Math.min(fitScale * 4, transform.scale * factor));
   const after = screenPoint(before.x, before.y);
   transform.x += event.clientX - rect.left - after.x;
   transform.y += event.clientY - rect.top - after.y;

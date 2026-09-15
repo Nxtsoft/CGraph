@@ -87,6 +87,49 @@ int main() {
     return 1;
   }
 
+  // Collapsed edges aggregate per drawn thing, not per community. Two expanded
+  // members calling into the same disc must keep one arrow each, so an expanded
+  // endpoint contributes its own node id; the superseded `(a.community || a.id)`
+  // key was always the community pair and drew only one of them.
+  if (html.find("const key = drawnKey(source) + \"\\u0000\" + drawnKey(target);") == std::string::npos ||
+      html.find("function drawnKey(node) { return isCollapsed(node) ? COMMUNITY_ID_PREFIX + node.community : node.id; }") ==
+          std::string::npos ||
+      html.find("(a.community || a.id)") != std::string::npos) {
+    return 1;
+  }
+
+  // Hovering a super-node resolves to its community's members and everything
+  // they touch; without the prefix branch the lookup misses and every node dims.
+  if (html.find("if (id.startsWith(COMMUNITY_ID_PREFIX)) {") == std::string::npos) {
+    return 1;
+  }
+
+  // The viewer maps an arbitrary coordinate scale (unit or pixel): a precomputed
+  // layout's span is normalized onto the canvas, fitToScreen is unclamped, and
+  // the zoom bounds are relative to the fit. Without the normalization a
+  // unit-scale graph.json paints as one blob or as overlapping giant discs.
+  if (html.find("function normalizeLayoutSpan(") == std::string::npos ||
+      html.find("    normalizeLayoutSpan();") == std::string::npos ||
+      html.find("fitScale = scale;") == std::string::npos ||
+      html.find("Math.min(4,") != std::string::npos ||
+      html.find("Math.min(fitScale * 4, transform.scale * factor)") == std::string::npos) {
+    return 1;
+  }
+
+  // Super-node labels are screen-constant like every other label: divided by
+  // the current zoom, not fixed px inside the scaled transform.
+  if (html.find("\"bold \" + (12 / transform.scale) + \"px") == std::string::npos ||
+      html.find("(11 / transform.scale) + \"px") == std::string::npos) {
+    return 1;
+  }
+
+  // A disc pushed off an overlapping neighbour carries its members, so
+  // expanding it reveals them where the disc sat.
+  if (html.find("const dx = disc.x - centroid[i].x;") == std::string::npos ||
+      html.find("member.x += dx;") == std::string::npos) {
+    return 1;
+  }
+
   // Legend is a dynamic per-community color key, not two hardcoded rows.
   if (html.find("buildLegend(") == std::string::npos ||
       html.find("id=\"legend\"") == std::string::npos) {
