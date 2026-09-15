@@ -151,6 +151,9 @@ struct LanguageConfig {
   MethodPredicate method_predicate;
   PreprocessSource preprocess_source;
   InternedSymbols symbols;
+  bool extract_members = false;
+  std::function<void(const TSNode&, const ExtractionContext&, const std::string&, Fragment&)> member_handler;
+  bool class_requires_body = false;
 };
 
 void intern_node_symbols(LanguageConfig& config, const TSLanguage* language);
