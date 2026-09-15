@@ -5,9 +5,9 @@ A call site's callee key SHALL be the callee's name, resolved through the gramma
 
 A qualified callee SHALL also carry its qualifier: the scope text as written at the call site (`std` for `std::find(...)`, `proj::detail` for `proj::detail::helper()`), collected from every `qualified_identifier` on the way to the leaf. A C-family symbol declared inside one or more namespaces SHALL carry a `scope` property holding the `::`-joined enclosing namespace names, outermost first, with `(anonymous)` for an unnamed namespace; an inline namespace SHALL contribute no segment. A definition whose own declarator is qualified SHALL append that qualification (`int proj::Cache::reload() {}` carries `proj::Cache`). A symbol at file scope whose declarator is unqualified SHALL carry no `scope` property.
 
-A qualifier segment SHALL be the scope's bare identifier: a class template scope `Outer<proj::Beast>` contributes `Outer`, and a scope that names no declaration -- `decltype(x)`, or a type parameter of an enclosing template -- SHALL void the whole qualifier. A qualifier rooted at a namespace alias SHALL be rewritten to the namespace that alias names. The qualifier and the `scope` property are compared as segment sequences, never by reducing text at a `::`.
+A qualifier segment SHALL be the scope's bare identifier: a class template scope `Outer<proj::Beast>` contributes `Outer`, and a scope that names no declaration -- `decltype(x)`, or a type parameter of an enclosing template -- SHALL void the whole qualifier. A qualifier rooted at a namespace alias declared in the call's own file, before the call, SHALL be rewritten to the namespace that alias names; an alias declared in another file (a header the call includes) is not seen and the qualifier SHALL stay as written. The qualifier and the `scope` property are compared as segment sequences, never by reducing text at a `::`.
 
-Resolution order SHALL remain a symbol declared in the caller's own file, then a project-wide symbol whose name is unique, with the existing overload, import-narrowing and member-call tiers unchanged. When the call carries a qualifier, every candidate those tiers produce (the target and any overload siblings) SHALL be kept only if the qualifier's segments are a suffix of the candidate's `scope` segments with `(anonymous)` segments ignored, or the candidate is a method of a class whose label equals the qualifier's last segment and whose own `scope` carries the remaining segments. The qualifier SHALL be applied only where it can contradict a candidate: when its outermost segment is `std`, or when at least one candidate carries a `scope` property or belongs to a class. When no candidate carries either, the call SHALL resolve exactly as an unqualified call does. A set with no surviving candidate SHALL be refused and counted as `dropped_scope_mismatch`, and SHALL NOT be counted as `resolved_overload_first`. `CallResolution::balances()` SHALL include `dropped_scope_mismatch`.
+Resolution order SHALL remain a symbol declared in the caller's own file, then a project-wide symbol whose name is unique, with the existing overload, import-narrowing and member-call tiers unchanged. When the call carries a qualifier, every candidate those tiers produce (the target and any overload siblings) SHALL be kept only if the qualifier's segments are a suffix of the candidate's `scope` segments with `(anonymous)` segments ignored, or the candidate is a method of a class whose label equals the qualifier's last segment and whose own `scope` carries the remaining segments. The qualifier SHALL be applied only where it can contradict a candidate: when its outermost segment is not the outermost segment of any `scope` property in the project -- a root the project declares nowhere, which no declaration in it can be inside -- or when at least one candidate carries a `scope` property or belongs to a class. When the root is one the project declares and no candidate carries either, the call SHALL resolve exactly as an unqualified call does, and SHALL be counted as `resolved_qualifier_unchecked`. No namespace name SHALL be hard-coded as a library root. A set with no surviving candidate SHALL be refused and counted as `dropped_scope_mismatch`, and SHALL NOT be counted as `resolved_overload_first`. `CallResolution::balances()` SHALL include `dropped_scope_mismatch`.
 
 A member call with an unknown receiver whose normalized name is one every standard library defines on its containers, strings, iterators, smart pointers and option types (`size`, `find`, `empty`, `begin`, `value`, `unwrap`, ...) SHALL NOT be bound by the method-only project-wide tier; when a project method of that name existed to refuse, the call is counted as `dropped_library_member`, otherwise it remains `dropped_unknown`. Same-file and receiver-named bindings are unaffected.
 
@@ -70,11 +70,17 @@ A member call with an unknown receiver whose normalized name is one every standa
 - **AND** the project declares exactly one `make`
 - **THEN** a `CALLS` edge from `build` to `make` is emitted
 
-#### Scenario: A qualified call binds a candidate that records no scope
-- **GIVEN** `reload` is declared in a file with no `scope` property and no owning class
+#### Scenario: A qualified call binds a candidate that records no scope, under a root the project owns
+- **GIVEN** the project declares `namespace proj`, so `proj` is a root it owns
+- **AND** `reload` is declared in a file with no `scope` property and no owning class
 - **AND** another file contains the call site `proj::Cache::reload()`
-- **THEN** a `CALLS` edge to `reload` is emitted
-- **AND** the same project refuses `std::filesystem::remove(p)` against a project `remove` that records no scope either
+- **THEN** a `CALLS` edge to `reload` is emitted and `resolved_qualifier_unchecked` is incremented
+
+#### Scenario: A qualifier rooted outside the project refuses every candidate
+- **GIVEN** the project declares file-scope `find`, `remove`, `size`, `format` and `trim`, none carrying a `scope`
+- **AND** call sites read `fmt::format(a)`, `boost::algorithm::trim(a)`, `absl::strings_internal::size()`, `QString::find(a)` and `std::filesystem::remove(p)`
+- **THEN** no `CALLS` edge is emitted for any of them and `dropped_scope_mismatch` is incremented five times
+- **AND** a call site reading `proj::detail::helper()` in the same project still resolves
 
 #### Scenario: An unqualified call is unchanged
 - **GIVEN** the same project
@@ -82,7 +88,7 @@ A member call with an unknown receiver whose normalized name is one every standa
 - **THEN** resolution follows the existing same-file and unique-name rules
 
 ### Requirement: Call resolution is measurable from a committed artifact
-`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `resolved_member_method`, `dropped_unknown`, `dropped_ambiguous`, `dropped_self`, `dropped_scope_mismatch`, and `dropped_library_member`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`. `resolved_overload_first` SHALL also be reported as a subset of the resolved fields.
+`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `resolved_member_method`, `dropped_unknown`, `dropped_ambiguous`, `dropped_self`, `dropped_scope_mismatch`, and `dropped_library_member`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`. `resolved_overload_first` and `resolved_qualifier_unchecked` SHALL also be reported, each a subset of the resolved fields.
 
 #### Scenario: The resolution rate is readable without instrumenting a build
 - **WHEN** `cgraph --root PATH --out DIR` completes

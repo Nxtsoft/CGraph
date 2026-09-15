@@ -51,3 +51,22 @@
       before and after this change (unrelated, noted on the PR).
 - [x] 6.7 Before/after on origin/main `src/` (104 files): every `call_resolution` field identical,
       940 CALLS edges either way, partitions balance.
+
+## 7. Derive the contradicting roots from the project (review of #80)
+- [x] 7.1 `graph_builder_test.cpp::test_library_qualified_calls`: `fmt::format`, `boost::algorithm::trim`,
+      `absl::strings_internal::size`, `QString::find` and `std::filesystem::remove` against file-scope
+      project functions of the same name emit no edge, while `proj::detail::helper()` still resolves.
+      Four of the same shapes asserted through real extraction in `cpp_extractor_test.cpp`; all fail
+      with the `std`-only allowlist in place.
+- [x] 7.2 `project_scope_roots`: the outermost segment of every `scope` property. A qualifier rooted
+      outside that set contradicts every candidate; `kStdNamespace` is deleted.
+- [x] 7.3 `test_qualifier_root_unknown_to_project` (was `test_qualified_scope_no_evidence`, whose
+      synthetic project records no scope at all, so `proj::Cache::reload()` is a library call by this
+      rule) and `test_qualifier_root_is_project_namespace` (the root IS the project's, the candidate
+      records nothing, the call binds and is tallied `resolved_qualifier_unchecked`).
+- [x] 7.4 `CallResolution::resolved_qualifier_unchecked`, serialized in `operation_stats.cpp`, a
+      subset of the resolved fields like `resolved_overload_first`.
+- [x] 7.5 Alias rewriting stated as file-local in the spec and proposal; the header case is an
+      explicit non-goal.
+- [x] 7.6 Full suite and before/after on origin/main `src/` re-run; every field unchanged and
+      `resolved_qualifier_unchecked` 0.
