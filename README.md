@@ -123,12 +123,12 @@ Plus structured/regex extraction for Apex, Delphi form/source, MSBuild/XML proje
 ### Type members
 
 C, C++, TypeScript/TSX, Go, Rust, Python and Java emit a `field` node per declared member of a class,
-struct, interface, record, enum or object type alias, with a `defines` edge from the owner. A field
-carries the declared type as a `type_text` property, plus `optional`/`readonly` where the grammar
-states them. Members are declared members only: no inherited-member expansion, no alias flattening,
-no runtime attribute inference. A declaration that is already a node of its own — a TypeScript
-`method_signature`, a Rust trait method or type alias — keeps its function or type node and is not
-also a field.
+struct, interface, record, enum or object type alias, with a `defines` edge from the owner. Outside
+C and C++, a field also carries the declared type as a `type_text` property, plus `optional` and
+`readonly` where the grammar states them. Members are declared members only: no inherited-member
+expansion, no alias flattening, no runtime attribute inference. A declaration that is already a node
+of its own — a TypeScript `method_signature`, a Rust trait method or type alias — keeps its function
+or type node and is not also a field.
 
 A class-like declaration without a body (`struct FileCacheEntry;`) is a forward declaration and mints
 no node; only the body-bearing definition does.
