@@ -1,5 +1,6 @@
 #include "cgraph/export_json.hpp"
 
+#include "cgraph/analysis.hpp"
 #include "cgraph/content_root.hpp"
 #include "cgraph/fragment_json.hpp"
 
@@ -513,6 +514,10 @@ std::string export_graph_html(const GraphSnapshot& graph) {
   output += "const graphData = ";
   append_json_for_script(output, to_node_link_json(graph));
   output += ";\n";
+  std::ostringstream layout_span;
+  layout_span << "const LAYOUT_MIN_SIDE = " << kMinCanvasSide << ";\n"
+              << "const LAYOUT_PIXELS_PER_SQRT_NODE = " << kPixelsPerSqrtNode << ";\n";
+  output += layout_span.str();
   output += R"html(
 const canvas = document.getElementById("graph-canvas");
 const ctx = canvas.getContext("2d");
@@ -783,10 +788,11 @@ function hasEmbeddedLayout() {
 }
 
 // A precomputed layout arrives in whatever scale its producer used (igraph
-// returns unit coordinates; write_layout emits canvas-sized ones). Node radii,
-// label offsets and edge geometry are all world-space, so the span is mapped
-// onto the canvas once here rather than left for the zoom to absorb -- at a
-// zoom of 28 a 12-unit radius would paint as a 336 px disc.
+// returns unit coordinates; write_layout sizes the span by node count). Node
+// radii, label offsets and edge geometry are all world-space, so the span is
+// restated in write_layout's own terms once here -- ink per node stays
+// constant however wide the window is, and a layout carrying raw igraph
+// coordinates is rescued instead of painting at a zoom of 28.
 function normalizeLayoutSpan() {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const node of nodes) {
@@ -797,7 +803,7 @@ function normalizeLayoutSpan() {
   }
   const span = Math.max(maxX - minX, maxY - minY);
   if (span <= 0) return;
-  const scale = (Math.min(sim.width, sim.height) - 80) / span;
+  const scale = Math.max(LAYOUT_MIN_SIDE, LAYOUT_PIXELS_PER_SQRT_NODE * Math.sqrt(nodes.length)) / span;
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
   for (const node of nodes) {
@@ -815,9 +821,9 @@ function layout() {
   const centerY = sim.height / 2;
   // Ideal edge length scales with available area per node.
   sim.k = Math.max(34, Math.sqrt((sim.width * sim.height) / Math.max(nodes.length, 1)));
-  // Precomputed layout: adopt server x/y verbatim (fitToScreen maps the layout's
-  // arbitrary coordinate scale into the viewport), then leave the simulation
-  // cold so nothing moves and settle time is effectively zero.
+  // Precomputed layout: adopt server x/y, restate their span in write_layout's
+  // terms, then leave the simulation cold so nothing moves and settle time is
+  // effectively zero.
   if (hasEmbeddedLayout()) {
     for (const node of nodes) {
       node.x = Number(node.properties.x);
@@ -1138,7 +1144,7 @@ function draw() {
     ctx.fill();
   }
 
-  ctx.font = "11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+  ctx.font = (11 / transform.scale) + "px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
   for (const node of nodes) {
@@ -1187,7 +1193,7 @@ function draw() {
       ctx.fillStyle = palette.text;
       ctx.globalAlpha = dim ? 0.22 : 0.95;
       // Centered just below the node, matching the Graphify viewer's labels.
-      ctx.fillText(shortLabel(node.label || node.id), node.x, node.y + r + 9);
+      ctx.fillText(shortLabel(node.label || node.id), node.x, node.y + r + 9 / transform.scale);
     }
   }
 
