@@ -262,6 +262,37 @@ int main() {
              "int template_user() { return proj::Outer<int>::make() + proj::Outer<proj::Beast>::make(); }\n"
              "int alpha_user() { return alpha::dup(1.0); }\n");
 
+  // A qualifier refuses a candidate only where it CONTRADICTS what that
+  // candidate records. Five of these shapes resolved by name and were then
+  // dropped as `dropped_scope_mismatch`; the sixth, an in-class definition, is
+  // the control that bound all along (CGR-4 review of #76).
+  write_file(root / "scope_evidence.hpp",
+             "#pragma once\n"
+             "namespace proj {\n"
+             "struct Cache { static int reload(); };\n"
+             "struct Nest { struct Inner { static int spin(); }; };\n"
+             "struct Inline { static int inline_reload() { return 7; } };\n"
+             "namespace detail { int helper_decl() { return 3; } }\n"
+             "inline namespace v1 { int versioned() { return 8; } }\n"
+             "}\n");
+  // Out-of-line member definitions: the class qualifier is on the DEFINITION,
+  // never on the in-class prototype (a field_declaration, which gets no node).
+  write_file(root / "scope_evidence.cpp",
+             "#include \"scope_evidence.hpp\"\n"
+             "namespace proj {\n"
+             "int Cache::reload() { return 1; }\n"
+             "int Nest::Inner::spin() { return 2; }\n"
+             "}\n");
+  write_file(root / "scope_evidence_user.cpp",
+             "#include \"scope_evidence.hpp\"\n"
+             "namespace pd = proj::detail;\n"
+             "template <typename T> int build() { return T::make(); }\n"
+             "int user_outofline() { return proj::Cache::reload(); }\n"
+             "int user_nested() { return proj::Nest::Inner::spin(); }\n"
+             "int via_alias() { return pd::helper_decl(); }\n"
+             "int via_inline_ns() { return proj::versioned(); }\n"
+             "int user_inline() { return proj::Inline::inline_reload(); }\n");
+
   const auto graph = cgraph::run_one_shot(root).graph;
 
   int failures = 0;
@@ -435,6 +466,33 @@ int main() {
       }
     }
     check(scoped, "a symbol declared inside namespaces carries its scope");
+  }
+
+  // A qualifier only refuses what it contradicts. The gate used to demand that
+  // every candidate PROVE its scope, and an out-of-line definition proved
+  // nothing: `int Cache::reload() {}` recorded only the namespace it sat in, a
+  // call through an alias or a template parameter nothing that could match.
+  check(has_edge(graph, "user_outofline", "reload", "CALLS"),
+        "an out-of-line member definition carries the class it qualifies");
+  check(has_edge(graph, "user_nested", "spin", "CALLS"),
+        "a nested class's out-of-line definition carries both of its segments");
+  check(has_edge(graph, "via_alias", "helper_decl", "CALLS"),
+        "a namespace alias resolves to the namespace it aliases");
+  check(has_edge(graph, "via_inline_ns", "versioned", "CALLS"),
+        "an inline namespace is transparent to a qualified call");
+  check(has_edge(graph, "build", "make", "CALLS"),
+        "a dependent call T::make() names no scope and resolves on its leaf name");
+  check(has_edge(graph, "user_inline", "inline_reload", "CALLS"),
+        "an in-class definition still resolves through its class");
+  {
+    bool qualified = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "reload" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        qualified = scope != node.properties.end() && scope->second == "proj::Cache";
+      }
+    }
+    check(qualified, "the class an out-of-line definition names is recorded as its scope");
   }
 
   return failures == 0 ? 0 : 1;
