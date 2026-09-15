@@ -255,7 +255,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 | `graph_impact` | Transitive blast radius of changing a node |
 | `graph_path` | Shortest path between two nodes |
 | `graph_context` | Token-budgeted source bundle for a node/query (with adaptive gather) |
-| `graph_report` | Module dependency map (`view: "modules"`): layers, cycles, import/call counts, sized to a budget |
+| `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; both sized to a budget |
 | `graph_update` | Content-verified sync; returns a `content_root` to pin reads |
 | `graph_status` | Daemon, graph, and enrichment status |
 | `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after |
@@ -365,9 +365,25 @@ cgraph report modules --root /path/to/project --depth 1 --budget 2000
 
 The output is sized to a token budget (default 6000, `--budget 0` for all of it): when it
 overflows, whole low-weight edges or modules are dropped and `omitted` says how many. One-shot
-builds write the same diagram as `modules.mmd` and `modules.svg` next to `graph.json`. The same
-report is the `graph_report` MCP tool and the daemon `report` op; views `design`, `clones`,
-`types` are reserved and answer "not implemented".
+builds write the same diagram as `modules.mmd` and `modules.svg` next to `graph.json`.
+
+`cgraph report types` audits type definitions from the same daemon: `class`/`type` nodes whose
+extracted `field` members are compared by name. It lists **identical** shapes (groups of
+differently named types declaring exactly the same members), **duplicates** (one type name
+declared in several files, with how much their member sets overlap), **overlaps** (pairs whose
+members nest with the smaller at least half of the larger, or match at or above `--threshold`,
+default 0.80; only types with at least `--min-members` members, default 3, take part) and
+**unreferenced** types (no other symbol or file in the graph refers to them; same-file use is
+not an edge, so read it as a lead). Output is Markdown tables by default or `--format json`;
+rows are shed to the budget in that order of value.
+
+```sh
+cgraph report types --root /path/to/project --scope src                 # Markdown tables on stdout
+cgraph report types --root /path/to/project --format json --threshold 0.6 --min-members 2
+```
+
+Both views are the `graph_report` MCP tool and the daemon `report` op; views `design` and
+`clones` are reserved and answer "not implemented".
 
 ### Daemon & thin client
 

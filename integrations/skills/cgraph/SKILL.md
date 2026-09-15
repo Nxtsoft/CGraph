@@ -26,6 +26,7 @@ grep/read calls that burn context.
 | "How does A connect to B?" | `graph_path` `{source, target}` — shortest path, with `path_nodes` briefs |
 | "Load context on X" / before editing or reviewing X | `graph_context` `{query or id, budget}` — focal node + most-relevant neighbors with snippets, packed to a token budget |
 | "What's the architecture? Give me a module map / what depends on what at the package level / where does a new file belong?" | `graph_report` `{view:"modules", format:"mermaid", scope?, depth?}` — files grouped into modules, imports/calls between them with counts, layers (0 = nothing depends on it), cycles listed; whole rows shed to the budget with `omitted` reported |
+| "Which types are duplicated / redundant / bloated? Which interfaces or structs have the same shape? Which types are dead?" | `graph_report` `{view:"types", format:"markdown", scope?, threshold?, min_members?}` — `identical` (groups of differently named types with the same members), `duplicates` (one name in several files, with member overlap), `overlaps` (subset / ≥ threshold Jaccard pairs), `unreferenced` (no other symbol or file refers to them), each with file:line and members |
 | "Verify the graph is current before I rely on it" | `graph_update {path:"."}` — blocking content-verified synchronization; returns `freshness.content_root`. Pin subsequent reads by passing the root as `expected_content_root`. |
 | "Is the graph current? / I just changed files" | Nothing for ordinary reads — the daemon watches the tree and folds edits in within seconds. Use `graph_update` when you need a verified content_root to pin reads. |
 
@@ -73,7 +74,23 @@ grep/read calls that burn context.
   top-level directories, 3 = sub-packages). Test roots are excluded unless
   `include_tests:true`. Check `omitted` -- a nonzero count means the budget
   dropped the lightest edges or modules; raise `budget` or narrow `scope` to see
-  them. Views `design`, `clones`, `types` are reserved and answer "not implemented".
+  them.
+- `graph_report` with `view:"types"` is the type-cleanup call. `identical`
+  groups differently named types that declare exactly the same members -- the
+  strongest bloat signal, and the one no other tool gives you. `duplicates`
+  says which type names are declared in more than one file and how alike the
+  declarations are (`min_jaccard`/`max_jaccard` over their members: 1.0 is a
+  copy, 0.0 an unrelated homonym such as a component-local `Props`). `overlaps`
+  pairs types whose members nest (`subset`, the smaller at least half of the
+  larger) or match at or above `threshold` (`overlap`, default 0.80).
+  `unreferenced` lists types no other symbol or file in the graph refers to;
+  the graph carries cross-file references only, so a type used in its own file
+  lands here too -- treat it as a lead, not a verdict. Members come from
+  extracted `field` nodes, so interfaces made only of method signatures have no
+  shape to compare. Only json and markdown; `min_members` (default 3) keeps
+  `{id, name}` pairs out. Under the budget, identical groups survive first,
+  then duplicates, then overlaps, then unreferenced; `omitted` says what fell.
+  Views `design` and `clones` are reserved and answer "not implemented".
 
 ## Freshness-sensitive navigation
 

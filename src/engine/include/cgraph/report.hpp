@@ -14,8 +14,9 @@
 namespace cgraph {
 
 // Structural reports (report-modules): one daemon op, `report`, with a `view`
-// selector. Only `modules` is implemented; the other views are reserved so the
-// tool surface an agent discovers is stable while they land (CGR-9/10/11).
+// selector. `modules` and `types` are implemented; `design` and `clones` are
+// reserved so the tool surface an agent discovers is stable while they land
+// (CGR-11/10).
 enum class ReportView { Modules, Design, Clones, Types };
 enum class ReportFormat { Json, Mermaid, Svg, Markdown };
 
@@ -28,6 +29,7 @@ enum class ReportFormat { Json, Mermaid, Svg, Markdown };
 // budget (the one-shot export writes the whole diagram).
 inline constexpr std::size_t kDefaultReportBudget = 6000;
 inline constexpr int kDefaultModuleDepth = 2;
+inline constexpr std::size_t kDefaultMinMembers = 3;
 
 struct ReportRequest {
   ReportView view = ReportView::Modules;
@@ -44,9 +46,13 @@ struct ReportRequest {
   // Directory components that name a module: depth 2 turns
   // src/engine/dedup.cpp into src/engine.
   int module_depth = kDefaultModuleDepth;
-  // Reserved for the clones view (CGR-10): similarity floor and token floor.
+  // Similarity floor shared by the types view (member-set Jaccard) and the
+  // reserved clones view (CGR-10), and the clones view's token floor.
   double threshold = 0.80;
   std::size_t min_tokens = 30;
+  // types view: a type takes part in shape comparison only when it declares at
+  // least this many members, so `{id, name}` pairs do not flood the report.
+  std::size_t min_members = kDefaultMinMembers;
   // Module names are relative to this root; empty leaves paths as they are.
   std::filesystem::path project_root;
 };
@@ -104,6 +110,78 @@ void shed_to_budget(ModulesReport& report, ReportFormat format, std::size_t budg
 // The text an agent receives for `format`: the JSON payload dump or the rendered
 // diagram. Budget accounting measures exactly this string.
 [[nodiscard]] std::string render_modules_report(const ModulesReport& report, ReportFormat format);
+
+// ---- types view (CGR-9) ------------------------------------------------------
+// A type is a `class` or `type` node; its members are the `field` nodes it
+// `defines`, compared by label. Four findings, each a whole row: differently
+// named types with exactly the same member set (identical, grouped), a label
+// declared in several files (duplicates), pairs whose member sets nest or are
+// at least `threshold` Jaccard-similar (overlaps), and types no other symbol or
+// file in the graph refers to (unreferenced).
+struct TypeRef {
+  std::string id;
+  std::string label;
+  std::string kind;  // class | type
+  std::string source_file;  // root-relative when under the project root
+  std::size_t line = 0;
+  std::vector<std::string> members;  // sorted, unique field labels
+  std::size_t incoming = 0;          // non-structural edges into the type
+};
+
+struct IdenticalTypes {
+  std::vector<std::string> shape;  // the member set every type in the group declares
+  std::vector<TypeRef> types;      // by label, then file
+};
+
+struct DuplicateTypes {
+  std::string label;
+  std::vector<TypeRef> declarations;  // by source file
+  // Lowest and highest pairwise member-set Jaccard among the declarations, so
+  // the reader can tell one type copied into two files (1.0) from two unrelated
+  // types that share a name (0.0). Declarations with no members compare as 0.
+  double min_jaccard = 0.0;
+  double max_jaccard = 0.0;
+};
+
+struct TypeOverlap {
+  TypeRef a;  // for `subset`, the smaller type
+  TypeRef b;
+  std::size_t shared = 0;
+  double jaccard = 0.0;
+  std::string relation;  // subset | overlap
+};
+
+struct TypesReport {
+  std::string scope;
+  bool include_tests = false;
+  double threshold = 0.80;
+  std::size_t min_members = kDefaultMinMembers;
+  std::vector<IdenticalTypes> identical;   // widest shape first, then largest group
+  std::vector<DuplicateTypes> duplicates;  // most alike first (min_jaccard), then most declarations
+  std::vector<TypeOverlap> overlaps;       // jaccard desc, shared desc
+  std::vector<TypeRef> unreferenced;       // most members first
+  std::size_t total_types = 0;
+  std::size_t total_with_members = 0;
+  std::size_t total_identical = 0;
+  std::size_t total_duplicates = 0;
+  std::size_t total_overlaps = 0;
+  std::size_t total_unreferenced = 0;
+  std::size_t omitted_identical = 0;
+  std::size_t omitted_duplicates = 0;
+  std::size_t omitted_overlaps = 0;
+  std::size_t omitted_unreferenced = 0;
+};
+
+[[nodiscard]] TypesReport build_types_report(const GraphSnapshot& graph, const ReportRequest& request);
+// Whole rows only, in value order: identical groups outrank duplicates, which
+// outrank overlap pairs, which outrank unreferenced types; within a section the
+// list is best-first, so the tail of the last populated section goes first.
+void shed_to_budget(TypesReport& report, ReportFormat format, std::size_t budget);
+[[nodiscard]] nlohmann::json types_report_json(const TypesReport& report);
+[[nodiscard]] std::string render_types_markdown(const TypesReport& report);
+// json or markdown; the types view has no diagram form, so mermaid and svg
+// render as markdown here and `report_response` refuses them with a typed error.
+[[nodiscard]] std::string render_types_report(const TypesReport& report, ReportFormat format);
 
 // ~4 characters per token: the one estimate the report and context ops pack
 // against. The length overload costs text that is not materialized yet.
