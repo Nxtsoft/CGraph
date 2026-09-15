@@ -51,8 +51,11 @@ void print_usage() {
       "        roll up the durable op-stats ledger (counts + zero-hit rate) and show live daemon stats\n"
       "  cgraph report modules [--root PATH] [--format json|mermaid|svg|markdown] [--scope PREFIX]\n"
       "                        [--depth N] [--budget N] [--include-tests] [--daemon PATH]\n"
-      "        module dependency diagram from the resident daemon (spawned if absent);\n"
-      "        views design|clones|types are reserved\n"
+      "        module dependency diagram from the resident daemon (spawned if absent)\n"
+      "  cgraph report types [--root PATH] [--format json|markdown] [--scope PREFIX] [--threshold 0.80]\n"
+      "                      [--min-members 3] [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        identical shapes under different names, one name declared in several files,\n"
+      "        subset/overlapping shapes, and unreferenced types; views design|clones are reserved\n"
       "  cgraph seam gen --seam SPEC.json --graphs NAME=graph.json [--graphs ...] --out DROPDIR\n"
       "        resolve a cross-service seam spec against consumer graphs into a contract fragment\n"
       "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] --out DIR\n"
@@ -241,22 +244,24 @@ int run_stats(const Args& args) {
 }
 
 // cgraph report <view> [--root PATH] [--format F] [--scope PREFIX] [--depth N] [--budget N]
-//                      [--include-tests] [--daemon PATH]
+//                      [--threshold X] [--min-members N] [--include-tests] [--daemon PATH]
 // A thin-client op like cgraph-client's: connects to the per-root graphd,
 // spawning it when absent. Prints the rendered diagram (mermaid/svg/markdown)
 // or the JSON payload to stdout; `omitted` counts go to stderr so a piped
-// diagram stays clean.
+// diagram stays clean. The default format is the view's natural text form:
+// a mermaid diagram for modules, markdown tables for types.
 int run_report(int argc, char** argv) {
   const std::string view = argc >= 3 ? argv[2] : "";
   if (view.empty() || view.starts_with("--")) {
-    std::cerr << "usage: cgraph report <modules|design|clones|types> [--root PATH] [--format json|mermaid|svg|markdown]\n"
-                 "                     [--scope PREFIX] [--depth N] [--budget N] [--include-tests] [--daemon PATH]\n";
+    std::cerr << "usage: cgraph report <modules|types|design|clones> [--root PATH] [--format json|mermaid|svg|markdown]\n"
+                 "                     [--scope PREFIX] [--depth N] [--threshold X] [--min-members N] [--budget N]\n"
+                 "                     [--include-tests] [--daemon PATH]\n";
     return 2;
   }
   cgraph::ClientRequest request{
       .project_root = std::filesystem::current_path(),
       .operation = "report",
-      .params = {{"view", view}, {"format", "mermaid"}},
+      .params = {{"view", view}, {"format", view == "types" ? "markdown" : "mermaid"}},
   };
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -271,6 +276,10 @@ int run_report(int argc, char** argv) {
       request.params["depth"] = std::stoi(argv[++index]);
     } else if (arg == "--budget" && has_value) {
       request.params["budget"] = std::stoll(argv[++index]);
+    } else if (arg == "--threshold" && has_value) {
+      request.params["threshold"] = std::stod(argv[++index]);
+    } else if (arg == "--min-members" && has_value) {
+      request.params["min_members"] = std::stoi(argv[++index]);
     } else if (arg == "--include-tests") {
       request.params["include_tests"] = true;
     } else if (arg == "--daemon" && has_value) {
@@ -304,11 +313,18 @@ int run_report(int argc, char** argv) {
   } else {
     std::cout << payload.dump(2) << '\n';
   }
-  const auto& omitted = payload["omitted"];
-  std::cerr << "report: " << payload["totals"].value("modules", 0) << " modules, " << payload["totals"].value("edges", 0)
-            << " edges; omitted " << omitted.value("modules", 0) << " modules, " << omitted.value("edges", 0)
-            << " edges (budget " << payload.value("budget", 0) << ", ~" << payload.value("estimated_tokens", 0)
-            << " tokens)\n";
+  // Each view has its own totals (modules/edges; types/with_members/identical/
+  // duplicates/overlaps/unreferenced), so print whatever the daemon counted.
+  const auto counts = [](const nlohmann::json& object) {
+    std::string out;
+    for (auto it = object.begin(); it != object.end(); ++it) {
+      out += (out.empty() ? "" : ", ") + it.key() + " " + it.value().dump();
+    }
+    return out;
+  };
+  std::cerr << "report: " << counts(payload.value("totals", nlohmann::json::object())) << "; omitted "
+            << counts(payload.value("omitted", nlohmann::json::object())) << " (budget " << payload.value("budget", 0)
+            << ", ~" << payload.value("estimated_tokens", 0) << " tokens)\n";
   return 0;
 }
 

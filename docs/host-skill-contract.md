@@ -18,13 +18,22 @@ Supported operations:
 - `shutdown`: Ask the per-root daemon to exit cleanly.
 - `remember`: Persist a session-memory checkpoint (title, tags, markdown body).
 - `recall`: List or filter persisted checkpoints.
-- `report`: Structural report sized to a token budget. `view: "modules"` (the only implemented
-  view; `design`, `clones`, `types` answer `code: "report_view_not_implemented"`) groups files
-  into modules by directory depth, aggregates imports/calls between them, ranks layers by
-  longest path, lists cycles, and renders `json` | `mermaid` | `markdown` | `svg`. Whole rows are
-  shed to fit `budget`; `omitted` always reports how many. A daemon that predates the op answers
-  `unknown op: report`; hosts should surface that as "upgrade the daemon". Hosts also call
-  `graph_report` when asked for the architecture or a module map.
+- `report`: Structural report sized to a token budget. `view: "modules"` groups files into
+  modules by directory depth, aggregates imports/calls between them, ranks layers by longest
+  path, lists cycles, and renders `json` | `mermaid` | `markdown` | `svg`. `view: "types"` audits
+  type definitions (`class`/`type` nodes, members = the labels of the `field` nodes they
+  `defines`): `identical` (groups of differently named types with exactly the same member set),
+  `duplicates` (one name declared in several files, with the lowest/highest member-set Jaccard
+  between the declarations), `overlaps` (pairs that nest with the smaller at least half of the
+  larger, or are at least `threshold` Jaccard-similar, default 0.80; only types with at least
+  `min_members` members, default 3, take part) and `unreferenced` (no non-structural edge into
+  the type from anything in the graph; same-file use is not an edge, so this is a lead, not a
+  verdict); it renders `json` | `markdown`, and a diagram format answers
+  `code: "report_format_unsupported"`. `design` and `clones` answer
+  `code: "report_view_not_implemented"`. Whole rows are shed to fit `budget`; `omitted` always
+  reports how many. A daemon that predates the op answers `unknown op: report`; hosts should
+  surface that as "upgrade the daemon". Hosts also call `graph_report` when asked for the
+  architecture or a module map, and for type bloat, duplicate interfaces/structs, or dead types.
 
 Hosts should prefer the thin client command surface unless they are implementing an MCP or always-on bridge that already speaks local JSON frames.
 

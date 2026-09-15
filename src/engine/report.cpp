@@ -9,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -246,11 +247,19 @@ std::optional<std::string> parse_report_request(const nlohmann::json& params, Re
   }
   out.include_tests = params.value("include_tests", false);
   out.threshold = params.value("threshold", 0.80);
+  if (!(out.threshold >= 0.0 && out.threshold <= 1.0)) {
+    return "threshold must be between 0 and 1";
+  }
   const auto min_tokens = params.value("min_tokens", static_cast<long long>(30));
   if (min_tokens < 0) {
     return "min_tokens must be >= 0";
   }
   out.min_tokens = static_cast<std::size_t>(min_tokens);
+  const auto min_members = params.value("min_members", static_cast<long long>(kDefaultMinMembers));
+  if (min_members < 1) {
+    return "min_members must be >= 1";
+  }
+  out.min_members = static_cast<std::size_t>(min_members);
   return std::nullopt;
 }
 
@@ -968,6 +977,551 @@ std::string render_modules_svg(const ModulesReport& report) {
   return svg.str();
 }
 
+// ---- types view ---------------------------------------------------------------
+
+namespace {
+
+// Edges that build a type rather than use it. Everything else pointing at a
+// type -- references, inherits, implements, imports, CALLS (a constructor),
+// impl_trait, dispatches_to -- is a use.
+[[nodiscard]] bool is_structural_relation(std::string_view relation) {
+  return relation == "contains" || relation == "defines" || relation == "method" || relation == "method_of";
+}
+
+[[nodiscard]] bool is_type_kind(std::string_view kind) {
+  return kind == "class" || kind == "type";
+}
+
+// A contained pair is a `subset` row only when the smaller type is at least
+// half of the larger one (Jaccard >= 0.5): `Base` missing one field of
+// `Extended`, not `{id, name, createdAt}` inside a 30-member record. On a
+// 1,800-type TypeScript app the bare containment rule produced 923 rows.
+constexpr double kSubsetFloor = 0.5;
+// Markdown lists this many declarations per duplicate row before "+N more";
+// a component-local `Props` name declared in 26 files is one row, not a page.
+constexpr std::size_t kMarkdownDeclarationCap = 8;
+
+[[nodiscard]] std::size_t shared_members(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+  std::size_t shared = 0;
+  std::size_t i = 0;
+  std::size_t j = 0;
+  while (i < a.size() && j < b.size()) {
+    if (a[i] == b[j]) {
+      ++shared;
+      ++i;
+      ++j;
+    } else if (a[i] < b[j]) {
+      ++i;
+    } else {
+      ++j;
+    }
+  }
+  return shared;
+}
+
+// |A ∩ B| / |A ∪ B|; two empty sets share nothing we can see, so 0.
+[[nodiscard]] double member_jaccard(const std::vector<std::string>& a, const std::vector<std::string>& b, std::size_t shared) {
+  const auto union_size = a.size() + b.size() - shared;
+  return union_size == 0 ? 0.0 : static_cast<double>(shared) / static_cast<double>(union_size);
+}
+
+// Root-relative when the file lies under the project root, as module names are;
+// an absolute path per row would spend the budget on the same prefix.
+[[nodiscard]] std::string relative_file(const std::string& source_file, const fs::path& root) {
+  if (root.empty()) {
+    return source_file;
+  }
+  const auto relative = fs::path(source_file).lexically_normal().lexically_relative(root);
+  const auto text = relative.generic_string();
+  if (relative.empty() || text == "." || text.starts_with("..")) {
+    return source_file;
+  }
+  return text;
+}
+
+[[nodiscard]] std::string file_line(const TypeRef& type) {
+  return type.source_file + (type.line > 0 ? ":" + std::to_string(type.line) : std::string{});
+}
+
+[[nodiscard]] std::string join_members(const std::vector<std::string>& members, std::size_t cap = 8) {
+  std::string out;
+  for (std::size_t i = 0; i < members.size() && i < cap; ++i) {
+    out += (i == 0 ? "" : ", ") + members[i];
+  }
+  if (members.size() > cap) {
+    out += ", +" + std::to_string(members.size() - cap) + " more";
+  }
+  return out;
+}
+
+[[nodiscard]] std::string format_ratio(double value) {
+  std::ostringstream out;
+  out.precision(2);
+  out << std::fixed << value;
+  return out.str();
+}
+
+[[nodiscard]] std::string types_caption(const TypesReport& report) {
+  std::string caption = report.scope.empty() ? std::string("whole project") : "scope " + report.scope;
+  caption += report.include_tests ? ", tests included" : ", tests excluded";
+  caption += ", threshold " + format_ratio(report.threshold) + ", min_members " + std::to_string(report.min_members);
+  return caption;
+}
+
+[[nodiscard]] std::string types_omitted_caption(const TypesReport& report) {
+  return "omitted: " + std::to_string(report.omitted_identical) + " identical, " + std::to_string(report.omitted_duplicates) +
+         " duplicates, " + std::to_string(report.omitted_overlaps) + " overlaps, " + std::to_string(report.omitted_unreferenced) +
+         " unreferenced (of " + std::to_string(report.total_identical) + ", " + std::to_string(report.total_duplicates) + ", " +
+         std::to_string(report.total_overlaps) + ", " + std::to_string(report.total_unreferenced) + ")";
+}
+
+[[nodiscard]] nlohmann::json type_ref_json(const TypeRef& type) {
+  nlohmann::json out{{"id", type.id}, {"label", type.label}, {"kind", type.kind}, {"file", type.source_file},
+                     {"members", type.members}};
+  if (type.line > 0) {
+    out["line"] = type.line;
+  }
+  return out;
+}
+
+[[nodiscard]] bool type_ref_before(const TypeRef& a, const TypeRef& b) {
+  return std::tie(a.label, a.source_file, a.line) < std::tie(b.label, b.source_file, b.line);
+}
+
+}  // namespace
+
+TypesReport build_types_report(const GraphSnapshot& graph, const ReportRequest& request) {
+  TypesReport report;
+  report.scope = request.scope;
+  report.include_tests = request.include_tests;
+  report.threshold = request.threshold;
+  report.min_members = std::max<std::size_t>(1, request.min_members);
+
+  fs::path root;
+  if (!request.project_root.empty()) {
+    std::error_code ec;
+    root = fs::weakly_canonical(request.project_root, ec);
+    if (ec) {
+      root = request.project_root.lexically_normal();
+    }
+  }
+
+  // Candidate types: class/type nodes with a source file, in scope, outside
+  // test roots unless asked. The directory path (every component) is what the
+  // scope and test-root rules see, exactly as the modules view groups files.
+  std::vector<TypeRef> types;
+  std::unordered_map<std::string, std::size_t> index_of;
+  std::unordered_map<std::string, std::string> directory_of_file;
+  for (const auto& node : graph.nodes) {
+    if (!is_type_kind(node.kind) || node.source_file.empty() || is_enrichment_node_id(node.id) ||
+        is_memory_node_id(node.id)) {
+      continue;
+    }
+    auto dir_it = directory_of_file.find(node.source_file);
+    if (dir_it == directory_of_file.end()) {
+      dir_it = directory_of_file.emplace(node.source_file, module_for(node.source_file, root, 1 << 20)).first;
+    }
+    if (!is_source_module(dir_it->second, request)) {
+      continue;
+    }
+    index_of.emplace(node.id, types.size());
+    types.push_back(TypeRef{
+        .id = node.id,
+        .label = node.label,
+        .kind = node.kind,
+        .source_file = relative_file(node.source_file, root),
+        .line = node.source_location ? node.source_location->start_line : 0,
+    });
+  }
+  report.total_types = types.size();
+
+  // Members from `defines` edges to field nodes; uses from every other
+  // non-structural edge into the type, excluding the type's own members.
+  std::unordered_map<std::string, const Node*> by_id;
+  by_id.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) {
+    by_id.emplace(node.id, &node);
+  }
+  std::unordered_map<std::string, std::string> owner_of_field;
+  for (const auto& edge : graph.edges) {
+    if (edge.relation != "defines") {
+      continue;
+    }
+    const auto owner = index_of.find(edge.source);
+    const auto field = by_id.find(edge.target);
+    if (owner == index_of.end() || field == by_id.end() || field->second->kind != "field") {
+      continue;
+    }
+    types[owner->second].members.push_back(field->second->label);
+    owner_of_field.emplace(edge.target, edge.source);
+  }
+  for (auto& type : types) {
+    std::sort(type.members.begin(), type.members.end());
+    type.members.erase(std::unique(type.members.begin(), type.members.end()), type.members.end());
+    if (!type.members.empty()) {
+      ++report.total_with_members;
+    }
+  }
+  for (const auto& edge : graph.edges) {
+    const auto target = index_of.find(edge.target);
+    if (target == index_of.end() || is_structural_relation(edge.relation) || edge.source == edge.target) {
+      continue;
+    }
+    if (const auto owner = owner_of_field.find(edge.source); owner != owner_of_field.end() && owner->second == edge.target) {
+      continue;  // a field pointing back at its own type is not a use
+    }
+    ++types[target->second].incoming;
+  }
+
+  // Duplicates: one label declared in two or more files. Most alike first, so
+  // a type copied between files leads and a homonym convention (`Props` in
+  // every component file) sinks.
+  std::map<std::string, std::vector<std::size_t>> by_label;
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    by_label[types[i].label].push_back(i);
+  }
+  for (auto& [label, indices] : by_label) {
+    std::set<std::string> files;
+    for (const auto i : indices) {
+      files.insert(types[i].source_file);
+    }
+    if (files.size() < 2) {
+      continue;
+    }
+    DuplicateTypes duplicate;
+    duplicate.label = label;
+    std::sort(indices.begin(), indices.end(), [&](std::size_t x, std::size_t y) {
+      return std::tie(types[x].source_file, types[x].line) < std::tie(types[y].source_file, types[y].line);
+    });
+    for (const auto i : indices) {
+      duplicate.declarations.push_back(types[i]);
+    }
+    duplicate.min_jaccard = 1.0;
+    duplicate.max_jaccard = 0.0;
+    for (std::size_t x = 0; x < indices.size(); ++x) {
+      for (std::size_t y = x + 1; y < indices.size(); ++y) {
+        const auto& a = types[indices[x]].members;
+        const auto& b = types[indices[y]].members;
+        const auto jaccard = member_jaccard(a, b, shared_members(a, b));
+        duplicate.min_jaccard = std::min(duplicate.min_jaccard, jaccard);
+        duplicate.max_jaccard = std::max(duplicate.max_jaccard, jaccard);
+      }
+    }
+    report.duplicates.push_back(std::move(duplicate));
+  }
+  std::sort(report.duplicates.begin(), report.duplicates.end(), [](const DuplicateTypes& a, const DuplicateTypes& b) {
+    if (a.min_jaccard != b.min_jaccard) {
+      return a.min_jaccard > b.min_jaccard;
+    }
+    if (a.declarations.size() != b.declarations.size()) {
+      return a.declarations.size() > b.declarations.size();
+    }
+    return a.label < b.label;
+  });
+
+  // Shape comparison among differently named types with at least min_members
+  // members. Candidate pairs come from an inverted index on member label, so
+  // only types with something in common are compared. Equal member sets are
+  // grouped (union-find over identical pairs); nested sets are `subset` rows
+  // when the smaller is at least half the larger; the rest need Jaccard >=
+  // threshold to be an `overlap` row.
+  std::unordered_map<std::string, std::vector<std::size_t>> types_with_member;
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    if (types[i].members.size() < report.min_members) {
+      continue;
+    }
+    for (const auto& member : types[i].members) {
+      types_with_member[member].push_back(i);
+    }
+  }
+  std::set<std::pair<std::size_t, std::size_t>> pairs;
+  for (const auto& [member, indices] : types_with_member) {
+    for (std::size_t x = 0; x < indices.size(); ++x) {
+      for (std::size_t y = x + 1; y < indices.size(); ++y) {
+        pairs.emplace(std::min(indices[x], indices[y]), std::max(indices[x], indices[y]));
+      }
+    }
+  }
+  std::vector<std::size_t> group_of(types.size());
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    group_of[i] = i;
+  }
+  const auto find_group = [&](std::size_t i) {
+    while (group_of[i] != i) {
+      group_of[i] = group_of[group_of[i]];
+      i = group_of[i];
+    }
+    return i;
+  };
+  for (const auto& [x, y] : pairs) {
+    const auto& a = types[x];
+    const auto& b = types[y];
+    if (a.label == b.label) {
+      continue;  // that is a duplicate, reported above
+    }
+    const auto shared = shared_members(a.members, b.members);
+    const auto jaccard = member_jaccard(a.members, b.members, shared);
+    if (shared == a.members.size() && shared == b.members.size()) {
+      group_of[find_group(x)] = find_group(y);
+      continue;
+    }
+    std::string relation;
+    if (shared == std::min(a.members.size(), b.members.size()) && jaccard >= kSubsetFloor) {
+      relation = "subset";
+    } else if (jaccard >= report.threshold) {
+      relation = "overlap";
+    } else {
+      continue;
+    }
+    TypeOverlap overlap;
+    overlap.shared = shared;
+    overlap.jaccard = jaccard;
+    overlap.relation = relation;
+    // The smaller type leads a subset; otherwise the lexically earlier one.
+    const bool a_first = relation == "subset" ? a.members.size() <= b.members.size() : type_ref_before(a, b);
+    overlap.a = a_first ? a : b;
+    overlap.b = a_first ? b : a;
+    report.overlaps.push_back(std::move(overlap));
+  }
+  std::map<std::size_t, std::vector<std::size_t>> groups;
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    if (types[i].members.size() >= report.min_members && find_group(i) != i) {
+      groups[find_group(i)].push_back(i);
+    }
+  }
+  for (auto& [leader, members] : groups) {
+    members.push_back(leader);
+    IdenticalTypes group;
+    group.shape = types[leader].members;
+    for (const auto i : members) {
+      group.types.push_back(types[i]);
+    }
+    std::sort(group.types.begin(), group.types.end(), type_ref_before);
+    report.identical.push_back(std::move(group));
+  }
+  std::sort(report.identical.begin(), report.identical.end(), [](const IdenticalTypes& x, const IdenticalTypes& y) {
+    if (x.shape.size() != y.shape.size()) {
+      return x.shape.size() > y.shape.size();
+    }
+    if (x.types.size() != y.types.size()) {
+      return x.types.size() > y.types.size();
+    }
+    return type_ref_before(x.types.front(), y.types.front());
+  });
+  std::sort(report.overlaps.begin(), report.overlaps.end(), [](const TypeOverlap& x, const TypeOverlap& y) {
+    if (x.jaccard != y.jaccard) {
+      return x.jaccard > y.jaccard;
+    }
+    if (x.shared != y.shared) {
+      return x.shared > y.shared;
+    }
+    return std::tie(x.a.label, x.b.label, x.a.source_file, x.b.source_file) <
+           std::tie(y.a.label, y.b.label, y.a.source_file, y.b.source_file);
+  });
+
+  // Unreferenced: no non-structural edge into the type from anything in the
+  // graph. The graph carries cross-file references (an extractor resolves a
+  // type name through imports/includes, not within its own file), so a type
+  // used only by the file that declares it lands here too; the caption and the
+  // skill text say so.
+  for (const auto& type : types) {
+    if (type.incoming == 0) {
+      report.unreferenced.push_back(type);
+    }
+  }
+  std::sort(report.unreferenced.begin(), report.unreferenced.end(), [](const TypeRef& a, const TypeRef& b) {
+    if (a.members.size() != b.members.size()) {
+      return a.members.size() > b.members.size();
+    }
+    return type_ref_before(a, b);
+  });
+
+  report.total_identical = report.identical.size();
+  report.total_duplicates = report.duplicates.size();
+  report.total_overlaps = report.overlaps.size();
+  report.total_unreferenced = report.unreferenced.size();
+  return report;
+}
+
+void shed_to_budget(TypesReport& report, ReportFormat format, std::size_t budget) {
+  if (budget == 0) {
+    return;
+  }
+  const auto fits = [&](const TypesReport& candidate) {
+    return estimate_report_tokens(render_types_report(candidate, format)) <= budget;
+  };
+  if (fits(report)) {
+    return;
+  }
+  // One ranking across the four sections, each already best-first: a prefix
+  // keeps the rows worth most and sheds from the tail of the last section.
+  const auto total = report.identical.size() + report.duplicates.size() + report.overlaps.size() + report.unreferenced.size();
+  const auto with_rows = [&](std::size_t keep) {
+    TypesReport candidate = report;
+    const auto keep_identical = std::min(keep, report.identical.size());
+    keep -= keep_identical;
+    const auto keep_duplicates = std::min(keep, report.duplicates.size());
+    keep -= keep_duplicates;
+    const auto keep_overlaps = std::min(keep, report.overlaps.size());
+    keep -= keep_overlaps;
+    const auto keep_unreferenced = std::min(keep, report.unreferenced.size());
+    candidate.identical.resize(keep_identical);
+    candidate.duplicates.resize(keep_duplicates);
+    candidate.overlaps.resize(keep_overlaps);
+    candidate.unreferenced.resize(keep_unreferenced);
+    candidate.omitted_identical = report.total_identical - keep_identical;
+    candidate.omitted_duplicates = report.total_duplicates - keep_duplicates;
+    candidate.omitted_overlaps = report.total_overlaps - keep_overlaps;
+    candidate.omitted_unreferenced = report.total_unreferenced - keep_unreferenced;
+    return candidate;
+  };
+  std::size_t lo = 0;
+  std::size_t hi = total;
+  while (lo < hi) {
+    const auto mid = (lo + hi + 1) / 2;
+    if (fits(with_rows(mid))) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  report = with_rows(lo);
+}
+
+nlohmann::json types_report_json(const TypesReport& report) {
+  nlohmann::json identical = nlohmann::json::array();
+  for (const auto& group : report.identical) {
+    nlohmann::json members = nlohmann::json::array();
+    for (const auto& type : group.types) {
+      members.push_back(type_ref_json(type));
+    }
+    identical.push_back({{"shape", group.shape}, {"types", std::move(members)}});
+  }
+  nlohmann::json duplicates = nlohmann::json::array();
+  for (const auto& duplicate : report.duplicates) {
+    nlohmann::json declarations = nlohmann::json::array();
+    for (const auto& declaration : duplicate.declarations) {
+      declarations.push_back(type_ref_json(declaration));
+    }
+    duplicates.push_back({{"label", duplicate.label},
+                          {"declarations", std::move(declarations)},
+                          {"min_jaccard", duplicate.min_jaccard},
+                          {"max_jaccard", duplicate.max_jaccard}});
+  }
+  nlohmann::json overlaps = nlohmann::json::array();
+  for (const auto& overlap : report.overlaps) {
+    overlaps.push_back({{"a", type_ref_json(overlap.a)},
+                        {"b", type_ref_json(overlap.b)},
+                        {"relation", overlap.relation},
+                        {"shared", overlap.shared},
+                        {"jaccard", overlap.jaccard}});
+  }
+  nlohmann::json unreferenced = nlohmann::json::array();
+  for (const auto& type : report.unreferenced) {
+    unreferenced.push_back(type_ref_json(type));
+  }
+  return nlohmann::json{
+      {"view", "types"},
+      {"scope", report.scope},
+      {"include_tests", report.include_tests},
+      {"threshold", report.threshold},
+      {"min_members", report.min_members},
+      {"identical", std::move(identical)},
+      {"duplicates", std::move(duplicates)},
+      {"overlaps", std::move(overlaps)},
+      {"unreferenced", std::move(unreferenced)},
+      {"totals",
+       {{"types", report.total_types},
+        {"with_members", report.total_with_members},
+        {"identical", report.total_identical},
+        {"duplicates", report.total_duplicates},
+        {"overlaps", report.total_overlaps},
+        {"unreferenced", report.total_unreferenced}}},
+      {"omitted",
+       {{"identical", report.omitted_identical},
+        {"duplicates", report.omitted_duplicates},
+        {"overlaps", report.omitted_overlaps},
+        {"unreferenced", report.omitted_unreferenced}}},
+  };
+}
+
+std::string render_types_markdown(const TypesReport& report) {
+  std::string out = "# Type definitions\n\n";
+  out += types_caption(report) + " · " + plural(report.total_types, "type") + ", " +
+         std::to_string(report.total_with_members) + " with members\n\n";
+  out += "## Identical shapes (different names, same members)\n\n";
+  if (report.identical.empty()) {
+    out += "none\n";
+  } else {
+    out += "| members | types |\n| --- | --- |\n";
+    for (const auto& group : report.identical) {
+      std::string names;
+      for (std::size_t i = 0; i < group.types.size(); ++i) {
+        names += (i == 0 ? "`" : "<br>`") + group.types[i].label + "` " + file_line(group.types[i]);
+      }
+      out += "| " + join_members(group.shape) + " (" + std::to_string(group.shape.size()) + ") | " + names + " |\n";
+    }
+  }
+  out += "\n## Duplicates (one name, several files)\n\n";
+  if (report.duplicates.empty()) {
+    out += "none\n";
+  } else {
+    out += "| type | declared in | members | overlap |\n| --- | --- | --- | --- |\n";
+    for (const auto& duplicate : report.duplicates) {
+      std::string where;
+      std::string members;
+      const auto shown = std::min(duplicate.declarations.size(), kMarkdownDeclarationCap);
+      for (std::size_t i = 0; i < shown; ++i) {
+        const auto& declaration = duplicate.declarations[i];
+        where += (i == 0 ? "`" : "<br>`") + file_line(declaration) + "`";
+        members += (i == 0 ? "" : "<br>") + (declaration.members.empty() ? std::string("(none)") : join_members(declaration.members));
+      }
+      if (duplicate.declarations.size() > shown) {
+        where += "<br>+" + std::to_string(duplicate.declarations.size() - shown) + " more files";
+      }
+      const auto overlap = duplicate.min_jaccard == duplicate.max_jaccard
+                               ? format_ratio(duplicate.min_jaccard)
+                               : format_ratio(duplicate.min_jaccard) + "–" + format_ratio(duplicate.max_jaccard);
+      out += "| `" + duplicate.label + "` (" + plural(duplicate.declarations.size(), "declaration") + ") | " + where + " | " +
+             members + " | " + overlap + " |\n";
+    }
+  }
+  out += "\n## Overlapping shapes (different names)\n\n";
+  if (report.overlaps.empty()) {
+    out += "none\n";
+  } else {
+    out += "| a | b | relation | shared | jaccard |\n| --- | --- | --- | ---: | ---: |\n";
+    for (const auto& overlap : report.overlaps) {
+      out += "| `" + overlap.a.label + "` " + file_line(overlap.a) + " (" + std::to_string(overlap.a.members.size()) + ") | `" +
+             overlap.b.label + "` " + file_line(overlap.b) + " (" + std::to_string(overlap.b.members.size()) + ") | " +
+             overlap.relation + " | " + std::to_string(overlap.shared) + " | " + format_ratio(overlap.jaccard) + " |\n";
+    }
+  }
+  out += "\n## Unreferenced (no other symbol or file in the graph refers to them)\n\n";
+  if (report.unreferenced.empty()) {
+    out += "none\n";
+  } else {
+    out += "| type | kind | where | members |\n| --- | --- | --- | ---: |\n";
+    for (const auto& type : report.unreferenced) {
+      out += "| `" + type.label + "` | " + type.kind + " | " + file_line(type) + " | " + std::to_string(type.members.size()) + " |\n";
+    }
+  }
+  out += "\n" + types_omitted_caption(report) + "\n";
+  return out;
+}
+
+std::string render_types_report(const TypesReport& report, ReportFormat format) {
+  switch (format) {
+    case ReportFormat::Json:
+      return types_report_json(report).dump();
+    case ReportFormat::Mermaid:
+    case ReportFormat::Svg:
+    case ReportFormat::Markdown:
+      return render_types_markdown(report);
+  }
+  return {};
+}
+
 std::string render_modules_report(const ModulesReport& report, ReportFormat format) {
   switch (format) {
     case ReportFormat::Json:
@@ -989,30 +1543,52 @@ nlohmann::json report_response(const GraphSnapshot& graph, const nlohmann::json&
   if (const auto error = parse_report_request(params, request)) {
     return nlohmann::json{{"ok", false}, {"error", *error}};
   }
-  if (request.view != ReportView::Modules) {
+  if (request.view == ReportView::Design || request.view == ReportView::Clones) {
     return nlohmann::json{
         {"ok", false},
         {"error", std::string{"report view '"} + report_view_name(request.view) +
-                      "' is not implemented yet; only 'modules' is available"},
+                      "' is not implemented yet; 'modules' and 'types' are available"},
         {"code", "report_view_not_implemented"},
     };
   }
-  auto report = build_modules_report(graph, request);
-  shed_to_budget(report, request.format, request.budget);
-  const auto rendered = render_modules_report(report, request.format);
   nlohmann::json result;
-  if (request.format == ReportFormat::Json) {
-    result = modules_report_json(report);
+  std::string rendered;
+  if (request.view == ReportView::Types) {
+    if (request.format == ReportFormat::Mermaid || request.format == ReportFormat::Svg) {
+      return nlohmann::json{
+          {"ok", false},
+          {"error", std::string{"report view 'types' renders json or markdown; '"} + report_format_name(request.format) +
+                        "' is a diagram format for the modules view"},
+          {"code", "report_format_unsupported"},
+      };
+    }
+    auto report = build_types_report(graph, request);
+    shed_to_budget(report, request.format, request.budget);
+    rendered = render_types_report(report, request.format);
+    result = types_report_json(report);
+    if (request.format == ReportFormat::Markdown) {
+      for (const char* section : {"identical", "duplicates", "overlaps", "unreferenced"}) {
+        result.erase(section);
+      }
+      result["rendered"] = rendered;
+    }
   } else {
-    result = nlohmann::json{
-        {"view", "modules"},
-        {"depth", report.depth},
-        {"scope", report.scope},
-        {"include_tests", report.include_tests},
-        {"rendered", rendered},
-        {"totals", {{"modules", report.total_modules}, {"edges", report.total_edges}}},
-        {"omitted", {{"modules", report.omitted_modules}, {"edges", report.omitted_edges}}},
-    };
+    auto report = build_modules_report(graph, request);
+    shed_to_budget(report, request.format, request.budget);
+    rendered = render_modules_report(report, request.format);
+    if (request.format == ReportFormat::Json) {
+      result = modules_report_json(report);
+    } else {
+      result = nlohmann::json{
+          {"view", "modules"},
+          {"depth", report.depth},
+          {"scope", report.scope},
+          {"include_tests", report.include_tests},
+          {"rendered", rendered},
+          {"totals", {{"modules", report.total_modules}, {"edges", report.total_edges}}},
+          {"omitted", {{"modules", report.omitted_modules}, {"edges", report.omitted_edges}}},
+      };
+    }
   }
   result["format"] = report_format_name(request.format);
   result["budget"] = request.budget;
