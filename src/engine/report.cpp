@@ -263,6 +263,11 @@ std::optional<std::string> parse_report_request(const nlohmann::json& params, Re
     return "min_members must be >= 1";
   }
   out.min_members = static_cast<std::size_t>(min_members);
+  const auto hops = params.value("hops", kDefaultHops);
+  if (hops < 1) {
+    return "hops must be >= 1";
+  }
+  out.hops = hops;
   return std::nullopt;
 }
 
@@ -1869,6 +1874,522 @@ std::string render_clones_report(const ClonesReport& report, ReportFormat format
   return {};
 }
 
+// ---- design view --------------------------------------------------------------
+
+namespace {
+
+// Children drawn per flow node; the rest are counted in `more`. Four keeps a
+// three-hop flow under a screen while showing where the weight goes.
+constexpr std::size_t kFlowBranch = 4;
+constexpr std::size_t kUnreachedSamples = 5;
+constexpr std::array<std::string_view, 8> kHttpVerbs = {"get", "post", "put", "patch", "delete", "head", "options", "all"};
+
+[[nodiscard]] bool is_call_relation(std::string_view relation) {
+  return relation == "CALLS" || relation == "dispatches_to";
+}
+
+[[nodiscard]] bool is_main_label(std::string_view label) {
+  return label == "main" || label == "Main" || label == "__main__";
+}
+
+// `notebookRoutes.get /starred-notes` or `get /health`: the inline HTTP route
+// handlers the JavaScript extractor names (CGR-4 follow-up).
+[[nodiscard]] bool is_route_label(std::string_view label) {
+  const auto space = label.find(' ');
+  if (space == std::string_view::npos || space + 1 >= label.size() || label[space + 1] != '/') {
+    return false;
+  }
+  auto head = label.substr(0, space);
+  if (const auto dot = head.rfind('.'); dot != std::string_view::npos) {
+    head = head.substr(dot + 1);
+  }
+  return std::find(kHttpVerbs.begin(), kHttpVerbs.end(), head) != kHttpVerbs.end();
+}
+
+[[nodiscard]] std::string file_stem(const std::string& source_file) {
+  return fs::path(source_file).stem().generic_string();
+}
+
+[[nodiscard]] bool under_directory(const std::string& source_file, std::string_view name) {
+  for (const auto& part : fs::path(source_file).parent_path()) {
+    if (part.generic_string() == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Next.js / Remix-style framework entries: the file is the route. A function
+// in `app/**/page.tsx`, `layout.tsx`, `template.tsx`, `loading.tsx`,
+// `error.tsx`, `not-found.tsx` or `pages/**/*.tsx` is a page; an exported
+// `GET`/`POST`/... in `app/**/route.ts` is a route.
+[[nodiscard]] bool is_page_file(const std::string& source_file) {
+  static constexpr std::array<std::string_view, 6> kPageStems = {"page", "layout", "template", "loading", "error", "not-found"};
+  const auto stem = file_stem(source_file);
+  if (under_directory(source_file, "app") &&
+      std::find(kPageStems.begin(), kPageStems.end(), std::string_view(stem)) != kPageStems.end()) {
+    return true;
+  }
+  return under_directory(source_file, "pages") && !under_directory(source_file, "api");
+}
+
+[[nodiscard]] bool is_route_file_handler(const std::string& source_file, std::string_view label) {
+  if (file_stem(source_file) != "route" || !under_directory(source_file, "app")) {
+    return false;
+  }
+  std::string lower(label);
+  for (auto& c : lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return std::find(kHttpVerbs.begin(), kHttpVerbs.end(), std::string_view(lower)) != kHttpVerbs.end();
+}
+
+[[nodiscard]] std::string flow_where(const FlowNode& node) {
+  return node.source_file + (node.line > 0 ? ":" + std::to_string(node.line) : std::string{});
+}
+
+[[nodiscard]] std::string design_caption(const DesignReport& report) {
+  std::string caption = report.scope.empty() ? std::string("whole project") : "scope " + report.scope;
+  caption += report.include_tests ? ", tests included" : ", tests excluded";
+  caption += ", " + std::to_string(report.hops) + (report.hops == 1 ? " hop" : " hops");
+  return caption;
+}
+
+[[nodiscard]] std::string design_omitted_caption(const DesignReport& report) {
+  return "omitted: " + std::to_string(report.omitted_entries) + " of " + plural(report.total_entries, "entry point");
+}
+
+nlohmann::json flow_json(const FlowNode& node) {
+  nlohmann::json out{{"id", node.id}, {"label", node.label}, {"file", node.source_file}, {"reach", node.reach}};
+  if (node.line > 0) {
+    out["line"] = node.line;
+  }
+  nlohmann::json children = nlohmann::json::array();
+  for (const auto& child : node.children) {
+    children.push_back(flow_json(child));
+  }
+  out["children"] = std::move(children);
+  if (node.more > 0) {
+    out["more"] = node.more;
+  }
+  return out;
+}
+
+void render_flow_markdown(const FlowNode& node, int depth, std::string& out) {
+  for (const auto& child : node.children) {
+    out += std::string(static_cast<std::size_t>(depth) * 2, ' ') + "- `" + child.label + "` " + flow_where(child);
+    if (child.reach > 0) {
+      out += " (reach " + std::to_string(child.reach) + ")";
+    }
+    out += "\n";
+    render_flow_markdown(child, depth + 1, out);
+  }
+  if (node.more > 0) {
+    out += std::string(static_cast<std::size_t>(depth) * 2, ' ') + "- +" + std::to_string(node.more) +
+           (node.more == 1 ? " more callee\n" : " more callees\n");
+  }
+}
+
+}  // namespace
+
+DesignReport build_design_report(const GraphSnapshot& graph, const ReportRequest& request) {
+  DesignReport report;
+  report.scope = request.scope;
+  report.include_tests = request.include_tests;
+  report.hops = std::max(1, request.hops);
+
+  fs::path root;
+  if (!request.project_root.empty()) {
+    std::error_code ec;
+    root = fs::weakly_canonical(request.project_root, ec);
+    if (ec) {
+      root = request.project_root.lexically_normal();
+    }
+  }
+
+  // Functions in scope, outside test roots unless asked. Indexed for the walks.
+  struct Function {
+    const Node* node = nullptr;
+    std::string module;
+    std::string relative;
+    std::vector<std::size_t> callees;
+    std::size_t callers = 0;
+  };
+  std::vector<Function> functions;
+  std::unordered_map<std::string, std::size_t> index_of;
+  std::unordered_map<std::string, std::string> directory_of_file;
+  for (const auto& node : graph.nodes) {
+    if (node.kind != "function" || node.source_file.empty() || is_enrichment_node_id(node.id) || is_memory_node_id(node.id)) {
+      continue;
+    }
+    auto dir_it = directory_of_file.find(node.source_file);
+    if (dir_it == directory_of_file.end()) {
+      dir_it = directory_of_file.emplace(node.source_file, module_for(node.source_file, root, 1 << 20)).first;
+    }
+    if (!is_source_module(dir_it->second, request)) {
+      continue;
+    }
+    index_of.emplace(node.id, functions.size());
+    functions.push_back(Function{
+        .node = &node,
+        .module = module_for(node.source_file, root, kDefaultModuleDepth),
+        .relative = relative_file(node.source_file, root),
+    });
+  }
+  report.total_functions = functions.size();
+  std::set<std::pair<std::size_t, std::size_t>> seen_edges;
+  for (const auto& edge : graph.edges) {
+    if (!is_call_relation(edge.relation)) {
+      continue;
+    }
+    const auto from = index_of.find(edge.source);
+    const auto to = index_of.find(edge.target);
+    if (from == index_of.end() || to == index_of.end() || from->second == to->second) {
+      continue;
+    }
+    if (seen_edges.emplace(from->second, to->second).second) {
+      functions[from->second].callees.push_back(to->second);
+      ++functions[to->second].callers;
+    }
+  }
+  for (auto& function : functions) {
+    std::sort(function.callees.begin(), function.callees.end(), [&](std::size_t a, std::size_t b) {
+      return functions[a].node->label < functions[b].node->label;
+    });
+  }
+
+  // Unbounded reach per function, memoized through a BFS each; graphs here are
+  // a few thousand functions, and the walk is over the call adjacency only.
+  std::vector<std::size_t> reach(functions.size(), 0);
+  {
+    std::vector<std::size_t> mark(functions.size(), static_cast<std::size_t>(-1));
+    std::vector<std::size_t> queue;
+    for (std::size_t start = 0; start < functions.size(); ++start) {
+      queue.clear();
+      queue.push_back(start);
+      mark[start] = start;
+      std::size_t count = 0;
+      for (std::size_t head = 0; head < queue.size(); ++head) {
+        for (const auto next : functions[queue[head]].callees) {
+          if (mark[next] != start) {
+            mark[next] = start;
+            queue.push_back(next);
+            ++count;
+          }
+        }
+      }
+      reach[start] = count;
+    }
+  }
+
+  // Entry points, most specific kind first.
+  std::vector<std::size_t> entry_indices;
+  std::vector<std::string> entry_kinds(functions.size());
+  for (std::size_t i = 0; i < functions.size(); ++i) {
+    const auto& function = functions[i];
+    const auto& label = function.node->label;
+    std::string kind;
+    if (is_main_label(label)) {
+      kind = "main";
+    } else if (is_route_label(label) || is_route_file_handler(function.node->source_file, label)) {
+      kind = "route";
+    } else if (is_page_file(function.node->source_file) && function.callers == 0) {
+      kind = "page";
+    } else if (function.callers == 0 && !function.callees.empty()) {
+      kind = "root";
+    } else {
+      continue;
+    }
+    entry_kinds[i] = kind;
+    entry_indices.push_back(i);
+    ++report.by_kind[kind];
+  }
+  std::sort(entry_indices.begin(), entry_indices.end(), [&](std::size_t a, std::size_t b) {
+    if (reach[a] != reach[b]) {
+      return reach[a] > reach[b];
+    }
+    if (functions[a].callees.size() != functions[b].callees.size()) {
+      return functions[a].callees.size() > functions[b].callees.size();
+    }
+    return std::tie(functions[a].node->label, functions[a].relative) < std::tie(functions[b].node->label, functions[b].relative);
+  });
+
+  // Layers: shortest call distance from any entry point.
+  std::vector<int> depth(functions.size(), -1);
+  {
+    std::vector<std::size_t> queue;
+    for (const auto i : entry_indices) {
+      depth[i] = 0;
+      queue.push_back(i);
+    }
+    for (std::size_t head = 0; head < queue.size(); ++head) {
+      for (const auto next : functions[queue[head]].callees) {
+        if (depth[next] < 0) {
+          depth[next] = depth[queue[head]] + 1;
+          queue.push_back(next);
+        }
+      }
+    }
+  }
+  std::map<int, std::map<std::string, std::size_t>> layer_modules;
+  std::vector<std::size_t> unreached;
+  for (std::size_t i = 0; i < functions.size(); ++i) {
+    if (depth[i] < 0) {
+      unreached.push_back(i);
+      continue;
+    }
+    ++layer_modules[depth[i]][functions[i].module];
+  }
+  for (const auto& [d, modules] : layer_modules) {
+    DesignLayer layer;
+    layer.depth = d;
+    std::vector<std::pair<std::string, std::size_t>> ranked(modules.begin(), modules.end());
+    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+      return a.second != b.second ? a.second > b.second : a.first < b.first;
+    });
+    for (const auto& [name, count] : ranked) {
+      layer.functions += count;
+      if (layer.modules.size() < 3) {
+        layer.modules.push_back(name);
+      }
+    }
+    report.layers.push_back(std::move(layer));
+  }
+  report.total_entries = entry_indices.size();
+  report.total_reached = static_cast<std::size_t>(std::count_if(depth.begin(), depth.end(), [](int d) { return d > 0; }));
+  report.total_unreached = unreached.size();
+  std::sort(unreached.begin(), unreached.end(), [&](std::size_t a, std::size_t b) {
+    if (functions[a].callers != functions[b].callers) {
+      return functions[a].callers > functions[b].callers;
+    }
+    return functions[a].node->label < functions[b].node->label;
+  });
+  for (const auto i : unreached) {
+    if (report.unreached_samples.size() >= kUnreachedSamples) {
+      break;
+    }
+    // Distinct labels: a class's constructor, destructor and method share one.
+    const auto& label = functions[i].node->label;
+    if (std::find(report.unreached_samples.begin(), report.unreached_samples.end(), label) == report.unreached_samples.end()) {
+      report.unreached_samples.push_back(label);
+    }
+  }
+
+  // Flows: a tree to `hops` from each entry, children by reach, each function
+  // drawn once per flow so a cycle ends where it re-enters.
+  const auto make_node = [&](std::size_t i) {
+    return FlowNode{
+        .id = functions[i].node->id,
+        .label = functions[i].node->label,
+        .source_file = functions[i].relative,
+        .line = functions[i].node->source_location ? functions[i].node->source_location->start_line : 0,
+        .reach = reach[i],
+    };
+  };
+  std::function<void(FlowNode&, std::size_t, int, std::set<std::size_t>&)> expand;
+  expand = [&](FlowNode& node, std::size_t i, int remaining, std::set<std::size_t>& drawn) {
+    if (remaining == 0) {
+      return;
+    }
+    std::vector<std::size_t> callees;
+    for (const auto c : functions[i].callees) {
+      if (drawn.insert(c).second) {
+        callees.push_back(c);
+      }
+    }
+    std::sort(callees.begin(), callees.end(), [&](std::size_t a, std::size_t b) {
+      return reach[a] != reach[b] ? reach[a] > reach[b] : functions[a].node->label < functions[b].node->label;
+    });
+    if (callees.size() > kFlowBranch) {
+      node.more = callees.size() - kFlowBranch;
+      callees.resize(kFlowBranch);
+    }
+    for (const auto c : callees) {
+      node.children.push_back(make_node(c));
+      expand(node.children.back(), c, remaining - 1, drawn);
+    }
+  };
+  for (const auto i : entry_indices) {
+    DesignEntry entry;
+    entry.id = functions[i].node->id;
+    entry.label = functions[i].node->label;
+    entry.kind = entry_kinds[i];
+    entry.source_file = functions[i].relative;
+    entry.line = functions[i].node->source_location ? functions[i].node->source_location->start_line : 0;
+    entry.module = functions[i].module;
+    entry.fan_out = functions[i].callees.size();
+    entry.reach = reach[i];
+    entry.flow = make_node(i);
+    std::set<std::size_t> drawn{i};
+    expand(entry.flow, i, report.hops, drawn);
+    report.entries.push_back(std::move(entry));
+  }
+  return report;
+}
+
+void shed_to_budget(DesignReport& report, ReportFormat format, std::size_t budget) {
+  if (budget == 0) {
+    return;
+  }
+  const auto fits = [&](const DesignReport& candidate) {
+    return estimate_report_tokens(render_design_report(candidate, format)) <= budget;
+  };
+  if (fits(report)) {
+    return;
+  }
+  const auto with_rows = [&](std::size_t keep) {
+    DesignReport candidate = report;
+    candidate.entries.resize(std::min(keep, report.entries.size()));
+    candidate.omitted_entries = report.total_entries - candidate.entries.size();
+    return candidate;
+  };
+  std::size_t lo = 0;
+  std::size_t hi = report.entries.size();
+  while (lo < hi) {
+    const auto mid = (lo + hi + 1) / 2;
+    if (fits(with_rows(mid))) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  report = with_rows(lo);
+}
+
+nlohmann::json design_report_json(const DesignReport& report) {
+  nlohmann::json entries = nlohmann::json::array();
+  for (const auto& entry : report.entries) {
+    nlohmann::json row{{"id", entry.id}, {"label", entry.label}, {"kind", entry.kind}, {"file", entry.source_file},
+                       {"module", entry.module}, {"fan_out", entry.fan_out}, {"reach", entry.reach},
+                       {"flow", flow_json(entry.flow)}};
+    if (entry.line > 0) {
+      row["line"] = entry.line;
+    }
+    entries.push_back(std::move(row));
+  }
+  nlohmann::json layers = nlohmann::json::array();
+  for (const auto& layer : report.layers) {
+    layers.push_back({{"depth", layer.depth}, {"functions", layer.functions}, {"modules", layer.modules}});
+  }
+  return nlohmann::json{
+      {"view", "design"},
+      {"scope", report.scope},
+      {"include_tests", report.include_tests},
+      {"hops", report.hops},
+      {"entry_points", std::move(entries)},
+      {"layers", std::move(layers)},
+      {"unreached_samples", report.unreached_samples},
+      {"totals",
+       {{"functions", report.total_functions},
+        {"entry_points", report.total_entries},
+        {"by_kind", report.by_kind},
+        {"reached", report.total_reached},
+        {"unreached", report.total_unreached}}},
+      {"omitted", {{"entry_points", report.omitted_entries}}},
+  };
+}
+
+std::string render_design_mermaid(const DesignReport& report) {
+  std::string out = "flowchart TD\n";
+  out += "  %% design: " + design_caption(report) + "; " + plural(report.total_entries, "entry point") + "\n";
+  out += "  classDef entry fill:#eef2ff,stroke:#4f46e5,stroke-width:2px\n";
+  std::map<std::string, std::string> ids;
+  std::set<std::pair<std::string, std::string>> edges;
+  const auto id_for = [&](const FlowNode& node) {
+    auto it = ids.find(node.id);
+    if (it == ids.end()) {
+      const auto mermaid_id = "f" + std::to_string(ids.size());
+      it = ids.emplace(node.id, mermaid_id).first;
+      out += "  " + mermaid_id + "[\"" + mermaid_label(node.label) + "\"]\n";
+    }
+    return it->second;
+  };
+  std::function<void(const FlowNode&)> walk = [&](const FlowNode& node) {
+    const auto from = id_for(node);
+    for (const auto& child : node.children) {
+      const auto to = id_for(child);
+      if (edges.emplace(from, to).second) {
+        out += "  " + from + " --> " + to + "\n";
+      }
+      walk(child);
+    }
+    if (node.more > 0) {
+      const auto more_id = from + "_more";
+      out += "  " + more_id + "([\"+" + std::to_string(node.more) + " more\"])\n";
+      out += "  " + from + " -.-> " + more_id + "\n";
+    }
+  };
+  for (const auto& entry : report.entries) {
+    out += "  %% " + entry.kind + ": " + entry.label + " (" + entry.source_file + ", reach " + std::to_string(entry.reach) + ")\n";
+    walk(entry.flow);
+    out += "  class " + id_for(entry.flow) + " entry\n";
+  }
+  out += "  %% " + design_omitted_caption(report) + "\n";
+  return out;
+}
+
+std::string render_design_markdown(const DesignReport& report) {
+  std::string out = "# Program design\n\n";
+  out += design_caption(report) + " · " + plural(report.total_functions, "function") + ", " +
+         plural(report.total_entries, "entry point") + ", " + std::to_string(report.total_reached) + " reached, " +
+         std::to_string(report.total_unreached) + " unreached\n\n";
+  out += "## Entry points\n\n";
+  if (report.entries.empty()) {
+    out += "none\n";
+  } else {
+    out += "| kind | entry | where | module | calls | reach |\n| --- | --- | --- | --- | ---: | ---: |\n";
+    for (const auto& entry : report.entries) {
+      out += "| " + entry.kind + " | `" + entry.label + "` | " + flow_where(entry.flow) + " | " + entry.module + " | " +
+             std::to_string(entry.fan_out) + " | " + std::to_string(entry.reach) + " |\n";
+    }
+  }
+  out += "\n## Call flows\n\n";
+  for (const auto& entry : report.entries) {
+    out += "### " + entry.kind + ": `" + entry.label + "` (" + flow_where(entry.flow) + ")\n\n";
+    if (entry.flow.children.empty()) {
+      out += "- (calls nothing the graph resolves)\n";
+    } else {
+      render_flow_markdown(entry.flow, 0, out);
+    }
+    out += "\n";
+  }
+  out += "## Layers (shortest call distance from an entry point)\n\n";
+  if (report.layers.empty()) {
+    out += "none\n";
+  } else {
+    out += "| depth | functions | mostly in |\n| ---: | ---: | --- |\n";
+    for (const auto& layer : report.layers) {
+      std::string modules;
+      for (std::size_t i = 0; i < layer.modules.size(); ++i) {
+        modules += (i == 0 ? "`" : ", `") + layer.modules[i] + "`";
+      }
+      out += "| " + std::to_string(layer.depth) + " | " + std::to_string(layer.functions) + " | " + modules + " |\n";
+    }
+  }
+  out += "\n" + std::to_string(report.total_unreached) + " unreached from any entry point";
+  if (!report.unreached_samples.empty()) {
+    out += " (most called first):";
+    for (std::size_t i = 0; i < report.unreached_samples.size(); ++i) {
+      out += (i == 0 ? " `" : ", `") + report.unreached_samples[i] + "`";
+    }
+  }
+  out += "\n\n" + design_omitted_caption(report) + "\n";
+  return out;
+}
+
+std::string render_design_report(const DesignReport& report, ReportFormat format) {
+  switch (format) {
+    case ReportFormat::Json:
+      return design_report_json(report).dump();
+    case ReportFormat::Mermaid:
+    case ReportFormat::Svg:
+      return render_design_mermaid(report);
+    case ReportFormat::Markdown:
+      return render_design_markdown(report);
+  }
+  return {};
+}
+
 std::string render_modules_report(const ModulesReport& report, ReportFormat format) {
   switch (format) {
     case ReportFormat::Json:
@@ -1890,14 +2411,6 @@ nlohmann::json report_response(const GraphSnapshot& graph, const nlohmann::json&
   if (const auto error = parse_report_request(params, request)) {
     return nlohmann::json{{"ok", false}, {"error", *error}};
   }
-  if (request.view == ReportView::Design) {
-    return nlohmann::json{
-        {"ok", false},
-        {"error", std::string{"report view '"} + report_view_name(request.view) +
-                      "' is not implemented yet; 'modules', 'types' and 'clones' are available"},
-        {"code", "report_view_not_implemented"},
-    };
-  }
   nlohmann::json result;
   std::string rendered;
   const bool tabular = request.view == ReportView::Types || request.view == ReportView::Clones;
@@ -1909,7 +2422,25 @@ nlohmann::json report_response(const GraphSnapshot& graph, const nlohmann::json&
         {"code", "report_format_unsupported"},
     };
   }
-  if (request.view == ReportView::Clones) {
+  if (request.view == ReportView::Design && request.format == ReportFormat::Svg) {
+    return nlohmann::json{
+        {"ok", false},
+        {"error", "report view 'design' renders json, mermaid or markdown; svg is drawn for the modules view only"},
+        {"code", "report_format_unsupported"},
+    };
+  }
+  if (request.view == ReportView::Design) {
+    auto report = build_design_report(graph, request);
+    shed_to_budget(report, request.format, request.budget);
+    rendered = render_design_report(report, request.format);
+    result = design_report_json(report);
+    if (request.format != ReportFormat::Json) {
+      result.erase("entry_points");
+      result.erase("layers");
+      result.erase("unreached_samples");
+      result["rendered"] = rendered;
+    }
+  } else if (request.view == ReportView::Clones) {
     auto report = build_clones_report(graph, request);
     shed_to_budget(report, request.format, request.budget);
     rendered = render_clones_report(report, request.format);

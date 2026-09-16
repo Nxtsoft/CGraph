@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,9 +15,8 @@
 namespace cgraph {
 
 // Structural reports (report-modules): one daemon op, `report`, with a `view`
-// selector. `modules`, `types` and `clones` are implemented; `design` is
-// reserved so the tool surface an agent discovers is stable while it lands
-// (CGR-11).
+// selector -- `modules` (CGR-8), `types` (CGR-9), `clones` (CGR-10) and
+// `design` (CGR-11).
 enum class ReportView { Modules, Design, Clones, Types };
 enum class ReportFormat { Json, Mermaid, Svg, Markdown };
 
@@ -31,6 +31,7 @@ inline constexpr std::size_t kDefaultReportBudget = 6000;
 inline constexpr int kDefaultModuleDepth = 2;
 inline constexpr std::size_t kDefaultMinMembers = 3;
 inline constexpr std::size_t kDefaultMinTokens = 30;
+inline constexpr int kDefaultHops = 3;
 
 struct ReportRequest {
   ReportView view = ReportView::Modules;
@@ -55,6 +56,8 @@ struct ReportRequest {
   // types view: a type takes part in shape comparison only when it declares at
   // least this many members, so `{id, name}` pairs do not flood the report.
   std::size_t min_members = kDefaultMinMembers;
+  // design view: how many call hops each entry point's flow is drawn to.
+  int hops = kDefaultHops;
   // Module names are relative to this root; empty leaves paths as they are.
   std::filesystem::path project_root;
 };
@@ -235,6 +238,65 @@ void shed_to_budget(ClonesReport& report, ReportFormat format, std::size_t budge
 // json or markdown; diagram formats render as markdown here and are refused by
 // `report_response`, as for the types view.
 [[nodiscard]] std::string render_clones_report(const ClonesReport& report, ReportFormat format);
+
+// ---- design view (CGR-11) ----------------------------------------------------
+// The program as it is entered and traversed: entry points (main, HTTP route
+// handlers, framework pages, and functions nothing in the graph calls), the top
+// call flow from each as a bounded tree over CALLS/dispatches_to, and layers as
+// the shortest call distance from any entry point. Replaces the flat
+// call-flow.html export, which listed every CALLS edge once.
+struct FlowNode {
+  std::string id;
+  std::string label;
+  std::string source_file;  // root-relative when under the project root
+  std::size_t line = 0;
+  std::size_t reach = 0;    // distinct functions reachable from here, unbounded
+  std::vector<FlowNode> children;  // largest reach first, capped; `more` counts the rest
+  std::size_t more = 0;
+};
+
+struct DesignEntry {
+  std::string id;
+  std::string label;
+  std::string kind;  // main | route | page | root
+  std::string source_file;
+  std::size_t line = 0;
+  std::string module;      // first two directory components, as the modules view
+  std::size_t fan_out = 0;  // direct callees
+  std::size_t reach = 0;    // distinct functions reachable, unbounded
+  FlowNode flow;            // the entry itself with children to `hops`
+};
+
+struct DesignLayer {
+  int depth = 0;                     // 0 = the entry points themselves
+  std::size_t functions = 0;
+  std::vector<std::string> modules;  // up to three module names, most functions first
+};
+
+struct DesignReport {
+  std::string scope;
+  bool include_tests = false;
+  int hops = kDefaultHops;
+  std::vector<DesignEntry> entries;  // reach desc, then fan_out desc, then label
+  std::vector<DesignLayer> layers;   // by depth
+  std::vector<std::string> unreached_samples;  // up to five labels, most called first
+  std::size_t total_functions = 0;
+  std::size_t total_entries = 0;
+  std::size_t total_reached = 0;     // functions reached from any entry, entries excluded
+  std::size_t total_unreached = 0;   // functions neither entries nor reached
+  std::size_t omitted_entries = 0;
+  std::map<std::string, std::size_t> by_kind;
+};
+
+[[nodiscard]] DesignReport build_design_report(const GraphSnapshot& graph, const ReportRequest& request);
+// Whole entry points only, from the tail of the ranking.
+void shed_to_budget(DesignReport& report, ReportFormat format, std::size_t budget);
+[[nodiscard]] nlohmann::json design_report_json(const DesignReport& report);
+[[nodiscard]] std::string render_design_mermaid(const DesignReport& report);
+[[nodiscard]] std::string render_design_markdown(const DesignReport& report);
+// json, mermaid (a `flowchart TD` of every kept flow) or markdown; svg renders
+// as mermaid here and is refused by `report_response`.
+[[nodiscard]] std::string render_design_report(const DesignReport& report, ReportFormat format);
 
 // ~4 characters per token: the one estimate the report and context ops pack
 // against. The length overload costs text that is not materialized yet.

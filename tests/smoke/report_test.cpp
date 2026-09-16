@@ -5,8 +5,10 @@
 // the upgrade hint for a graphd that predates the op) -- its types view:
 // identical shapes grouped, duplicate names across files, subset / overlapping
 // member sets, unreferenced types, the member floor, and its own shedding order
-// -- and its clones view: fingerprint Jaccard classes, the token floor, the
-// test-class bucket, the missing-fingerprint hint, and shedding.
+// -- its clones view: fingerprint Jaccard classes, the token floor, the
+// test-class bucket, the missing-fingerprint hint, and shedding -- and its
+// design view: entry-point kinds, reach ranking, bounded flows, layers,
+// unreached functions, and shedding.
 #include "cgraph/report.hpp"
 
 #include "cgraph/daemon_ops.hpp"
@@ -389,11 +391,10 @@ int test_daemon_envelope() {
       mermaid["result"]["scope"] != "b" || mermaid["result"]["totals"]["modules"] != 2) {
     return fail("mermaid format returns the diagram in `rendered`; a trailing slash on scope is dropped");
   }
-  for (const char* reserved : {"design"}) {
-    const auto response = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", reserved}}));
-    if (response.value("ok", true) || response.value("code", std::string{}) != "report_view_not_implemented") {
-      return fail(std::string("reserved view answers a typed not-implemented error: ") + reserved);
-    }
+  // Every view is implemented; a design request answers with entry points.
+  const auto design = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "design"}}));
+  if (!design.value("ok", false) || design["result"]["view"] != "design" || !design["result"].contains("entry_points")) {
+    return fail("the design view is implemented and answers through the same envelope");
   }
   const auto unknown = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "blueprints"}}));
   if (unknown.value("ok", true) || unknown.value("error", std::string{}).find("unknown report view") == std::string::npos) {
@@ -892,12 +893,225 @@ int test_clones_envelope() {
   return 0;
 }
 
+// ---- design view ----------------------------------------------------------------
+
+void add_call(cgraph::GraphSnapshot& graph, const std::string& from, const std::string& to) {
+  graph.edges.push_back(edge(from, to, "CALLS"));
+}
+
+// main with seven callees (branch cap), a route handler, a Next.js page, an
+// uncalled root, a leaf nobody calls, a two-function cycle no entry reaches, a
+// test-root caller, and enrichment prose.
+cgraph::GraphSnapshot design_fixture() {
+  cgraph::GraphSnapshot graph;
+  graph.build_state = cgraph::BuildState::DeterministicReady;
+  for (const char* path : {"src/cli/main.cpp", "src/engine/run.cpp", "src/api.ts", "app/dashboard/page.tsx", "src/lib.ts", "tests/t.ts"}) {
+    graph.nodes.push_back(file_node(path));
+  }
+  graph.nodes.push_back(function_node("src/cli/main.cpp", "main", 5));
+  graph.nodes.push_back(function_node("src/engine/run.cpp", "run", 10));
+  graph.nodes.push_back(function_node("src/engine/run.cpp", "store", 20));
+  graph.nodes.push_back(function_node("src/engine/run.cpp", "persist", 30));
+  graph.nodes.push_back(function_node("src/engine/run.cpp", "parse", 40));
+  graph.nodes.push_back(function_node("src/engine/run.cpp", "lex", 50));
+  for (const char* h : {"h1", "h2", "h3", "h4", "h5"}) {
+    graph.nodes.push_back(function_node("src/engine/run.cpp", h, 60));
+    add_call(graph, "src/cli/main.cpp:main", std::string("src/engine/run.cpp:") + h);
+  }
+  add_call(graph, "src/cli/main.cpp:main", "src/engine/run.cpp:run");
+  add_call(graph, "src/cli/main.cpp:main", "src/engine/run.cpp:parse");
+  add_call(graph, "src/engine/run.cpp:run", "src/engine/run.cpp:store");
+  add_call(graph, "src/engine/run.cpp:store", "src/engine/run.cpp:persist");
+  add_call(graph, "src/engine/run.cpp:parse", "src/engine/run.cpp:lex");
+  graph.nodes.push_back(function_node("src/api.ts", "app.get /health", 3));
+  graph.nodes.push_back(function_node("src/api.ts", "ping", 10));
+  graph.nodes.push_back(function_node("src/api.ts", "fmt", 20));
+  add_call(graph, "src/api.ts:app.get /health", "src/api.ts:ping");
+  add_call(graph, "src/api.ts:ping", "src/api.ts:fmt");
+  graph.nodes.push_back(function_node("app/dashboard/page.tsx", "Page", 1));
+  graph.nodes.push_back(function_node("app/dashboard/page.tsx", "load", 12));
+  graph.nodes.push_back(function_node("app/dashboard/page.tsx", "fetchAll", 20));
+  add_call(graph, "app/dashboard/page.tsx:Page", "app/dashboard/page.tsx:load");
+  add_call(graph, "app/dashboard/page.tsx:load", "app/dashboard/page.tsx:fetchAll");
+  add_call(graph, "app/dashboard/page.tsx:fetchAll", "src/api.ts:fmt");
+  graph.nodes.push_back(function_node("src/lib.ts", "exported", 1));
+  graph.nodes.push_back(function_node("src/lib.ts", "helper", 8));
+  graph.nodes.push_back(function_node("src/lib.ts", "leaf", 15));
+  graph.nodes.push_back(function_node("src/lib.ts", "cycA", 20));
+  graph.nodes.push_back(function_node("src/lib.ts", "cycB", 30));
+  add_call(graph, "src/lib.ts:exported", "src/lib.ts:helper");
+  add_call(graph, "src/lib.ts:cycA", "src/lib.ts:cycB");
+  add_call(graph, "src/lib.ts:cycB", "src/lib.ts:cycA");
+  graph.nodes.push_back(function_node("tests/t.ts", "test_main", 1));
+  add_call(graph, "tests/t.ts:test_main", "src/engine/run.cpp:run");
+  graph.nodes.push_back(cgraph::Node{.id = "doc:main", .label = "main", .source_file = "/proj/README.md", .kind = "function"});
+  return graph;
+}
+
+const cgraph::DesignEntry* find_entry(const cgraph::DesignReport& report, const std::string& label) {
+  for (const auto& entry : report.entries) {
+    if (entry.label == label) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+int test_design_view() {
+  cgraph::ReportRequest request;
+  request.view = cgraph::ReportView::Design;
+  request.project_root = "/proj";
+  const auto report = cgraph::build_design_report(design_fixture(), request);
+
+  // 22 functions outside test roots; four entry points of four kinds, by reach.
+  if (report.total_functions != 22 || report.total_entries != 4 || report.entries.size() != 4 ||
+      report.entries[0].label != "main" || report.entries[1].label != "Page" || report.entries[2].label != "app.get /health" ||
+      report.entries[3].label != "exported") {
+    return fail("design: four entry points ranked by reach (main 10, Page 3, route 2, exported 1)");
+  }
+  const auto* main = find_entry(report, "main");
+  const auto* page = find_entry(report, "Page");
+  const auto* route = find_entry(report, "app.get /health");
+  const auto* exported = find_entry(report, "exported");
+  if (main->kind != "main" || page->kind != "page" || route->kind != "route" || exported->kind != "root" ||
+      report.by_kind.at("main") != 1 || report.by_kind.at("page") != 1 || report.by_kind.at("route") != 1 ||
+      report.by_kind.at("root") != 1) {
+    return fail("design: entry kinds are main, page, route, root");
+  }
+  if (main->reach != 10 || main->fan_out != 7 || main->module != "src/cli" || main->source_file != "src/cli/main.cpp" ||
+      main->line != 5 || page->reach != 3 || route->reach != 2 || exported->reach != 1) {
+    return fail("design: reach counts every function transitively called; module and file are root-relative");
+  }
+  // Not entries: leaf (no callees), cycA/cycB (each called by the other),
+  // helper/run/store (called), test_main (test root).
+  for (const char* label : {"leaf", "cycA", "cycB", "helper", "run", "test_main"}) {
+    if (find_entry(report, label) != nullptr) {
+      return fail(std::string("design: not an entry point: ") + label);
+    }
+  }
+  // main's flow: children by reach (run 2, parse 1, then h1, h2 alphabetically),
+  // three more counted; run -> store -> persist to the third hop.
+  const auto& flow = main->flow;
+  if (flow.children.size() != 4 || flow.more != 3 || flow.children[0].label != "run" || flow.children[1].label != "parse" ||
+      flow.children[2].label != "h1" || flow.children[3].label != "h2" || flow.children[0].children.size() != 1 ||
+      flow.children[0].children[0].label != "store" || flow.children[0].children[0].children.size() != 1 ||
+      flow.children[0].children[0].children[0].label != "persist" || !flow.children[0].children[0].children[0].children.empty()) {
+    return fail("design: the flow draws four children by reach with `more`, three hops deep");
+  }
+  // Layers: 0 = the four entries; 1 = run, parse, h1..h5, ping, load, helper (10);
+  // 2 = store, lex, fmt, fetchAll (4); 3 = persist (1). fmt is reached at depth 2
+  // via ping, not 3 via fetchAll.
+  if (report.layers.size() != 4 || report.layers[0].functions != 4 || report.layers[1].functions != 10 ||
+      report.layers[2].functions != 4 || report.layers[3].functions != 1 || report.layers[1].modules.front() != "src/engine") {
+    return fail("design: layers count functions by shortest call distance, with the modules that hold them");
+  }
+  if (report.total_reached != 15 || report.total_unreached != 3 || report.unreached_samples.size() != 3 ||
+      report.unreached_samples[0] != "cycA") {
+    return fail("design: 15 reached, 3 unreached (leaf, cycA, cycB), most called first");
+  }
+
+  // hops 1 flattens the flows; include_tests admits the test caller as a root;
+  // scope narrows the candidate set.
+  cgraph::ReportRequest shallow = request;
+  shallow.hops = 1;
+  const auto one_hop = cgraph::build_design_report(design_fixture(), shallow);
+  if (find_entry(one_hop, "main")->flow.children[0].children.size() != 0 || find_entry(one_hop, "main")->reach != 10) {
+    return fail("design: hops bounds the drawn flow, not the reach");
+  }
+  cgraph::ReportRequest with_tests = request;
+  with_tests.include_tests = true;
+  const auto tests_too = cgraph::build_design_report(design_fixture(), with_tests);
+  const auto* test_main = find_entry(tests_too, "test_main");
+  if (tests_too.total_functions != 23 || test_main == nullptr || test_main->kind != "root" || test_main->reach != 3) {
+    return fail("design: include_tests admits the test caller as a root entry");
+  }
+  cgraph::ReportRequest scoped = request;
+  scoped.scope = "src/api.ts";
+  scoped.scope = "src";
+  const auto src_only = cgraph::build_design_report(design_fixture(), scoped);
+  if (src_only.total_functions != 19 || find_entry(src_only, "Page") != nullptr || find_entry(src_only, "main") == nullptr) {
+    return fail("design: scope keeps only functions whose file is under the prefix");
+  }
+
+  // Shedding drops whole entry points from the tail of the ranking.
+  const auto full_tokens = cgraph::estimate_report_tokens(cgraph::render_design_report(report, cgraph::ReportFormat::Json));
+  auto shed = report;
+  cgraph::shed_to_budget(shed, cgraph::ReportFormat::Json, full_tokens - 1);
+  if (shed.entries.size() != 3 || shed.entries.back().label != "app.get /health" || shed.omitted_entries != 1 ||
+      shed.total_entries != 4 || shed.layers.size() != 4) {
+    return fail("design: one token short sheds the last entry point and keeps the layers");
+  }
+
+  const auto json = cgraph::design_report_json(report);
+  if (json["view"] != "design" || json["totals"]["functions"] != 22 || json["totals"]["entry_points"] != 4 ||
+      json["totals"]["by_kind"]["route"] != 1 || json["totals"]["reached"] != 15 || json["totals"]["unreached"] != 3 ||
+      json["entry_points"][0]["label"] != "main" || json["entry_points"][0]["flow"]["children"].size() != 4 ||
+      json["entry_points"][0]["flow"]["more"] != 3 || json["entry_points"][0]["flow"]["children"][0]["children"][0]["label"] != "store" ||
+      json["layers"][1]["functions"] != 10 || json["hops"] != 3) {
+    return fail("design: json carries entry points with nested flows, layers, totals by kind and omitted");
+  }
+  const auto markdown = cgraph::render_design_markdown(report);
+  for (const char* expected : {"# Program design", "## Entry points", "| main | `main` | src/cli/main.cpp:5 | src/cli | 7 | 10 |",
+                               "| route | `app.get /health` | src/api.ts:3 |", "### main: `main` (src/cli/main.cpp:5)",
+                               "- `run` src/engine/run.cpp:10 (reach 2)", "  - `store` src/engine/run.cpp:20 (reach 1)",
+                               "    - `persist` src/engine/run.cpp:30", "- +3 more callees", "## Layers", "| 1 | 10 | `src/engine`",
+                               "3 unreached from any entry point (most called first): `cycA`, `cycB`, `leaf`",
+                               "omitted: 0 of 4 entry points"}) {
+    if (markdown.find(expected) == std::string::npos) {
+      return fail(std::string("design markdown lacks: ") + expected);
+    }
+  }
+  const auto mermaid = cgraph::render_design_mermaid(report);
+  for (const char* expected : {"flowchart TD", "%% main: main (src/cli/main.cpp, reach 10)", "[\"main\"]", "[\"run\"]", " --> ",
+                               "([\"+3 more\"])", "class f0 entry", "%% omitted: 0 of 4 entry points"}) {
+    if (mermaid.find(expected) == std::string::npos) {
+      return fail(std::string("design mermaid lacks: ") + expected);
+    }
+  }
+  // fmt is reached from both the route and the page: one node, two edges.
+  if (mermaid.find("[\"fmt\"]") == std::string::npos || mermaid.find("[\"fmt\"]", mermaid.find("[\"fmt\"]") + 1) != std::string::npos) {
+    return fail("design mermaid draws a shared callee once");
+  }
+  return 0;
+}
+
+int test_design_envelope() {
+  cgraph::DaemonState state;
+  state.project_root = "/proj";
+  cgraph::publish_graph_snapshot(state, design_fixture());
+  const auto json = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "design"}}));
+  if (!json.value("ok", false) || json["result"]["view"] != "design" || json["result"]["entry_points"].size() != 4 ||
+      json["result"]["layers"].size() != 4 || json["result"]["budget"] != cgraph::kDefaultReportBudget) {
+    return fail("design envelope: json result carries entry points, layers and the budget");
+  }
+  const auto mermaid = cgraph::handle_daemon_request(
+      state, cgraph::make_request("report", {{"view", "design"}, {"format", "mermaid"}, {"hops", 1}, {"budget", 0}}));
+  if (!mermaid.value("ok", false) || mermaid["result"]["rendered"].get<std::string>().find("flowchart TD") != 0 ||
+      mermaid["result"].contains("entry_points") || mermaid["result"]["hops"] != 1 || mermaid["result"]["totals"]["entry_points"] != 4) {
+    return fail("design envelope: mermaid returns the flowchart in `rendered` plus totals and forwards hops");
+  }
+  const auto markdown = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "design"}, {"format", "markdown"}}));
+  if (!markdown.value("ok", false) || markdown["result"]["rendered"].get<std::string>().find("# Program design") != 0) {
+    return fail("design envelope: markdown returns the report in `rendered`");
+  }
+  const auto svg = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "design"}, {"format", "svg"}}));
+  if (svg.value("ok", true) || svg.value("code", std::string{}) != "report_format_unsupported") {
+    return fail("design envelope: svg is a typed error");
+  }
+  const auto bad_hops = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "design"}, {"hops", 0}}));
+  if (bad_hops.value("ok", true)) {
+    return fail("design envelope: hops 0 is rejected");
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
   for (const auto test : {test_grouping_and_test_exclusion, test_layers, test_cycles, test_scope_and_depth,
                           test_budget_shedding, test_renderers, test_daemon_envelope, test_types_view,
-                          test_types_budget_and_renderers, test_types_envelope, test_clones_view, test_clones_envelope}) {
+                          test_types_budget_and_renderers, test_types_envelope, test_clones_view, test_clones_envelope,
+                          test_design_view, test_design_envelope}) {
     if (const int rc = test(); rc != 0) {
       return rc;
     }

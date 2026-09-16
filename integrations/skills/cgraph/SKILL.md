@@ -28,6 +28,7 @@ grep/read calls that burn context.
 | "What's the architecture? Give me a module map / what depends on what at the package level / where does a new file belong?" | `graph_report` `{view:"modules", format:"mermaid", scope?, depth?}` — files grouped into modules, imports/calls between them with counts, layers (0 = nothing depends on it), cycles listed; whole rows shed to the budget with `omitted` reported |
 | "Which types are duplicated / redundant / bloated? Which interfaces or structs have the same shape? Which types are dead?" | `graph_report` `{view:"types", format:"markdown", scope?, threshold?, min_members?}` — `identical` (groups of differently named types with the same members), `duplicates` (one name in several files, with member overlap), `overlaps` (subset / ≥ threshold Jaccard pairs), `unreferenced` (no other symbol or file refers to them), each with file:line and members |
 | "Where is copy-pasted code? Which functions are near-duplicates? What should be extracted into a shared helper?" | `graph_report` `{view:"clones", format:"markdown", scope?, threshold?, min_tokens?}` — `classes` of functions whose bodies are ≥ threshold similar after renaming (members with file:line-line, lowest pairwise similarity, shortest body in tokens); test-only classes in `test_classes` |
+| "How does this program start? What are the main flows? Where does a request go? Give me a program-design overview." | `graph_report` `{view:"design", format:"markdown" or "mermaid", scope?, hops?}` — `entry_points` (main / route / page / root) ranked by reach, the top call `flow` from each to `hops`, `layers` by call distance, `unreached` count |
 | "Verify the graph is current before I rely on it" | `graph_update {path:"."}` — blocking content-verified synchronization; returns `freshness.content_root`. Pin subsequent reads by passing the root as `expected_content_root`. |
 | "Is the graph current? / I just changed files" | Nothing for ordinary reads — the daemon watches the tree and folds edits in within seconds. Use `graph_update` when you need a verified content_root to pin reads. |
 
@@ -104,7 +105,19 @@ grep/read calls that burn context.
   `include_tests:true` merges them. A `hint` in the response means functions
   have no fingerprint yet (the daemon fast-loaded an older persist): call
   `graph_update` and retry. Only json and markdown.
-  View `design` is reserved and answers "not implemented".
+- `graph_report` with `view:"design"` is the orientation call for a repo you
+  do not know: `entry_points` are where execution starts -- `main`, HTTP
+  `route` handlers, framework `page` files (Next.js `app/**/page.tsx`), and
+  `root` functions with callees that nothing in the graph calls (exported
+  library surface, or unresolved callers) -- ranked by `reach`, the number of
+  functions each transitively calls. Each carries its top `flow`: a call tree
+  to `hops` (default 3) with four children per node chosen by reach and `more`
+  for the rest, so the heaviest path is always drawn. `layers` says how many
+  functions sit at each call distance from an entry and in which modules; the
+  `unreached` count (with samples, most called first) is code no entry reaches.
+  `format:"mermaid"` returns a `flowchart TD` of the kept flows to paste as-is;
+  markdown gives the entry table, nested flows and the layer table. Narrow
+  with `scope` when a monorepo has several programs.
 
 ## Freshness-sensitive navigation
 
