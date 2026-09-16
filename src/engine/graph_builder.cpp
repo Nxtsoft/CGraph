@@ -1,5 +1,6 @@
 #include "cgraph/graph_builder.hpp"
 
+#include "cgraph/detect.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -1190,6 +1191,10 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
     }
   }
   std::unordered_map<std::string, std::vector<std::string>> included_files_by_file;
+  std::unordered_map<std::string, std::string> file_id_by_source;
+  for (const auto& [id, source] : file_source_by_id) {
+    file_id_by_source.emplace(source, id);
+  }
   for (const auto& edge : graph.edges) {
     if (edge.relation != "imports" && edge.relation != "re_exports") {
       continue;
@@ -1198,6 +1203,56 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
       included_files_by_file[edge.source].push_back(src->second);
     }
   }
+
+  // A C/C++ `#include` is textual: every declaration a header includes is
+  // visible to the file that includes the header. Resolving only through the
+  // direct includes left CGraph's own `Node`, `Edge` and `RawCall` with no
+  // incoming `references` at all -- graph_builder.cpp includes graph_builder.hpp,
+  // which includes types.hpp -- so half the "unreferenced" types in `report
+  // types` were used everywhere. The include graph is walked breadth-first from
+  // the source file, bounded by kIncludeDepth, and a target resolves at the
+  // NEAREST distance where exactly one declaration bears its name: two
+  // declarations at that distance are an ambiguity and refuse the edge, a
+  // nearer declaration shadows a farther one. Levels are memoized per file.
+  constexpr std::size_t kIncludeDepth = 8;
+  std::unordered_map<std::string, std::vector<std::vector<std::string>>> include_levels_by_file;
+  const auto include_levels = [&](const std::string& source_file_id) -> const std::vector<std::vector<std::string>>& {
+    auto it = include_levels_by_file.find(source_file_id);
+    if (it != include_levels_by_file.end()) {
+      return it->second;
+    }
+    std::vector<std::vector<std::string>> levels;
+    std::unordered_set<std::string> visited{source_file_id};
+    std::vector<std::string> frontier{source_file_id};
+    for (std::size_t depth = 0; depth < kIncludeDepth && !frontier.empty(); ++depth) {
+      std::vector<std::string> next_sources;
+      std::vector<std::string> next_ids;
+      for (const auto& file_id : frontier) {
+        const auto inc = included_files_by_file.find(file_id);
+        if (inc == included_files_by_file.end()) {
+          continue;
+        }
+        for (const auto& included_source : inc->second) {
+          const auto included_id = file_id_by_source.find(included_source);
+          if (included_id == file_id_by_source.end() || !visited.insert(included_id->second).second) {
+            continue;
+          }
+          next_sources.push_back(included_source);
+          next_ids.push_back(included_id->second);
+        }
+      }
+      if (next_sources.empty()) {
+        break;
+      }
+      levels.push_back(std::move(next_sources));
+      frontier = std::move(next_ids);
+    }
+    return include_levels_by_file.emplace(source_file_id, std::move(levels)).first->second;
+  };
+  const auto is_c_family = [](const std::string& source_file) {
+    const auto language = detect_language(std::filesystem::path(source_file));
+    return language == DetectedLanguage::C || language == DetectedLanguage::Cpp;
+  };
 
   std::unordered_set<std::string> seen_edges;
   seen_edges.reserve(graph.edges.size());
@@ -1237,9 +1292,38 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
       }
     }
     // 1b. The type is declared in a file the source file #includes (C/C++
-    //     whole-file import). Resolve against declarations in each included file.
+    //     whole-file import). For the C family the walk is transitive and
+    //     nearest-unique (see include_levels); other languages keep the direct
+    //     includes only, since a transitive import does not re-export names.
     if (target_id.empty()) {
-      if (const auto inc = included_files_by_file.find(source_file_id); inc != included_files_by_file.end()) {
+      if (is_c_family(relation.source_file)) {
+        for (const auto& level : include_levels(source_file_id)) {
+          std::string found;
+          bool ambiguous = false;
+          for (const auto& included_source : level) {
+            const auto file = local_by_file.find(included_source);
+            if (file == local_by_file.end()) {
+              continue;
+            }
+            const auto slot = file->second.find(key);
+            if (slot == file->second.end()) {
+              continue;
+            }
+            if (slot->second.empty() || (!found.empty() && found != slot->second)) {
+              ambiguous = true;  // two declarations at this distance, or one file declaring it twice
+              break;
+            }
+            found = slot->second;
+          }
+          if (ambiguous) {
+            break;
+          }
+          if (!found.empty()) {
+            target_id = found;
+            break;
+          }
+        }
+      } else if (const auto inc = included_files_by_file.find(source_file_id); inc != included_files_by_file.end()) {
         for (const auto& included_source : inc->second) {
           const auto file = local_by_file.find(included_source);
           if (file == local_by_file.end()) {

@@ -120,6 +120,15 @@ int main() {
              "#pragma once\n"
              "struct Payload { int value; };\n"
              "struct Base { virtual int run(); };\n");
+  // A header that includes the header: transitive include resolution reaches
+  // Payload from a file that never names types.hpp itself.
+  write_file(root / "include" / "engine.hpp",
+             "#pragma once\n"
+             "#include \"types.hpp\"\n"
+             "struct Engine { int start(); };\n");
+  write_file(root / "consumer.cpp",
+             "#include \"engine.hpp\"\n"
+             "int consume(const Payload& p, Engine& e) { return p.value; }\n");
   write_file(root / "app.cpp",
              "#include \"types.hpp\"\n"
              "\n"
@@ -334,6 +343,10 @@ int main() {
   check(has_edge(graph, "handle", "Payload", "references"),
         "free-function parameter reference -> Payload");
   check(has_edge(graph, "Service", "Payload", "references"), "field reference -> Payload");
+  // consumer.cpp includes engine.hpp, which includes types.hpp: Payload is two
+  // includes away and resolves; Engine is one away.
+  check(has_edge(graph, "consume", "Payload", "references"), "transitive include reference -> Payload");
+  check(has_edge(graph, "consume", "Engine", "references"), "direct include reference -> Engine");
 
   // defines: a data member becomes a field node owned by its type.
   check(has_node(graph, "data", "field"), "data member node");
