@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <string>
 
 int main() {
@@ -117,5 +118,49 @@ int main() {
     }
   }
 
+  // A graph past the old 2,000-node DrL threshold (fix-layout-cliff) lays out
+  // through the same Fruchterman-Reingold pass as a small one: every node gets
+  // finite canvas-scale coordinates and the wider axis spans the sqrt(n) side.
+  // With DrL this took 12-20 s on a 2,007-node tree; the whole smoke test now
+  // runs in well under a second.
+  {
+    cgraph::GraphSnapshot large;
+    constexpr std::size_t kNodes = 2500;
+    for (std::size_t i = 0; i < kNodes; ++i) {
+      large.nodes.push_back(cgraph::Node{.id = "n" + std::to_string(i), .label = "N" + std::to_string(i)});
+    }
+    // A ring plus a few long chords: connected, sparse, and nothing a layout can
+    // collapse to a point.
+    for (std::size_t i = 0; i < kNodes; ++i) {
+      large.edges.push_back(cgraph::Edge{.source = "n" + std::to_string(i), .target = "n" + std::to_string((i + 1) % kNodes), .relation = "LINKS"});
+      if (i % 97 == 0) {
+        large.edges.push_back(cgraph::Edge{.source = "n" + std::to_string(i), .target = "n" + std::to_string((i * 7 + 13) % kNodes), .relation = "LINKS"});
+      }
+    }
+    const auto large_result = cgraph::detect_communities(large);
+    if (large_result.cluster_count < 1) {
+      return 8;
+    }
+    double min_x = 1e9, max_x = -1e9, min_y = 1e9, max_y = -1e9;
+    for (const auto& node : large.nodes) {
+      if (!node.properties.contains("x") || !node.properties.contains("y")) {
+        return 9;
+      }
+      const double x = std::stod(node.properties.at("x"));
+      const double y = std::stod(node.properties.at("y"));
+      if (!std::isfinite(x) || !std::isfinite(y)) {
+        return 10;
+      }
+      min_x = std::min(min_x, x);
+      max_x = std::max(max_x, x);
+      min_y = std::min(min_y, y);
+      max_y = std::max(max_y, y);
+    }
+    const double expected_side = std::max(cgraph::kMinCanvasSide, cgraph::kPixelsPerSqrtNode * std::sqrt(static_cast<double>(kNodes)));
+    const double span = std::max(max_x - min_x, max_y - min_y);
+    if (std::abs(span - expected_side) > 1.0) {
+      return 11;
+    }
+  }
   return 0;
 }

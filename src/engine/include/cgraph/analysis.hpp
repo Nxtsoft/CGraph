@@ -16,6 +16,9 @@ struct CommunityResult {
 // normalizeLayoutSpan), so the policy has one definition.
 inline constexpr double kMinCanvasSide = 720.0;
 inline constexpr double kPixelsPerSqrtNode = 30.0;
+// Fruchterman-Reingold iterations for the precomputed layout, at every graph
+// size (fix-layout-cliff): there is no second algorithm and no size threshold.
+inline constexpr int kLayoutIterations = 500;
 
 [[nodiscard]] CommunityResult detect_communities(GraphSnapshot& graph);
 void analyze_graph(GraphSnapshot& graph);
