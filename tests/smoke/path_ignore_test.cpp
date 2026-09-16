@@ -34,6 +34,14 @@ int test_skipped_directory() {
       return 1;
     }
   }
+  // Test-runner output trees (Playwright's report, per-test artifacts, blob
+  // reports) are generated, not source: the minified trace-viewer bundles in
+  // playwright-report/ otherwise dominate the design and clones reports.
+  for (const auto* name : {"playwright-report", "test-results", "blob-report"}) {
+    if (!cgraph::is_skipped_directory(name)) {
+      return 1;
+    }
+  }
   // Agent-CLI / spec-tool config dirs are tooling, not project source or docs.
   for (const auto* name : {".claude", ".codex", ".gemini", ".cursor", ".factory", ".opencode",
                            ".windsurf", ".aider", ".specify"}) {
@@ -48,8 +56,10 @@ int test_skipped_directory() {
   if (cgraph::is_skipped_directory("src") || cgraph::is_skipped_directory("docs") ||
       cgraph::is_skipped_directory("env") || cgraph::is_skipped_directory("my_env_utils") ||
       cgraph::is_skipped_directory("environment") || cgraph::is_skipped_directory("factory") ||
-      cgraph::is_skipped_directory("claude") || cgraph::is_skipped_directory("specify")) {
-    return 1;
+      cgraph::is_skipped_directory("claude") || cgraph::is_skipped_directory("specify") ||
+      cgraph::is_skipped_directory("tests") || cgraph::is_skipped_directory("test-utils") ||
+      cgraph::is_skipped_directory("playwright")) {
+    return 1;  // the runner's source-side dirs and lookalikes are not its output dirs
   }
   return 0;
 }

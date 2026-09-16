@@ -26,6 +26,15 @@ bool is_skipped_directory(std::string_view name) {
       "vendor",
       "cgraph-out",
       "graphify-out",
+      // Test-runner output: Playwright writes its HTML report (with minified
+      // trace-viewer bundles), its per-test artifacts, and its blob reports
+      // here by default, and none of it is source. On a 1,261-file Next.js app
+      // the seven bundles under playwright-report/ produced 237 of 1,349
+      // `report design` entry points (nine of the top ten by reach) and 46 of
+      // 216 clone classes, and were not covered by that repo's .gitignore.
+      "playwright-report",
+      "test-results",
+      "blob-report",
       // Python ecosystem: virtualenvs, installed packages, and tool caches are
       // dependencies/generated state, never project source. `site-packages`
       // catches venv contents regardless of the venv directory's name.
