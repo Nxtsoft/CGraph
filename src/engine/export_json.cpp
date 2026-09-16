@@ -1612,17 +1612,4 @@ std::string export_neo4j_cypher(const GraphSnapshot& graph) {
   return output.str();
 }
 
-std::string export_call_flow_html(const GraphSnapshot& graph) {
-  std::ostringstream output;
-  output << "<!doctype html><html><head><meta charset=\"utf-8\"><title>call flow</title></head><body>";
-  output << "<h1>Call Flow</h1><ol>";
-  for (const auto& edge : graph.edges) {
-    if (edge.relation == "CALLS") {
-      output << "<li>" << html_escape(edge.source) << " calls " << html_escape(edge.target) << "</li>";
-    }
-  }
-  output << "</ol></body></html>";
-  return output.str();
-}
-
 }  // namespace cgraph

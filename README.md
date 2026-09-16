@@ -50,7 +50,7 @@ Reading a large repo to answer **"what calls this?"** or **"what breaks if I cha
 
 <div align="center"><img src="assets/architecture.svg" alt="CGraph architecture" width="100%"></div>
 
-- **`cgraph`** — one-shot scan → portable disk exports (`graph.json`, `graph.html`, `graph.svg`, `obsidian.md`, `cypher.txt`, `call-flow.html`, `modules.mmd`, `modules.svg`).
+- **`cgraph`** — one-shot scan → portable disk exports (`graph.json`, `graph.html`, `graph.svg`, `obsidian.md`, `cypher.txt`, `modules.mmd`, `modules.svg`, `design.mmd`, `design.md`).
 - **`graphd` + `cgraph-client`** — a resident per-project daemon with live file-watching; warm `query` / `path` / `explain` / `impact` / `context` in ~10 ms.
 - **`cgraph-mcp`** — a Model Context Protocol server so agents navigate the graph directly.
 
@@ -86,9 +86,10 @@ A single scan turns a source tree into an interactive, explorable graph — comm
 - `graph.svg` — static graph visualization
 - `obsidian.md` — markdown export for Obsidian-style navigation
 - `cypher.txt` — Neo4j Cypher statements
-- `call-flow.html` — browser-readable call-flow view
 - `modules.mmd` — module dependency diagram as Mermaid
 - `modules.svg` — module dependency diagram as a layered static image
+- `design.mmd` — entry points and their top call flows as a Mermaid `flowchart TD`
+- `design.md` — the same as Markdown: entry-point table, nested flows, layers by call distance
 
 ## Performance
 
@@ -255,7 +256,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 | `graph_impact` | Transitive blast radius of changing a node |
 | `graph_path` | Shortest path between two nodes |
 | `graph_context` | Token-budgeted source bundle for a node/query (with adaptive gather) |
-| `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; `view: "clones"`: near-duplicate function bodies grouped into classes; all sized to a budget |
+| `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; `view: "clones"`: near-duplicate function bodies grouped into classes; `view: "design"`: entry points, top call flows, layers by call distance; all sized to a budget |
 | `graph_update` | Content-verified sync; returns a `content_root` to pin reads |
 | `graph_status` | Daemon, graph, and enrichment status |
 | `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after |
@@ -398,8 +399,23 @@ cgraph report clones --root /path/to/project --scope src                 # Markd
 cgraph report clones --root /path/to/project --format json --threshold 0.7 --min-tokens 50
 ```
 
-All three views are the `graph_report` MCP tool and the daemon `report` op; view `design` is
-reserved and answers "not implemented".
+`cgraph report design` shows the program as it is entered. **Entry points** are `main`, HTTP
+`route` handlers (inline `app.get('/path', handler)` registrations and Next.js `app/**/route.ts`
+exports), framework `page` files (`app/**/page.tsx`, `layout.tsx`, `pages/**`), and `root`
+functions with callees that nothing in the graph calls, ranked by **reach** (how many functions
+each transitively calls). Each entry carries its top **call flow** to `--hops` (default 3), four
+children per node chosen by reach with the rest counted, and the report closes with **layers**
+(functions per shortest call distance from an entry, with the modules that hold them) and the
+count of functions no entry reaches. Markdown by default, `--format mermaid` for a `flowchart TD`,
+`--format json` for the tree. One-shot builds write it as `design.mmd` and `design.md`, which
+replace the old flat `call-flow.html`.
+
+```sh
+cgraph report design --root /path/to/project --scope src                 # entry table, flows, layers
+cgraph report design --root /path/to/project --format mermaid --hops 2   # flowchart of the kept flows
+```
+
+All four views are the `graph_report` MCP tool and the daemon `report` op.
 
 ### Daemon & thin client
 

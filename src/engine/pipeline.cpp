@@ -121,13 +121,21 @@ void write_exports(const GraphSnapshot& graph, const std::filesystem::path& outp
   write_text(output_dir / "graph.svg", export_graph_svg(graph));
   write_text(output_dir / "obsidian.md", export_obsidian_markdown(graph));
   write_text(output_dir / "cypher.txt", export_neo4j_cypher(graph));
-  write_text(output_dir / "call-flow.html", export_call_flow_html(graph));
   ReportRequest modules_request;
   modules_request.budget = 0;
   modules_request.project_root = project_root;
   const auto modules = build_modules_report(graph, modules_request);
   write_text(output_dir / "modules.mmd", render_modules_mermaid(modules));
   write_text(output_dir / "modules.svg", render_modules_svg(modules));
+  // The design report replaces call-flow.html, which listed every CALLS edge
+  // once with full ids: entry points and the top flow from each, unbudgeted.
+  ReportRequest design_request;
+  design_request.view = ReportView::Design;
+  design_request.budget = 0;
+  design_request.project_root = project_root;
+  const auto design = build_design_report(graph, design_request);
+  write_text(output_dir / "design.mmd", render_design_mermaid(design));
+  write_text(output_dir / "design.md", render_design_markdown(design));
 }
 
 }  // namespace cgraph

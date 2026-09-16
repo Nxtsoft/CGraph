@@ -189,18 +189,26 @@ namespace {
           "(default 30) are boilerplate and skipped. Use it when asked about copy-paste, duplicated "
           "logic, or what to extract into a shared helper; json or markdown only. A `hint` appears "
           "when functions lack fingerprints (a graph fast-loaded from an older persist) and says how to "
-          "rescan. For modules and types, test roots are excluded unless include_tests is set. When a "
-          "report exceeds the budget whole rows are dropped (lightest first) and `omitted` says how "
-          "many. View design is reserved and answers \"not implemented\".",
+          "rescan. view \"design\" is the program's shape as it is entered: `entry_points` (main, HTTP "
+          "route handlers, framework pages such as Next.js app/**/page.tsx, and `root` functions nothing "
+          "in the graph calls), each ranked by `reach` (functions transitively called) with its top call "
+          "`flow` drawn to `hops` (default 3, four children per node by reach), plus `layers` (how many "
+          "functions sit at each call distance from an entry and which modules they are in) and the "
+          "`unreached` count. Use it when asked how the program starts, what the main flows are, where "
+          "a request goes, or for a program-design overview; format mermaid gives a `flowchart TD` of "
+          "the kept flows. For modules, types and design, test roots are excluded unless include_tests "
+          "is set. When a report exceeds the budget whole rows are dropped (lightest first) and "
+          "`omitted` says how many.",
           {{"view", {{"type", "string"}, {"enum", {"modules", "types", "clones", "design"}},
-                     {"description", "which report (default modules; modules, types and clones are implemented)"}}},
+                     {"description", "which report (default modules)"}}},
            {"format", {{"type", "string"}, {"enum", {"json", "mermaid", "markdown", "svg"}},
-                       {"description", "json (default) = structured data; mermaid = a `graph LR` diagram in "
-                                       "`rendered` (modules only); markdown = tables in `rendered`; svg = a drawn "
-                                       "diagram (modules only)"}}},
+                       {"description", "json (default) = structured data; mermaid = a diagram in `rendered` "
+                                       "(modules: `graph LR`; design: `flowchart TD`); markdown = tables in "
+                                       "`rendered`; svg = a drawn diagram (modules only)"}}},
            {"threshold", {{"type", "number"}, {"description", "types: member-set Jaccard at or above which two differently named types are an overlap (default 0.80; identical groups and subsets are reported regardless)"}}},
            {"min_members", integer_param("types: a type joins shape comparison only with at least this many declared members (default 3)")},
            {"min_tokens", integer_param("clones: a function body joins comparison only with at least this many normalized tokens (default 30)")},
+           {"hops", integer_param("design: call hops drawn from each entry point (default 3)")},
            {"scope", string_param("root-relative path prefix, e.g. \"src\": only modules under it report "
                                   "their dependencies (targets outside it still appear)")},
            {"depth", integer_param("directory components per module (default 2: src/engine/x.cpp -> src/engine)")},

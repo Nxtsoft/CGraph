@@ -36,12 +36,19 @@ Supported operations:
   shortest body `tokens`; bodies under `min_tokens` (default 30) are skipped; classes whose members
   all lie under test roots are `test_classes` unless `include_tests`; it renders `json` |
   `markdown`; a `hint` says when functions lack fingerprints (a graph fast-loaded from a persist
-  written before fingerprints existed) and that `update .` computes them. `design` answers
-  `code: "report_view_not_implemented"`. Whole rows are shed to fit `budget`; `omitted` always
-  reports how many. A daemon that predates the op answers `unknown op: report`; hosts should
-  surface that as "upgrade the daemon". Hosts also call `graph_report` when asked for the
-  architecture or a module map, for type bloat, duplicate interfaces/structs, or dead types, and
-  for copy-pasted or duplicated logic.
+  written before fingerprints existed) and that `update .` computes them. `view: "design"` lists
+  `entry_points` -- `main`, HTTP `route` handlers (inline `<x>.<verb>('/path', handler)` and
+  Next.js `app/**/route.ts` exports), framework `page` files (`app/**/page.tsx`, `layout.tsx`,
+  `pages/**`), and `root` functions with callees that nothing in the graph calls -- ranked by
+  `reach` (functions transitively called over `CALLS`/`dispatches_to`), each with its top call
+  `flow` to `hops` (default 3; four children per node by reach, the rest counted in `more`),
+  `layers` (functions per shortest call distance from an entry point, with the modules that hold
+  them) and the `unreached` count; it renders `json` | `mermaid` (`flowchart TD`) | `markdown`,
+  and `svg` answers `code: "report_format_unsupported"`. Whole rows are shed to fit `budget`;
+  `omitted` always reports how many. A daemon that predates the op answers `unknown op: report`;
+  hosts should surface that as "upgrade the daemon". Hosts also call `graph_report` when asked for
+  the architecture or a module map, for type bloat, duplicate interfaces/structs, or dead types,
+  for copy-pasted or duplicated logic, and for how the program is entered and flows.
 
 Hosts should prefer the thin client command surface unless they are implementing an MCP or always-on bridge that already speaks local JSON frames.
 

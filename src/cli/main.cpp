@@ -58,8 +58,11 @@ void print_usage() {
       "        subset/overlapping shapes, and unreferenced types\n"
       "  cgraph report clones [--root PATH] [--format json|markdown] [--scope PREFIX] [--threshold 0.80]\n"
       "                       [--min-tokens 30] [--budget N] [--include-tests] [--daemon PATH]\n"
-      "        function bodies at least threshold similar after renaming, grouped into clone classes;\n"
-      "        view design is reserved\n"
+      "        function bodies at least threshold similar after renaming, grouped into clone classes\n"
+      "  cgraph report design [--root PATH] [--format json|mermaid|markdown] [--scope PREFIX] [--hops 3]\n"
+      "                       [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        entry points (main, route handlers, pages, uncalled roots), the top call flow from\n"
+      "        each, and layers by call distance\n"
       "  cgraph seam gen --seam SPEC.json --graphs NAME=graph.json [--graphs ...] --out DROPDIR\n"
       "        resolve a cross-service seam spec against consumer graphs into a contract fragment\n"
       "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] --out DIR\n"
@@ -253,19 +256,19 @@ int run_stats(const Args& args) {
 // spawning it when absent. Prints the rendered diagram (mermaid/svg/markdown)
 // or the JSON payload to stdout; `omitted` counts go to stderr so a piped
 // diagram stays clean. The default format is the view's natural text form:
-// a mermaid diagram for modules, markdown tables for types.
+// a mermaid diagram for modules, markdown for types, clones and design.
 int run_report(int argc, char** argv) {
   const std::string view = argc >= 3 ? argv[2] : "";
   if (view.empty() || view.starts_with("--")) {
     std::cerr << "usage: cgraph report <modules|types|clones|design> [--root PATH] [--format json|mermaid|svg|markdown]\n"
-                 "                     [--scope PREFIX] [--depth N] [--threshold X] [--min-members N] [--min-tokens N]\n"
-                 "                     [--budget N] [--include-tests] [--daemon PATH]\n";
+                 "                     [--scope PREFIX] [--depth N] [--hops N] [--threshold X] [--min-members N]\n"
+                 "                     [--min-tokens N] [--budget N] [--include-tests] [--daemon PATH]\n";
     return 2;
   }
   cgraph::ClientRequest request{
       .project_root = std::filesystem::current_path(),
       .operation = "report",
-      .params = {{"view", view}, {"format", view == "types" || view == "clones" ? "markdown" : "mermaid"}},
+      .params = {{"view", view}, {"format", view == "modules" ? "mermaid" : "markdown"}},
   };
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -286,6 +289,8 @@ int run_report(int argc, char** argv) {
       request.params["min_members"] = std::stoi(argv[++index]);
     } else if (arg == "--min-tokens" && has_value) {
       request.params["min_tokens"] = std::stoi(argv[++index]);
+    } else if (arg == "--hops" && has_value) {
+      request.params["hops"] = std::stoi(argv[++index]);
     } else if (arg == "--include-tests") {
       request.params["include_tests"] = true;
     } else if (arg == "--daemon" && has_value) {

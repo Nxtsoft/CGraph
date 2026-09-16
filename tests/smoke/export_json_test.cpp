@@ -176,10 +176,5 @@ int main() {
     return 1;
   }
 
-  const auto call_flow = cgraph::export_call_flow_html(graph);
-  if (call_flow.find("a calls b") == std::string::npos) {
-    return 1;
-  }
-
   return 0;
 }

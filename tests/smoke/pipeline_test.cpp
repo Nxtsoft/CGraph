@@ -97,9 +97,11 @@ int main() {
       std::filesystem::exists(out / "graph.svg") &&
       std::filesystem::exists(out / "obsidian.md") &&
       std::filesystem::exists(out / "cypher.txt") &&
-      std::filesystem::exists(out / "call-flow.html") &&
+      !std::filesystem::exists(out / "call-flow.html") &&  // replaced by the design report
       std::filesystem::exists(out / "modules.mmd") &&
-      std::filesystem::exists(out / "modules.svg");
+      std::filesystem::exists(out / "modules.svg") &&
+      std::filesystem::exists(out / "design.mmd") &&
+      std::filesystem::exists(out / "design.md");
 
   std::filesystem::remove_all(root);
   std::filesystem::remove_all(out);
