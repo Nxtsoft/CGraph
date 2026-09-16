@@ -100,29 +100,25 @@ void write_membership(GraphSnapshot& snapshot, const igraph_vector_int_t& member
 // index i in the layout matrix maps directly to snapshot.nodes[i] because
 // make_igraph assigns vertex indices by node position.
 //
-// Scalable-layout choice: DRL (Distributed Recursive Layout) for large graphs
-// where a Fruchterman-Reingold pass would be prohibitively slow, FR for smaller
-// graphs where it yields a cleaner, more spread result.
+// One layout algorithm at every size: Fruchterman-Reingold with igraph's
+// AUTOGRID, which switches to the O(n) grid approximation above 1,000 vertices.
+// The earlier choice handed graphs of 2,000 nodes or more to DrL on the
+// assumption that FR would be prohibitively slow there; measured on this
+// igraph (fix-layout-cliff), DrL was the slow one -- 12-20 s at 2,007 nodes
+// against FR's 0.3 s, and 227 s of a 253 s build at 17,439 nodes -- and the
+// hard threshold made a repo's build time jump fifty-fold the day its graph
+// crossed 2,000 nodes, which CGraph's own tree did in #87.
 void write_layout(GraphSnapshot& snapshot, const igraph_t& graph) {
   igraph_matrix_t coords;
   if (igraph_matrix_init(&coords, 0, 0) != IGRAPH_SUCCESS) {
     return;
   }
 
-  constexpr std::size_t kDrlThreshold = 2000;
-  igraph_error_t error = IGRAPH_FAILURE;
-  if (snapshot.nodes.size() >= kDrlThreshold) {
-    igraph_layout_drl_options_t options;
-    if (igraph_layout_drl_options_init(&options, IGRAPH_LAYOUT_DRL_DEFAULT) == IGRAPH_SUCCESS) {
-      error = igraph_layout_drl(&graph, &coords, /*use_seed=*/false, &options, /*weights=*/nullptr);
-    }
-  } else {
-    const auto niter = static_cast<igraph_int_t>(500);
-    const auto start_temp = static_cast<igraph_real_t>(std::sqrt(static_cast<double>(snapshot.nodes.size())));
-    error = igraph_layout_fruchterman_reingold(
-        &graph, &coords, /*use_seed=*/false, niter, start_temp, IGRAPH_LAYOUT_AUTOGRID,
-        /*weights=*/nullptr, /*minx=*/nullptr, /*maxx=*/nullptr, /*miny=*/nullptr, /*maxy=*/nullptr);
-  }
+  const auto niter = static_cast<igraph_int_t>(kLayoutIterations);
+  const auto start_temp = static_cast<igraph_real_t>(std::sqrt(static_cast<double>(snapshot.nodes.size())));
+  const igraph_error_t error = igraph_layout_fruchterman_reingold(
+      &graph, &coords, /*use_seed=*/false, niter, start_temp, IGRAPH_LAYOUT_AUTOGRID,
+      /*weights=*/nullptr, /*minx=*/nullptr, /*maxx=*/nullptr, /*miny=*/nullptr, /*maxy=*/nullptr);
 
   if (error == IGRAPH_SUCCESS &&
       static_cast<std::size_t>(igraph_matrix_nrow(&coords)) == snapshot.nodes.size() &&
