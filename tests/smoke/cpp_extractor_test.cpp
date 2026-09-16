@@ -39,6 +39,35 @@ void write_file(const fs::path& path, std::string contents) {
   return false;
 }
 
+// Like has_edge, and the edge must also carry the given `context` property.
+[[nodiscard]] bool has_edge_with_context(const cgraph::GraphSnapshot& graph, const std::string& source,
+                                         const std::string& target, const std::string& relation,
+                                         const std::string& context) {
+  for (const auto& edge : graph.edges) {
+    if (edge.relation != relation) {
+      continue;
+    }
+    const auto ctx = edge.properties.find("context");
+    if (ctx == edge.properties.end() || ctx->second != context) {
+      continue;
+    }
+    bool source_ok = false;
+    bool target_ok = false;
+    for (const auto& node : graph.nodes) {
+      if (node.id == edge.source && node.label == source) {
+        source_ok = true;
+      }
+      if (node.id == edge.target && node.label == target) {
+        target_ok = true;
+      }
+    }
+    if (source_ok && target_ok) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Like has_edge but matches file nodes by label suffix, since file-node labels
 // are root-relative paths (`.../include/types.hpp`) rather than bare names.
 [[nodiscard]] bool has_edge_suffix(const cgraph::GraphSnapshot& graph, const std::string& source_suffix,
@@ -129,6 +158,17 @@ int main() {
   write_file(root / "consumer.cpp",
              "#include \"engine.hpp\"\n"
              "int consume(const Payload& p, Engine& e) { return p.value; }\n");
+  // Template arguments of namespace-qualified types are references too (#94):
+  // std::vector<Payload>&, std::span<const Payload>, std::optional<Payload>.
+  write_file(root / "generics.cpp",
+             "#include \"types.hpp\"\n"
+             "#include <optional>\n"
+             "#include <span>\n"
+             "#include <vector>\n"
+             "std::optional<Payload> maybe_payload(std::vector<Payload>& all, std::span<const Payload> view) {\n"
+             "  return all.empty() ? std::nullopt : std::optional<Payload>{all.front()};\n"
+             "}\n"
+             "struct PayloadBag { std::vector<Payload> items; };\n");
   write_file(root / "app.cpp",
              "#include \"types.hpp\"\n"
              "\n"
@@ -343,6 +383,12 @@ int main() {
   check(has_edge(graph, "handle", "Payload", "references"),
         "free-function parameter reference -> Payload");
   check(has_edge(graph, "Service", "Payload", "references"), "field reference -> Payload");
+  // A template argument of a qualified type is a reference, tagged generic_arg,
+  // whether it sits in a parameter, a return type or a data member.
+  check(has_edge_with_context(graph, "maybe_payload", "Payload", "references", "generic_arg"),
+        "std::vector<Payload>& / std::span<const Payload> / std::optional<Payload> -> Payload as generic_arg");
+  check(has_edge_with_context(graph, "PayloadBag", "Payload", "references", "generic_arg"),
+        "std::vector<Payload> data member -> Payload as generic_arg");
   // consumer.cpp includes engine.hpp, which includes types.hpp: Payload is two
   // includes away and resolves; Engine is one away.
   check(has_edge(graph, "consume", "Payload", "references"), "transitive include reference -> Payload");

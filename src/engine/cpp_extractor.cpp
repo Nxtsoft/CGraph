@@ -64,7 +64,26 @@ void collect_type_refs(const TSNode& node, std::string_view source, bool generic
     }
   };
 
-  if (type == "type_identifier" || type == "qualified_identifier" || type == "namespace_identifier") {
+  if (type == "qualified_identifier") {
+    // `std::vector<Node>` parses as qualified_identifier(scope: std, name:
+    // template_type(vector, <Node>)): the template and its arguments live in
+    // the `name` child. Treating the qualified text as a leaf emitted the tail
+    // "vector<Node>" and never walked the arguments, so no namespace-qualified
+    // template ever produced a generic_arg reference -- every signature naming
+    // RawCall in this engine is `std::span<const RawCall>` or
+    // `std::vector<RawCall>&`, and RawCall had no incoming reference (#94).
+    const auto name = ts_node_child_by_field_name(node, "name", 4);
+    if (!ts_node_is_null(name)) {
+      const std::string_view name_type = ts_node_type(name);
+      if (name_type == "template_type" || name_type == "qualified_identifier") {
+        collect_type_refs(name, source, generic, out);
+        return;
+      }
+    }
+    emit(node_text(node, source));
+    return;
+  }
+  if (type == "type_identifier" || type == "namespace_identifier") {
     emit(node_text(node, source));
     return;
   }
