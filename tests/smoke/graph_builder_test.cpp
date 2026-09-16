@@ -3,6 +3,8 @@
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
+#include <vector>
+#include <utility>
 #include <cstdio>
 
 namespace {
@@ -333,6 +335,103 @@ int test_resolve_relations() {
   }
   if (has_edge(graph, svc, same_file_type, "references")) {
     return 1;  // same-file reference must NOT resolve
+  }
+  return 0;
+}
+
+// C/C++ `#include` is textual, so a reference resolves through the whole
+// include chain: app.cpp -> engine.hpp -> types.hpp reaches `Node`. The walk is
+// nearest-unique: a declaration in a nearer header shadows a farther one, two
+// declarations at the same distance are ambiguous and refuse the edge, a header
+// cycle terminates, the depth is bounded, and a TypeScript file still resolves
+// through its direct imports only.
+int test_resolve_relations_through_includes() {
+  const auto app = cgraph::make_id("/p/app.cpp");
+  const auto engine_hpp = cgraph::make_id("/p/engine.hpp");
+  const auto types_hpp = cgraph::make_id("/p/types.hpp");
+  const auto other_hpp = cgraph::make_id("/p/other.hpp");
+  const auto far_hpp = cgraph::make_id("/p/far.hpp");
+  const auto cyc_a = cgraph::make_id("/p/cyc_a.hpp");
+  const auto cyc_b = cgraph::make_id("/p/cyc_b.hpp");
+  const auto fn = cgraph::make_id("/p/app.cpp:run");
+  const auto node_type = cgraph::make_id("/p/types.hpp:Node");
+  const auto near_config = cgraph::make_id("/p/engine.hpp:Config");
+  const auto far_config = cgraph::make_id("/p/types.hpp:Config");
+  const auto twin_one = cgraph::make_id("/p/types.hpp:Twin");
+  const auto twin_two = cgraph::make_id("/p/other.hpp:Twin");
+  const auto deep_type = cgraph::make_id("/p/far.hpp:Deep");
+  const auto cyc_type = cgraph::make_id("/p/cyc_b.hpp:Cyc");
+
+  cgraph::GraphSnapshot graph;
+  for (const auto& [id, path] : std::vector<std::pair<std::string, std::string>>{
+           {app, "/p/app.cpp"}, {engine_hpp, "/p/engine.hpp"}, {types_hpp, "/p/types.hpp"}, {other_hpp, "/p/other.hpp"},
+           {far_hpp, "/p/far.hpp"}, {cyc_a, "/p/cyc_a.hpp"}, {cyc_b, "/p/cyc_b.hpp"}}) {
+    graph.nodes.push_back({.id = id, .label = path.substr(3), .source_file = path, .kind = "file"});
+  }
+  graph.nodes.push_back({.id = fn, .label = "run", .source_file = "/p/app.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = node_type, .label = "Node", .source_file = "/p/types.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = near_config, .label = "Config", .source_file = "/p/engine.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = far_config, .label = "Config", .source_file = "/p/types.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = twin_one, .label = "Twin", .source_file = "/p/types.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = twin_two, .label = "Twin", .source_file = "/p/other.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = deep_type, .label = "Deep", .source_file = "/p/far.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = cyc_type, .label = "Cyc", .source_file = "/p/cyc_b.hpp", .kind = "class"});
+  // app.cpp -> engine.hpp -> {types.hpp, other.hpp}; types.hpp -> far.hpp (depth 3);
+  // app.cpp -> cyc_a.hpp <-> cyc_b.hpp.
+  graph.edges.push_back({.source = app, .target = engine_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = engine_hpp, .target = types_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = engine_hpp, .target = other_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = types_hpp, .target = far_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = app, .target = cyc_a, .relation = "imports"});
+  graph.edges.push_back({.source = cyc_a, .target = cyc_b, .relation = "imports"});
+  graph.edges.push_back({.source = cyc_b, .target = cyc_a, .relation = "imports"});
+
+  const cgraph::RawRelation relations[] = {
+      {.source_id = fn, .target_label = "Node", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Config", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Twin", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Deep", .relation = "references", .context = "return_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Cyc", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+  };
+  cgraph::resolve_raw_relations(graph, relations);
+
+  if (!has_edge(graph, fn, node_type, "references")) {
+    return 1;  // two hops: app.cpp -> engine.hpp -> types.hpp
+  }
+  if (!has_edge(graph, fn, near_config, "references") || has_edge(graph, fn, far_config, "references")) {
+    return 1;  // the nearer Config (engine.hpp, depth 1) shadows the farther one (types.hpp, depth 2)
+  }
+  if (has_edge(graph, fn, twin_one, "references") || has_edge(graph, fn, twin_two, "references")) {
+    return 1;  // two Twins at depth 2 are ambiguous: no edge to either
+  }
+  if (!has_edge(graph, fn, deep_type, "references")) {
+    return 1;  // depth 3 is within the bound
+  }
+  if (!has_edge(graph, fn, cyc_type, "references")) {
+    return 1;  // a header cycle terminates and still resolves what it reaches
+  }
+
+  // TypeScript: a transitive import does not re-export, so the same shape stays
+  // direct-only and `Node` two hops away does not resolve.
+  const auto ts_app = cgraph::make_id("/p/app.ts");
+  const auto ts_mid = cgraph::make_id("/p/mid.ts");
+  const auto ts_types = cgraph::make_id("/p/types.ts");
+  const auto ts_fn = cgraph::make_id("/p/app.ts:run");
+  const auto ts_node = cgraph::make_id("/p/types.ts:Node");
+  cgraph::GraphSnapshot ts;
+  ts.nodes.push_back({.id = ts_app, .label = "app.ts", .source_file = "/p/app.ts", .kind = "file"});
+  ts.nodes.push_back({.id = ts_mid, .label = "mid.ts", .source_file = "/p/mid.ts", .kind = "file"});
+  ts.nodes.push_back({.id = ts_types, .label = "types.ts", .source_file = "/p/types.ts", .kind = "file"});
+  ts.nodes.push_back({.id = ts_fn, .label = "run", .source_file = "/p/app.ts", .kind = "function"});
+  ts.nodes.push_back({.id = ts_node, .label = "Node", .source_file = "/p/types.ts", .kind = "class"});
+  ts.edges.push_back({.source = ts_app, .target = ts_mid, .relation = "imports"});
+  ts.edges.push_back({.source = ts_mid, .target = ts_types, .relation = "imports"});
+  const cgraph::RawRelation ts_relations[] = {
+      {.source_id = ts_fn, .target_label = "Node", .relation = "references", .context = "parameter_type", .source_file = "/p/app.ts"},
+  };
+  cgraph::resolve_raw_relations(ts, ts_relations);
+  if (has_edge(ts, ts_fn, ts_node, "references")) {
+    return 1;  // not for TypeScript
   }
   return 0;
 }
@@ -671,6 +770,10 @@ int main() {
   }
   if (test_resolve_relations() != 0) {
     std::fprintf(stderr, "FAIL test_resolve_relations\n");
+    return 1;
+  }
+  if (test_resolve_relations_through_includes() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_relations_through_includes\n");
     return 1;
   }
 
