@@ -1,5 +1,7 @@
 #include "cgraph/report.hpp"
 
+#include "cgraph/fingerprint.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -11,6 +13,7 @@
 #include <system_error>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace cgraph {
@@ -1522,6 +1525,350 @@ std::string render_types_report(const TypesReport& report, ReportFormat format) 
   return {};
 }
 
+// ---- clones view --------------------------------------------------------------
+
+namespace {
+
+// A shingle shared by more functions than this is boilerplate every body has
+// (`return ID ;`, `if ( ID ) {`) and carries no signal about copying; its
+// posting list is skipped when gathering candidate pairs. Lower would drop
+// legitimately common clone stretches; higher only costs time.
+constexpr std::size_t kHotShingleCap = 512;
+
+[[nodiscard]] std::string clone_file_line(const CloneMember& member) {
+  std::string out = member.source_file;
+  if (member.line > 0) {
+    out += ":" + std::to_string(member.line);
+    if (member.end_line > member.line) {
+      out += "-" + std::to_string(member.end_line);
+    }
+  }
+  return out;
+}
+
+[[nodiscard]] std::string clones_caption(const ClonesReport& report) {
+  std::string caption = report.scope.empty() ? std::string("whole project") : "scope " + report.scope;
+  caption += report.include_tests ? ", tests merged" : ", test-only classes listed separately";
+  caption += ", threshold " + format_ratio(report.threshold) + ", min_tokens " + std::to_string(report.min_tokens);
+  return caption;
+}
+
+[[nodiscard]] std::string classes_caption(std::size_t count, const char* prefix) {
+  return std::to_string(count) + " " + prefix + (count == 1 ? "class" : "classes");
+}
+
+[[nodiscard]] std::string clones_omitted_caption(const ClonesReport& report) {
+  return "omitted: " + classes_caption(report.omitted_classes, "") + ", " + classes_caption(report.omitted_test_classes, "test ") +
+         " (of " + classes_caption(report.total_classes, "") + ", " + classes_caption(report.total_test_classes, "test ") + ")";
+}
+
+[[nodiscard]] nlohmann::json clone_member_json(const CloneMember& member) {
+  nlohmann::json out{{"id", member.id}, {"label", member.label}, {"file", member.source_file}, {"tokens", member.tokens}};
+  if (member.line > 0) {
+    out["line"] = member.line;
+    out["end_line"] = member.end_line;
+  }
+  return out;
+}
+
+[[nodiscard]] nlohmann::json clone_class_json(const CloneClass& clone) {
+  nlohmann::json members = nlohmann::json::array();
+  for (const auto& member : clone.members) {
+    members.push_back(clone_member_json(member));
+  }
+  return nlohmann::json{{"size", clone.members.size()}, {"similarity", clone.similarity}, {"tokens", clone.tokens},
+                        {"members", std::move(members)}};
+}
+
+void render_clone_table(const std::vector<CloneClass>& classes, std::string& out) {
+  if (classes.empty()) {
+    out += "none\n";
+    return;
+  }
+  out += "| copies | similarity | tokens | members |\n| ---: | ---: | ---: | --- |\n";
+  for (const auto& clone : classes) {
+    std::string members;
+    for (std::size_t i = 0; i < clone.members.size(); ++i) {
+      members += (i == 0 ? "`" : "<br>`") + clone.members[i].label + "` " + clone_file_line(clone.members[i]);
+    }
+    out += "| " + std::to_string(clone.members.size()) + " | " + format_ratio(clone.similarity) + " | " +
+           std::to_string(clone.tokens) + " | " + members + " |\n";
+  }
+}
+
+}  // namespace
+
+ClonesReport build_clones_report(const GraphSnapshot& graph, const ReportRequest& request) {
+  ClonesReport report;
+  report.scope = request.scope;
+  report.include_tests = request.include_tests;
+  report.threshold = request.threshold;
+  report.min_tokens = request.min_tokens;
+
+  fs::path root;
+  if (!request.project_root.empty()) {
+    std::error_code ec;
+    root = fs::weakly_canonical(request.project_root, ec);
+    if (ec) {
+      root = request.project_root.lexically_normal();
+    }
+  }
+
+  // Candidates: function nodes in scope. Test roots stay in (they are where the
+  // copies live) but are remembered so their classes can be bucketed.
+  struct Candidate {
+    CloneMember member;
+    const FunctionFingerprint* fingerprint = nullptr;
+    bool in_tests = false;
+  };
+  std::vector<Candidate> candidates;
+  std::unordered_map<std::string, std::string> directory_of_file;
+  for (const auto& node : graph.nodes) {
+    if (node.kind != "function" || node.source_file.empty() || is_enrichment_node_id(node.id) || is_memory_node_id(node.id)) {
+      continue;
+    }
+    auto dir_it = directory_of_file.find(node.source_file);
+    if (dir_it == directory_of_file.end()) {
+      dir_it = directory_of_file.emplace(node.source_file, module_for(node.source_file, root, 1 << 20)).first;
+    }
+    if (!in_scope(dir_it->second, request.scope)) {
+      continue;
+    }
+    ++report.total_functions;
+    const auto fingerprint = graph.fingerprints.find(node.id);
+    if (fingerprint == graph.fingerprints.end()) {
+      continue;
+    }
+    ++report.total_fingerprinted;
+    if (fingerprint->second.tokens < report.min_tokens || fingerprint->second.shingles.empty()) {
+      continue;
+    }
+    ++report.total_eligible;
+    candidates.push_back(Candidate{
+        .member = CloneMember{
+            .id = node.id,
+            .label = node.label,
+            .source_file = relative_file(node.source_file, root),
+            .line = node.source_location ? node.source_location->start_line : 0,
+            .end_line = node.source_location ? node.source_location->end_line : 0,
+            .tokens = fingerprint->second.tokens,
+        },
+        .fingerprint = &fingerprint->second,
+        .in_tests = is_test_module(dir_it->second),
+    });
+  }
+  if (report.total_fingerprinted < report.total_functions) {
+    report.hint = std::to_string(report.total_functions - report.total_fingerprinted) + " of " +
+                  std::to_string(report.total_functions) +
+                  " functions have no fingerprint: the graph was loaded from a persist written before fingerprints "
+                  "existed. Run `cgraph-client --root PATH update .` (a full rescan) to compute them.";
+  }
+
+  // Candidate pairs through an inverted index on shingle hash: a pair is
+  // visited only when it shares a shingle that is not boilerplate. The Jaccard
+  // is then computed exactly over both full sets -- counting only the shingles
+  // that produced the candidacy under-scores a pair whenever one of its shared
+  // shingles is hot (18 identical `write_file` copies scored 5/7 that way).
+  std::unordered_map<std::uint64_t, std::vector<std::size_t>> postings;
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    for (const auto shingle : candidates[i].fingerprint->shingles) {
+      postings[shingle].push_back(i);
+    }
+  }
+  std::vector<std::size_t> parent(candidates.size());
+  for (std::size_t i = 0; i < parent.size(); ++i) {
+    parent[i] = i;
+  }
+  const auto find_root = [&](std::size_t i) {
+    while (parent[i] != i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  // Per function: count the non-hot shingles shared with every partner, then
+  // bound the pair's Jaccard from above (the partner can share at most every
+  // hot shingle this function has on top of the counted ones). Only pairs whose
+  // bound clears the threshold get the exact merge-walk -- on a 4,261-function
+  // TypeScript app that cut the op from 8 s to under 2 s with identical classes.
+  std::unordered_map<std::size_t, std::size_t> shared;
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    shared.clear();
+    std::size_t hot_in_i = 0;
+    for (const auto shingle : candidates[i].fingerprint->shingles) {
+      const auto& list = postings[shingle];
+      if (list.size() > kHotShingleCap) {
+        ++hot_in_i;
+        continue;
+      }
+      for (const auto j : list) {
+        if (j > i) {
+          ++shared[j];
+        }
+      }
+    }
+    const auto size_i = candidates[i].fingerprint->shingles.size();
+    for (const auto& [j, common] : shared) {
+      const auto size_j = candidates[j].fingerprint->shingles.size();
+      const auto at_most = std::min(common + hot_in_i, std::min(size_i, size_j));
+      const auto smallest_union = size_i + size_j - at_most;
+      const auto upper = smallest_union == 0 ? 0.0 : static_cast<double>(at_most) / static_cast<double>(smallest_union);
+      if (upper < report.threshold) {
+        continue;
+      }
+      if (fingerprint_similarity(*candidates[i].fingerprint, *candidates[j].fingerprint) >= report.threshold) {
+        parent[find_root(i)] = find_root(j);
+      }
+    }
+  }
+
+  std::map<std::size_t, std::vector<std::size_t>> groups;
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    groups[find_root(i)].push_back(i);
+  }
+  for (auto& [leader, indices] : groups) {
+    if (indices.size() < 2) {
+      continue;
+    }
+    CloneClass clone;
+    clone.similarity = 1.0;
+    clone.tokens = candidates[indices.front()].member.tokens;
+    bool all_tests = true;
+    for (std::size_t x = 0; x < indices.size(); ++x) {
+      const auto& candidate = candidates[indices[x]];
+      clone.members.push_back(candidate.member);
+      clone.tokens = std::min(clone.tokens, candidate.member.tokens);
+      all_tests = all_tests && candidate.in_tests;
+      for (std::size_t y = x + 1; y < indices.size(); ++y) {
+        clone.similarity = std::min(clone.similarity, fingerprint_similarity(*candidate.fingerprint, *candidates[indices[y]].fingerprint));
+      }
+    }
+    std::sort(clone.members.begin(), clone.members.end(), [](const CloneMember& a, const CloneMember& b) {
+      return std::tie(a.source_file, a.line, a.label) < std::tie(b.source_file, b.line, b.label);
+    });
+    report.total_members += clone.members.size();
+    if (all_tests && !report.include_tests) {
+      report.test_classes.push_back(std::move(clone));
+    } else {
+      report.classes.push_back(std::move(clone));
+    }
+  }
+  const auto by_value = [](const CloneClass& a, const CloneClass& b) {
+    if (a.members.size() != b.members.size()) {
+      return a.members.size() > b.members.size();
+    }
+    if (a.similarity != b.similarity) {
+      return a.similarity > b.similarity;
+    }
+    if (a.tokens != b.tokens) {
+      return a.tokens > b.tokens;
+    }
+    return std::tie(a.members.front().source_file, a.members.front().line) <
+           std::tie(b.members.front().source_file, b.members.front().line);
+  };
+  std::sort(report.classes.begin(), report.classes.end(), by_value);
+  std::sort(report.test_classes.begin(), report.test_classes.end(), by_value);
+  report.total_classes = report.classes.size();
+  report.total_test_classes = report.test_classes.size();
+  return report;
+}
+
+void shed_to_budget(ClonesReport& report, ReportFormat format, std::size_t budget) {
+  if (budget == 0) {
+    return;
+  }
+  const auto fits = [&](const ClonesReport& candidate) {
+    return estimate_report_tokens(render_clones_report(candidate, format)) <= budget;
+  };
+  if (fits(report)) {
+    return;
+  }
+  const auto total = report.classes.size() + report.test_classes.size();
+  const auto with_rows = [&](std::size_t keep) {
+    ClonesReport candidate = report;
+    const auto keep_classes = std::min(keep, report.classes.size());
+    const auto keep_tests = std::min(keep - keep_classes, report.test_classes.size());
+    candidate.classes.resize(keep_classes);
+    candidate.test_classes.resize(keep_tests);
+    candidate.omitted_classes = report.total_classes - keep_classes;
+    candidate.omitted_test_classes = report.total_test_classes - keep_tests;
+    return candidate;
+  };
+  std::size_t lo = 0;
+  std::size_t hi = total;
+  while (lo < hi) {
+    const auto mid = (lo + hi + 1) / 2;
+    if (fits(with_rows(mid))) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  report = with_rows(lo);
+}
+
+nlohmann::json clones_report_json(const ClonesReport& report) {
+  nlohmann::json classes = nlohmann::json::array();
+  for (const auto& clone : report.classes) {
+    classes.push_back(clone_class_json(clone));
+  }
+  nlohmann::json test_classes = nlohmann::json::array();
+  for (const auto& clone : report.test_classes) {
+    test_classes.push_back(clone_class_json(clone));
+  }
+  nlohmann::json out{
+      {"view", "clones"},
+      {"scope", report.scope},
+      {"include_tests", report.include_tests},
+      {"threshold", report.threshold},
+      {"min_tokens", report.min_tokens},
+      {"classes", std::move(classes)},
+      {"test_classes", std::move(test_classes)},
+      {"totals",
+       {{"functions", report.total_functions},
+        {"fingerprinted", report.total_fingerprinted},
+        {"eligible", report.total_eligible},
+        {"classes", report.total_classes},
+        {"test_classes", report.total_test_classes},
+        {"members", report.total_members}}},
+      {"omitted", {{"classes", report.omitted_classes}, {"test_classes", report.omitted_test_classes}}},
+  };
+  if (!report.hint.empty()) {
+    out["hint"] = report.hint;
+  }
+  return out;
+}
+
+std::string render_clones_markdown(const ClonesReport& report) {
+  std::string out = "# Function clones\n\n";
+  out += clones_caption(report) + " · " + plural(report.total_functions, "function") + ", " +
+         std::to_string(report.total_fingerprinted) + " fingerprinted, " + std::to_string(report.total_eligible) +
+         " at or above the token floor, " + std::to_string(report.total_members) + " in a clone class\n\n";
+  if (!report.hint.empty()) {
+    out += "> " + report.hint + "\n\n";
+  }
+  out += "## Clone classes\n\n";
+  render_clone_table(report.classes, out);
+  if (!report.include_tests) {
+    out += "\n## Test-only clone classes\n\n";
+    render_clone_table(report.test_classes, out);
+  }
+  out += "\n" + clones_omitted_caption(report) + "\n";
+  return out;
+}
+
+std::string render_clones_report(const ClonesReport& report, ReportFormat format) {
+  switch (format) {
+    case ReportFormat::Json:
+      return clones_report_json(report).dump();
+    case ReportFormat::Mermaid:
+    case ReportFormat::Svg:
+    case ReportFormat::Markdown:
+      return render_clones_markdown(report);
+  }
+  return {};
+}
+
 std::string render_modules_report(const ModulesReport& report, ReportFormat format) {
   switch (format) {
     case ReportFormat::Json:
@@ -1543,25 +1890,36 @@ nlohmann::json report_response(const GraphSnapshot& graph, const nlohmann::json&
   if (const auto error = parse_report_request(params, request)) {
     return nlohmann::json{{"ok", false}, {"error", *error}};
   }
-  if (request.view == ReportView::Design || request.view == ReportView::Clones) {
+  if (request.view == ReportView::Design) {
     return nlohmann::json{
         {"ok", false},
         {"error", std::string{"report view '"} + report_view_name(request.view) +
-                      "' is not implemented yet; 'modules' and 'types' are available"},
+                      "' is not implemented yet; 'modules', 'types' and 'clones' are available"},
         {"code", "report_view_not_implemented"},
     };
   }
   nlohmann::json result;
   std::string rendered;
-  if (request.view == ReportView::Types) {
-    if (request.format == ReportFormat::Mermaid || request.format == ReportFormat::Svg) {
-      return nlohmann::json{
-          {"ok", false},
-          {"error", std::string{"report view 'types' renders json or markdown; '"} + report_format_name(request.format) +
-                        "' is a diagram format for the modules view"},
-          {"code", "report_format_unsupported"},
-      };
+  const bool tabular = request.view == ReportView::Types || request.view == ReportView::Clones;
+  if (tabular && (request.format == ReportFormat::Mermaid || request.format == ReportFormat::Svg)) {
+    return nlohmann::json{
+        {"ok", false},
+        {"error", std::string{"report view '"} + report_view_name(request.view) + "' renders json or markdown; '" +
+                      report_format_name(request.format) + "' is a diagram format for the modules view"},
+        {"code", "report_format_unsupported"},
+    };
+  }
+  if (request.view == ReportView::Clones) {
+    auto report = build_clones_report(graph, request);
+    shed_to_budget(report, request.format, request.budget);
+    rendered = render_clones_report(report, request.format);
+    result = clones_report_json(report);
+    if (request.format == ReportFormat::Markdown) {
+      result.erase("classes");
+      result.erase("test_classes");
+      result["rendered"] = rendered;
     }
+  } else if (request.view == ReportView::Types) {
     auto report = build_types_report(graph, request);
     shed_to_budget(report, request.format, request.budget);
     rendered = render_types_report(report, request.format);

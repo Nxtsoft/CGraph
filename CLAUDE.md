@@ -49,7 +49,8 @@ shells over it. Core data types (`Node`, `Edge`, `Hyperedge`, `Fragment`, `Graph
 **Deterministic pipeline** (`pipeline.cpp::run_one_shot`, the canonical flow):
 `detect_project_files` → per-file `extract_detected_file` (tree-sitter via `parser_pool`,
 language-specific `python_extractor`/`javascript_extractor`/`non_grammar_extractors`,
-configured by `language_config`/`configured_extractors`) → `merge_fragments`
+configured by `language_config`/`configured_extractors`; every function body also gets a
+rename-insensitive `fingerprint` for `report clones`, runtime-only, never exported) → `merge_fragments`
 (`graph_builder`) → `resolve_raw_calls` → `semantic_dedup` (`dedup`) → `detect_communities`
 (`analysis`/igraph clustering) → `analyze_graph` → `write_exports` (`export_json`). ID
 normalization (`normalize.cpp`) preserves Graphify's ID contract — this is a parity surface,

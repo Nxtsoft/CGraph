@@ -14,9 +14,9 @@
 namespace cgraph {
 
 // Structural reports (report-modules): one daemon op, `report`, with a `view`
-// selector. `modules` and `types` are implemented; `design` and `clones` are
-// reserved so the tool surface an agent discovers is stable while they land
-// (CGR-11/10).
+// selector. `modules`, `types` and `clones` are implemented; `design` is
+// reserved so the tool surface an agent discovers is stable while it lands
+// (CGR-11).
 enum class ReportView { Modules, Design, Clones, Types };
 enum class ReportFormat { Json, Mermaid, Svg, Markdown };
 
@@ -30,6 +30,7 @@ enum class ReportFormat { Json, Mermaid, Svg, Markdown };
 inline constexpr std::size_t kDefaultReportBudget = 6000;
 inline constexpr int kDefaultModuleDepth = 2;
 inline constexpr std::size_t kDefaultMinMembers = 3;
+inline constexpr std::size_t kDefaultMinTokens = 30;
 
 struct ReportRequest {
   ReportView view = ReportView::Modules;
@@ -47,9 +48,10 @@ struct ReportRequest {
   // src/engine/dedup.cpp into src/engine.
   int module_depth = kDefaultModuleDepth;
   // Similarity floor shared by the types view (member-set Jaccard) and the
-  // reserved clones view (CGR-10), and the clones view's token floor.
+  // clones view (fingerprint Jaccard), and the clones view's token floor: a
+  // body shorter than this is boilerplate (a getter, a main stub), not a clone.
   double threshold = 0.80;
-  std::size_t min_tokens = 30;
+  std::size_t min_tokens = kDefaultMinTokens;
   // types view: a type takes part in shape comparison only when it declares at
   // least this many members, so `{id, name}` pairs do not flood the report.
   std::size_t min_members = kDefaultMinMembers;
@@ -182,6 +184,57 @@ void shed_to_budget(TypesReport& report, ReportFormat format, std::size_t budget
 // json or markdown; the types view has no diagram form, so mermaid and svg
 // render as markdown here and `report_response` refuses them with a typed error.
 [[nodiscard]] std::string render_types_report(const TypesReport& report, ReportFormat format);
+
+// ---- clones view (CGR-10) ----------------------------------------------------
+// Function bodies whose fingerprints (fingerprint.hpp) are at least `threshold`
+// Jaccard-similar, grouped into classes by union-find. A class whose members
+// all lie under test roots is a test class: reported, but after the production
+// classes, because duplicated test fixtures are the commonest clone and the
+// least urgent one.
+struct CloneMember {
+  std::string id;
+  std::string label;
+  std::string source_file;  // root-relative when under the project root
+  std::size_t line = 0;
+  std::size_t end_line = 0;
+  std::uint32_t tokens = 0;
+};
+
+struct CloneClass {
+  std::vector<CloneMember> members;  // by file, then line
+  double similarity = 0.0;           // lowest pairwise Jaccard inside the class
+  std::uint32_t tokens = 0;          // smallest member body, in normalized tokens
+};
+
+struct ClonesReport {
+  std::string scope;
+  bool include_tests = false;
+  double threshold = 0.80;
+  std::size_t min_tokens = kDefaultMinTokens;
+  std::vector<CloneClass> classes;       // largest first, then most similar, then longest
+  std::vector<CloneClass> test_classes;  // every member under a test root (empty when include_tests)
+  std::size_t total_functions = 0;       // function nodes in scope
+  std::size_t total_fingerprinted = 0;   // of those, with a fingerprint
+  std::size_t total_eligible = 0;        // of those, at or above min_tokens
+  std::size_t total_classes = 0;
+  std::size_t total_test_classes = 0;
+  std::size_t total_members = 0;         // functions in any class
+  std::size_t omitted_classes = 0;
+  std::size_t omitted_test_classes = 0;
+  // Set when functions lack fingerprints: a graph fast-loaded from a persist
+  // made before this build has none until the next rescan.
+  std::string hint;
+};
+
+[[nodiscard]] ClonesReport build_clones_report(const GraphSnapshot& graph, const ReportRequest& request);
+// Whole classes only: test classes shed first (smallest first), then
+// production classes.
+void shed_to_budget(ClonesReport& report, ReportFormat format, std::size_t budget);
+[[nodiscard]] nlohmann::json clones_report_json(const ClonesReport& report);
+[[nodiscard]] std::string render_clones_markdown(const ClonesReport& report);
+// json or markdown; diagram formats render as markdown here and are refused by
+// `report_response`, as for the types view.
+[[nodiscard]] std::string render_clones_report(const ClonesReport& report, ReportFormat format);
 
 // ~4 characters per token: the one estimate the report and context ops pack
 // against. The length overload costs text that is not materialized yet.

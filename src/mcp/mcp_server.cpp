@@ -181,18 +181,26 @@ namespace {
           "`min_members` members take part), and `unreferenced` (types no other symbol or file in the "
           "graph refers to; same-file use is not in the graph, so treat it as a lead). Use it when "
           "asked about type bloat, duplicate or redundant interfaces/structs, or dead types; json or "
-          "markdown only. Test roots are excluded unless "
-          "include_tests is set. When the report exceeds the budget whole rows are dropped (lightest "
-          "first) and `omitted` says how many. Views design and clones are reserved and answer "
-          "\"not implemented\".",
-          {{"view", {{"type", "string"}, {"enum", {"modules", "types", "design", "clones"}},
-                     {"description", "which report (default modules; modules and types are implemented)"}}},
+          "markdown only. view \"clones\" is the duplicate-code report: function bodies whose "
+          "rename-insensitive fingerprints are at least `threshold` Jaccard-similar (default 0.80), "
+          "grouped into `classes` (each with its members' file:line-line, the lowest pairwise "
+          "similarity and the shortest body in tokens); classes whose members all lie under test roots "
+          "are listed as `test_classes` unless include_tests merges them. Bodies under `min_tokens` "
+          "(default 30) are boilerplate and skipped. Use it when asked about copy-paste, duplicated "
+          "logic, or what to extract into a shared helper; json or markdown only. A `hint` appears "
+          "when functions lack fingerprints (a graph fast-loaded from an older persist) and says how to "
+          "rescan. For modules and types, test roots are excluded unless include_tests is set. When a "
+          "report exceeds the budget whole rows are dropped (lightest first) and `omitted` says how "
+          "many. View design is reserved and answers \"not implemented\".",
+          {{"view", {{"type", "string"}, {"enum", {"modules", "types", "clones", "design"}},
+                     {"description", "which report (default modules; modules, types and clones are implemented)"}}},
            {"format", {{"type", "string"}, {"enum", {"json", "mermaid", "markdown", "svg"}},
                        {"description", "json (default) = structured data; mermaid = a `graph LR` diagram in "
                                        "`rendered` (modules only); markdown = tables in `rendered`; svg = a drawn "
                                        "diagram (modules only)"}}},
            {"threshold", {{"type", "number"}, {"description", "types: member-set Jaccard at or above which two differently named types are an overlap (default 0.80; identical groups and subsets are reported regardless)"}}},
            {"min_members", integer_param("types: a type joins shape comparison only with at least this many declared members (default 3)")},
+           {"min_tokens", integer_param("clones: a function body joins comparison only with at least this many normalized tokens (default 30)")},
            {"scope", string_param("root-relative path prefix, e.g. \"src\": only modules under it report "
                                   "their dependencies (targets outside it still appear)")},
            {"depth", integer_param("directory components per module (default 2: src/engine/x.cpp -> src/engine)")},

@@ -162,6 +162,8 @@ GraphSnapshot merge_fragments(std::span<const Fragment> fragments) {
         graph.hyperedges.push_back(hyperedge);
       }
     }
+    // First occurrence wins here too, matching the node it belongs to.
+    graph.fingerprints.insert(fragment.fingerprints.begin(), fragment.fingerprints.end());
   }
   return graph;
 }
@@ -203,6 +205,7 @@ void merge_fragment(GraphSnapshot& graph, const Fragment& fragment) {
       graph.hyperedges.push_back(hyperedge);
     }
   }
+  graph.fingerprints.insert(fragment.fingerprints.begin(), fragment.fingerprints.end());
 }
 
 void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {

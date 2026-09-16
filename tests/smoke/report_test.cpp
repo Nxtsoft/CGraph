@@ -2,9 +2,11 @@
 // depth, cross-module edge aggregation, longest-path layering, cycle listing,
 // scope and test-root filtering, whole-row budget shedding with `omitted`, the
 // four renderers, and the daemon envelope (reserved views, mistyped params,
-// the upgrade hint for a graphd that predates the op) -- and its types view:
+// the upgrade hint for a graphd that predates the op) -- its types view:
 // identical shapes grouped, duplicate names across files, subset / overlapping
-// member sets, unreferenced types, the member floor, and its own shedding order.
+// member sets, unreferenced types, the member floor, and its own shedding order
+// -- and its clones view: fingerprint Jaccard classes, the token floor, the
+// test-class bucket, the missing-fingerprint hint, and shedding.
 #include "cgraph/report.hpp"
 
 #include "cgraph/daemon_ops.hpp"
@@ -387,7 +389,7 @@ int test_daemon_envelope() {
       mermaid["result"]["scope"] != "b" || mermaid["result"]["totals"]["modules"] != 2) {
     return fail("mermaid format returns the diagram in `rendered`; a trailing slash on scope is dropped");
   }
-  for (const char* reserved : {"design", "clones"}) {
+  for (const char* reserved : {"design"}) {
     const auto response = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", reserved}}));
     if (response.value("ok", true) || response.value("code", std::string{}) != "report_view_not_implemented") {
       return fail(std::string("reserved view answers a typed not-implemented error: ") + reserved);
@@ -695,12 +697,207 @@ int test_types_envelope() {
   return 0;
 }
 
+// ---- clones view ----------------------------------------------------------------
+
+// A fingerprint from a list of shingle hashes; tokens default well above the floor.
+cgraph::FunctionFingerprint fp(std::initializer_list<std::uint64_t> shingles, std::uint32_t tokens = 60) {
+  cgraph::FunctionFingerprint out;
+  out.shingles.assign(shingles.begin(), shingles.end());
+  std::sort(out.shingles.begin(), out.shingles.end());
+  out.tokens = tokens;
+  return out;
+}
+
+cgraph::Node function_node(const std::string& path, const std::string& name, std::uint32_t line) {
+  return cgraph::Node{.id = path + ":" + name, .label = name, .source_file = "/proj/" + path,
+                      .source_location = cgraph::SourceLocation{.start_line = line, .start_column = 0, .end_line = line + 5, .end_column = 1},
+                      .kind = "function"};
+}
+
+// Three production copies (two exact, one at 0.8), a 0.6 near miss, an
+// unrelated body, a body under the token floor that would otherwise match, two
+// test-root copies, and a function with no fingerprint at all.
+cgraph::GraphSnapshot clones_fixture() {
+  cgraph::GraphSnapshot graph;
+  graph.build_state = cgraph::BuildState::DeterministicReady;
+  for (const char* path : {"src/a.ts", "src/b.ts", "src/c.ts", "tests/t1.ts", "tests/t2.ts"}) {
+    graph.nodes.push_back(file_node(path));
+  }
+  graph.nodes.push_back(function_node("src/a.ts", "writeFile", 10));
+  graph.fingerprints["src/a.ts:writeFile"] = fp({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+  graph.nodes.push_back(function_node("src/b.ts", "persist", 20));
+  graph.fingerprints["src/b.ts:persist"] = fp({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+  graph.nodes.push_back(function_node("src/c.ts", "save", 30));
+  graph.fingerprints["src/c.ts:save"] = fp({1, 2, 3, 4, 5, 6, 7, 8, 11, 12});  // 8/12 = 0.67 with the copies... see below
+  graph.nodes.push_back(function_node("src/c.ts", "nearMiss", 40));
+  graph.fingerprints["src/c.ts:nearMiss"] = fp({1, 2, 3, 4, 5, 6, 21, 22, 23, 24});  // 6/14 = 0.43
+  graph.nodes.push_back(function_node("src/c.ts", "unrelated", 50));
+  graph.fingerprints["src/c.ts:unrelated"] = fp({31, 32, 33, 34, 35, 36, 37, 38, 39, 40});
+  graph.nodes.push_back(function_node("src/c.ts", "shortCopy", 60));
+  graph.fingerprints["src/c.ts:shortCopy"] = fp({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 12);  // under min_tokens 30
+  graph.nodes.push_back(function_node("src/c.ts", "noFingerprint", 70));
+  graph.nodes.push_back(function_node("tests/t1.ts", "helper", 1));
+  graph.fingerprints["tests/t1.ts:helper"] = fp({51, 52, 53, 54, 55, 56, 57, 58, 59, 60});
+  graph.nodes.push_back(function_node("tests/t2.ts", "helper", 1));
+  graph.fingerprints["tests/t2.ts:helper"] = fp({51, 52, 53, 54, 55, 56, 57, 58, 59, 60});
+  // Enrichment prose is never a function.
+  graph.nodes.push_back(cgraph::Node{.id = "doc:fn", .label = "writeFile", .source_file = "/proj/README.md", .kind = "function"});
+  return graph;
+}
+
+// Two identical copies whose every shingle but one is boilerplate shared by 600
+// other functions. The hot shingles are skipped when gathering candidates, but
+// the similarity must still be computed over the full sets: 1.0, not 1/6.
+cgraph::GraphSnapshot hot_shingle_fixture() {
+  cgraph::GraphSnapshot graph;
+  graph.build_state = cgraph::BuildState::DeterministicReady;
+  graph.nodes.push_back(file_node("src/hot.ts"));
+  for (std::uint32_t i = 0; i < 600; ++i) {
+    const auto name = "filler" + std::to_string(i);
+    graph.nodes.push_back(function_node("src/hot.ts", name, 100 + i * 10));
+    graph.fingerprints["src/hot.ts:" + name] = fp({1000, 1001, 1002, 1003, 1004, 5000 + i});
+  }
+  graph.nodes.push_back(function_node("src/hot.ts", "copyA", 1));
+  graph.fingerprints["src/hot.ts:copyA"] = fp({1000, 1001, 1002, 1003, 1004, 77});
+  graph.nodes.push_back(function_node("src/hot.ts", "copyB", 10));
+  graph.fingerprints["src/hot.ts:copyB"] = fp({1000, 1001, 1002, 1003, 1004, 77});
+  return graph;
+}
+
+int test_clones_view() {
+  cgraph::ReportRequest request;
+  request.view = cgraph::ReportView::Clones;
+  request.project_root = "/proj";
+  auto report = cgraph::build_clones_report(clones_fixture(), request);
+
+  // 9 functions in scope, 8 fingerprinted, 7 at or above the floor.
+  if (report.total_functions != 9 || report.total_fingerprinted != 8 || report.total_eligible != 7) {
+    return fail("clones: totals count functions, fingerprinted, eligible (" + std::to_string(report.total_functions) + ", " +
+                std::to_string(report.total_fingerprinted) + ", " + std::to_string(report.total_eligible) + ")");
+  }
+  if (report.hint.empty() || report.hint.find("1 of 9") == std::string::npos) {
+    return fail("clones: a function without a fingerprint produces the rescan hint");
+  }
+  // One production class: writeFile + persist (identical). save is 8/12 = 0.67
+  // with them, nearMiss lower, shortCopy under the floor, unrelated unrelated.
+  if (report.classes.size() != 1 || report.classes[0].members.size() != 2 || report.classes[0].similarity != 1.0 ||
+      report.classes[0].tokens != 60 || report.classes[0].members[0].label != "writeFile" ||
+      report.classes[0].members[0].source_file != "src/a.ts" || report.classes[0].members[0].line != 10 ||
+      report.classes[0].members[0].end_line != 15 || report.classes[0].members[1].label != "persist") {
+    return fail("clones: one production class of the two identical copies, members by file, root-relative, with extents");
+  }
+  // The two test helpers form a test class, bucketed apart.
+  if (report.test_classes.size() != 1 || report.test_classes[0].members.size() != 2 ||
+      report.test_classes[0].members[0].source_file != "tests/t1.ts" || report.total_classes != 1 ||
+      report.total_test_classes != 1 || report.total_members != 4) {
+    return fail("clones: test-root copies are a test class, counted in members");
+  }
+  // Lower the threshold: save joins the copies (0.67 >= 0.6), nearMiss does not
+  // (0.43); the class's similarity is its lowest pair.
+  cgraph::ReportRequest loose = request;
+  loose.threshold = 0.6;
+  const auto wide = cgraph::build_clones_report(clones_fixture(), loose);
+  if (wide.classes.size() != 1 || wide.classes[0].members.size() != 3 || wide.classes[0].members[2].label != "save" ||
+      std::abs(wide.classes[0].similarity - 8.0 / 12.0) > 1e-9) {
+    return fail("clones: threshold 0.6 admits the 0.67 copy; class similarity is the lowest pair");
+  }
+  // Lower the token floor: shortCopy joins.
+  cgraph::ReportRequest short_ok = request;
+  short_ok.min_tokens = 10;
+  const auto with_short = cgraph::build_clones_report(clones_fixture(), short_ok);
+  if (with_short.classes.size() != 1 || with_short.classes[0].members.size() != 3 || with_short.classes[0].tokens != 12 ||
+      with_short.total_eligible != 8) {
+    return fail("clones: min_tokens 10 admits the short copy and the class tokens is the shortest member");
+  }
+  // include_tests merges the test class into classes; scope narrows candidates.
+  cgraph::ReportRequest merged = request;
+  merged.include_tests = true;
+  const auto all = cgraph::build_clones_report(clones_fixture(), merged);
+  if (all.classes.size() != 2 || !all.test_classes.empty() || all.total_test_classes != 0) {
+    return fail("clones: include_tests merges test classes into classes");
+  }
+  cgraph::ReportRequest scoped = request;
+  scoped.scope = "tests";
+  const auto tests_only = cgraph::build_clones_report(clones_fixture(), scoped);
+  if (tests_only.total_functions != 2 || !tests_only.classes.empty() || tests_only.test_classes.size() != 1) {
+    return fail("clones: scope keeps only functions under the prefix");
+  }
+
+  // Hot shingles are skipped for candidacy only; the pair's Jaccard is exact.
+  const auto hot = cgraph::build_clones_report(hot_shingle_fixture(), request);
+  if (hot.classes.size() != 1 || hot.classes[0].members.size() != 2 || hot.classes[0].similarity != 1.0 ||
+      hot.classes[0].members[0].label != "copyA") {
+    return fail("clones: two copies whose shared shingles are mostly boilerplate still score 1.0 (" +
+                std::to_string(hot.classes.size()) + " classes)");
+  }
+
+  // Shedding: test classes go first, then production classes.
+  const auto full_tokens = cgraph::estimate_report_tokens(cgraph::render_clones_report(report, cgraph::ReportFormat::Json));
+  auto shed = report;
+  cgraph::shed_to_budget(shed, cgraph::ReportFormat::Json, full_tokens - 1);
+  if (shed.classes.size() != 1 || !shed.test_classes.empty() || shed.omitted_test_classes != 1 || shed.omitted_classes != 0) {
+    return fail("clones: one token short sheds the test class first");
+  }
+  auto unlimited = report;
+  cgraph::shed_to_budget(unlimited, cgraph::ReportFormat::Markdown, 0);
+  if (unlimited.test_classes.size() != 1) {
+    return fail("clones: budget 0 sheds nothing");
+  }
+
+  const auto json = cgraph::clones_report_json(report);
+  if (json["view"] != "clones" || json["totals"]["classes"] != 1 || json["totals"]["test_classes"] != 1 ||
+      json["totals"]["fingerprinted"] != 8 || json["classes"][0]["size"] != 2 || json["classes"][0]["similarity"] != 1.0 ||
+      json["classes"][0]["members"][0]["file"] != "src/a.ts" || json["classes"][0]["members"][0]["line"] != 10 ||
+      json["classes"][0]["members"][0]["end_line"] != 15 || json["classes"][0]["members"][0]["tokens"] != 60 ||
+      !json.contains("hint") || json["min_tokens"] != 30) {
+    return fail("clones: json carries classes, test_classes, totals, omitted, min_tokens and the hint");
+  }
+  const auto markdown = cgraph::render_clones_markdown(report);
+  for (const char* expected : {"# Function clones", "## Clone classes", "| 2 | 1.00 | 60 | `writeFile` src/a.ts:10-15<br>`persist` src/b.ts:20-25 |",
+                               "## Test-only clone classes", "`helper` tests/t1.ts:1-6", "> 1 of 9 functions have no fingerprint",
+                               "omitted: 0 classes, 0 test classes (of 1 class, 1 test class)"}) {
+    if (markdown.find(expected) == std::string::npos) {
+      return fail(std::string("clones markdown lacks: ") + expected);
+    }
+  }
+  return 0;
+}
+
+int test_clones_envelope() {
+  cgraph::DaemonState state;
+  state.project_root = "/proj";
+  cgraph::publish_graph_snapshot(state, clones_fixture());
+  const auto json = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "clones"}}));
+  if (!json.value("ok", false) || json["result"]["view"] != "clones" || json["result"]["classes"].size() != 1 ||
+      json["result"]["test_classes"].size() != 1 || !json["result"].contains("hint") ||
+      json["result"]["budget"] != cgraph::kDefaultReportBudget) {
+    return fail("clones envelope: json result carries both buckets, the hint and the budget");
+  }
+  const auto markdown = cgraph::handle_daemon_request(
+      state, cgraph::make_request("report", {{"view", "clones"}, {"format", "markdown"}, {"threshold", 0.6}, {"min_tokens", 10}}));
+  if (!markdown.value("ok", false) || !markdown["result"].contains("rendered") || markdown["result"].contains("classes") ||
+      markdown["result"]["totals"]["members"] != 6 || markdown["result"]["threshold"] != 0.6 || markdown["result"]["min_tokens"] != 10) {
+    return fail("clones envelope: markdown returns `rendered` plus totals and forwards threshold/min_tokens");
+  }
+  for (const char* diagram : {"mermaid", "svg"}) {
+    const auto response = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "clones"}, {"format", diagram}}));
+    if (response.value("ok", true) || response.value("code", std::string{}) != "report_format_unsupported") {
+      return fail(std::string("clones envelope: a diagram format is a typed error: ") + diagram);
+    }
+  }
+  const auto bad_floor = cgraph::handle_daemon_request(state, cgraph::make_request("report", {{"view", "clones"}, {"min_tokens", -1}}));
+  if (bad_floor.value("ok", true)) {
+    return fail("clones envelope: a negative min_tokens is rejected");
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
   for (const auto test : {test_grouping_and_test_exclusion, test_layers, test_cycles, test_scope_and_depth,
                           test_budget_shedding, test_renderers, test_daemon_envelope, test_types_view,
-                          test_types_budget_and_renderers, test_types_envelope}) {
+                          test_types_budget_and_renderers, test_types_envelope, test_clones_view, test_clones_envelope}) {
     if (const int rc = test(); rc != 0) {
       return rc;
     }

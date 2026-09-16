@@ -29,11 +29,19 @@ Supported operations:
   `min_members` members, default 3, take part) and `unreferenced` (no non-structural edge into
   the type from anything in the graph; same-file use is not an edge, so this is a lead, not a
   verdict); it renders `json` | `markdown`, and a diagram format answers
-  `code: "report_format_unsupported"`. `design` and `clones` answer
+  `code: "report_format_unsupported"`. `view: "clones"` groups functions whose bodies are at
+  least `threshold` similar (default 0.80) after identifiers and literals are normalized
+  (rename-insensitive fingerprints computed at extraction, compared by Jaccard over winnowed
+  5-token shingles) into `classes` with members' file:line-line, lowest pairwise `similarity` and
+  shortest body `tokens`; bodies under `min_tokens` (default 30) are skipped; classes whose members
+  all lie under test roots are `test_classes` unless `include_tests`; it renders `json` |
+  `markdown`; a `hint` says when functions lack fingerprints (a graph fast-loaded from a persist
+  written before fingerprints existed) and that `update .` computes them. `design` answers
   `code: "report_view_not_implemented"`. Whole rows are shed to fit `budget`; `omitted` always
   reports how many. A daemon that predates the op answers `unknown op: report`; hosts should
   surface that as "upgrade the daemon". Hosts also call `graph_report` when asked for the
-  architecture or a module map, and for type bloat, duplicate interfaces/structs, or dead types.
+  architecture or a module map, for type bloat, duplicate interfaces/structs, or dead types, and
+  for copy-pasted or duplicated logic.
 
 Hosts should prefer the thin client command surface unless they are implementing an MCP or always-on bridge that already speaks local JSON frames.
 

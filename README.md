@@ -255,7 +255,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 | `graph_impact` | Transitive blast radius of changing a node |
 | `graph_path` | Shortest path between two nodes |
 | `graph_context` | Token-budgeted source bundle for a node/query (with adaptive gather) |
-| `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; both sized to a budget |
+| `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; `view: "clones"`: near-duplicate function bodies grouped into classes; all sized to a budget |
 | `graph_update` | Content-verified sync; returns a `content_root` to pin reads |
 | `graph_status` | Daemon, graph, and enrichment status |
 | `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after |
@@ -382,8 +382,24 @@ cgraph report types --root /path/to/project --scope src                 # Markdo
 cgraph report types --root /path/to/project --format json --threshold 0.6 --min-members 2
 ```
 
-Both views are the `graph_report` MCP tool and the daemon `report` op; views `design` and
-`clones` are reserved and answer "not implemented".
+`cgraph report clones` finds copy-pasted functions. Every function body is fingerprinted at
+extraction: identifiers become `ID`, literals become `LIT`, comments vanish, and the remaining
+5-token shingles are hashed and winnowed, so two copies that differ only in names or constants
+compare equal and an edited copy scores by how much of it survived. Functions whose fingerprints
+are at least `--threshold` Jaccard-similar (default 0.80) form a **clone class**, listed largest
+first with every member's `file:line-line`, the lowest pairwise similarity and the shortest body
+in tokens. Bodies under `--min-tokens` (default 30) are skipped as boilerplate. Classes made only
+of test-root functions are listed separately unless `--include-tests`. Fingerprints are never
+written to `graph.json`; the daemon persists them beside it, and a graph fast-loaded from an
+older persist reports a hint until the next `update .`.
+
+```sh
+cgraph report clones --root /path/to/project --scope src                 # Markdown tables on stdout
+cgraph report clones --root /path/to/project --format json --threshold 0.7 --min-tokens 50
+```
+
+All three views are the `graph_report` MCP tool and the daemon `report` op; view `design` is
+reserved and answers "not implemented".
 
 ### Daemon & thin client
 

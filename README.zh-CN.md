@@ -226,7 +226,7 @@ fuzzer 预设需要带 libFuzzer 运行时的 Clang 工具链；若 Apple 命令
 | `graph_impact` | 改动某节点的传递影响范围 |
 | `graph_path` | 两个节点之间的最短路径 |
 | `graph_context` | 受 token 预算约束的源码打包（支持自适应聚合） |
-| `graph_report` | `view: "modules"`：模块依赖图（分层、环、导入/调用计数）；`view: "types"`：形状相同、同名重复、重叠和未被引用的类型定义；均按预算裁剪 |
+| `graph_report` | `view: "modules"`：模块依赖图（分层、环、导入/调用计数）；`view: "types"`：形状相同、同名重复、重叠和未被引用的类型定义；`view: "clones"`：近似重复的函数体分组；均按预算裁剪 |
 | `graph_update` | 内容校验式同步；返回 `content_root` 用于锁定后续读取 |
 | `graph_status` | 守护进程、图谱与增强状态 |
 | `graph_remember` / `graph_recall` | 会话记忆——`/compact` 前存档，之后恢复 |
