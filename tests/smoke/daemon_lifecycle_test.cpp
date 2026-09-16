@@ -4,6 +4,9 @@
 
 #include <chrono>
 #include <filesystem>
+#include <cstdint>
+#include <vector>
+#include <iterator>
 #include <fstream>
 
 namespace {
@@ -42,8 +45,18 @@ int main() {
   cgraph::publish_graph_snapshot(state, std::move(fused));
 
   const auto graph_path = root / "graph.json";
-  if (!cgraph::persist_graph_snapshot(deterministic, graph_path)) {
+  // Function fingerprints ride in a sidecar, never in graph.json (report-clones).
+  auto with_fingerprints = deterministic;
+  with_fingerprints.fingerprints["b"] = cgraph::FunctionFingerprint{.shingles = {3, 7, 11}, .tokens = 42};
+  if (!cgraph::persist_graph_snapshot(with_fingerprints, graph_path)) {
     return 1;
+  }
+  {
+    std::ifstream graph_file(graph_path);
+    const std::string graph_text((std::istreambuf_iterator<char>(graph_file)), std::istreambuf_iterator<char>());
+    if (graph_text.find("fingerprint") != std::string::npos || !std::filesystem::exists(root / "fingerprints.json")) {
+      return 1;  // graph.json stays the parity export; the sidecar exists beside it
+    }
   }
 
   cgraph::DaemonState reloaded;
@@ -53,6 +66,16 @@ int main() {
   const auto snapshot = cgraph::read_graph_snapshot(reloaded);
   if (snapshot->nodes.size() != 2 || snapshot->edges.size() != 1 ||
       snapshot->build_state != cgraph::BuildState::DeterministicReady || snapshot->cache_hit_rate != 0.5) {
+    return 1;
+  }
+  if (const auto fp = snapshot->fingerprints.find("b");
+      fp == snapshot->fingerprints.end() || fp->second.tokens != 42 || fp->second.shingles != std::vector<std::uint64_t>{3, 7, 11}) {
+    return 1;  // fingerprints survive persist -> load
+  }
+  // An older persist has no sidecar: the graph still loads, with no fingerprints.
+  std::filesystem::remove(root / "fingerprints.json");
+  cgraph::DaemonState older;
+  if (!cgraph::load_graph_snapshot(older, graph_path) || !cgraph::read_graph_snapshot(older)->fingerprints.empty()) {
     return 1;
   }
 

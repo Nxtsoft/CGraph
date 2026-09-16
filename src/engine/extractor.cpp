@@ -1,5 +1,7 @@
 #include "cgraph/extractor.hpp"
 
+#include "cgraph/fingerprint.hpp"
+
 #include "cgraph/normalize.hpp"
 #include "cgraph/parser_pool.hpp"
 
@@ -376,6 +378,12 @@ void walk_node(
         if (config.relation_handler) {
           config.relation_handler(node, context, id, raw_relations);
         }
+        // Fingerprint the body for `report clones`: the statements, not the
+        // signature, so two copies that differ only in name and parameter names
+        // compare equal. A grammar without a body field (a Python `def` is all
+        // body) fingerprints the whole definition.
+        const auto body = first_child_by_fields(node, config.body_fields);
+        fragment.fingerprints[id] = fingerprint_function(body.value_or(node), context.source);
         child_scope = id;
         child_kind = "function";
       }

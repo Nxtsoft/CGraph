@@ -18,6 +18,7 @@ add_library(cgraph_engine STATIC
   file_cache.cpp
   file_extraction.cpp
   file_watcher.cpp
+  fingerprint.cpp
   fragment_json.cpp
   graph_builder.cpp
   incremental_update.cpp

@@ -55,7 +55,11 @@ void print_usage() {
       "  cgraph report types [--root PATH] [--format json|markdown] [--scope PREFIX] [--threshold 0.80]\n"
       "                      [--min-members 3] [--budget N] [--include-tests] [--daemon PATH]\n"
       "        identical shapes under different names, one name declared in several files,\n"
-      "        subset/overlapping shapes, and unreferenced types; views design|clones are reserved\n"
+      "        subset/overlapping shapes, and unreferenced types\n"
+      "  cgraph report clones [--root PATH] [--format json|markdown] [--scope PREFIX] [--threshold 0.80]\n"
+      "                       [--min-tokens 30] [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        function bodies at least threshold similar after renaming, grouped into clone classes;\n"
+      "        view design is reserved\n"
       "  cgraph seam gen --seam SPEC.json --graphs NAME=graph.json [--graphs ...] --out DROPDIR\n"
       "        resolve a cross-service seam spec against consumer graphs into a contract fragment\n"
       "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] --out DIR\n"
@@ -253,15 +257,15 @@ int run_stats(const Args& args) {
 int run_report(int argc, char** argv) {
   const std::string view = argc >= 3 ? argv[2] : "";
   if (view.empty() || view.starts_with("--")) {
-    std::cerr << "usage: cgraph report <modules|types|design|clones> [--root PATH] [--format json|mermaid|svg|markdown]\n"
-                 "                     [--scope PREFIX] [--depth N] [--threshold X] [--min-members N] [--budget N]\n"
-                 "                     [--include-tests] [--daemon PATH]\n";
+    std::cerr << "usage: cgraph report <modules|types|clones|design> [--root PATH] [--format json|mermaid|svg|markdown]\n"
+                 "                     [--scope PREFIX] [--depth N] [--threshold X] [--min-members N] [--min-tokens N]\n"
+                 "                     [--budget N] [--include-tests] [--daemon PATH]\n";
     return 2;
   }
   cgraph::ClientRequest request{
       .project_root = std::filesystem::current_path(),
       .operation = "report",
-      .params = {{"view", view}, {"format", view == "types" ? "markdown" : "mermaid"}},
+      .params = {{"view", view}, {"format", view == "types" || view == "clones" ? "markdown" : "mermaid"}},
   };
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -280,6 +284,8 @@ int run_report(int argc, char** argv) {
       request.params["threshold"] = std::stod(argv[++index]);
     } else if (arg == "--min-members" && has_value) {
       request.params["min_members"] = std::stoi(argv[++index]);
+    } else if (arg == "--min-tokens" && has_value) {
+      request.params["min_tokens"] = std::stoi(argv[++index]);
     } else if (arg == "--include-tests") {
       request.params["include_tests"] = true;
     } else if (arg == "--daemon" && has_value) {
@@ -312,6 +318,9 @@ int run_report(int argc, char** argv) {
     std::cout << payload["rendered"].get<std::string>();
   } else {
     std::cout << payload.dump(2) << '\n';
+  }
+  if (payload.contains("hint")) {
+    std::cerr << "report: " << payload["hint"].get<std::string>() << '\n';
   }
   // Each view has its own totals (modules/edges; types/with_members/identical/
   // duplicates/overlaps/unreferenced), so print whatever the daemon counted.

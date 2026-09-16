@@ -27,6 +27,7 @@ grep/read calls that burn context.
 | "Load context on X" / before editing or reviewing X | `graph_context` `{query or id, budget}` — focal node + most-relevant neighbors with snippets, packed to a token budget |
 | "What's the architecture? Give me a module map / what depends on what at the package level / where does a new file belong?" | `graph_report` `{view:"modules", format:"mermaid", scope?, depth?}` — files grouped into modules, imports/calls between them with counts, layers (0 = nothing depends on it), cycles listed; whole rows shed to the budget with `omitted` reported |
 | "Which types are duplicated / redundant / bloated? Which interfaces or structs have the same shape? Which types are dead?" | `graph_report` `{view:"types", format:"markdown", scope?, threshold?, min_members?}` — `identical` (groups of differently named types with the same members), `duplicates` (one name in several files, with member overlap), `overlaps` (subset / ≥ threshold Jaccard pairs), `unreferenced` (no other symbol or file refers to them), each with file:line and members |
+| "Where is copy-pasted code? Which functions are near-duplicates? What should be extracted into a shared helper?" | `graph_report` `{view:"clones", format:"markdown", scope?, threshold?, min_tokens?}` — `classes` of functions whose bodies are ≥ threshold similar after renaming (members with file:line-line, lowest pairwise similarity, shortest body in tokens); test-only classes in `test_classes` |
 | "Verify the graph is current before I rely on it" | `graph_update {path:"."}` — blocking content-verified synchronization; returns `freshness.content_root`. Pin subsequent reads by passing the root as `expected_content_root`. |
 | "Is the graph current? / I just changed files" | Nothing for ordinary reads — the daemon watches the tree and folds edits in within seconds. Use `graph_update` when you need a verified content_root to pin reads. |
 
@@ -90,7 +91,20 @@ grep/read calls that burn context.
   shape to compare. Only json and markdown; `min_members` (default 3) keeps
   `{id, name}` pairs out. Under the budget, identical groups survive first,
   then duplicates, then overlaps, then unreferenced; `omitted` says what fell.
-  Views `design` and `clones` are reserved and answer "not implemented".
+- `graph_report` with `view:"clones"` is the duplicate-code call. Every
+  function body is fingerprinted at extraction with identifiers and literals
+  normalized away, so two copies that differ only in names, string literals or
+  numbers compare equal, and an edited copy scores by how much of its
+  token stream survived; `threshold` 0.80 (the default) is the "80% similar"
+  fallow and SourcererCC use. `classes` are ranked largest first, then most
+  similar, then longest; each member carries `file:line-end_line` so you can
+  open all copies at once. Bodies under `min_tokens` (default 30) are getters,
+  stubs and one-liners and are skipped. Classes whose members are all under test
+  roots are `test_classes` -- real, common, less urgent -- unless
+  `include_tests:true` merges them. A `hint` in the response means functions
+  have no fingerprint yet (the daemon fast-loaded an older persist): call
+  `graph_update` and retry. Only json and markdown.
+  View `design` is reserved and answers "not implemented".
 
 ## Freshness-sensitive navigation
 
