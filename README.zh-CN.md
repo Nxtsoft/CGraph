@@ -130,13 +130,13 @@ vendor/           内置的 tree-sitter core 与语法
 下载当前 Linux x64 版本并构建第一个图谱：
 
 ```sh
-mkdir -p "$HOME/.local/lib/cgraph/bin-v0.3.0" "$HOME/.local/bin"
-curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz \
-  -o "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz"
-tar -xzf "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz" \
-  -C "$HOME/.local/lib/cgraph/bin-v0.3.0"
+mkdir -p "$HOME/.local/lib/cgraph/bin-v0.4.0" "$HOME/.local/bin"
+curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.4.0/cgraph-linux-x64.tar.gz \
+  -o "$HOME/.local/lib/cgraph/bin-v0.4.0/cgraph.tar.gz"
+tar -xzf "$HOME/.local/lib/cgraph/bin-v0.4.0/cgraph.tar.gz" \
+  -C "$HOME/.local/lib/cgraph/bin-v0.4.0"
 for name in cgraph graphd cgraph-client cgraph-mcp; do
-  ln -sf "$HOME/.local/lib/cgraph/bin-v0.3.0/$name" "$HOME/.local/bin/$name"
+  ln -sf "$HOME/.local/lib/cgraph/bin-v0.4.0/$name" "$HOME/.local/bin/$name"
 done
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -148,15 +148,15 @@ cgraph --root . --out cgraph-out
 
 ## 安装与配置
 
-`bin-v0.3.0` 发布版的每个压缩包都包含四个可执行文件（`cgraph`、`graphd`、`cgraph-client` 和 `cgraph-mcp`）：
+`bin-v0.4.0` 发布版的每个压缩包都包含四个可执行文件（`cgraph`、`graphd`、`cgraph-client` 和 `cgraph-mcp`）：
 
 | 平台 | 架构 | 压缩包 |
 | --- | --- | --- |
-| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz) |
-| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-arm64.tar.gz) |
-| macOS | Apple 芯片 / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-macos-arm64.tar.gz) |
+| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.4.0/cgraph-linux-x64.tar.gz) |
+| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.4.0/cgraph-linux-arm64.tar.gz) |
+| macOS | Apple 芯片 / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.4.0/cgraph-macos-arm64.tar.gz) |
 
-用 `uname -s` 和 `uname -m` 选择压缩包。快速开始把带版本的文件安装到 `~/.local/lib/cgraph/bin-v0.3.0`，并在 `~/.local/bin` 中创建稳定的软链接；如有需要，请把该目录加入 `PATH`。MCP 客户端配置应使用带版本的绝对路径，因为客户端未必继承 shell 的 `PATH`。
+用 `uname -s` 和 `uname -m` 选择压缩包。快速开始把带版本的文件安装到 `~/.local/lib/cgraph/bin-v0.4.0`，并在 `~/.local/bin` 中创建稳定的软链接；如有需要，请把该目录加入 `PATH`。MCP 客户端配置应使用带版本的绝对路径，因为客户端未必继承 shell 的 `PATH`。
 
 ### 从源码构建
 
@@ -243,8 +243,8 @@ Claude Code 会按会话设置 `CLAUDE_PROJECT_DIR`，因此一次注册即可�
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.4.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.4.0/graphd
 ```
 
 或在仓库根目录提交一个按项目作用域的 `.mcp.json`，以便与协作者共享：
@@ -253,8 +253,8 @@ claude mcp add --scope user --transport stdio cgraph \
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp",
-      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
+      "command": "/home/you/.local/lib/cgraph/bin-v0.4.0/cgraph-mcp",
+      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.4.0/graphd"]
     }
   }
 }
@@ -268,16 +268,16 @@ Codex 不设置 `CLAUDE_PROJECT_DIR`，因此服务器回退到 Codex 启动它�
 
 ```sh
 codex mcp add cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.4.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.4.0/graphd
 ```
 
 ……或直接编辑 `~/.codex/config.toml`（在 `args` 中加入 `"--root", "/abs/path/to/your/project"` 可无视工作目录锁定某个项目）：
 
 ```toml
 [mcp_servers.cgraph]
-command = "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp"
-args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
+command = "/home/you/.local/lib/cgraph/bin-v0.4.0/cgraph-mcp"
+args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.4.0/graphd"]
 ```
 
 编辑后重启 Codex，在 TUI 中运行 `/mcp` 确认。
