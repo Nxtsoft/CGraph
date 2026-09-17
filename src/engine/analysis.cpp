@@ -100,39 +100,56 @@ void write_membership(GraphSnapshot& snapshot, const igraph_vector_int_t& member
 // index i in the layout matrix maps directly to snapshot.nodes[i] because
 // make_igraph assigns vertex indices by node position.
 //
-// Scalable-layout choice: DRL (Distributed Recursive Layout) for large graphs
-// where a Fruchterman-Reingold pass would be prohibitively slow, FR for smaller
-// graphs where it yields a cleaner, more spread result.
+// One layout algorithm at every size: Fruchterman-Reingold with igraph's
+// AUTOGRID, which switches to the O(n) grid approximation above 1,000 vertices.
+// The earlier choice handed graphs of 2,000 nodes or more to DrL on the
+// assumption that FR would be prohibitively slow there; measured on this
+// igraph (fix-layout-cliff), DrL was the slow one -- 12-20 s at 2,007 nodes
+// against FR's 0.3 s, and 227 s of a 253 s build at 17,439 nodes -- and the
+// hard threshold made a repo's build time jump fifty-fold the day its graph
+// crossed 2,000 nodes, which CGraph's own tree did in #87.
 void write_layout(GraphSnapshot& snapshot, const igraph_t& graph) {
   igraph_matrix_t coords;
   if (igraph_matrix_init(&coords, 0, 0) != IGRAPH_SUCCESS) {
     return;
   }
 
-  constexpr std::size_t kDrlThreshold = 2000;
-  igraph_error_t error = IGRAPH_FAILURE;
-  if (snapshot.nodes.size() >= kDrlThreshold) {
-    igraph_layout_drl_options_t options;
-    if (igraph_layout_drl_options_init(&options, IGRAPH_LAYOUT_DRL_DEFAULT) == IGRAPH_SUCCESS) {
-      error = igraph_layout_drl(&graph, &coords, /*use_seed=*/false, &options, /*weights=*/nullptr);
-    }
-  } else {
-    const auto niter = static_cast<igraph_int_t>(500);
-    const auto start_temp = static_cast<igraph_real_t>(std::sqrt(static_cast<double>(snapshot.nodes.size())));
-    error = igraph_layout_fruchterman_reingold(
-        &graph, &coords, /*use_seed=*/false, niter, start_temp, IGRAPH_LAYOUT_AUTOGRID,
-        /*weights=*/nullptr, /*minx=*/nullptr, /*maxx=*/nullptr, /*miny=*/nullptr, /*maxy=*/nullptr);
-  }
+  const auto niter = static_cast<igraph_int_t>(kLayoutIterations);
+  const auto start_temp = static_cast<igraph_real_t>(std::sqrt(static_cast<double>(snapshot.nodes.size())));
+  const igraph_error_t error = igraph_layout_fruchterman_reingold(
+      &graph, &coords, /*use_seed=*/false, niter, start_temp, IGRAPH_LAYOUT_AUTOGRID,
+      /*weights=*/nullptr, /*minx=*/nullptr, /*maxx=*/nullptr, /*miny=*/nullptr, /*maxy=*/nullptr);
 
   if (error == IGRAPH_SUCCESS &&
       static_cast<std::size_t>(igraph_matrix_nrow(&coords)) == snapshot.nodes.size() &&
       igraph_matrix_ncol(&coords) >= 2) {
+    // igraph returns unit-scale coordinates (a 1,600-node graph spans about
+    // 20 units). The viewer adopts them verbatim as pixels and clamps its fit
+    // zoom, so unscaled every node landed in one blob. Rescale to a canvas-
+    // sized square that grows with sqrt(n), centered on the origin, keeping
+    // the layout's shape and determinism.
+    double min_x = MATRIX(coords, 0, 0);
+    double max_x = min_x;
+    double min_y = MATRIX(coords, 0, 1);
+    double max_y = min_y;
+    for (std::size_t index = 1; index < snapshot.nodes.size(); ++index) {
+      const auto row = static_cast<igraph_int_t>(index);
+      min_x = std::min(min_x, MATRIX(coords, row, 0));
+      max_x = std::max(max_x, MATRIX(coords, row, 0));
+      min_y = std::min(min_y, MATRIX(coords, row, 1));
+      max_y = std::max(max_y, MATRIX(coords, row, 1));
+    }
+    const double side = std::max(kMinCanvasSide, kPixelsPerSqrtNode * std::sqrt(static_cast<double>(snapshot.nodes.size())));
+    const double span = std::max({max_x - min_x, max_y - min_y, 1e-9});
+    const double scale = side / span;
+    const double center_x = (min_x + max_x) / 2.0;
+    const double center_y = (min_y + max_y) / 2.0;
     for (std::size_t index = 0; index < snapshot.nodes.size(); ++index) {
       const auto row = static_cast<igraph_int_t>(index);
       std::ostringstream x_value;
       std::ostringstream y_value;
-      x_value << std::fixed << std::setprecision(2) << MATRIX(coords, row, 0);
-      y_value << std::fixed << std::setprecision(2) << MATRIX(coords, row, 1);
+      x_value << std::fixed << std::setprecision(2) << (MATRIX(coords, row, 0) - center_x) * scale;
+      y_value << std::fixed << std::setprecision(2) << (MATRIX(coords, row, 1) - center_y) * scale;
       snapshot.nodes[index].properties["x"] = x_value.str();
       snapshot.nodes[index].properties["y"] = y_value.str();
     }

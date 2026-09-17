@@ -1,0 +1,28 @@
+name: Change impact benchmark
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/change_impact_benchmark*.py'
+      - 'scripts/bootstrap_eval.py'
+      - 'bench/change-impact-cases.json'
+      - '.github/workflows/change-impact-benchmark.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/change_impact_benchmark*.py'
+      - 'scripts/bootstrap_eval.py'
+      - 'bench/change-impact-cases.json'
+      - '.github/workflows/change-impact-benchmark.yml'
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify history replay and scoring with real Git objects
+        run: python3 -m unittest discover -s scripts -p 'change_impact_benchmark_test.py' -v

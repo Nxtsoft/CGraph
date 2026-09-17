@@ -245,6 +245,14 @@ void semantic_dedup_impl(
     if (node.kind == "file") {
       continue;
     }
+    // An endpoint's identity is its method and path, and sibling routes are
+    // deliberately near-identical strings (`GET /notebooks/:id/notes` beside
+    // `GET /notebooks/:id/votes`): a fuzzy match would fold two contracts into
+    // one and misroute every consumer edge. resolve_contracts already minted one
+    // node per distinct path, so endpoints never participate in dedup.
+    if (node.kind == "endpoint" || node.kind == "schema") {
+      continue;  // a contract schema's identity is its exact name too (`Note` beside `Notes`)
+    }
 
     // Pass 1: exact-label merge, restricted to one source file AND one
     // declaration site. Two files that declare the same name ("Props", "index",

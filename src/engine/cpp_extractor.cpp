@@ -64,7 +64,26 @@ void collect_type_refs(const TSNode& node, std::string_view source, bool generic
     }
   };
 
-  if (type == "type_identifier" || type == "qualified_identifier" || type == "namespace_identifier") {
+  if (type == "qualified_identifier") {
+    // `std::vector<Node>` parses as qualified_identifier(scope: std, name:
+    // template_type(vector, <Node>)): the template and its arguments live in
+    // the `name` child. Treating the qualified text as a leaf emitted the tail
+    // "vector<Node>" and never walked the arguments, so no namespace-qualified
+    // template ever produced a generic_arg reference -- every signature naming
+    // RawCall in this engine is `std::span<const RawCall>` or
+    // `std::vector<RawCall>&`, and RawCall had no incoming reference (#94).
+    const auto name = ts_node_child_by_field_name(node, "name", 4);
+    if (!ts_node_is_null(name)) {
+      const std::string_view name_type = ts_node_type(name);
+      if (name_type == "template_type" || name_type == "qualified_identifier") {
+        collect_type_refs(name, source, generic, out);
+        return;
+      }
+    }
+    emit(node_text(node, source));
+    return;
+  }
+  if (type == "type_identifier" || type == "namespace_identifier") {
     emit(node_text(node, source));
     return;
   }
@@ -211,11 +230,237 @@ namespace {
   return {};
 }
 
+// The `::`-joined scopes a qualified name spells, outermost first. `a::b::f`
+// parses as qualified_identifier(scope: a, name: qualified_identifier(scope: b,
+// name: f)), so collect each scope while descending to the leaf. A scope is
+// recorded as its bare identifier only -- `Outer<proj::Beast>` is recorded as
+// `Outer` -- so every segment is `::`-free and the resolver can split the joined
+// text on `::` without ever cutting inside a template argument (the
+// fabricated-name failure callee_leaf_name exists to prevent).
+//
+// Empty for an unqualified name, and empty when a scope names nothing a
+// declaration could carry (`decltype(x)::f`): the resolver's scope gate runs
+// only on a non-empty qualifier, so such a call resolves on its bare name.
+[[nodiscard]] std::string qualified_scope(const TSNode& node, std::string_view source) {
+  std::string scope;
+  TSNode current = node;
+  for (int depth = 0; depth < 24 && !ts_node_is_null(current); ++depth) {
+    const std::string_view type = ts_node_type(current);
+    if (type == "template_function" || type == "template_method") {
+      current = ts_node_child_by_field_name(current, "name", 4);
+      continue;
+    }
+    if (type != "qualified_identifier") {
+      break;
+    }
+    const auto scope_node = ts_node_child_by_field_name(current, "scope", 5);
+    if (!ts_node_is_null(scope_node)) {
+      std::string segment;
+      const std::string_view scope_type = ts_node_type(scope_node);
+      if (scope_type == "template_type") {
+        if (const auto name = ts_node_child_by_field_name(scope_node, "name", 4); !ts_node_is_null(name)) {
+          segment = std::string(node_text(name, source));
+        }
+      } else if (scope_type == "namespace_identifier" || scope_type == "type_identifier" ||
+                 scope_type == "identifier") {
+        segment = std::string(node_text(scope_node, source));
+      }
+      if (segment.empty() || segment.find("::") != std::string::npos || segment.find('<') != std::string::npos) {
+        return {};
+      }
+      if (!scope.empty()) {
+        scope += "::";
+      }
+      scope += segment;
+    }
+    current = ts_node_child_by_field_name(current, "name", 4);
+  }
+  return scope;
+}
+
+// The outermost segment of a `::`-joined scope: the only one a template
+// parameter or a namespace alias can be.
+[[nodiscard]] std::string scope_root(const std::string& scope) {
+  return scope.substr(0, scope.find("::"));
+}
+
+// Whether `name` is a type parameter of a template enclosing `node`. `T::make()`
+// inside `template <typename T>` names the scope of whatever T is instantiated
+// with, which no declaration in the project carries.
+[[nodiscard]] bool names_template_parameter(const TSNode& node, const std::string& name, std::string_view source) {
+  for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
+    if (std::string_view(ts_node_type(parent)) != "template_declaration") {
+      continue;
+    }
+    const auto parameters = ts_node_child_by_field_name(parent, "parameters", 10);
+    if (ts_node_is_null(parameters)) {
+      continue;
+    }
+    const std::uint32_t count = ts_node_named_child_count(parameters);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const auto parameter = ts_node_named_child(parameters, index);
+      const std::uint32_t parts = ts_node_named_child_count(parameter);
+      for (std::uint32_t part = 0; part < parts; ++part) {
+        const auto named = ts_node_named_child(parameter, part);
+        if (std::string_view(ts_node_type(named)) == "type_identifier" && node_text(named, source) == name) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// The namespace a `namespace <name> = proj::detail;` alias stands for, looked up
+// from `node` outwards, or empty when no enclosing scope declares such an alias.
+// The alias is a local spelling; the namespace is what the declaration carries,
+// so resolution has to see through it.
+[[nodiscard]] std::string namespace_alias_target(const TSNode& node, const std::string& name, std::string_view source) {
+  // C++ binds an alias before it is used, so each enclosing scope is scanned
+  // only up to the call itself, with a cursor: `ts_node_named_child(parent, i)`
+  // descends from the parent every time, which turns one file-level scan into
+  // quadratic work (measured: +70 ms of extraction on this repo's own src/).
+  const auto before = ts_node_start_byte(node);
+  for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
+    TSTreeCursor cursor = ts_tree_cursor_new(parent);
+    std::string target;
+    if (ts_tree_cursor_goto_first_child(&cursor)) {
+      do {
+        const auto child = ts_tree_cursor_current_node(&cursor);
+        if (ts_node_start_byte(child) >= before) {
+          break;
+        }
+        if (std::string_view(ts_node_type(child)) != "namespace_alias_definition") {
+          continue;
+        }
+        const auto alias = ts_node_child_by_field_name(child, "name", 4);
+        if (ts_node_is_null(alias) || node_text(alias, source) != name) {
+          continue;
+        }
+        // The aliased namespace is the definition's other named child: a
+        // `namespace_identifier` for `= detail`, a `nested_namespace_specifier`
+        // for `= proj::detail`.
+        const std::uint32_t parts = ts_node_named_child_count(child);
+        for (std::uint32_t part = 0; part < parts; ++part) {
+          const auto aliased = ts_node_named_child(child, part);
+          const std::string_view aliased_type = ts_node_type(aliased);
+          if (!ts_node_eq(aliased, alias) &&
+              (aliased_type == "namespace_identifier" || aliased_type == "nested_namespace_specifier")) {
+            target = node_text(aliased, source);
+          }
+        }
+      } while (ts_tree_cursor_goto_next_sibling(&cursor));
+    }
+    ts_tree_cursor_delete(&cursor);
+    if (!target.empty()) {
+      return target;
+    }
+  }
+  return {};
+}
+
+// The scope a definition's own declarator names: `int proj::Cache::reload() {}`
+// declares a member of `proj::Cache`, and nothing else records that owner --
+// the in-class prototype is a field_declaration, which gets no node of its own,
+// and declarator_name reduces the definition's label to `reload`.
+[[nodiscard]] std::string declarator_scope(const TSNode& node, std::string_view source) {
+  if (ts_node_is_null(node)) {
+    return {};
+  }
+  if (std::string_view(ts_node_type(node)) == "qualified_identifier") {
+    return qualified_scope(node, source);
+  }
+  return declarator_scope(ts_node_child_by_field_name(node, "declarator", 10), source);
+}
+
 }  // namespace
 
 std::string cpp_callee_name(const TSNode& node, const ExtractionContext& context) {
   return callee_leaf_name(node, context.source, 0);
 }
+
+std::string cpp_callee_scope(const TSNode& node, const ExtractionContext& context) {
+  auto scope = qualified_scope(node, context.source);
+  if (scope.empty()) {
+    return {};
+  }
+  const auto root = scope_root(scope);
+  // A dependent scope names no declaration, so the whole qualifier is refused
+  // and the call resolves on its bare name; an aliased one names a real
+  // namespace under a local spelling, so it is rewritten to that namespace.
+  if (names_template_parameter(node, root, context.source)) {
+    return {};
+  }
+  if (const auto aliased = namespace_alias_target(node, root, context.source); !aliased.empty()) {
+    scope.replace(0, root.size(), aliased);
+  }
+  return scope;
+}
+
+namespace {
+
+// The `::`-joined names of the namespaces enclosing `node`, outermost first, or
+// empty at file scope. An anonymous namespace contributes "(anonymous)".
+[[nodiscard]] std::string enclosing_namespace_scope(const TSNode& node, std::string_view source) {
+  std::vector<std::string> names;
+  for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
+    if (std::string_view(ts_node_type(parent)) != "namespace_definition") {
+      continue;
+    }
+    // An inline namespace is transparent to qualified lookup -- `proj::f()`
+    // finds a declaration in `proj::v1` when v1 is inline -- so it contributes
+    // no segment, and a call that spells it is the one that no longer matches.
+    if (const auto first = ts_node_child(parent, 0);
+        !ts_node_is_null(first) && node_text(first, source) == "inline") {
+      continue;
+    }
+    const auto name = ts_node_child_by_field_name(parent, "name", 4);
+    names.push_back(ts_node_is_null(name) ? std::string("(anonymous)") : std::string(node_text(name, source)));
+  }
+  std::string scope;
+  for (auto it = names.rbegin(); it != names.rend(); ++it) {
+    if (!scope.empty()) {
+      scope += "::";
+    }
+    scope += *it;
+  }
+  return scope;
+}
+
+// Stamps `scope` on the symbol node the walk just added for `node`, so call
+// resolution can check a qualified callee against the declaration's own scope:
+// the enclosing namespaces, plus whatever the declarator itself qualifies
+// (`int proj::Cache::reload() {}` is declared in `proj::Cache`). Nothing is
+// stamped at file scope, keeping namespace-free graphs byte-identical.
+void stamp_namespace_scope(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
+  const std::string_view node_type = ts_node_type(node);
+  if (node_type != "function_definition" && node_type != "class_specifier" && node_type != "struct_specifier" &&
+      node_type != "union_specifier" && node_type != "enum_specifier") {
+    return;
+  }
+  auto scope = enclosing_namespace_scope(node, context.source);
+  if (const auto declared = declarator_scope(node, context.source); !declared.empty()) {
+    if (!scope.empty()) {
+      scope += "::";
+    }
+    scope += declared;
+  }
+  if (scope.empty()) {
+    return;
+  }
+  const auto location = source_location(node);
+  for (auto it = fragment.nodes.rbegin(); it != fragment.nodes.rend(); ++it) {
+    if (it->source_file != context.source_file || !it->source_location.has_value() ||
+        it->kind == "field" || it->source_location->start_line != location.start_line ||
+        it->source_location->start_column != location.start_column) {
+      continue;
+    }
+    it->properties["scope"] = scope;
+    return;
+  }
+}
+
+}  // namespace
 
 void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
   if (std::string_view(ts_node_type(node)) != "preproc_include") {
@@ -371,7 +616,8 @@ void cpp_relation_handler(const TSNode& node, const ExtractionContext& context, 
   }
 }
 
-void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/, Fragment& fragment, std::vector<RawCall>&) {
+void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/, Fragment& fragment, std::vector<RawCall>&, std::vector<RawRelation>&) {
+  stamp_namespace_scope(node, context, fragment);
   const std::string_view node_type = ts_node_type(node);
   if (node_type != "class_specifier" && node_type != "struct_specifier") {
     return;
@@ -400,21 +646,7 @@ void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const 
     if (field_name.empty()) {
       continue;
     }
-    const auto field_id = make_id(context.source_file + ":" + class_name + "::" + field_name);
-    fragment.nodes.push_back(Node{
-        .id = field_id,
-        .label = field_name,
-        .source_file = context.source_file,
-        .source_location = source_location(member),
-        .kind = "field",
-        .confidence = Confidence::Extracted,
-    });
-    fragment.edges.push_back(Edge{
-        .source = class_id,
-        .target = field_id,
-        .relation = "defines",
-        .confidence = Confidence::Extracted,
-    });
+    add_field_node(context, class_id, class_name, field_name, source_location(member), {}, fragment);
   }
 }
 

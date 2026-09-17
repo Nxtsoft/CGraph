@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string_view>
 #include <vector>
+#include <set>
 
 namespace {
 
@@ -530,6 +531,60 @@ bool check_kotlin_extraction() {
 }  // namespace
 
 int main() {
+  struct MemberCase { cgraph::DetectedLanguage language; std::string source; };
+  for (const auto& test : std::vector<MemberCase>{
+      {cgraph::DetectedLanguage::Go, "package main\ntype First struct { Size, Count int; Name string }\ntype Second struct { Size, Count int; Name string }"},
+      {cgraph::DetectedLanguage::Rust, "struct First { Size: i32, Count: i32, Name: String } struct Second { Size: i32, Count: i32, Name: String }"},
+      {cgraph::DetectedLanguage::Java, "class First { int Size, Count; String Name; } record Second(int Size, int Count, String Name) {}"},
+  }) {
+    const auto result = cgraph::extract_configured_language(test.language, {.source_file = "members", .source = test.source});
+    if (!result) return 1;
+    for (const std::string owner : {"First", "Second"}) {
+      std::set<std::string> labels;
+      for (const auto& edge : result->fragment.edges) {
+        if (edge.relation != "defines" || edge.source != cgraph::make_id("members:" + owner)) continue;
+        for (const auto& field : result->fragment.nodes) {
+          if (field.id != edge.target) continue;
+          if (field.kind != "field" || field.id != cgraph::make_id("members:" + owner + "::" + field.label)) return 1;
+          if (!field.properties.contains("type_text")) return 1;
+          labels.insert(field.label);
+        }
+      }
+      if (labels != std::set<std::string>{"Size", "Count", "Name"}) { std::cerr << "missing members on " << owner << '\n'; return 1; }
+    }
+  }
+
+  // A field must never take the id a function wants: `Config::path` and
+  // `config_path` normalize to the same id, and before the shared guard the
+  // field claimed it and the function was renamed to `..._2_0` -- a stable
+  // function id changing because a struct one line up has a matching member.
+  {
+    const auto result = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Rust,
+        {.source_file = "c.rs",
+         .source = "pub struct Config { pub path: String }\npub fn config_path() -> u8 { 0 }\n"});
+    if (!result) return 1;
+    const cgraph::Node* function = nullptr;
+    const cgraph::Node* field = nullptr;
+    for (const auto& node : result->fragment.nodes) {
+      if (node.kind == "function" && node.label == "config_path") function = &node;
+      if (node.kind == "field" && node.label == "path") field = &node;
+    }
+    if (function == nullptr || field == nullptr) return 1;
+    if (function->id != cgraph::make_id("c.rs:config_path")) {
+      std::cerr << "rust: function id moved to " << function->id << '\n';
+      return 1;
+    }
+    if (field->id == function->id) return 1;
+    bool defines_the_field = false;
+    for (const auto& edge : result->fragment.edges) {
+      if (edge.relation != "defines" || edge.source != cgraph::make_id("c.rs:Config")) continue;
+      if (edge.target == function->id) return 1;
+      defines_the_field = defines_the_field || edge.target == field->id;
+    }
+    if (!defines_the_field) return 1;
+  }
+
   const auto languages = {
       cgraph::DetectedLanguage::C,
       cgraph::DetectedLanguage::Cpp,

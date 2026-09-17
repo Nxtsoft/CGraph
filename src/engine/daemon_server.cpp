@@ -228,6 +228,7 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
 
   DaemonState state;
   state.pid = ::getpid();
+  state.project_root = identity.project_root;
   const auto graph_path = root / "graph.json";
   if (!load_graph_snapshot(state, graph_path)) {
     std::cerr << "graphd: failed to load seam graph: " << graph_path << '\n';
@@ -306,6 +307,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
 
   DaemonState state;
   state.pid = ::getpid();
+  state.project_root = identity.project_root;
 
   // Serve immediately. Publish an empty graph so status/query answer right away
   // (build_state Empty, node_count 0) while the initial build runs on a worker

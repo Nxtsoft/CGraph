@@ -3,6 +3,7 @@
 #include "cgraph/engine.hpp"
 #include "cgraph/change_context.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 
 #include <string>
 #include <utility>
@@ -179,6 +180,59 @@ namespace {
           "reload bounded code context. The fastest way to resume a long session.",
           {{"query", string_param("optional filter over checkpoint titles/tags")},
            {"limit", integer_param("max checkpoints returned (default 10)")}}),
+      tool_schema(
+          "graph_report",
+          "Structural report over the whole graph, sized to a token budget. view \"modules\" is the "
+          "architecture map: files grouped into modules by directory depth (default 2), the "
+          "imports/calls between modules with counts, layers ranked by longest dependency path "
+          "(layer 0 = nothing depends on it), and every dependency cycle listed. Use it when asked "
+          "for the architecture, a module map, what depends on what at the package level, or where "
+          "a new file belongs -- before graph_query, which works symbol by symbol. view \"types\" is "
+          "the type-definition audit: `identical` (groups of differently named types declaring exactly "
+          "the same members), `duplicates` (one type name declared in several files, with how much "
+          "their member sets overlap), `overlaps` (pairs whose members nest -- the smaller at least "
+          "half of the larger -- or are at least `threshold` Jaccard-similar; only types with at least "
+          "`min_members` members take part), and `unreferenced` (types no other symbol or file in the "
+          "graph refers to; same-file use is not in the graph, so treat it as a lead). Use it when "
+          "asked about type bloat, duplicate or redundant interfaces/structs, or dead types; json or "
+          "markdown only. view \"clones\" is the duplicate-code report: function bodies whose "
+          "rename-insensitive fingerprints are at least `threshold` Jaccard-similar (default 0.80), "
+          "grouped into `classes` (each with its members' file:line-line, the lowest pairwise "
+          "similarity and the shortest body in tokens); classes whose members all lie under test roots "
+          "are listed as `test_classes` unless include_tests merges them. Bodies under `min_tokens` "
+          "(default 30) are boilerplate and skipped. Use it when asked about copy-paste, duplicated "
+          "logic, or what to extract into a shared helper; json or markdown only. A `hint` appears "
+          "when functions lack fingerprints (a graph fast-loaded from an older persist) and says how to "
+          "rescan. view \"design\" is the program's shape as it is entered: `entry_points` (main, HTTP "
+          "route handlers, framework pages such as Next.js app/**/page.tsx, and `root` functions nothing "
+          "in the graph calls), each ranked by `reach` (functions transitively called) with its top call "
+          "`flow` drawn to `hops` (default 3, four children per node by reach), plus `layers` (how many "
+          "functions sit at each call distance from an entry and which modules they are in) and the "
+          "`unreached` count. Use it when asked how the program starts, what the main flows are, where "
+          "a request goes, or for a program-design overview; format mermaid gives a `flowchart TD` of "
+          "the kept flows. For modules, types and design, test roots are excluded unless include_tests "
+          "is set. When a report exceeds the budget whole rows are dropped (lightest first) and "
+          "`omitted` says how many.",
+          {{"view", {{"type", "string"}, {"enum", {"modules", "types", "clones", "design"}},
+                     {"description", "which report (default modules)"}}},
+           {"format", {{"type", "string"}, {"enum", {"json", "mermaid", "markdown", "svg"}},
+                       {"description", "json (default) = structured data; mermaid = a diagram in `rendered` "
+                                       "(modules: `graph LR`; design: `flowchart TD`); markdown = tables in "
+                                       "`rendered`; svg = a drawn diagram (modules only)"}}},
+           {"threshold", {{"type", "number"}, {"description", "types: member-set Jaccard at or above which two differently named types are an overlap (default 0.80; identical groups and subsets are reported regardless)"}}},
+           {"min_members", integer_param("types: a type joins shape comparison only with at least this many declared members (default 3)")},
+           {"min_tokens", integer_param("clones: a function body joins comparison only with at least this many normalized tokens (default 30)")},
+           {"hops", integer_param("design: call hops drawn from each entry point (default 3)")},
+           {"scope", string_param("root-relative path prefix, e.g. \"src\": only modules under it report "
+                                  "their dependencies (targets outside it still appear)")},
+           {"depth", integer_param("directory components per module (default 2: src/engine/x.cpp -> src/engine)")},
+           {"group_by", string_param("modules view: what names a module - auto (default: the repo's workspace packages when its manifest declares any, else directory depth), packages, or depth")},
+           {"include_tests", {{"type", "boolean"}, {"description", "also report test roots (tests/, spec/, e2e/...) as sources (default false)"}}},
+           {"budget", integer_param("token budget for the response (default 6000; 0 = unlimited)")},
+           {"expected_content_root",
+            string_param("content root returned by graph_update; if supplied, the response comes "
+                         "only from the matching snapshot and errors if the daemon has published "
+                         "a different root")}}),
       tool_schema("graph_shutdown", "Ask the per-project graph daemon to shut down", nlohmann::json::object()),
   });
 }
@@ -204,6 +258,10 @@ namespace {
     // Forward arguments verbatim; the daemon op applies budget/depth defaults and
     // resolves the focal node from id, label, or query.
     return make_request("context", arguments);
+  }
+  if (name == "graph_report") {
+    // Forward arguments verbatim; the daemon op applies view/format/depth/budget defaults.
+    return make_request("report", arguments.empty() ? nlohmann::json::object() : arguments);
   }
   if (name == "graph_remember") {
     return make_request("remember", arguments);
@@ -270,6 +328,11 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
 
   const auto daemon_response = forwarder(daemon_request);
   if (!daemon_response.value("ok", false)) {
+    if (name == "graph_report") {
+      if (const auto hint = report_upgrade_hint(daemon_response)) {
+        return error_response(id, -32603, *hint);
+      }
+    }
     return error_response(id, -32603, daemon_response.value("error", std::string{"daemon request failed"}));
   }
   return response(id, text_content(daemon_response.value("result", nlohmann::json::object())));

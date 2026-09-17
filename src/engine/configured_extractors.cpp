@@ -38,6 +38,135 @@ extern "C" const TSLanguage* tree_sitter_tsx();
 // Java resolvers above it can reuse the same byte-safe node-text helper.
 [[nodiscard]] std::string go_node_text(const TSNode& node, std::string_view source);
 
+[[nodiscard]] TSNode member_field(const TSNode& node, std::string_view name) {
+  return ts_node_child_by_field_name(node, name.data(), static_cast<std::uint32_t>(name.size()));
+}
+
+void emit_member(const TSNode& member, const ExtractionContext& context,
+                 const std::string& owner_id, const std::string& owner_name,
+                 std::string name, std::string type_text, Fragment& fragment,
+                 Properties properties = {}) {
+  if (!type_text.empty()) properties.emplace("type_text", std::move(type_text));
+  const auto start = ts_node_start_point(member);
+  const auto end = ts_node_end_point(member);
+  add_field_node(context, owner_id, owner_name, std::move(name),
+                 SourceLocation{.start_line = start.row + 1, .start_column = start.column,
+                                .end_line = end.row + 1, .end_column = end.column},
+                 std::move(properties), fragment);
+}
+
+void go_member_handler(const TSNode& node, const ExtractionContext& context,
+                       const std::string& owner_id, Fragment& fragment) {
+  const auto type = member_field(node, "type");
+  if (ts_node_is_null(type) || std::string_view(ts_node_type(type)) != "struct_type") return;
+  const auto owner_name = go_node_text(member_field(node, "name"), context.source);
+  const auto body = ts_node_named_child(type, 0);
+  for (std::uint32_t i = 0; i < ts_node_named_child_count(body); ++i) {
+    const auto member = ts_node_named_child(body, i);
+    if (std::string_view(ts_node_type(member)) != "field_declaration") continue;
+    const auto type_node = member_field(member, "type");
+    auto type_text = go_node_text(type_node, context.source);
+    bool named = false;
+    for (std::uint32_t j = 0; j < ts_node_child_count(member); ++j) {
+      const auto field = ts_node_field_name_for_child(member, j);
+      if (field == nullptr || std::string_view(field) != "name") continue;
+      named = true;
+      emit_member(member, context, owner_id, owner_name,
+                  go_node_text(ts_node_child(member, j), context.source), type_text, fragment);
+    }
+    if (!named) {
+      auto name_node = type_node;
+      const std::string_view kind = ts_node_type(name_node);
+      if (kind == "generic_type") name_node = member_field(name_node, "type");
+      if (std::string_view(ts_node_type(name_node)) == "qualified_type") name_node = member_field(name_node, "name");
+      const auto label = go_node_text(name_node, context.source);
+      if (std::string_view(ts_node_type(ts_node_child(member, 0))) == "*") type_text = "*" + type_text;
+      emit_member(member, context, owner_id, owner_name, label, type_text, fragment);
+    }
+  }
+}
+
+void rust_member_handler(const TSNode& node, const ExtractionContext& context,
+                         const std::string& owner_id, Fragment& fragment) {
+  const auto body = member_field(node, "body");
+  if (ts_node_is_null(body)) return;
+  const auto owner_name = go_node_text(member_field(node, "name"), context.source);
+  const bool tuple = std::string_view(ts_node_type(body)) == "ordered_field_declaration_list";
+  std::uint32_t position = 0;
+  for (std::uint32_t i = 0; i < ts_node_child_count(body); ++i) {
+    const auto member = ts_node_child(body, i);
+    const std::string_view kind = ts_node_type(member);
+    if (tuple) {
+      const auto field = ts_node_field_name_for_child(body, i);
+      if (field != nullptr && std::string_view(field) == "type") {
+        emit_member(member, context, owner_id, owner_name, std::to_string(position++),
+                    go_node_text(member, context.source), fragment);
+      }
+      continue;
+    }
+    // `function_item`, `function_signature_item` and `type_item` are already
+    // graph nodes of their own (rust_config's function_node_types and
+    // type_node_types), and a member node would reuse their id and overwrite
+    // them -- erasing the `interface_method` tag trait dispatch reads.
+    if (kind != "field_declaration" && kind != "enum_variant" && kind != "associated_type" &&
+        kind != "const_item") continue;
+    auto type_text = go_node_text(member_field(member, "type"), context.source);
+    if (kind == "enum_variant") type_text = go_node_text(member_field(member, "body"), context.source);
+    emit_member(member, context, owner_id, owner_name,
+                go_node_text(member_field(member, "name"), context.source), type_text, fragment);
+  }
+}
+
+void java_member_handler(const TSNode& node, const ExtractionContext& context,
+                         const std::string& owner_id, Fragment& fragment) {
+  const auto owner_name = go_node_text(member_field(node, "name"), context.source);
+  const auto emit = [&](const TSNode& member, const TSNode& declarator, bool readonly) {
+    auto type_text = go_node_text(member_field(member, "type"), context.source);
+    type_text += go_node_text(member_field(declarator, "dimensions"), context.source);
+    emit_member(declarator, context, owner_id, owner_name,
+                go_node_text(member_field(declarator, "name"), context.source), type_text,
+                fragment, {{"readonly", readonly ? "true" : "false"}});
+  };
+  const auto parameters = member_field(node, "parameters");
+  if (!ts_node_is_null(parameters)) {
+    for (std::uint32_t i = 0; i < ts_node_named_child_count(parameters); ++i) {
+      const auto parameter = ts_node_named_child(parameters, i);
+      if (std::string_view(ts_node_type(parameter)) == "formal_parameter") emit(parameter, parameter, true);
+    }
+  }
+  const auto body = member_field(node, "body");
+  if (ts_node_is_null(body)) return;
+  const auto emit_fields = [&](const TSNode& container) {
+    for (std::uint32_t i = 0; i < ts_node_named_child_count(container); ++i) {
+      const auto member = ts_node_named_child(container, i);
+      const std::string_view kind = ts_node_type(member);
+      if (kind == "enum_constant") {
+        emit_member(member, context, owner_id, owner_name,
+                    go_node_text(member_field(member, "name"), context.source), {}, fragment);
+        continue;
+      }
+      if (kind != "field_declaration" && kind != "constant_declaration") continue;
+      bool readonly = kind == "constant_declaration";
+      for (std::uint32_t j = 0; j < ts_node_named_child_count(member); ++j) {
+        const auto child = ts_node_named_child(member, j);
+        if (std::string_view(ts_node_type(child)) != "modifiers") continue;
+        for (std::uint32_t k = 0; k < ts_node_child_count(child); ++k) {
+          readonly = readonly || std::string_view(ts_node_type(ts_node_child(child, k))) == "final";
+        }
+      }
+      for (std::uint32_t j = 0; j < ts_node_named_child_count(member); ++j) {
+        const auto declarator = ts_node_named_child(member, j);
+        if (std::string_view(ts_node_type(declarator)) == "variable_declarator") emit(member, declarator, readonly);
+      }
+    }
+  };
+  emit_fields(body);
+  for (std::uint32_t i = 0; i < ts_node_named_child_count(body); ++i) {
+    const auto child = ts_node_named_child(body, i);
+    if (std::string_view(ts_node_type(child)) == "enum_body_declarations") emit_fields(child);
+  }
+}
+
 [[nodiscard]] LanguageConfig c_config() {
   LanguageConfig config{
       .name = "c",
@@ -62,6 +191,7 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       .call_member_node_types = {"field_expression"},
       .call_member_field = "field",
       .resolve_callee_name = cpp_callee_name,
+      .resolve_callee_scope = cpp_callee_scope,
       // Grammar-driven callee naming. A text rule cannot do this job: `::` shows up
       // in nine distinct callee node types, and `ns::make<zoo::Beast>` reduced at
       // its last `::` yields `Beast>` -- a fabricated call to an unrelated struct.
@@ -72,6 +202,7 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   config.import_handler = cpp_import_handler;
   config.relation_handler = cpp_relation_handler;
   config.extra_walk = cpp_field_walk;
+  config.class_requires_body = true;
   // A `function_definition` has no `name` field, so without this the label would
   // be the declarator's raw text -- the whole declaration, signature included --
   // and a bare callee name at a call site could never match it. See
@@ -180,6 +311,8 @@ extern "C" const TSLanguage* tree_sitter_tsx();
       .call_receiver_field = "object",
       .interface_node_types = {"interface_declaration"},
   };
+  config.extract_members = true;
+  config.member_handler = java_member_handler;
   config.resolve_callee_name = java_callee_name;
   return config;
 }
@@ -339,6 +472,7 @@ extern "C" const TSLanguage* tree_sitter_tsx();
 }
 
 [[nodiscard]] std::string go_node_text(const TSNode& node, std::string_view source) {
+  if (ts_node_is_null(node)) return {};
   const auto start = ts_node_start_byte(node);
   const auto end = ts_node_end_byte(node);
   if (start >= end || end > source.size()) {
@@ -437,7 +571,7 @@ void go_relation_handler(const TSNode& node, const ExtractionContext& context, c
 // method is a contract entry, never the same node as an implementation.
 void go_extra_walk(const TSNode& node, const ExtractionContext& context,
                    const std::string& /*function_scope_id*/, Fragment& fragment,
-                   std::vector<RawCall>& raw_calls) {
+                   std::vector<RawCall>& raw_calls, std::vector<RawRelation>&) {
   (void)raw_calls;
   if (std::string_view(ts_node_type(node)) != "type_spec") {
     return;
@@ -518,6 +652,8 @@ void go_extra_walk(const TSNode& node, const ExtractionContext& context,
   };
   config.import_handler = go_import_handler;
   config.relation_handler = go_relation_handler;
+  config.extract_members = true;
+  config.member_handler = go_member_handler;
   config.extra_walk = go_extra_walk;
   return config;
 }
@@ -899,7 +1035,7 @@ void rust_scan_macro_tokens(const TSNode& token_tree, const ExtractionContext& c
 // allowlist-driven walk, so they share the one extra_walk slot.
 void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
                      const std::string& function_scope_id, Fragment& fragment,
-                     std::vector<RawCall>& raw_calls) {
+                     std::vector<RawCall>& raw_calls, std::vector<RawRelation>&) {
   const std::string_view type = ts_node_type(node);
   if (type == "macro_invocation") {
     // Same rule as call_expression extraction: a macro at file/type scope has
@@ -1097,6 +1233,8 @@ void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
   };
   config.import_handler = rust_import_handler;
   config.relation_handler = rust_relation_handler;
+  config.extract_members = true;
+  config.member_handler = rust_member_handler;
   config.extra_walk = rust_extra_walk;
   config.method_predicate = [](const TSNode& node, const ExtractionContext&) {
     return rust_is_impl_method(node);

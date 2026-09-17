@@ -77,6 +77,10 @@ struct DaemonState {
   // the running daemon to <project>/cgraph-out/memory). Empty disables the write
   // op (returns an error) so in-process callers without a project dir are safe.
   std::filesystem::path memory_dir;
+  // Canonical project root the daemon serves (set by the running daemon). The
+  // report op names modules relative to it; empty leaves file paths as they are,
+  // which in-process callers and tests use with already-relative paths.
+  std::filesystem::path project_root;
   // Session-memory observability: recency of the last remember/recall (ms-epoch
   // strings, empty when never called) and the number of checkpoints re-applied by
   // the most recent memory re-overlay. Surfaced in the status `memory` block.

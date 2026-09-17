@@ -48,8 +48,22 @@ DetectedLanguage detect_language(const std::filesystem::path& path) {
   if (is_msbuild_name(filename)) {
     return DetectedLanguage::MsBuild;
   }
+  // An OpenAPI document is JSON named for what it is (`openapi.json`,
+  // `swagger.json`, `petstore.openapi.json`); every other .json stays undetected
+  // rather than sniffing lockfiles and configs. YAML documents need a parser the
+  // engine does not carry and are not detected.
+  if (ends_with(filename, ".json") &&
+      (filename.find("openapi") != std::string::npos || filename.find("swagger") != std::string::npos)) {
+    return DetectedLanguage::OpenApi;
+  }
 
   const auto extension = lower_ascii(path.extension().generic_string());
+  if (extension == ".proto") {
+    return DetectedLanguage::Protobuf;
+  }
+  if (extension == ".graphql" || extension == ".gql" || extension == ".graphqls") {
+    return DetectedLanguage::GraphQL;
+  }
   if (extension == ".c" || extension == ".h") {
     return DetectedLanguage::C;
   }
@@ -123,6 +137,8 @@ std::string_view language_name(DetectedLanguage language) {
       return "delphi";
     case DetectedLanguage::Go:
       return "go";
+    case DetectedLanguage::GraphQL:
+      return "graphql";
     case DetectedLanguage::Rust:
       return "rust";
     case DetectedLanguage::Groovy:
@@ -137,8 +153,12 @@ std::string_view language_name(DetectedLanguage language) {
       return "mcp-config";
     case DetectedLanguage::MsBuild:
       return "msbuild";
+    case DetectedLanguage::OpenApi:
+      return "openapi";
     case DetectedLanguage::PhpBlade:
       return "php-blade";
+    case DetectedLanguage::Protobuf:
+      return "protobuf";
     case DetectedLanguage::Python:
       return "python";
     case DetectedLanguage::Ruby:

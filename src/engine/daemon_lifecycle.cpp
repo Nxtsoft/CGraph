@@ -4,6 +4,8 @@
 #include "cgraph/fragment_json.hpp"
 
 #include <fstream>
+#include <string>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <system_error>
 
@@ -48,6 +50,69 @@ bool cleanup_daemon_endpoint(const std::filesystem::path& endpoint_path) {
   return !error;
 }
 
+namespace {
+
+// Function fingerprints live beside graph.json, never inside it: graph.json is
+// the Graphify-parity export and stays byte-identical. Absent or unreadable,
+// the fast-loaded graph simply has no fingerprints until the next rescan; the
+// clones report says so rather than failing.
+[[nodiscard]] std::filesystem::path fingerprints_path(const std::filesystem::path& graph_path) {
+  return graph_path.parent_path() / "fingerprints.json";
+}
+
+[[nodiscard]] bool write_atomically(const std::filesystem::path& path, const std::string& contents) {
+  const auto temp_path = path.parent_path() / (path.filename().string() + ".tmp");
+  {
+    std::ofstream output(temp_path);
+    if (!output) {
+      return false;
+    }
+    output << contents;
+  }
+  std::error_code error;
+  std::filesystem::rename(temp_path, path, error);
+  if (error) {
+    std::error_code cleanup;
+    std::filesystem::remove(temp_path, cleanup);
+    return false;
+  }
+  return true;
+}
+
+void persist_fingerprints(const GraphSnapshot& snapshot, const std::filesystem::path& graph_path) {
+  nlohmann::json functions = nlohmann::json::object();
+  for (const auto& [id, fingerprint] : snapshot.fingerprints) {
+    functions[id] = {{"tokens", fingerprint.tokens}, {"shingles", fingerprint.shingles}};
+  }
+  const nlohmann::json document{{"version", 1}, {"functions", std::move(functions)}};
+  (void)write_atomically(fingerprints_path(graph_path), document.dump());
+}
+
+[[nodiscard]] std::unordered_map<std::string, FunctionFingerprint> load_fingerprints(const std::filesystem::path& graph_path) {
+  std::unordered_map<std::string, FunctionFingerprint> out;
+  std::ifstream input(fingerprints_path(graph_path));
+  if (!input) {
+    return out;
+  }
+  try {
+    const auto document = nlohmann::json::parse(input);
+    if (document.value("version", 0) != 1 || !document.contains("functions") || !document["functions"].is_object()) {
+      return out;
+    }
+    for (const auto& [id, entry] : document["functions"].items()) {
+      FunctionFingerprint fingerprint;
+      fingerprint.tokens = entry.value("tokens", std::uint32_t{0});
+      fingerprint.shingles = entry.value("shingles", std::vector<std::uint64_t>{});
+      out.emplace(id, std::move(fingerprint));
+    }
+  } catch (const nlohmann::json::exception&) {
+    out.clear();
+  }
+  return out;
+}
+
+}  // namespace
+
 bool persist_graph_snapshot(
     const GraphSnapshot& snapshot,
     const std::filesystem::path& graph_path) {
@@ -81,6 +146,7 @@ bool persist_graph_snapshot(
     std::filesystem::remove(temp_path, cleanup);  // drop the orphan temp; keep the good file
     return false;
   }
+  persist_fingerprints(snapshot, graph_path);
   return true;
 }
 
@@ -105,7 +171,9 @@ bool load_graph_snapshot(DaemonState& state, const std::filesystem::path& graph_
 
   try {
     const auto json = nlohmann::json::parse(input);
-    publish_graph_snapshot(state, parse_node_link_graph(json));
+    auto graph = parse_node_link_graph(json);
+    graph.fingerprints = load_fingerprints(graph_path);
+    publish_graph_snapshot(state, std::move(graph));
   } catch (const nlohmann::json::exception&) {
     return false;
   }

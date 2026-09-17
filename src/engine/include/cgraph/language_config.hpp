@@ -30,6 +30,12 @@ struct RawCall {
   // unknown — a static call names its class outright, and that is evidence, not
   // a guess. Resolution uses it to scope the method lookup to that class.
   std::string receiver_label;
+  // The scope a qualified callee names, as written (`std` in `std::find(...)`,
+  // `a::b` in `a::b::f()`), empty for an unqualified or member callee. A
+  // qualifier is evidence about which declaration the call means: the leaf
+  // name alone binds `std::find` to any project function called `find`,
+  // which is a false dependent on every call into the standard library.
+  std::string qualifier;
 };
 
 // A type/heritage relationship discovered during extraction, resolved against
@@ -38,11 +44,17 @@ struct RawCall {
 // annotation. The target is a bare type name resolved by import (and, for
 // heritage only, a same-file declaration) — mirroring Graphify, which never
 // resolves these by a project-wide name guess.
+//
+// Two further kinds carry HTTP contract facts for resolve_contracts (see
+// contracts.hpp) and are skipped by resolve_raw_relations: `route` (source = an
+// inline handler, target = its router chain's identifier, context = "<verb>
+// <path>") and `mounts` (source = the mounting chain's variable node, target =
+// the mounted chain's identifier, context = the mount path or empty).
 struct RawRelation {
   std::string source_id;      // the class / interface / method node id
   std::string target_label;   // the referenced type name
-  std::string relation;       // "inherits" | "implements" | "references"
-  std::string context;        // "type" | "parameter_type" | "return_type" | "field" | "generic_arg"
+  std::string relation;       // "inherits" | "implements" | "references" | "route" | "mounts"
+  std::string context;        // "type" | "parameter_type" | "return_type" | "field" | "generic_arg" | route/mount text
   std::string source_file;
   bool allow_same_file = false;  // heritage may resolve to a same-file declaration; references may not
 };
@@ -55,15 +67,27 @@ struct ExtractionContext {
 using ImportHandler = std::function<void(const TSNode&, const ExtractionContext&, Fragment&)>;
 using ResolveFunctionName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
 using ResolveCalleeName = std::function<std::string(const TSNode&, const ExtractionContext&)>;
+// The scope text of a qualified callee (`std::filesystem` for
+// `std::filesystem::exists(p)`), or empty when the callee is unqualified.
+using ResolveCalleeScope = std::function<std::string(const TSNode&, const ExtractionContext&)>;
 // The third argument is the innermost enclosing function scope (empty at file /
 // class / type scope) — the caller id for any RawCall the walk emits. Handlers
-// that emit no calls ignore it.
-using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, Fragment&, std::vector<RawCall>&)>;
+// that emit no calls ignore it. The last argument collects relation facts the
+// walk finds on non-symbol nodes (JavaScript's router mounts); handlers that
+// emit none ignore it.
+using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, Fragment&, std::vector<RawCall>&, std::vector<RawRelation>&)>;
 // True when a function node is a method by its surrounding context rather than
 // its grammar shape (Rust's `function_item` inside an `impl_item` — the node
 // type alone cannot tell a method from a free function). Complements
 // method_node_types, which handles grammar-shape methods (Go).
 using MethodPredicate = std::function<bool(const TSNode&, const ExtractionContext&)>;
+// Decides whether a nested anonymous function -- an arrow that is not a
+// module-level `const Foo = () => {}` -- is nonetheless a graph node and a call
+// scope. The walker treats every such arrow as a boundary (Graphify seeds no
+// calls from callbacks); a language opts specific shapes back in, such as the
+// handler an HTTP route registration passes inline. The name still comes from
+// `resolve_function_name`, which must return one for the same node.
+using NestedFunctionScope = std::function<bool(const TSNode&, const ExtractionContext&)>;
 // Invoked for each class/interface node (with its already-assigned node id) to
 // emit heritage and member type-reference facts.
 using RelationHandler = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, std::vector<RawRelation>&)>;
@@ -132,16 +156,52 @@ struct LanguageConfig {
   // which make_id normalizes to `Beast` -- fabricating a call to an unrelated
   // struct while losing the real call. Returning empty drops the call.
   ResolveCalleeName resolve_callee_name;
+  // Returns the qualifier of a qualified callee so resolution can require the
+  // resolved declaration to live in that scope (see RawCall::qualifier).
+  ResolveCalleeScope resolve_callee_scope;
   ImportHandler import_handler;
   ResolveFunctionName resolve_function_name;
   ExtraWalk extra_walk;
   RelationHandler relation_handler;
   MethodPredicate method_predicate;
+  NestedFunctionScope nested_function_scope;
   PreprocessSource preprocess_source;
   InternedSymbols symbols;
+  bool extract_members = false;
+  std::function<void(const TSNode&, const ExtractionContext&, const std::string&, Fragment&)> member_handler;
+  bool class_requires_body = false;
 };
 
 void intern_node_symbols(LanguageConfig& config, const TSLanguage* language);
 [[nodiscard]] bool contains_symbol(const std::vector<TSSymbol>& symbols, TSSymbol symbol);
+
+// The one id-collision guard for extracted nodes. `seed` is the id's natural
+// spelling (`file:label` for a symbol, `file:Owner::member` for a field);
+// make_id collapses it, so unrelated spellings land on one id -- `First::size`
+// and `first_size` both normalize to `first_size`. merge_fragments keeps the
+// first node with a given id and drops the rest without a warning
+// (graph_builder.cpp), so a collision silently loses a symbol. When the natural
+// id is taken, fall back to the declaration's line, then its column, then a
+// counter, all stable for a given file so the id stays deterministic.
+[[nodiscard]] std::string unique_node_id(
+    const std::string& seed, const SourceLocation& location, const Fragment& fragment);
+
+// The one field emitter: every language's members become `field` nodes and
+// `defines` edges here, through unique_node_id, so a member never lands on an
+// id another declaration in the file already holds.
+//
+// A field yields to a symbol, never the reverse: add_symbol_node relocates an
+// already-emitted field that holds the id a function or type wants, because a
+// function's id is what an agent asks impact and explain about, and it must not
+// change because a struct one line up happens to have a snake_case-equivalent
+// member.
+std::string add_field_node(
+    const ExtractionContext& context,
+    const std::string& owner_id,
+    std::string_view owner_name,
+    std::string label,
+    const SourceLocation& location,
+    Properties properties,
+    Fragment& fragment);
 
 }  // namespace cgraph

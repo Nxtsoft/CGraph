@@ -50,7 +50,7 @@ Reading a large repo to answer **"what calls this?"** or **"what breaks if I cha
 
 <div align="center"><img src="assets/architecture.svg" alt="CGraph architecture" width="100%"></div>
 
-- **`cgraph`** — one-shot scan → portable disk exports (`graph.json`, `graph.html`, `graph.svg`, `obsidian.md`, `cypher.txt`, `call-flow.html`).
+- **`cgraph`** — one-shot scan → portable disk exports (`graph.json`, `graph.html`, `graph.svg`, `obsidian.md`, `cypher.txt`, `modules.mmd`, `modules.svg`, `design.mmd`, `design.md`).
 - **`graphd` + `cgraph-client`** — a resident per-project daemon with live file-watching; warm `query` / `path` / `explain` / `impact` / `context` in ~10 ms.
 - **`cgraph-mcp`** — a Model Context Protocol server so agents navigate the graph directly.
 
@@ -86,7 +86,10 @@ A single scan turns a source tree into an interactive, explorable graph — comm
 - `graph.svg` — static graph visualization
 - `obsidian.md` — markdown export for Obsidian-style navigation
 - `cypher.txt` — Neo4j Cypher statements
-- `call-flow.html` — browser-readable call-flow view
+- `modules.mmd` — module dependency diagram as Mermaid
+- `modules.svg` — module dependency diagram as a layered static image
+- `design.mmd` — entry points and their top call flows as a Mermaid `flowchart TD`
+- `design.md` — the same as Markdown: entry-point table, nested flows, layers by call distance
 
 ## Performance
 
@@ -120,27 +123,150 @@ Tree-sitter-backed structural extraction, with regex/structured extraction for a
 
 Plus structured/regex extraction for Apex, Delphi form/source, MSBuild/XML project files, and MCP config files.
 
-## Quick start
+### Type members
 
-**Prerequisites:** CMake 3.25+, Ninja, a C++20 compiler, Git, a Fortran compiler (`gfortran` — igraph pulls in `lapack-reference`), and vcpkg. See [Install & Setup](#install--setup) for the full recipe.
+Seven languages emit a `field` node per declared member, with a `defines` edge from the owner:
+
+| Language | Owners with members | Field properties |
+| --- | --- | --- |
+| C, C++ | `class`, `struct` only — not `enum` or `union` | none |
+| TypeScript, TSX | interface, object type alias, class (constructor parameter properties included), enum | `type_text`, `optional`, `readonly` |
+| Go | struct, including multi-name and embedded fields | `type_text` |
+| Rust | named and tuple struct, union, enum variant, trait associated type and constant | `type_text` |
+| Python | class-body assignment, including chained and tuple targets | `type_text` when annotated |
+| Java | class, record, enum | `type_text`, `readonly` |
+
+Members are declared members only: no inherited-member expansion, no alias flattening, no runtime
+attribute inference. A declaration that is already a node of its own — a TypeScript
+`method_signature`, a Rust trait method or type alias — keeps its function or type node and is not
+also a field. A field never takes the id a function or type holds; it moves instead, so a symbol's
+id stays stable.
+
+A class-like declaration without a body (`struct FileCacheEntry;`) is a forward declaration and mints
+no node; only the body-bearing definition does.
+
+Fields are members, not navigation targets: `graph_context` packs the owner (whose snippet spans its
+members) rather than the members, and `report modules` symbol counts exclude them.
+
+### HTTP endpoints
+
+JavaScript and TypeScript services get one `endpoint` node per route the code serves, with the
+full path composed across files: an Elysia, Express or Hono chain's own prefix (`new Elysia({
+prefix: '/notebooks' })`, `.basePath('/v1')`) beneath every `.use(child)`, `.use('/p', child)` or
+`.route('/p', child)` that mounts it, up to the top-level chain, read through `as any` and
+`as unknown as T` casts and resolved through imports (aliased ones included). A chain built inline
+inside `.use(new Elysia({ prefix }).get(…))`, a `.group('/v2', app => app.get(…))` or `.guard()`
+callback, and a module re-exported as `export const deckModule = deckRoutes as unknown as Elysia`
+all compose the same way. A Next.js `app/api/x/[id]/route.ts` exporting `GET` is `GET /api/x/:id`.
+The node's id is `endpoint:GET /api/v1/notebooks/{}/notes` with no repository in it and `{}` for
+every parameter segment (`:id`, `{id}`, `[id]`), its label keeps the provider's spelling
+(`GET /api/v1/notebooks/:id/notes`), and it carries `method` and `path`, the handler's file and
+span, a `contains` edge from that file and a `handled_by` edge to the handler, so `graph_impact`
+on a handler reaches its endpoint. Chains mounted twice serve their routes twice; a route on a
+router the file only receives as a function parameter (`function register(app) { app.get(…) }`)
+is not minted, and `stats.json` counts it under `route_resolution.routes_unresolved`.
+
+The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/publish\`, { method:
+'POST' })`, an openapi-fetch `api.GET('/api/v1/projects/{id}', …)`, an `axios.post(…)`, and a call
+through a path wrapper (`apiFetch(path)` whose own `fetch(\`${base}${path}\`)` appends its first
+parameter to a module constant) each give the calling function (or the module-level object the
+arrow initialises) a `CONSUMES` edge to `endpoint:<METHOD> <canonical path>`. The host
+interpolation is dropped, a whole-segment interpolation is `{}`, the method comes from the call's
+literal `method` option, the wrapper's own, or the client verb, else GET. When this repository
+does not serve the route the node is minted with `served: false` and no source; when it does
+(a Next.js route file fetched from the same app) the one node has both a handler and its callers.
+A URL assembled in a variable or spelled as an absolute `https://` literal adds nothing and is
+counted under `route_resolution.calls_unresolved`. Because the id carries no repository, two
+graphs built separately share their endpoint nodes:
 
 ```sh
-git clone --recurse-submodules https://github.com/Nxtsoft/CGraph.git && cd CGraph
-git clone https://github.com/microsoft/vcpkg .vcpkg && ./.vcpkg/bootstrap-vcpkg.sh
-export VCPKG_ROOT="$PWD/.vcpkg"
-cmake --preset release && cmake --build --preset release
-
-# build a graph of this repo, then open the interactive viewer
-build/release/src/cli/cgraph --root . --out cgraph-out
-open cgraph-out/graph.html
+cgraph seam discover --graph api=api-out/graph.json --graph web=web-out/graph.json --out seam-drop
+cgraph seam fuse --seam seam-drop/chunk_00.json --graph api=api-out/graph.json --graph web=web-out/graph.json --out fused
 ```
+
+`seam discover` writes the seam fragment from what each graph serves (`SERVED_BY`, `HANDLED_BY`),
+consumes (`CONSUMES`, `CONSUMED_AT`) and documents (`DOCUMENTED_IN`) with no hand-written spec,
+and reports how many endpoints matched across services, how many are consumed with no provider
+among the graphs, and, when a graph carries a contract document, the **drift**: endpoints the
+document promises that no service serves, and endpoints served that no document mentions.
+
+### Contract documents
+
+A contract stated in a document is read as one too. An OpenAPI JSON document (`openapi*.json`,
+`swagger*.json`; YAML is not read) gives one documented `endpoint` per path and method and one
+`schema` per component schema with a `field` per property, linked by `RESPONDS_WITH`, `ACCEPTS`,
+`references` and `inherits` (`allOf`). A `.proto` file gives a `schema` per message and enum, a
+`type` per service and an endpoint `POST /<package>.<Service>/<Method>` per rpc. A `.graphql`
+schema gives a `schema` per type, interface, input, enum, union and scalar, and an endpoint
+`QUERY <field>` / `MUTATION <field>` / `SUBSCRIPTION <field>` per root operation field. The
+openapi-typescript output a TypeScript client is typed against (`export interface paths` with
+`operations` and `components`) is read the same way, and its 455-member `paths` interface no
+longer yields 455 field nodes. A documented endpoint has the same canonical id as a served or
+consumed one, so it is one node with `handled_by`, `CONSUMES` and its document anchor together;
+`stats.json` counts them under `route_resolution.endpoints_documented`. Schemas are type owners
+in `report types`, so an API schema and its hand-written TypeScript mirror show up as a duplicate
+or identical shape. A repository with none of these files gains nothing.
+
+### Workspaces
+
+`seam discover` joins two graphs offline; a **workspace** joins them live. Put a
+`cgraph.workspace.json` in a directory naming its member repositories and point any of the tools
+at that directory instead of a project:
+
+```sh
+cgraph workspace init --root ~/work --repo api=./turing-api --repo web=./turing-webapp
+cgraph workspace status --root ~/work
+cgraph-client --root ~/work impact '{"id": "<the handler>", "direction": "dependents"}'
+```
+
+Each repository keeps its own daemon, its own watcher and its own incremental updates; nothing is
+copied into a workspace process. A federated `impact` asks every member about the seed, and where
+the traversal reaches an `endpoint:` node it forwards that contract once to the other repositories
+with the depth that remains, so changing an API handler reports the frontend hooks that call it,
+each witness tagged with its `repo` and the contract it came through. `path` joins two repositories
+at a contract the same way, `query` and `explain` merge and tag, `update` fans out, and
+`workspace init` with no `--repo` discovers every git repository one level down. A repository
+whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
+`context` and the memory ops are answered per project and say so, naming the roots to use. The
+MCP server federates too when its root is a workspace, with no new tool.
+
+## Quick start
+
+Download the current Linux x64 release and build your first graph:
+
+```sh
+mkdir -p "$HOME/.local/lib/cgraph/bin-v0.3.0" "$HOME/.local/bin"
+curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz \
+  -o "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz"
+tar -xzf "$HOME/.local/lib/cgraph/bin-v0.3.0/cgraph.tar.gz" \
+  -C "$HOME/.local/lib/cgraph/bin-v0.3.0"
+for name in cgraph graphd cgraph-client cgraph-mcp; do
+  ln -sf "$HOME/.local/lib/cgraph/bin-v0.3.0/$name" "$HOME/.local/bin/$name"
+done
+export PATH="$HOME/.local/bin:$PATH"
+
+# Run this from any source repository.
+cgraph --root . --out cgraph-out
+```
+
+Open `cgraph-out/graph.html` in a browser (`open cgraph-out/graph.html` on macOS), then [register CGraph with your coding agent](#use-with-coding-agents). See [Install & Setup](#install--setup) for other architectures and source builds.
 
 ## Install & Setup
 
-> **Status:** early native implementation. The full command surface (CLI, daemon, thin client, MCP server) is present and tested; there is no packaged release yet — you build from source with CMake + vcpkg and run the binaries from the build tree (or symlink them onto your `PATH`).
+Release `bin-v0.3.0` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
+
+| Platform | Architecture | Archive |
+| --- | --- | --- |
+| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-x64.tar.gz) |
+| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-linux-arm64.tar.gz) |
+| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.3.0/cgraph-macos-arm64.tar.gz) |
+
+Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.3.0` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
+
+### Build from source
 
 <details>
-<summary><strong>📋 Full build recipe — prerequisites · vcpkg · PATH · sanitizer &amp; fuzzer presets</strong></summary>
+<summary><strong>Full build recipe — prerequisites · vcpkg · PATH · sanitizer &amp; fuzzer presets</strong></summary>
 
 ### Prerequisites
 
@@ -212,6 +338,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 | `graph_impact` | Transitive blast radius of changing a node |
 | `graph_path` | Shortest path between two nodes |
 | `graph_context` | Token-budgeted source bundle for a node/query (with adaptive gather) |
+| `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; `view: "clones"`: near-duplicate function bodies grouped into classes; `view: "design"`: entry points, top call flows, layers by call distance; all sized to a budget |
 | `graph_update` | Content-verified sync; returns a `content_root` to pin reads |
 | `graph_status` | Daemon, graph, and enrichment status |
 | `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after |
@@ -219,7 +346,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 
 `graph_context` has two gather modes. The default (`gather: "fixed"`) packs the whole k-hop neighborhood. With a task query in hand, `gather: "adaptive"` keeps the full 2-hop core but expands the third hop only along query-relevant nodes — on the retrieval eval it lifted grade-2 recall **+0.057** for **+13%** candidate tokens, versus the **+96%** a full 3-hop gather costs (needs a `query`/`q`).
 
-The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds); while it runs, results carry `"graph_state": "building"` so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/abs/path/to/CGraph` with this repo's absolute path.
+The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds); while it runs, results carry `"graph_state": "building"` so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/home/you` with your absolute home directory.
 
 <details>
 <summary><strong>🔌 Register with Claude Code · Codex · Cursor / Windsurf / other MCP clients</strong></summary>
@@ -230,8 +357,8 @@ Claude Code sets `CLAUDE_PROJECT_DIR` per session, so a single registration work
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/release/src/daemon/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
 ```
 
 Or commit a project-scoped `.mcp.json` at the repo root to share it with collaborators:
@@ -240,8 +367,8 @@ Or commit a project-scoped `.mcp.json` at the repo root to share it with collabo
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp",
-      "args": ["--daemon", "/abs/path/to/CGraph/build/release/src/daemon/graphd"]
+      "command": "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp",
+      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
     }
   }
 }
@@ -255,16 +382,16 @@ Codex does not set `CLAUDE_PROJECT_DIR`, so the server falls back to the working
 
 ```sh
 codex mcp add cgraph \
-  -- /abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp \
-     --daemon /abs/path/to/CGraph/build/release/src/daemon/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.3.0/graphd
 ```
 
 …or edit `~/.codex/config.toml` directly (add `"--root", "/abs/path/to/your/project"` to `args` to pin a project regardless of working directory):
 
 ```toml
 [mcp_servers.cgraph]
-command = "/abs/path/to/CGraph/build/release/src/mcp/cgraph-mcp"
-args = ["--daemon", "/abs/path/to/CGraph/build/release/src/daemon/graphd"]
+command = "/home/you/.local/lib/cgraph/bin-v0.3.0/cgraph-mcp"
+args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.3.0/graphd"]
 ```
 
 Restart Codex and run `/mcp` in the TUI to confirm.
@@ -305,6 +432,84 @@ build/release/src/cli/cgraph enrich-plan --root /path/to/project --out /tmp/cgra
 build/release/src/cli/cgraph enrich-ingest --root /path/to/project --out /tmp/cgraph-out
 ```
 
+### Reports
+
+`cgraph report modules` draws the module dependency map of a project from the resident daemon
+(spawned if absent): files grouped into modules, `imports`/`CALLS` between modules with counts,
+layers ranked by longest dependency path (layer 0 = nothing depends on it), and every cycle
+listed. Test roots are excluded unless `--include-tests`.
+
+**A monorepo is grouped by the packages it declares**, not by directory depth. The root's
+workspace manifest is read (`workspaces` in a `package.json`, `packages:` in a
+`pnpm-workspace.yaml`, `members` in a Cargo `[workspace]`, `use` in a `go.work`), its member globs
+are expanded, and every matched directory that declares a manifest of its own becomes a module
+under its real name, so the map says `@turing/web` and `ui-kit` rather than `apps` and `packages`.
+Files under no package keep their directory name, nothing is dropped, and the response says which
+question it answered through `group_by`, `manifest` and `packages`. A project with no workspace
+manifest is grouped by depth exactly as before. `--group-by packages|depth` overrides the choice.
+Grouping is computed at report time: no `package` node is added to `graph.json`.
+
+```sh
+cgraph report modules --root /path/to/project --scope src            # Mermaid `graph LR` on stdout
+cgraph report modules --root /path/to/project --format json          # modules / edges / layers / cycles
+cgraph report modules --root /path/to/project --format svg > modules.svg
+cgraph report modules --root /path/to/project --depth 1 --budget 2000
+cgraph report modules --root /path/to/monorepo --group-by depth      # ignore the workspace manifest
+```
+
+The output is sized to a token budget (default 6000, `--budget 0` for all of it): when it
+overflows, whole low-weight edges or modules are dropped and `omitted` says how many. One-shot
+builds write the same diagram as `modules.mmd` and `modules.svg` next to `graph.json`.
+
+`cgraph report types` audits type definitions from the same daemon: `class`/`type` nodes whose
+extracted `field` members are compared by name. It lists **identical** shapes (groups of
+differently named types declaring exactly the same members), **duplicates** (one type name
+declared in several files, with how much their member sets overlap), **overlaps** (pairs whose
+members nest with the smaller at least half of the larger, or match at or above `--threshold`,
+default 0.80; only types with at least `--min-members` members, default 3, take part) and
+**unreferenced** types (no other symbol or file in the graph refers to them; same-file use is
+not an edge, so read it as a lead). Output is Markdown tables by default or `--format json`;
+rows are shed to the budget in that order of value.
+
+```sh
+cgraph report types --root /path/to/project --scope src                 # Markdown tables on stdout
+cgraph report types --root /path/to/project --format json --threshold 0.6 --min-members 2
+```
+
+`cgraph report clones` finds copy-pasted functions. Every function body is fingerprinted at
+extraction: identifiers become `ID`, literals become `LIT`, comments vanish, and the remaining
+5-token shingles are hashed and winnowed, so two copies that differ only in names or constants
+compare equal and an edited copy scores by how much of it survived. Functions whose fingerprints
+are at least `--threshold` Jaccard-similar (default 0.80) form a **clone class**, listed largest
+first with every member's `file:line-line`, the lowest pairwise similarity and the shortest body
+in tokens. Bodies under `--min-tokens` (default 30) are skipped as boilerplate. Classes made only
+of test-root functions are listed separately unless `--include-tests`. Fingerprints are never
+written to `graph.json`; the daemon persists them beside it, and a graph fast-loaded from an
+older persist reports a hint until the next `update .`.
+
+```sh
+cgraph report clones --root /path/to/project --scope src                 # Markdown tables on stdout
+cgraph report clones --root /path/to/project --format json --threshold 0.7 --min-tokens 50
+```
+
+`cgraph report design` shows the program as it is entered. **Entry points** are `main`, HTTP
+`route` handlers (inline `app.get('/path', handler)` registrations and Next.js `app/**/route.ts`
+exports), framework `page` files (`app/**/page.tsx`, `layout.tsx`, `pages/**`), and `root`
+functions with callees that nothing in the graph calls, ranked by **reach** (how many functions
+each transitively calls). Each entry carries its top **call flow** to `--hops` (default 3), four
+children per node chosen by reach with the rest counted, and the report closes with **layers**
+(functions per shortest call distance from an entry, with the modules that hold them) and the
+count of functions no entry reaches. Markdown by default, `--format mermaid` for a `flowchart TD`,
+`--format json` for the tree. One-shot builds write it as `design.mmd` and `design.md`, which
+replace the old flat `call-flow.html`.
+
+```sh
+cgraph report design --root /path/to/project --scope src                 # entry table, flows, layers
+cgraph report design --root /path/to/project --format mermaid --hops 2   # flowchart of the kept flows
+```
+
+All four views are the `graph_report` MCP tool and the daemon `report` op.
+
 ### Daemon & thin client
 
 ```sh
@@ -328,6 +533,7 @@ build/release/src/client/cgraph-client --root /path/to/project status
 build/release/src/client/cgraph-client --root /path/to/project query '{"q":"Parser"}'
 build/release/src/client/cgraph-client --root /path/to/project explain '{"id":"Parser"}'
 build/release/src/client/cgraph-client --root /path/to/project path '{"source":"A","target":"B"}'
+build/release/src/client/cgraph-client --root /path/to/project report '{"view":"modules","format":"mermaid","scope":"src"}'
 build/release/src/client/cgraph-client --root /path/to/project update '{"path":"."}'
 build/release/src/client/cgraph-client --root /path/to/project shutdown
 ```

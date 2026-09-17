@@ -1,5 +1,6 @@
 #include "cgraph/export_json.hpp"
 
+#include "cgraph/analysis.hpp"
 #include "cgraph/content_root.hpp"
 #include "cgraph/fragment_json.hpp"
 
@@ -481,6 +482,7 @@ std::string export_graph_html(const GraphSnapshot& graph) {
     <div class="controls">
       <button type="button" class="control-btn" id="fit-view">Fit to screen</button>
       <button type="button" class="control-btn" id="reset-view">Reset view</button>
+      <button type="button" class="control-btn" id="collapse-toggle">Expand all</button>
       <button type="button" class="control-btn" id="theme-toggle" aria-pressed="false">Light</button>
     </div>
     <div class="hint">Drag a node to rearrange. Scroll to zoom, drag to pan. Click a node for details. Esc clears.</div>
@@ -512,6 +514,10 @@ std::string export_graph_html(const GraphSnapshot& graph) {
   output += "const graphData = ";
   append_json_for_script(output, to_node_link_json(graph));
   output += ";\n";
+  std::ostringstream layout_span;
+  layout_span << "const LAYOUT_MIN_SIDE = " << kMinCanvasSide << ";\n"
+              << "const LAYOUT_PIXELS_PER_SQRT_NODE = " << kPixelsPerSqrtNode << ";\n";
+  output += layout_span.str();
   output += R"html(
 const canvas = document.getElementById("graph-canvas");
 const ctx = canvas.getContext("2d");
@@ -520,6 +526,7 @@ const details = document.getElementById("node-details");
 const fitButton = document.getElementById("fit-view");
 const resetButton = document.getElementById("reset-view");
 const themeToggle = document.getElementById("theme-toggle");
+const collapseToggle = document.getElementById("collapse-toggle");
 const nodes = graphData.nodes.map((node, index) => ({...node, index}));
 const links = graphData.links || [];
 const nodeById = new Map(nodes.map(node => [node.id, node]));
@@ -547,6 +554,10 @@ let selectedId = "";
 let hoverId = "";
 let searchTerm = "";
 let transform = {x: 0, y: 0, scale: 1};
+// The zoom fitToScreen last computed. Zoom bounds and the zoomed-in label
+// threshold are relative to it, so a layout in unit coordinates and one in
+// pixels behave the same.
+let fitScale = 1;
 let dragging = false;
 let draggingNodeId = "";
 let dragStart = {x: 0, y: 0, tx: 0, ty: 0, nodeX: 0, nodeY: 0};
@@ -588,6 +599,107 @@ const labelBudget = new Set(
     .slice(0, LABEL_BUDGET)
     .map(node => node.id)
 );
+
+// Community-collapsed overview. Above COLLAPSE_THRESHOLD nodes a first paint of
+// every node is unreadable however well it is laid out, so each community with
+// more than one member opens as a single sized super-node at its members'
+// centroid, with the edges between communities aggregated. Clicking a
+// super-node, selecting one of its members (legend, search) or "Expand all"
+// reveals the members at their precomputed positions.
+const COLLAPSE_THRESHOLD = 500;
+const communityMembers = new Map();
+for (const node of nodes) {
+  if (!communityMembers.has(node.community)) communityMembers.set(node.community, []);
+  communityMembers.get(node.community).push(node);
+}
+const collapsed = new Set();
+if (nodes.length > COLLAPSE_THRESHOLD) {
+  for (const [community, members] of communityMembers) {
+    if (members.length > 1) collapsed.add(community);
+  }
+}
+// community -> {community, x, y, r, rep, count}; rebuilt from member positions
+// on every frame so it follows drags and a still-cooling simulation.
+const superNodes = new Map();
+function rebuildSuperNodes() {
+  superNodes.clear();
+  for (const community of collapsed) {
+    const members = communityMembers.get(community) || [];
+    if (!members.length) continue;
+    let x = 0, y = 0, rep = members[0];
+    for (const member of members) {
+      x += member.x; y += member.y;
+      if ((degree.get(member.id) || 0) > (degree.get(rep.id) || 0)) rep = member;
+    }
+    superNodes.set(community, {
+      community, rep, count: members.length,
+      x: x / members.length, y: y / members.length,
+      r: Math.min(64, 12 + 3.2 * Math.sqrt(members.length))
+    });
+  }
+  // Centroids of neighboring communities land on top of each other in a dense
+  // layout; push overlapping discs apart (with room for their two label lines)
+  // so every community and its label stay readable at first paint.
+  const discs = [...superNodes.values()];
+  const centroid = discs.map(disc => ({x: disc.x, y: disc.y}));
+  for (let pass = 0; pass < 40; ++pass) {
+    let moved = false;
+    for (let i = 0; i < discs.length; ++i) {
+      for (let j = i + 1; j < discs.length; ++j) {
+        const a = discs[i], b = discs[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        const minDist = a.r + b.r + 34;
+        if (dist >= minDist) continue;
+        if (dist < 0.01) { dx = seededUnit(i * 17 + j) - 0.5; dy = seededUnit(j * 17 + i) - 0.5; dist = Math.sqrt(dx * dx + dy * dy); }
+        const push = (minDist - dist) / 2;
+        a.x -= (dx / dist) * push; a.y -= (dy / dist) * push;
+        b.x += (dx / dist) * push; b.y += (dy / dist) * push;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  // Members follow their disc, so expanding one reveals them where it sat
+  // rather than back under its neighbour.
+  discs.forEach((disc, i) => {
+    const dx = disc.x - centroid[i].x;
+    const dy = disc.y - centroid[i].y;
+    if (dx === 0 && dy === 0) return;
+    for (const member of communityMembers.get(disc.community) || []) {
+      member.x += dx;
+      member.y += dy;
+    }
+  });
+}
+const COMMUNITY_ID_PREFIX = "community:";
+function isCollapsed(node) { return collapsed.has(node.community); }
+// The thing drawn for a node: itself, or its community's super-node.
+function drawnFor(node) { return isCollapsed(node) ? superNodes.get(node.community) : node; }
+// Its identity for edge aggregation and hover: a collapsed node's edges merge
+// into its community's disc, an expanded one's stay its own.
+function drawnKey(node) { return isCollapsed(node) ? COMMUNITY_ID_PREFIX + node.community : node.id; }
+function expandCommunity(community) {
+  if (!collapsed.delete(community)) return;
+  syncCollapseButton();
+}
+function syncCollapseButton() {
+  if (!collapseToggle) return;
+  collapseToggle.textContent = collapsed.size ? "Expand all" : "Collapse communities";
+  collapseToggle.hidden = nodes.length <= COLLAPSE_THRESHOLD && !collapsed.size;
+}
+function toggleCollapse() {
+  if (collapsed.size) {
+    collapsed.clear();
+  } else {
+    for (const [community, members] of communityMembers) {
+      if (members.length > 1) collapsed.add(community);
+    }
+  }
+  syncCollapseButton();
+  autoFitPending = false;
+  fitToScreen();
+}
 
 // Largest degree in the graph, so node sizing can be normalized against the
 // busiest hub exactly like the Graphify viewer (radius 5..20 over [0, maxDeg]).
@@ -675,6 +787,31 @@ function hasEmbeddedLayout() {
   return true;
 }
 
+// A precomputed layout arrives in whatever scale its producer used (igraph
+// returns unit coordinates; write_layout sizes the span by node count). Node
+// radii, label offsets and edge geometry are all world-space, so the span is
+// restated in write_layout's own terms once here -- ink per node stays
+// constant however wide the window is, and a layout carrying raw igraph
+// coordinates is rescued instead of painting at a zoom of 28.
+function normalizeLayoutSpan() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const node of nodes) {
+    minX = Math.min(minX, node.x);
+    maxX = Math.max(maxX, node.x);
+    minY = Math.min(minY, node.y);
+    maxY = Math.max(maxY, node.y);
+  }
+  const span = Math.max(maxX - minX, maxY - minY);
+  if (span <= 0) return;
+  const scale = Math.max(LAYOUT_MIN_SIDE, LAYOUT_PIXELS_PER_SQRT_NODE * Math.sqrt(nodes.length)) / span;
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  for (const node of nodes) {
+    node.x = (node.x - centerX) * scale + sim.width / 2;
+    node.y = (node.y - centerY) * scale + sim.height / 2;
+  }
+}
+
 function layout() {
   if (layoutReady) return;
   const box = canvas.getBoundingClientRect();
@@ -684,14 +821,15 @@ function layout() {
   const centerY = sim.height / 2;
   // Ideal edge length scales with available area per node.
   sim.k = Math.max(34, Math.sqrt((sim.width * sim.height) / Math.max(nodes.length, 1)));
-  // Precomputed layout: adopt server x/y verbatim (fitToScreen maps the layout's
-  // arbitrary coordinate scale into the viewport), then leave the simulation
-  // cold so nothing moves and settle time is effectively zero.
+  // Precomputed layout: adopt server x/y, restate their span in write_layout's
+  // terms, then leave the simulation cold so nothing moves and settle time is
+  // effectively zero.
   if (hasEmbeddedLayout()) {
     for (const node of nodes) {
       node.x = Number(node.properties.x);
       node.y = Number(node.properties.y);
     }
+    normalizeLayoutSpan();
     sim.alpha = 0;
     layoutReady = true;
     return;
@@ -829,6 +967,15 @@ function relatedIds(id) {
 
 function highlightIdsFor(id) {
   if (!id) return new Set();
+  // A super-node stands for its whole community: highlight every member and
+  // everything they touch.
+  if (id.startsWith(COMMUNITY_ID_PREFIX)) {
+    const highlighted = new Set();
+    for (const member of communityMembers.get(id.slice(COMMUNITY_ID_PREFIX.length)) || []) {
+      for (const related of relatedIds(member.id)) highlighted.add(related);
+    }
+    return highlighted;
+  }
   const node = nodeById.get(id);
   const highlighted = relatedIds(id);
   const community = communityFor(node);
@@ -901,11 +1048,25 @@ function draw() {
   ctx.save();
   ctx.translate(transform.x, transform.y);
   ctx.scale(transform.scale, transform.scale);
+  rebuildSuperNodes();
 
+  // Links touching a collapsed community are aggregated per (from, to) pair
+  // and drawn once, weighted by count, after the plain links.
+  const aggregated = new Map();
   for (const link of links) {
     const source = nodeById.get(link.source);
     const target = nodeById.get(link.target);
     if (!source || !target) continue;
+    if (isCollapsed(source) || isCollapsed(target)) {
+      const a = drawnFor(source);
+      const b = drawnFor(target);
+      if (!a || !b || a === b) continue;
+      const key = drawnKey(source) + "\u0000" + drawnKey(target);
+      let acc = aggregated.get(key);
+      if (!acc) { acc = {a, b, count: 0, source}; aggregated.set(key, acc); }
+      acc.count += 1;
+      continue;
+    }
     const sourcePoint = screenPoint(source.x, source.y);
     const targetPoint = screenPoint(target.x, target.y);
     const activeEdge = activeId && highlighted.has(source.id) && highlighted.has(target.id);
@@ -955,10 +1116,39 @@ function draw() {
     }
   }
 
-  ctx.font = "11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+  for (const acc of aggregated.values()) {
+    const ar = acc.a.r !== undefined ? acc.a.r : radiusFor(acc.a);
+    const br = acc.b.r !== undefined ? acc.b.r : radiusFor(acc.b);
+    const dx = acc.b.x - acc.a.x;
+    const dy = acc.b.y - acc.a.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const ux = dx / dist;
+    const uy = dy / dist;
+    const tipX = acc.b.x - ux * (br + 1.5);
+    const tipY = acc.b.y - uy * (br + 1.5);
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = colorFor(acc.source);
+    ctx.lineWidth = (1 + Math.log2(1 + acc.count) * 0.9) / transform.scale;
+    ctx.beginPath();
+    ctx.moveTo(acc.a.x + ux * ar, acc.a.y + uy * ar);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+    const head = 8 / transform.scale;
+    const ang = Math.atan2(uy, ux);
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - head * Math.cos(ang - 0.4), tipY - head * Math.sin(ang - 0.4));
+    ctx.lineTo(tipX - head * Math.cos(ang + 0.4), tipY - head * Math.sin(ang + 0.4));
+    ctx.closePath();
+    ctx.fillStyle = colorFor(acc.source);
+    ctx.fill();
+  }
+
+  ctx.font = (11 / transform.scale) + "px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
   for (const node of nodes) {
+    if (isCollapsed(node)) continue;
     const selected = node.id === selectedId;
     const hovered = node.id === hoverId;
     const inHighlight = activeId && highlighted.has(node.id);
@@ -995,7 +1185,7 @@ function draw() {
     // else progressively on hover, selection, active highlight, search match,
     // or when zoomed in, so the overview stays legible but no label is ever
     // permanently hidden.
-    const zoomedIn = transform.scale >= 1.6;
+    const zoomedIn = transform.scale >= fitScale * 1.6;
     const labelled = !dim && (
       labelBudget.has(node.id) || hovered || selected || inHighlight ||
       zoomedIn || searchMatch);
@@ -1003,8 +1193,31 @@ function draw() {
       ctx.fillStyle = palette.text;
       ctx.globalAlpha = dim ? 0.22 : 0.95;
       // Centered just below the node, matching the Graphify viewer's labels.
-      ctx.fillText(shortLabel(node.label || node.id), node.x, node.y + r + 9);
+      ctx.fillText(shortLabel(node.label || node.id), node.x, node.y + r + 9 / transform.scale);
     }
+  }
+
+  // Super-nodes: one disc per collapsed community, sized by member count,
+  // always labelled with its hub and size so the overview reads at a glance.
+  for (const sup of superNodes.values()) {
+    const point = screenPoint(sup.x, sup.y);
+    if (!visibleCircle(point, (sup.r + 4) * transform.scale, bounds)) continue;
+    const hovered = hoverId === COMMUNITY_ID_PREFIX + sup.community;
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.fillStyle = colorFor(sup.rep);
+    ctx.strokeStyle = hovered ? palette.focus : palette.nodeStroke;
+    ctx.lineWidth = (hovered ? 4 : 2.5) / transform.scale;
+    ctx.arc(sup.x, sup.y, sup.r + (hovered ? 2 : 0), 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = palette.text;
+    ctx.globalAlpha = 0.95;
+    ctx.font = "bold " + (12 / transform.scale) + "px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+    ctx.fillText(shortLabel(sup.rep.label || sup.rep.id), sup.x, sup.y + sup.r + 10 / transform.scale);
+    ctx.font = (11 / transform.scale) + "px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+    ctx.fillStyle = palette.muted;
+    ctx.fillText(sup.count + " nodes", sup.x, sup.y + sup.r + 24 / transform.scale);
   }
   ctx.restore();
   ctx.globalAlpha = 1;
@@ -1048,11 +1261,23 @@ function render() {
   runSimulation();
 }
 
+function hitSuperNode(event) {
+  const rect = canvas.getBoundingClientRect();
+  const point = worldPoint(event.clientX - rect.left, event.clientY - rect.top);
+  for (const sup of superNodes.values()) {
+    const dx = point.x - sup.x;
+    const dy = point.y - sup.y;
+    if (Math.sqrt(dx * dx + dy * dy) <= sup.r + 4) return sup;
+  }
+  return null;
+}
+
 function hitNode(event) {
   const rect = canvas.getBoundingClientRect();
   const point = worldPoint(event.clientX - rect.left, event.clientY - rect.top);
   for (let index = nodes.length - 1; index >= 0; --index) {
     const node = nodes[index];
+    if (isCollapsed(node)) continue;
     const dx = point.x - node.x;
     const dy = point.y - node.y;
     if (Math.sqrt(dx * dx + dy * dy) <= radiusFor(node) + 4) {
@@ -1063,6 +1288,8 @@ function hitNode(event) {
 }
 
 function selectNode(id) {
+  const chosen = nodeById.get(id);
+  if (chosen) expandCommunity(chosen.community);
   const node = nodeById.get(id);
   if (!node) return;
   selectedId = id;
@@ -1083,6 +1310,11 @@ function selectNode(id) {
 
 function applySearch() {
   searchTerm = search.value.trim().toLowerCase();
+  if (searchTerm) {
+    for (const node of nodes) {
+      if (isCollapsed(node) && matchesSearch(node)) expandCommunity(node.community);
+    }
+  }
   draw();
 }
 
@@ -1149,20 +1381,24 @@ function resetView() {
 // viewport, the recenter affordance the view otherwise lacks.
 function fitToScreen() {
   if (!nodes.length) return;
+  rebuildSuperNodes();
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = (x, y, r) => {
+    minX = Math.min(minX, x - r);
+    minY = Math.min(minY, y - r);
+    maxX = Math.max(maxX, x + r);
+    maxY = Math.max(maxY, y + r);
+  };
   for (const node of nodes) {
-    const r = radiusFor(node);
-    minX = Math.min(minX, node.x - r);
-    minY = Math.min(minY, node.y - r);
-    maxX = Math.max(maxX, node.x + r);
-    maxY = Math.max(maxY, node.y + r);
+    if (!isCollapsed(node)) include(node.x, node.y, radiusFor(node));
   }
+  for (const sup of superNodes.values()) include(sup.x, sup.y, sup.r + 28);
   const box = canvas.getBoundingClientRect();
   const margin = 40;
   const spanX = Math.max(maxX - minX, 1);
   const spanY = Math.max(maxY - minY, 1);
-  const scale = Math.max(0.25, Math.min(4,
-    Math.min((box.width - margin * 2) / spanX, (box.height - margin * 2) / spanY)));
+  const scale = Math.min((box.width - margin * 2) / spanX, (box.height - margin * 2) / spanY);
+  fitScale = scale;
   transform.scale = scale;
   transform.x = box.width / 2 - ((minX + maxX) / 2) * scale;
   transform.y = box.height / 2 - ((minY + maxY) / 2) * scale;
@@ -1171,6 +1407,13 @@ function fitToScreen() {
 
 canvas.addEventListener("pointerdown", event => {
   autoFitPending = false;
+  const sup = hitSuperNode(event);
+  if (sup) {
+    expandCommunity(sup.community);
+    hoverId = "";
+    draw();
+    return;
+  }
   const node = hitNode(event);
   if (node) {
     selectNode(node.id);
@@ -1207,8 +1450,9 @@ canvas.addEventListener("pointermove", event => {
     transform.x = dragStart.tx + event.clientX - dragStart.x;
     transform.y = dragStart.ty + event.clientY - dragStart.y;
   } else {
-    const node = hitNode(event);
-    hoverId = node ? node.id : "";
+    const sup = hitSuperNode(event);
+    const node = sup ? null : hitNode(event);
+    hoverId = sup ? COMMUNITY_ID_PREFIX + sup.community : node ? node.id : "";
   }
   draw();
 });
@@ -1232,7 +1476,7 @@ canvas.addEventListener("wheel", event => {
   const rect = canvas.getBoundingClientRect();
   const before = worldPoint(event.clientX - rect.left, event.clientY - rect.top);
   const factor = event.deltaY < 0 ? 1.12 : 0.89;
-  transform.scale = Math.max(0.25, Math.min(4, transform.scale * factor));
+  transform.scale = Math.max(fitScale * 0.25, Math.min(fitScale * 4, transform.scale * factor));
   const after = screenPoint(before.x, before.y);
   transform.x += event.clientX - rect.left - after.x;
   transform.y += event.clientY - rect.top - after.y;
@@ -1263,6 +1507,8 @@ themeToggle.addEventListener("click", toggleTheme);
 search.addEventListener("input", applySearch);
 fitButton.addEventListener("click", fitToScreen);
 resetButton.addEventListener("click", resetView);
+collapseToggle.addEventListener("click", toggleCollapse);
+syncCollapseButton();
 // Escape clears the current selection and highlight, returning to the full
 // graph without a reload.
 window.addEventListener("keydown", event => {
@@ -1363,19 +1609,6 @@ std::string export_neo4j_cypher(const GraphSnapshot& graph) {
            << "(b:Symbol {id: '" << cypher_escape(edge.target) << "'}) "
            << "MERGE (a)-[:`" << cypher_escape(edge.relation) << "`]->(b);\n";
   }
-  return output.str();
-}
-
-std::string export_call_flow_html(const GraphSnapshot& graph) {
-  std::ostringstream output;
-  output << "<!doctype html><html><head><meta charset=\"utf-8\"><title>call flow</title></head><body>";
-  output << "<h1>Call Flow</h1><ol>";
-  for (const auto& edge : graph.edges) {
-    if (edge.relation == "CALLS") {
-      output << "<li>" << html_escape(edge.source) << " calls " << html_escape(edge.target) << "</li>";
-    }
-  }
-  output << "</ol></body></html>";
   return output.str();
 }
 

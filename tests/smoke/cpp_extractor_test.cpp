@@ -39,6 +39,35 @@ void write_file(const fs::path& path, std::string contents) {
   return false;
 }
 
+// Like has_edge, and the edge must also carry the given `context` property.
+[[nodiscard]] bool has_edge_with_context(const cgraph::GraphSnapshot& graph, const std::string& source,
+                                         const std::string& target, const std::string& relation,
+                                         const std::string& context) {
+  for (const auto& edge : graph.edges) {
+    if (edge.relation != relation) {
+      continue;
+    }
+    const auto ctx = edge.properties.find("context");
+    if (ctx == edge.properties.end() || ctx->second != context) {
+      continue;
+    }
+    bool source_ok = false;
+    bool target_ok = false;
+    for (const auto& node : graph.nodes) {
+      if (node.id == edge.source && node.label == source) {
+        source_ok = true;
+      }
+      if (node.id == edge.target && node.label == target) {
+        target_ok = true;
+      }
+    }
+    if (source_ok && target_ok) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Like has_edge but matches file nodes by label suffix, since file-node labels
 // are root-relative paths (`.../include/types.hpp`) rather than bare names.
 [[nodiscard]] bool has_edge_suffix(const cgraph::GraphSnapshot& graph, const std::string& source_suffix,
@@ -120,6 +149,26 @@ int main() {
              "#pragma once\n"
              "struct Payload { int value; };\n"
              "struct Base { virtual int run(); };\n");
+  // A header that includes the header: transitive include resolution reaches
+  // Payload from a file that never names types.hpp itself.
+  write_file(root / "include" / "engine.hpp",
+             "#pragma once\n"
+             "#include \"types.hpp\"\n"
+             "struct Engine { int start(); };\n");
+  write_file(root / "consumer.cpp",
+             "#include \"engine.hpp\"\n"
+             "int consume(const Payload& p, Engine& e) { return p.value; }\n");
+  // Template arguments of namespace-qualified types are references too (#94):
+  // std::vector<Payload>&, std::span<const Payload>, std::optional<Payload>.
+  write_file(root / "generics.cpp",
+             "#include \"types.hpp\"\n"
+             "#include <optional>\n"
+             "#include <span>\n"
+             "#include <vector>\n"
+             "std::optional<Payload> maybe_payload(std::vector<Payload>& all, std::span<const Payload> view) {\n"
+             "  return all.empty() ? std::nullopt : std::optional<Payload>{all.front()};\n"
+             "}\n"
+             "struct PayloadBag { std::vector<Payload> items; };\n");
   write_file(root / "app.cpp",
              "#include \"types.hpp\"\n"
              "\n"
@@ -214,6 +263,99 @@ int main() {
              "struct Holder { int field_value; };\n"
              "}  // namespace demo\n");
 
+  // A qualified callee's scope is evidence. `std::find` reduces to the leaf
+  // `find`, which names exactly one project function -- but that function is
+  // declared in `proj`, not `std`, so the call must not bind (every call into
+  // the standard library used to become a dependent of a same-named project
+  // symbol). `proj::helper` and the class-qualified `proj::Stats::size_of` bind.
+  write_file(root / "stdlib_decls.hpp",
+             "#pragma once\n"
+             "#include <vector>\n"
+             "namespace proj {\n"
+             "int find(int x) { return x; }\n"
+             "int exists(int x) { return x; }\n"
+             "struct Stats { static int size_of() { return 1; } int size() const { return 0; }\n"
+             "               static int count_of(std::vector<int>& v) { return (int)v.size(); } };\n"
+             "namespace detail { int helper() { return 2; } }\n"
+             "}\n");
+  // The caller lives in another file: `v.size()` on an unknown receiver must not
+  // reach the project's only method named `size` (same-file binding is a
+  // different tier and stays), and `std::find` must not reach `proj::find`.
+  write_file(root / "stdlib_user.cpp",
+             "#include \"stdlib_decls.hpp\"\n"
+             "#include <algorithm>\n"
+             "#include <filesystem>\n"
+             "#include <vector>\n"
+             "int stdlib_user(std::vector<int>& v) {\n"
+             "  auto it = std::find(v.begin(), v.end(), 3);\n"
+             "  auto n = v.size() + proj::Stats::count_of(v);\n"
+             "  bool there = std::filesystem::exists(\"x\");\n"
+             "  return (it != v.end()) + there + proj::detail::helper() + proj::Stats::size_of() + n;\n"
+             "}\n");
+  // The qualifier is reasoned about in segments, through real grammar shapes:
+  // a static call through a class template, a qualified call to a symbol in an
+  // anonymous namespace, and an overload set split across a namespace and file
+  // scope with the file-scope declaration first.
+  write_file(root / "scope_shapes.hpp",
+             "#pragma once\n"
+             "namespace proj {\n"
+             "struct Beast { int n; };\n"
+             "template <typename T> struct Outer { static int make() { return 1; } };\n"
+             "namespace { int hidden() { return 3; } }\n"
+             "int hidden_user() { return proj::hidden(); }\n"
+             "}\n"
+             "int dup(int a) { return a; }\n"
+             "namespace alpha { int dup(double a) { return 0; } }\n");
+  write_file(root / "scope_shapes.cpp",
+             "#include \"scope_shapes.hpp\"\n"
+             "int template_user() { return proj::Outer<int>::make() + proj::Outer<proj::Beast>::make(); }\n"
+             "int alpha_user() { return alpha::dup(1.0); }\n");
+
+  // A qualifier refuses a candidate only where it CONTRADICTS what that
+  // candidate records. Five of these shapes resolved by name and were then
+  // dropped as `dropped_scope_mismatch`; the sixth, an in-class definition, is
+  // the control that bound all along (CGR-4 review of #76).
+  write_file(root / "scope_evidence.hpp",
+             "#pragma once\n"
+             "namespace proj {\n"
+             "struct Cache { static int reload(); };\n"
+             "struct Nest { struct Inner { static int spin(); }; };\n"
+             "struct Inline { static int inline_reload() { return 7; } };\n"
+             "namespace detail { int helper_decl() { return 3; } }\n"
+             "inline namespace v1 { int versioned() { return 8; } }\n"
+             "}\n");
+  // Out-of-line member definitions: the class qualifier is on the DEFINITION,
+  // never on the in-class prototype (a field_declaration, which gets no node).
+  write_file(root / "scope_evidence.cpp",
+             "#include \"scope_evidence.hpp\"\n"
+             "namespace proj {\n"
+             "int Cache::reload() { return 1; }\n"
+             "int Nest::Inner::spin() { return 2; }\n"
+             "}\n");
+  write_file(root / "scope_evidence_user.cpp",
+             "#include \"scope_evidence.hpp\"\n"
+             "namespace pd = proj::detail;\n"
+             "template <typename T> int build() { return T::make(); }\n"
+             "int user_outofline() { return proj::Cache::reload(); }\n"
+             "int user_nested() { return proj::Nest::Inner::spin(); }\n"
+             "int via_alias() { return pd::helper_decl(); }\n"
+             "int via_inline_ns() { return proj::versioned(); }\n"
+             "int user_inline() { return proj::Inline::inline_reload(); }\n");
+
+  // Library namespaces the project declares nowhere, against file-scope project
+  // functions of the same name. While the contradiction test was an allowlist
+  // holding `std` alone, all four of these bound (CGR-4 review of #80).
+  write_file(root / "library_roots.cpp",
+             "int format(int a) { return a; }\n"
+             "int trim(int a) { return a; }\n"
+             "int capacity() { return 0; }\n"
+             "int number(int a) { return a; }\n");
+  write_file(root / "library_roots_user.cpp",
+             "int library_user(int a) {\n"
+             "  return fmt::format(a) + boost::algorithm::trim(a) + absl::strings_internal::capacity() +\n"
+             "         QString::number(a);\n"
+             "}\n");
+
   const auto graph = cgraph::run_one_shot(root).graph;
 
   int failures = 0;
@@ -241,6 +383,16 @@ int main() {
   check(has_edge(graph, "handle", "Payload", "references"),
         "free-function parameter reference -> Payload");
   check(has_edge(graph, "Service", "Payload", "references"), "field reference -> Payload");
+  // A template argument of a qualified type is a reference, tagged generic_arg,
+  // whether it sits in a parameter, a return type or a data member.
+  check(has_edge_with_context(graph, "maybe_payload", "Payload", "references", "generic_arg"),
+        "std::vector<Payload>& / std::span<const Payload> / std::optional<Payload> -> Payload as generic_arg");
+  check(has_edge_with_context(graph, "PayloadBag", "Payload", "references", "generic_arg"),
+        "std::vector<Payload> data member -> Payload as generic_arg");
+  // consumer.cpp includes engine.hpp, which includes types.hpp: Payload is two
+  // includes away and resolves; Engine is one away.
+  check(has_edge(graph, "consume", "Payload", "references"), "transitive include reference -> Payload");
+  check(has_edge(graph, "consume", "Engine", "references"), "direct include reference -> Engine");
 
   // defines: a data member becomes a field node owned by its type.
   check(has_node(graph, "data", "field"), "data member node");
@@ -336,5 +488,92 @@ int main() {
   }
 
   fs::remove_all(root);
+  // Qualified callees: scope must agree with the declaration.
+  check(!has_edge(graph, "stdlib_user", "find", "CALLS"), "std::find must not bind to proj::find");
+  check(!has_edge(graph, "stdlib_user", "exists", "CALLS"), "std::filesystem::exists must not bind to proj::exists");
+  check(has_edge(graph, "stdlib_user", "helper", "CALLS"), "proj::detail::helper resolves through its namespace");
+  check(has_edge(graph, "stdlib_user", "size_of", "CALLS"), "proj::Stats::size_of resolves through its class");
+  check(has_edge(graph, "stdlib_user", "count_of", "CALLS"), "proj::Stats::count_of resolves through its class");
+  // `v.size()` on an unknown receiver must not reach the project's only method named `size`.
+  check(!has_edge(graph, "stdlib_user", "size", "CALLS"), "v.size() must not bind to proj::Stats::size");
+  check(has_edge(graph, "template_user", "make", "CALLS"), "proj::Outer<int>::make() resolves through the template's class");
+  check(has_edge(graph, "hidden_user", "hidden", "CALLS"), "proj::hidden() reaches a symbol in an anonymous namespace");
+  {
+    // Exactly one `dup` edge, and it is the one declared in namespace alpha.
+    int alpha_edges = 0;
+    int file_scope_edges = 0;
+    for (const auto& edge : graph.edges) {
+      if (edge.relation != "CALLS") {
+        continue;
+      }
+      for (const auto& node : graph.nodes) {
+        if (node.id != edge.target || node.label != "dup") {
+          continue;
+        }
+        const auto scope = node.properties.find("scope");
+        if (scope != node.properties.end() && scope->second == "alpha") {
+          ++alpha_edges;
+        } else {
+          ++file_scope_edges;
+        }
+      }
+    }
+    check(alpha_edges == 1 && file_scope_edges == 0, "alpha::dup() edges only to the alpha member of the overload set");
+  }
+  {
+    bool anonymous_scope = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "hidden" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        anonymous_scope = scope != node.properties.end() && scope->second == "proj::(anonymous)";
+      }
+    }
+    check(anonymous_scope, "an anonymous namespace is spelled (anonymous) in scope");
+  }
+  {
+    bool scoped = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "helper" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        scoped = scope != node.properties.end() && scope->second == "proj::detail";
+      }
+    }
+    check(scoped, "a symbol declared inside namespaces carries its scope");
+  }
+
+  // A qualifier only refuses what it contradicts. The gate used to demand that
+  // every candidate PROVE its scope, and an out-of-line definition proved
+  // nothing: `int Cache::reload() {}` recorded only the namespace it sat in, a
+  // call through an alias or a template parameter nothing that could match.
+  check(has_edge(graph, "user_outofline", "reload", "CALLS"),
+        "an out-of-line member definition carries the class it qualifies");
+  check(has_edge(graph, "user_nested", "spin", "CALLS"),
+        "a nested class's out-of-line definition carries both of its segments");
+  check(has_edge(graph, "via_alias", "helper_decl", "CALLS"),
+        "a namespace alias resolves to the namespace it aliases");
+  check(has_edge(graph, "via_inline_ns", "versioned", "CALLS"),
+        "an inline namespace is transparent to a qualified call");
+  check(has_edge(graph, "build", "make", "CALLS"),
+        "a dependent call T::make() names no scope and resolves on its leaf name");
+  check(has_edge(graph, "user_inline", "inline_reload", "CALLS"),
+        "an in-class definition still resolves through its class");
+  // A qualifier rooted in a namespace the project does not declare names a
+  // scope no declaration here can be in, whatever the leaf name matches.
+  check(!has_edge(graph, "library_user", "format", "CALLS"), "fmt::format does not bind a project format");
+  check(!has_edge(graph, "library_user", "trim", "CALLS"), "boost::algorithm::trim does not bind a project trim");
+  check(!has_edge(graph, "library_user", "capacity", "CALLS"),
+        "absl::strings_internal::capacity does not bind a project capacity");
+  check(!has_edge(graph, "library_user", "number", "CALLS"), "QString::number does not bind a project number");
+  {
+    bool qualified = false;
+    for (const auto& node : graph.nodes) {
+      if (node.label == "reload" && node.kind == "function") {
+        const auto scope = node.properties.find("scope");
+        qualified = scope != node.properties.end() && scope->second == "proj::Cache";
+      }
+    }
+    check(qualified, "the class an out-of-line definition names is recorded as its scope");
+  }
+
   return failures == 0 ? 0 : 1;
 }

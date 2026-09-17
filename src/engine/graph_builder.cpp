@@ -1,5 +1,6 @@
 #include "cgraph/graph_builder.hpp"
 
+#include "cgraph/detect.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -31,6 +32,47 @@ constexpr std::string_view kCallRelation = "CALLS";
 
 [[nodiscard]] std::string edge_key(const Edge& edge) {
   return edge.source + "\n" + edge.relation + "\n" + edge.target;
+}
+
+// Member names that every standard library defines on its containers, strings,
+// iterators, smart pointers and option types. A member call to one of these
+// with an unknown receiver (`v.size()`, `m.find(k)`, `opt.value()`) is far more
+// likely to be the library's member than the project's, so the method-only
+// project-wide tier refuses to bind it: on CGraph's own source the one project
+// method named `size` received 141 CALLS edges, one per `.size()` in the tree,
+// and `find` received 68, every one a false dependent in `impact`. A same-file
+// declaration (tier 1) is evidence and still binds; so does a receiver that
+// names the class (`Stats::size()`, tier 2a), but only where the language config
+// fills `receiver_label` through `call_receiver_field` -- java_config alone
+// today -- so for the C family the same-file tier is the only one left.
+// Deliberately excludes names a project plausibly owns (`open`, `close`,
+// `read`, `write`, `get`, `set`, `add`, `apply`, `merge`, `load`, `store`):
+// losing those edges would cost more recall than the precision is worth.
+// Keys are make_id-normalized, so `.Count()` (Go, C#) and `.count()` both match.
+[[nodiscard]] bool is_library_member_key(const std::string& key) {
+  static const std::unordered_set<std::string> keys = [] {
+    static constexpr std::string_view names[] = {
+      // containers and strings: C++, Java, JS, Python, Rust
+      "size", "length", "len", "empty", "is_empty", "isEmpty", "clear", "capacity", "reserve", "resize",
+      "begin", "end", "cbegin", "cend", "rbegin", "rend", "front", "back", "first", "second", "at",
+      "count", "contains", "has", "insert", "erase", "emplace", "emplace_back", "emplace_front",
+      "try_emplace", "insert_or_assign", "push_back", "pop_back", "push_front", "pop_front", "append",
+      "swap", "data", "c_str", "str", "substr", "substring", "find", "rfind", "find_first_of",
+      "find_last_of", "lower_bound", "upper_bound", "equal_range", "starts_with", "ends_with",
+      "startswith", "endswith", "keys", "values", "entries", "items", "iter", "into_iter", "collect",
+      "indexOf", "lastIndexOf", "includes", "slice", "splice", "forEach", "for_each", "toString",
+      "hashCode", "equals", "to_string", "to_owned", "as_str", "as_ref", "as_mut", "clone",
+      // optionals, results, smart pointers, locks
+      "value", "has_value", "value_or", "unwrap", "unwrap_or", "expect", "is_some", "is_none", "is_ok",
+      "is_err", "reset", "release", "lock", "unlock", "try_lock",
+    };
+    std::unordered_set<std::string> normalized;
+    for (const auto name : names) {
+      normalized.insert(make_id(name));
+    }
+    return normalized;
+  }();
+  return keys.contains(key);
 }
 
 // Language built-in callables. Graphify never resolves a call to one of these
@@ -121,6 +163,8 @@ GraphSnapshot merge_fragments(std::span<const Fragment> fragments) {
         graph.hyperedges.push_back(hyperedge);
       }
     }
+    // First occurrence wins here too, matching the node it belongs to.
+    graph.fingerprints.insert(fragment.fingerprints.begin(), fragment.fingerprints.end());
   }
   return graph;
 }
@@ -162,6 +206,7 @@ void merge_fragment(GraphSnapshot& graph, const Fragment& fragment) {
       graph.hyperedges.push_back(hyperedge);
     }
   }
+  graph.fingerprints.insert(fragment.fingerprints.begin(), fragment.fingerprints.end());
 }
 
 void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
@@ -482,12 +527,27 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     const auto found = remap.find(id);
     return found == remap.end() ? id : found->second;
   };
+  // An aliased import (`import { config as configModule }`) is referred to by
+  // its alias in the importing file. The stub carried it; the relinked edge
+  // keeps it, so build_relation_scopes can bind the name the file actually uses.
+  std::unordered_map<std::string, std::string> alias_of;
+  for (const auto& node : graph.nodes) {
+    if (!removed.contains(node.id)) {
+      continue;
+    }
+    if (const auto alias = node.properties.find("alias"); alias != node.properties.end()) {
+      alias_of.emplace(node.id, alias->second);
+    }
+  }
   std::unordered_set<std::string> seen_edges;
   std::vector<Edge> rewritten;
   rewritten.reserve(graph.edges.size());
   for (auto edge : graph.edges) {
     if (dropped.contains(edge.source) || dropped.contains(edge.target)) {
       continue;  // edge to a dropped third-party import
+    }
+    if (const auto alias = alias_of.find(edge.target); alias != alias_of.end()) {
+      edge.properties.emplace("alias", alias->second);
     }
     edge.source = canonical(edge.source);
     edge.target = canonical(edge.target);
@@ -536,10 +596,15 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   // declare a `toJSONObject`.
   std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::string>>>
       methods_by_owner;
+  // The class node that owns each method, for checking a class-qualified callee
+  // (`proj::Stats::size()`) against the resolved method's owner and that owner's
+  // own namespace.
+  std::unordered_map<std::string, std::string> owner_id_by_method;
   for (const auto& edge : graph.edges) {
     if (edge.relation != "method") {
       continue;
     }
+    owner_id_by_method.emplace(edge.target, edge.source);
     const auto name_key = method_name_key_by_id.find(edge.target);
     if (name_key != method_name_key_by_id.end()) {
       methods_by_owner[edge.source][name_key->second].push_back(edge.target);
@@ -548,6 +613,14 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   std::unordered_set<std::string> node_ids;
   std::unordered_map<std::string, std::string> source_file_by_id;
   std::unordered_map<std::string, std::string> label_by_id;
+  // Declared namespace scope per node (`scope` property, C-family only today).
+  std::unordered_map<std::string, std::string> scope_by_id;
+  // The outermost segment of every declared scope: the namespace roots this
+  // project actually owns. A qualifier rooted anywhere else (`std::find`,
+  // `fmt::format`, `boost::algorithm::trim`, `QString::number`) names a scope no
+  // declaration here can be in, which is what makes it evidence against every
+  // candidate rather than only against the ones that recorded something.
+  std::unordered_set<std::string> project_scope_roots;
   node_ids.reserve(graph.nodes.size());
   source_file_by_id.reserve(graph.nodes.size());
 
@@ -572,6 +645,14 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     node_ids.insert(node.id);
     source_file_by_id.emplace(node.id, node.source_file);
     label_by_id.emplace(node.id, node.label);
+    if (const auto scope = node.properties.find("scope"); scope != node.properties.end()) {
+      const std::string_view text = scope->second;
+      const auto separator = text.find("::");
+      if (const auto root = text.substr(0, separator); root != "(anonymous)" && !root.empty()) {
+        project_scope_roots.emplace(root);
+      }
+      scope_by_id.emplace(node.id, scope->second);
+    }
     if (node.source_file.empty()) {
       continue;
     }
@@ -662,6 +743,12 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     // Sibling targets beyond target_id, filled only for an overload set: the
     // call edges to EVERY member, because any of them may be the callee.
     std::span<const std::string> overload_rest;
+    // Survivors of the scope gate below, when it narrows an overload set.
+    std::vector<std::string> gated_rest;
+    bool overload_counted = false;
+    // The call carried a qualifier the project gave nothing to check it
+    // against; counted only once the call actually produces an edge.
+    bool qualifier_unchecked = false;
 
     // Resolve an overload set: target the first declaration and remember the
     // rest, all graded INFERRED. Which member a call means cannot be known
@@ -683,6 +770,7 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       overload_rest = std::span(members->second).subspan(1);
       confidence = Confidence::Inferred;
       ++tally.resolved_overload_first;
+      overload_counted = true;
       return true;
     };
 
@@ -887,6 +975,14 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     bool member_method_hit = false;
     if (target_id.empty() && raw_call.is_member_call) {
       if (const auto methods = method_index.find(key); methods != method_index.end()) {
+        if (is_library_member_key(key)) {
+          // The bare name is one every standard library defines: with the
+          // receiver unknown, a project method of that name is not evidence.
+          // Counted only here, where a candidate existed to refuse; a name with
+          // no project method at all is an ordinary unknown below.
+          ++tally.dropped_library_member;
+          continue;
+        }
         if (methods->second.size() == 1) {
           target_id = methods->second.front();
           confidence = Confidence::Inferred;
@@ -923,9 +1019,102 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       ++tally.dropped_unknown;
       continue;
     }
+    // A qualified callee names its scope outright, and that is evidence about
+    // which declaration the call means -- evidence that can only ever REFUSE a
+    // candidate the tiers already produced. A candidate survives when the
+    // qualifier's segments are a suffix of its `scope` segments
+    // (`detail::helper()` from inside `proj` matches `proj::detail`;
+    // `other::detail::helper()` does not), with anonymous namespaces transparent
+    // because a qualified name from the same translation unit sees through
+    // them; or when it is a method of a class bearing the last segment whose own
+    // scope carries the rest (`proj::Stats::size()`).
+    //
+    // The gate runs where the qualifier has something to contradict. A root the
+    // project declares nowhere (`std`, `fmt`, `boost`, `QString`) contradicts
+    // every candidate by itself -- no declaration here is in that scope. Under a
+    // root the project does own, at least one candidate must record a scope or
+    // an owning class for the qualifier to check against; when none does, the
+    // qualifier is checked against nothing, so refusing would drop a real edge
+    // (a project scope the extractor never stamped) to buy no precision. Those
+    // bindings are the ones the qualifier could not confirm, and they are
+    // counted as `resolved_qualifier_unchecked`.
+    if (!raw_call.qualifier.empty()) {
+      const auto split_scope = [](std::string_view text) {
+        std::vector<std::string_view> segments;
+        while (!text.empty()) {
+          const auto separator = text.find("::");
+          const auto segment = text.substr(0, separator);
+          if (segment != "(anonymous)") {
+            segments.push_back(segment);
+          }
+          if (separator == std::string_view::npos) {
+            break;
+          }
+          text.remove_prefix(separator + 2);
+        }
+        return segments;
+      };
+      const auto wanted = split_scope(raw_call.qualifier);
+      const auto declared_scope_of = [&](const std::string& id) -> std::string_view {
+        const auto scope = scope_by_id.find(id);
+        return scope == scope_by_id.end() ? std::string_view{} : std::string_view(scope->second);
+      };
+      const auto is_suffix = [&](std::string_view declared, std::span<const std::string_view> prefix) {
+        const auto have = split_scope(declared);
+        if (prefix.size() > have.size()) {
+          return false;
+        }
+        return std::equal(prefix.rbegin(), prefix.rend(), have.rbegin());
+      };
+      const auto records_scope = [&](const std::string& id) {
+        return scope_by_id.contains(id) || owner_id_by_method.contains(id);
+      };
+      const auto in_scope = [&](const std::string& id) {
+        if (!wanted.empty() && is_suffix(declared_scope_of(id), wanted)) {
+          return true;
+        }
+        const auto owner = owner_id_by_method.find(id);
+        if (owner == owner_id_by_method.end() || wanted.empty()) {
+          return false;
+        }
+        const auto owner_label = label_by_id.find(owner->second);
+        if (owner_label == label_by_id.end() || owner_label->second != wanted.back()) {
+          return false;
+        }
+        return is_suffix(declared_scope_of(owner->second), std::span(wanted).first(wanted.size() - 1));
+      };
+      const bool foreign_root =
+          !wanted.empty() && !project_scope_roots.contains(std::string(wanted.front()));
+      const bool contradictable = foreign_root || records_scope(target_id) ||
+                                  std::any_of(overload_rest.begin(), overload_rest.end(), records_scope);
+      if (!contradictable) {
+        qualifier_unchecked = true;
+      } else {
+        for (const auto& sibling : overload_rest) {
+          if (in_scope(sibling)) {
+            gated_rest.push_back(sibling);
+          }
+        }
+        if (!in_scope(target_id)) {
+          if (gated_rest.empty()) {
+            if (overload_counted) {
+              --tally.resolved_overload_first;  // the set produced no edge after all
+            }
+            ++tally.dropped_scope_mismatch;
+            continue;
+          }
+          target_id = gated_rest.front();
+          gated_rest.erase(gated_rest.begin());
+        }
+        overload_rest = std::span(gated_rest);
+      }
+    }
     if (target_id == raw_call.caller_id) {
       ++tally.dropped_self;
       continue;
+    }
+    if (qualifier_unchecked) {
+      ++tally.resolved_qualifier_unchecked;
     }
     if (same_file_hit) {
       ++tally.resolved_same_file;
@@ -967,25 +1156,22 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   }
 }
 
-void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> raw_relations) {
-  std::unordered_set<std::string> node_ids;
-  std::unordered_map<std::string, std::string> label_by_id;
-  node_ids.reserve(graph.nodes.size());
+RelationScopes build_relation_scopes(const GraphSnapshot& graph) {
+  RelationScopes scopes;
+  scopes.label_by_id.reserve(graph.nodes.size());
 
   // Per-file declared symbols (label -> id, empty when ambiguous), the same
   // index used for same-file call resolution. Heritage relations may resolve a
   // base type to a declaration in the same file.
-  std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;
   for (const auto& node : graph.nodes) {
-    node_ids.insert(node.id);
-    label_by_id.emplace(node.id, node.label);
+    scopes.label_by_id.emplace(node.id, node.label);
     if (node.source_file.empty()) {
       continue;
     }
     if (node.kind != "function" && node.kind != "class" && node.kind != "type" && node.kind != "variable") {
       continue;
     }
-    auto& by_label = local_by_file[node.source_file];
+    auto& by_label = scopes.local_by_file[node.source_file];
     const auto [slot, inserted] = by_label.emplace(make_id(node.label), node.id);
     if (!inserted && slot->second != node.id) {
       slot->second.clear();
@@ -995,15 +1181,48 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
   // Per-file imported names (file id -> label -> imported target id), built from
   // the import/re_export edges left by resolve_imports. This is the import-alias
   // map every relation target is resolved through.
-  std::unordered_map<std::string, std::unordered_map<std::string, std::string>> imported_by_file;
   for (const auto& edge : graph.edges) {
     if (edge.relation != "imports" && edge.relation != "re_exports") {
       continue;
     }
-    if (const auto label = label_by_id.find(edge.target); label != label_by_id.end()) {
-      imported_by_file[edge.source].emplace(make_id(label->second), edge.target);
+    if (const auto label = scopes.label_by_id.find(edge.target); label != scopes.label_by_id.end()) {
+      auto& names = scopes.imported_by_file[edge.source];
+      names.emplace(make_id(label->second), edge.target);
+      // `import { config as configModule }`: the file says `configModule`.
+      if (const auto alias = edge.properties.find("alias"); alias != edge.properties.end()) {
+        names.emplace(make_id(alias->second), edge.target);
+      }
     }
   }
+  return scopes;
+}
+
+std::string resolve_scoped_name(const RelationScopes& scopes, const std::string& source_file,
+                                const std::string& name_key, bool allow_same_file) {
+  if (const auto file = scopes.imported_by_file.find(make_id(source_file)); file != scopes.imported_by_file.end()) {
+    if (const auto slot = file->second.find(name_key); slot != file->second.end()) {
+      return slot->second;
+    }
+  }
+  if (allow_same_file) {
+    if (const auto file = scopes.local_by_file.find(source_file); file != scopes.local_by_file.end()) {
+      if (const auto slot = file->second.find(name_key); slot != file->second.end()) {
+        return slot->second;  // empty when the file declares the name twice
+      }
+    }
+  }
+  return {};
+}
+
+void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> raw_relations) {
+  std::unordered_set<std::string> node_ids;
+  node_ids.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) {
+    node_ids.insert(node.id);
+  }
+  const auto scopes = build_relation_scopes(graph);
+  const auto& local_by_file = scopes.local_by_file;
+  const auto& imported_by_file = scopes.imported_by_file;
 
   // C/C++ `#include` imports a whole file, not named symbols, so a referenced
   // type (a base class, a parameter type) is declared in an included *file*
@@ -1017,6 +1236,10 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
     }
   }
   std::unordered_map<std::string, std::vector<std::string>> included_files_by_file;
+  std::unordered_map<std::string, std::string> file_id_by_source;
+  for (const auto& [id, source] : file_source_by_id) {
+    file_id_by_source.emplace(source, id);
+  }
   for (const auto& edge : graph.edges) {
     if (edge.relation != "imports" && edge.relation != "re_exports") {
       continue;
@@ -1025,6 +1248,56 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
       included_files_by_file[edge.source].push_back(src->second);
     }
   }
+
+  // A C/C++ `#include` is textual: every declaration a header includes is
+  // visible to the file that includes the header. Resolving only through the
+  // direct includes left CGraph's own `Node`, `Edge` and `RawCall` with no
+  // incoming `references` at all -- graph_builder.cpp includes graph_builder.hpp,
+  // which includes types.hpp -- so half the "unreferenced" types in `report
+  // types` were used everywhere. The include graph is walked breadth-first from
+  // the source file, bounded by kIncludeDepth, and a target resolves at the
+  // NEAREST distance where exactly one declaration bears its name: two
+  // declarations at that distance are an ambiguity and refuse the edge, a
+  // nearer declaration shadows a farther one. Levels are memoized per file.
+  constexpr std::size_t kIncludeDepth = 8;
+  std::unordered_map<std::string, std::vector<std::vector<std::string>>> include_levels_by_file;
+  const auto include_levels = [&](const std::string& source_file_id) -> const std::vector<std::vector<std::string>>& {
+    auto it = include_levels_by_file.find(source_file_id);
+    if (it != include_levels_by_file.end()) {
+      return it->second;
+    }
+    std::vector<std::vector<std::string>> levels;
+    std::unordered_set<std::string> visited{source_file_id};
+    std::vector<std::string> frontier{source_file_id};
+    for (std::size_t depth = 0; depth < kIncludeDepth && !frontier.empty(); ++depth) {
+      std::vector<std::string> next_sources;
+      std::vector<std::string> next_ids;
+      for (const auto& file_id : frontier) {
+        const auto inc = included_files_by_file.find(file_id);
+        if (inc == included_files_by_file.end()) {
+          continue;
+        }
+        for (const auto& included_source : inc->second) {
+          const auto included_id = file_id_by_source.find(included_source);
+          if (included_id == file_id_by_source.end() || !visited.insert(included_id->second).second) {
+            continue;
+          }
+          next_sources.push_back(included_source);
+          next_ids.push_back(included_id->second);
+        }
+      }
+      if (next_sources.empty()) {
+        break;
+      }
+      levels.push_back(std::move(next_sources));
+      frontier = std::move(next_ids);
+    }
+    return include_levels_by_file.emplace(source_file_id, std::move(levels)).first->second;
+  };
+  const auto is_c_family = [](const std::string& source_file) {
+    const auto language = detect_language(std::filesystem::path(source_file));
+    return language == DetectedLanguage::C || language == DetectedLanguage::Cpp;
+  };
 
   std::unordered_set<std::string> seen_edges;
   seen_edges.reserve(graph.edges.size());
@@ -1047,6 +1320,11 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
   };
 
   for (const auto& relation : raw_relations) {
+    if (relation.relation == "route" || relation.relation == "file_route" || relation.relation == "mounts" ||
+        relation.relation == "aliases" || relation.relation == "http_call" || relation.relation == "http_wrapper" ||
+        relation.relation == "url_const") {
+      continue;  // HTTP contract facts: resolve_contracts mints endpoints from these
+    }
     if (relation.source_id.empty() || relation.target_label.empty() || !node_ids.contains(relation.source_id)) {
       continue;
     }
@@ -1064,9 +1342,38 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
       }
     }
     // 1b. The type is declared in a file the source file #includes (C/C++
-    //     whole-file import). Resolve against declarations in each included file.
+    //     whole-file import). For the C family the walk is transitive and
+    //     nearest-unique (see include_levels); other languages keep the direct
+    //     includes only, since a transitive import does not re-export names.
     if (target_id.empty()) {
-      if (const auto inc = included_files_by_file.find(source_file_id); inc != included_files_by_file.end()) {
+      if (is_c_family(relation.source_file)) {
+        for (const auto& level : include_levels(source_file_id)) {
+          std::string found;
+          bool ambiguous = false;
+          for (const auto& included_source : level) {
+            const auto file = local_by_file.find(included_source);
+            if (file == local_by_file.end()) {
+              continue;
+            }
+            const auto slot = file->second.find(key);
+            if (slot == file->second.end()) {
+              continue;
+            }
+            if (slot->second.empty() || (!found.empty() && found != slot->second)) {
+              ambiguous = true;  // two declarations at this distance, or one file declaring it twice
+              break;
+            }
+            found = slot->second;
+          }
+          if (ambiguous) {
+            break;
+          }
+          if (!found.empty()) {
+            target_id = found;
+            break;
+          }
+        }
+      } else if (const auto inc = included_files_by_file.find(source_file_id); inc != included_files_by_file.end()) {
         for (const auto& included_source : inc->second) {
           const auto file = local_by_file.find(included_source);
           if (file == local_by_file.end()) {

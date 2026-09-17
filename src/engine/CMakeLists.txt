@@ -10,6 +10,8 @@ add_library(cgraph_engine STATIC
   daemon_supervisor.cpp
   daemon_identity.cpp
   dedup.cpp
+  contract_schemas.cpp
+  contracts.cpp
   cpp_extractor.cpp
   detect.cpp
   engine.cpp
@@ -19,6 +21,7 @@ add_library(cgraph_engine STATIC
   file_cache.cpp
   file_extraction.cpp
   file_watcher.cpp
+  fingerprint.cpp
   fragment_json.cpp
   graph_builder.cpp
   incremental_update.cpp
@@ -29,11 +32,13 @@ add_library(cgraph_engine STATIC
   non_grammar_extractors.cpp
   normalize.cpp
   operation_stats.cpp
+  package_manifests.cpp
   parser_pool.cpp
   path_ignore.cpp
   pipeline.cpp
   protocol.cpp
   python_extractor.cpp
+  report.cpp
   seam.cpp
   semantic_chunk_plan.cpp
   semantic_cache.cpp
@@ -45,7 +50,8 @@ add_library(cgraph_engine STATIC
   semantic_orchestration.cpp
   skills_install.cpp
   snapshot_source_reader.cpp
-  tsconfig_aliases.cpp)
+  tsconfig_aliases.cpp
+  workspace.cpp)
 
 add_library(cgraph::engine ALIAS cgraph_engine)
 
