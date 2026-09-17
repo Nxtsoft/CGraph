@@ -435,15 +435,26 @@ build/release/src/cli/cgraph enrich-ingest --root /path/to/project --out /tmp/cg
 ### Reports
 
 `cgraph report modules` draws the module dependency map of a project from the resident daemon
-(spawned if absent): files grouped into modules by directory depth, `imports`/`CALLS` between
-modules with counts, layers ranked by longest dependency path (layer 0 = nothing depends on it),
-and every cycle listed. Test roots are excluded unless `--include-tests`.
+(spawned if absent): files grouped into modules, `imports`/`CALLS` between modules with counts,
+layers ranked by longest dependency path (layer 0 = nothing depends on it), and every cycle
+listed. Test roots are excluded unless `--include-tests`.
+
+**A monorepo is grouped by the packages it declares**, not by directory depth. The root's
+workspace manifest is read (`workspaces` in a `package.json`, `packages:` in a
+`pnpm-workspace.yaml`, `members` in a Cargo `[workspace]`, `use` in a `go.work`), its member globs
+are expanded, and every matched directory that declares a manifest of its own becomes a module
+under its real name, so the map says `@turing/web` and `ui-kit` rather than `apps` and `packages`.
+Files under no package keep their directory name, nothing is dropped, and the response says which
+question it answered through `group_by`, `manifest` and `packages`. A project with no workspace
+manifest is grouped by depth exactly as before. `--group-by packages|depth` overrides the choice.
+Grouping is computed at report time: no `package` node is added to `graph.json`.
 
 ```sh
 cgraph report modules --root /path/to/project --scope src            # Mermaid `graph LR` on stdout
 cgraph report modules --root /path/to/project --format json          # modules / edges / layers / cycles
 cgraph report modules --root /path/to/project --format svg > modules.svg
 cgraph report modules --root /path/to/project --depth 1 --budget 2000
+cgraph report modules --root /path/to/monorepo --group-by depth      # ignore the workspace manifest
 ```
 
 The output is sized to a token budget (default 6000, `--budget 0` for all of it): when it

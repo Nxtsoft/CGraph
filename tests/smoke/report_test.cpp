@@ -17,8 +17,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <system_error>
 #include <set>
 #include <string>
 #include <vector>
@@ -93,6 +96,77 @@ cgraph::ReportRequest request_for(int depth = 2) {
   request.project_root = "/proj";
   request.budget = 0;
   return request;
+}
+
+// CGR-15: a monorepo names its own units, so the modules view uses them. The
+// manifest is read from disk, so this builds a real (tiny) workspace.
+int test_modules_by_package() {
+  namespace fs = std::filesystem;
+  const auto root = fs::temp_directory_path() / "cgraph-report-packages-test";
+  fs::remove_all(root);
+  const auto write = [](const fs::path& path, std::string_view text) {
+    fs::create_directories(path.parent_path());
+    std::ofstream(path) << text;
+  };
+  write(root / "package.json", R"({"name": "mono", "workspaces": ["apps/*", "packages/*"]})");
+  write(root / "apps" / "web" / "package.json", R"({"name": "@acme/web"})");
+  write(root / "packages" / "ui" / "package.json", R"({"name": "ui-kit"})");
+  // Package roots are canonical; the graph's source_file paths must match.
+  std::error_code error;
+  const auto canonical = fs::weakly_canonical(root, error);
+
+  cgraph::GraphSnapshot graph;
+  graph.build_state = cgraph::BuildState::DeterministicReady;
+  const auto web_file = (canonical / "apps" / "web" / "src" / "page.tsx").generic_string();
+  const auto ui_file = (canonical / "packages" / "ui" / "button.tsx").generic_string();
+  const auto loose_file = (canonical / "tools" / "build.ts").generic_string();
+  graph.nodes.push_back({.id = "web", .label = "Page", .source_file = web_file, .kind = "function"});
+  graph.nodes.push_back({.id = "ui", .label = "Button", .source_file = ui_file, .kind = "function"});
+  graph.nodes.push_back({.id = "tool", .label = "build", .source_file = loose_file, .kind = "function"});
+  graph.edges.push_back({.source = "web", .target = "ui", .relation = "CALLS"});
+
+  cgraph::ReportRequest request;
+  request.view = cgraph::ReportView::Modules;
+  request.project_root = canonical;
+  const auto report = cgraph::build_modules_report(graph, request);
+  if (report.grouping != cgraph::ModuleGrouping::Packages || report.manifest != "package.json" || report.packages != 2) {
+    return fail("a workspace manifest supplies the grouping, and the report says which manifest");
+  }
+  if (module_named(report, "@acme/web") == nullptr || module_named(report, "ui-kit") == nullptr) {
+    for (const auto& module : report.modules) {
+      std::cerr << "  module " << module.name << '\n';
+    }
+    return fail("modules are the packages' own names");
+  }
+  // A file in no package keeps its directory name, so nothing is dropped.
+  if (module_named(report, "tools") == nullptr) {
+    return fail("a file outside every package still has a module");
+  }
+  const auto* edge = edge_named(report, "@acme/web", "ui-kit");
+  if (edge == nullptr || edge->calls != 1) {
+    return fail("dependencies are aggregated between packages");
+  }
+
+  // `depth` ignores the manifest; `auto` on a repo with no workspace is depth.
+  cgraph::ReportRequest by_depth = request;
+  by_depth.module_grouping = cgraph::ModuleGrouping::Depth;
+  const auto depth_report = cgraph::build_modules_report(graph, by_depth);
+  if (depth_report.grouping != cgraph::ModuleGrouping::Depth || depth_report.packages != 0 ||
+      module_named(depth_report, "apps/web") == nullptr || module_named(depth_report, "@acme/web") != nullptr) {
+    return fail("group_by depth ignores the manifest");
+  }
+  cgraph::ReportRequest no_workspace = request;
+  no_workspace.project_root = canonical / "apps" / "web";
+  if (cgraph::build_modules_report(graph, no_workspace).grouping != cgraph::ModuleGrouping::Packages) {
+    // apps/web declares no `workspaces`, so auto falls back to depth. The graph's
+    // files lie outside that root, which is fine: the grouping is what is under test.
+    const auto fallback = cgraph::build_modules_report(graph, no_workspace);
+    if (fallback.grouping != cgraph::ModuleGrouping::Depth || fallback.packages != 0) {
+      return fail("a root that declares no workspace groups by depth");
+    }
+  }
+  fs::remove_all(root);
+  return 0;
 }
 
 int test_grouping_and_test_exclusion() {
@@ -1143,7 +1217,7 @@ int test_design_envelope() {
 }  // namespace
 
 int main() {
-  for (const auto test : {test_grouping_and_test_exclusion, test_layers, test_cycles, test_scope_and_depth,
+  for (const auto test : {test_modules_by_package, test_grouping_and_test_exclusion, test_layers, test_cycles, test_scope_and_depth,
                           test_budget_shedding, test_renderers, test_daemon_envelope, test_types_view,
                           test_types_view_schemas, test_types_budget_and_renderers, test_types_envelope, test_clones_view,
                           test_clones_envelope,

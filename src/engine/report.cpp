@@ -2,6 +2,7 @@
 
 #include "cgraph/contracts.hpp"
 #include "cgraph/fingerprint.hpp"
+#include "cgraph/package_manifests.hpp"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +25,7 @@ namespace fs = std::filesystem;
 
 constexpr std::array<const char*, 4> kViewNames = {"modules", "design", "clones", "types"};
 constexpr std::array<const char*, 4> kFormatNames = {"json", "mermaid", "svg", "markdown"};
+constexpr std::array<const char*, 3> kGroupingNames = {"auto", "packages", "depth"};
 
 // Directory names that mark a test root. Matched on every path component so a
 // nested tests/ under a package is excluded the same as a top-level one.
@@ -183,7 +185,9 @@ constexpr std::array<std::string_view, 12> kTestDirs = {
 }
 
 [[nodiscard]] std::string scope_caption(const ModulesReport& report) {
-  std::string caption = "depth " + std::to_string(report.depth);
+  std::string caption = report.grouping == ModuleGrouping::Packages
+                            ? plural(report.packages, "package") + " from " + report.manifest
+                            : "depth " + std::to_string(report.depth);
   caption += report.scope.empty() ? std::string(", whole project") : ", scope " + report.scope;
   caption += report.include_tests ? ", tests included" : ", tests excluded";
   return caption;
@@ -222,6 +226,19 @@ std::optional<ReportFormat> report_format_from_string(std::string_view name) {
   return std::nullopt;
 }
 
+const char* module_grouping_name(ModuleGrouping grouping) {
+  return kGroupingNames[static_cast<std::size_t>(grouping)];
+}
+
+std::optional<ModuleGrouping> module_grouping_from_string(std::string_view name) {
+  for (std::size_t i = 0; i < kGroupingNames.size(); ++i) {
+    if (name == kGroupingNames[i]) {
+      return static_cast<ModuleGrouping>(i);
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string> parse_report_request(const nlohmann::json& params, ReportRequest& out) {
   const auto view_name = params.value("view", std::string{"modules"});
   const auto view = report_view_from_string(view_name);
@@ -235,6 +252,12 @@ std::optional<std::string> parse_report_request(const nlohmann::json& params, Re
     return "unknown report format '" + format_name + "' (expected json|mermaid|svg|markdown)";
   }
   out.format = *format;
+  const auto grouping_name = params.value("group_by", std::string{"auto"});
+  const auto grouping = module_grouping_from_string(grouping_name);
+  if (!grouping) {
+    return "unknown group_by '" + grouping_name + "' (expected auto|packages|depth)";
+  }
+  out.module_grouping = *grouping;
   const auto budget = params.value("budget", static_cast<long long>(kDefaultReportBudget));
   if (budget < 0) {
     return "budget must be >= 0 (0 disables the budget)";
@@ -287,6 +310,21 @@ ModulesReport build_modules_report(const GraphSnapshot& graph, const ReportReque
     }
   }
 
+  // A monorepo has already named its own units in its build manifest, and those
+  // names ("@turing/api", "ui-kit") are what the team says out loud; directory
+  // depth is a guess at the same question. Packages win when the manifest
+  // declares any, unless the caller asked for one or the other. This is a
+  // report-time view like depth grouping: no `package` node enters graph.json.
+  std::vector<WorkspacePackage> packages;
+  if (request.module_grouping != ModuleGrouping::Depth && !root.empty()) {
+    packages = discover_workspace_packages(root);
+  }
+  if (!packages.empty()) {
+    report.grouping = ModuleGrouping::Packages;
+    report.manifest = packages.front().manifest;
+    report.packages = packages.size();
+  }
+
   // Every code node joins the module of its source file. Enrichment and memory
   // nodes are prose about the code, not code, and stay out.
   struct Group {
@@ -303,7 +341,16 @@ ModulesReport build_modules_report(const GraphSnapshot& graph, const ReportReque
     }
     auto file_it = module_of_file.find(node.source_file);
     if (file_it == module_of_file.end()) {
-      file_it = module_of_file.emplace(node.source_file, module_for(node.source_file, root, report.depth)).first;
+      // A file inside a package belongs to it; one outside every package (a root
+      // script, a config) keeps the directory name, so nothing is dropped.
+      std::string module;
+      if (const auto* package = packages.empty() ? nullptr : package_for_file(packages, node.source_file);
+          package != nullptr) {
+        module = package->name;
+      } else {
+        module = module_for(node.source_file, root, report.depth);
+      }
+      file_it = module_of_file.emplace(node.source_file, std::move(module)).first;
     }
     const auto& module = file_it->second;
     module_of_node.emplace(node.id, module);
@@ -637,6 +684,9 @@ nlohmann::json modules_report_json(const ModulesReport& report) {
   return nlohmann::json{
       {"view", "modules"},
       {"depth", report.depth},
+      {"group_by", module_grouping_name(report.grouping)},
+      {"manifest", report.manifest},
+      {"packages", report.packages},
       {"scope", report.scope},
       {"include_tests", report.include_tests},
       {"modules", std::move(modules)},
@@ -2475,6 +2525,9 @@ nlohmann::json report_response(const GraphSnapshot& graph, const nlohmann::json&
       result = nlohmann::json{
           {"view", "modules"},
           {"depth", report.depth},
+          {"group_by", module_grouping_name(report.grouping)},
+          {"manifest", report.manifest},
+          {"packages", report.packages},
           {"scope", report.scope},
           {"include_tests", report.include_tests},
           {"rendered", rendered},

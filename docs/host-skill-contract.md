@@ -48,7 +48,11 @@ Supported operations:
   `omitted` always reports how many. A daemon that predates the op answers `unknown op: report`;
   hosts should surface that as "upgrade the daemon". Hosts also call `graph_report` when asked for
   the architecture or a module map, for type bloat, duplicate interfaces/structs, or dead types,
-  for copy-pasted or duplicated logic, and for how the program is entered and flows.
+  for copy-pasted or duplicated logic, and for how the program is entered and flows. The `modules`
+  view names its modules after the repository's own workspace packages when the root declares a
+  workspace (npm/pnpm/Cargo/go.work), else by directory depth; the response's `group_by`,
+  `manifest` and `packages` say which, and the request's `group_by` (`auto`, `packages`, `depth`)
+  selects.
 
 Hosts should prefer the thin client command surface unless they are implementing an MCP or always-on bridge that already speaks local JSON frames.
 

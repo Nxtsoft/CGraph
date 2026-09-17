@@ -19,11 +19,15 @@ namespace cgraph {
 // `design` (CGR-11).
 enum class ReportView { Modules, Design, Clones, Types };
 enum class ReportFormat { Json, Mermaid, Svg, Markdown };
+// What names a module in the `modules` view (CGR-15).
+enum class ModuleGrouping { Auto, Packages, Depth };
 
 [[nodiscard]] const char* report_view_name(ReportView view);
 [[nodiscard]] std::optional<ReportView> report_view_from_string(std::string_view name);
 [[nodiscard]] const char* report_format_name(ReportFormat format);
 [[nodiscard]] std::optional<ReportFormat> report_format_from_string(std::string_view name);
+[[nodiscard]] const char* module_grouping_name(ModuleGrouping grouping);
+[[nodiscard]] std::optional<ModuleGrouping> module_grouping_from_string(std::string_view name);
 
 // Token budget the daemon applies when a request names none. 0 disables the
 // budget (the one-shot export writes the whole diagram).
@@ -48,6 +52,12 @@ struct ReportRequest {
   // Directory components that name a module: depth 2 turns
   // src/engine/dedup.cpp into src/engine.
   int module_depth = kDefaultModuleDepth;
+  // What names a module. `Auto` uses the repository's own workspace packages
+  // when its manifest declares any (npm/pnpm workspaces, Cargo members,
+  // go.work), because those are the names the team already uses, and falls back
+  // to directory depth otherwise. `Packages` insists on packages and reports
+  // none when the manifest declares none; `Depth` ignores the manifest.
+  ModuleGrouping module_grouping = ModuleGrouping::Auto;
   // Similarity floor shared by the types view (member-set Jaccard) and the
   // clones view (fingerprint Jaccard), and the clones view's token floor: a
   // body shorter than this is boilerplate (a getter, a main stub), not a clone.
@@ -86,6 +96,14 @@ struct ModuleDependency {
 
 struct ModulesReport {
   int depth = kDefaultModuleDepth;
+  // How modules were actually named: `packages` when the repository's workspace
+  // manifest supplied them, `depth` otherwise. A caller reading a diagram has to
+  // know which, because the two answer different questions.
+  ModuleGrouping grouping = ModuleGrouping::Depth;
+  // The manifest the packages came from (`package.json`, `pnpm-workspace.yaml`,
+  // `Cargo.toml`, `go.work`), empty when grouping by depth.
+  std::string manifest;
+  std::size_t packages = 0;  // packages the manifest declared
   std::string scope;
   bool include_tests = false;
   std::vector<ModuleSummary> modules;          // by layer, then weight, then name

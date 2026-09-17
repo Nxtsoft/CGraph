@@ -51,8 +51,9 @@ void print_usage() {
       "  cgraph stats [--root PATH] [--since all|today|<ISO8601>|<N>h|<N>d]   (default: all)\n"
       "        roll up the durable op-stats ledger (counts + zero-hit rate) and show live daemon stats\n"
       "  cgraph report modules [--root PATH] [--format json|mermaid|svg|markdown] [--scope PREFIX]\n"
-      "                        [--depth N] [--budget N] [--include-tests] [--daemon PATH]\n"
-      "        module dependency diagram from the resident daemon (spawned if absent)\n"
+      "                        [--depth N] [--group-by auto|packages|depth] [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        module dependency diagram from the resident daemon (spawned if absent); a monorepo\n"
+      "        groups by its workspace packages unless --group-by depth\n"
       "  cgraph report types [--root PATH] [--format json|markdown] [--scope PREFIX] [--threshold 0.80]\n"
       "                      [--min-members 3] [--budget N] [--include-tests] [--daemon PATH]\n"
       "        identical shapes under different names, one name declared in several files,\n"
@@ -286,6 +287,8 @@ int run_report(int argc, char** argv) {
       request.params["format"] = argv[++index];
     } else if (arg == "--scope" && has_value) {
       request.params["scope"] = argv[++index];
+    } else if (arg == "--group-by" && has_value) {
+      request.params["group_by"] = argv[++index];
     } else if (arg == "--depth" && has_value) {
       request.params["depth"] = std::stoi(argv[++index]);
     } else if (arg == "--budget" && has_value) {
