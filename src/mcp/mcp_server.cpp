@@ -1,6 +1,7 @@
 #include "cgraph/mcp_server.hpp"
 
 #include "cgraph/engine.hpp"
+#include "cgraph/change_context.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/report.hpp"
 
@@ -22,11 +23,12 @@ namespace {
   return nlohmann::json{{"content", {{{"type", "text"}, {"text", value.dump()}}}}};
 }
 
-[[nodiscard]] nlohmann::json tool_schema(std::string name, std::string description, nlohmann::json properties) {
+[[nodiscard]] nlohmann::json tool_schema(std::string name, std::string description, nlohmann::json properties,
+                                        nlohmann::json required = nlohmann::json::array()) {
   return nlohmann::json{
       {"name", std::move(name)},
       {"description", std::move(description)},
-      {"inputSchema", {{"type", "object"}, {"properties", std::move(properties)}, {"additionalProperties", true}}},
+      {"inputSchema", {{"type", "object"}, {"properties", std::move(properties)}, {"additionalProperties", true}, {"required", std::move(required)}}},
   };
 }
 
@@ -146,6 +148,18 @@ namespace {
           "is still running and query results may be empty), whether live file watching is active, "
           "and semantic enrichment progress.",
           nlohmann::json::object()),
+      tool_schema("graph_change_context",
+          "Validate an explicit unified diff against base and target source roots, build isolated "
+          "snapshots, and return source-pinned advisory impact and globally budgeted context. "
+          "Does not modify roots or the resident graph. Budget uses serialized UTF-8 bytes / 4, rounded up.",
+          {{"base_root", string_param("existing immutable base source directory")},
+           {"target_root", string_param("target source directory")},
+           {"diff_path", string_param("unified diff file")},
+           {"budget", integer_param("complete response budget; default 6000")},
+           {"max_depth", integer_param("impact/context hops; default 3")},
+           {"expected_base_content_root", string_param("optional expected base source hash")},
+           {"expected_target_content_root", string_param("optional expected target source hash")}},
+          {"base_root", "target_root", "diff_path"}),
       tool_schema(
           "graph_remember",
           "Checkpoint task state so you can /compact or /clear a long session without losing the "
@@ -296,6 +310,14 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
   const auto params = request.value("params", nlohmann::json::object());
   const auto name = params.value("name", std::string{});
   const auto arguments = params.value("arguments", nlohmann::json::object());
+  if (name == "graph_change_context") {
+    try {
+      return response(id, text_content(change_context(arguments)));
+    } catch (const std::exception& error) {
+      return response(id, {{"isError", true},
+          {"content", {{{"type", "text"}, {"text", nlohmann::json{{"error", error.what()}}.dump()}}}}});
+    }
+  }
   const auto daemon_request = daemon_request_for_tool(name, arguments);
   if (daemon_request.empty()) {
     return error_response(id, -32602, "unknown tool: " + name);

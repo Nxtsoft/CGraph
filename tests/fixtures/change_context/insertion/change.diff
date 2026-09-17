@@ -1,0 +1,8 @@
+--- a/source.py
++++ b/source.py
+@@ -1,4 +1,5 @@
+ def compute():
++    value = 2
+     return 1
+ 
+ def caller():

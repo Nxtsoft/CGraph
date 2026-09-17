@@ -2,6 +2,9 @@
 
 #include "cgraph/operation_stats.hpp"
 #include "cgraph/types.hpp"
+#include "cgraph/snapshot_source_reader.hpp"
+#include <span>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
@@ -117,6 +120,24 @@ class EnrichmentRunningScope {
  private:
   DaemonState& state_;
 };
+
+// Canonical directional multi-source traversal. Each reached node keeps a real
+// predecessor edge and the originating changed symbol; roots have depth zero.
+struct ImpactReach {
+  int depth = 0;
+  std::string via;
+  std::string predecessor;
+  std::string changed_id;
+  Edge edge;
+};
+[[nodiscard]] std::unordered_map<std::string, ImpactReach> trace_impact(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::string_view direction, std::string_view relation, int max_depth);
+// One union gather and one packing pass, never a per-seed budget multiplication.
+[[nodiscard]] nlohmann::json pack_seed_context(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::size_t budget, int max_depth, SnapshotSourceReader& reader);
+[[nodiscard]] std::size_t serialized_context_tokens(const nlohmann::json& value);
 
 [[nodiscard]] std::shared_ptr<const GraphSnapshot> read_graph_snapshot(const DaemonState& state);
 [[nodiscard]] nlohmann::json freshness_metadata(const GraphSnapshot& graph);

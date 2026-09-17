@@ -24,6 +24,8 @@
 #include <queue>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -910,54 +912,8 @@ struct StructuralIntent {
   // The canonical id (the requested key may have been a label).
   const auto& seed_id = seed->id;
 
-  const bool want_dependents = direction == "dependents" || direction == "both";
-  const bool want_dependencies = direction == "dependencies" || direction == "both";
-
-  // Adjacency in the requested direction(s), filtered by relation if given.
-  struct Link {
-    std::string to;
-    std::string relation;
-  };
-  std::unordered_map<std::string, std::vector<Link>> adjacency;
-  for (const auto& edge : graph.edges) {
-    if (!relation.empty() && edge.relation != relation) {
-      continue;
-    }
-    if (want_dependents) {
-      adjacency[edge.target].push_back({edge.source, edge.relation});  // who points at target
-    }
-    if (want_dependencies) {
-      adjacency[edge.source].push_back({edge.target, edge.relation});  // what source points to
-    }
-  }
-
-  struct Reached {
-    int depth = 0;
-    std::string via;
-  };
-  std::unordered_map<std::string, Reached> reached;
-  std::queue<std::string> frontier;
-  reached[seed_id] = {0, {}};
-  frontier.push(seed_id);
-  while (!frontier.empty()) {
-    const auto current = frontier.front();
-    frontier.pop();
-    const auto depth = reached[current].depth;
-    if (depth >= max_depth) {
-      continue;
-    }
-    const auto links = adjacency.find(current);
-    if (links == adjacency.end()) {
-      continue;
-    }
-    for (const auto& link : links->second) {
-      if (reached.contains(link.to)) {
-        continue;  // first (shortest) path wins
-      }
-      reached[link.to] = {depth + 1, link.relation};
-      frontier.push(link.to);
-    }
-  }
+  const std::vector<std::string> seed_ids{seed_id};
+  const auto reached = trace_impact(graph, seed_ids, direction, relation, max_depth);
 
   // Drop the seed itself; order by (depth asc, centrality desc).
   std::vector<const Node*> hits;
@@ -970,8 +926,8 @@ struct StructuralIntent {
     }
   }
   std::ranges::sort(hits, [&](const Node* lhs, const Node* rhs) {
-    const auto ld = reached[lhs->id].depth;
-    const auto rd = reached[rhs->id].depth;
+    const auto ld = reached.at(lhs->id).depth;
+    const auto rd = reached.at(rhs->id).depth;
     if (ld != rd) {
       return ld < rd;
     }
@@ -992,9 +948,9 @@ struct StructuralIntent {
   auto nodes = nlohmann::json::array();
   for (const auto* node : hits) {
     auto brief = node_brief(*node);
-    brief["depth"] = reached[node->id].depth;
-    if (!reached[node->id].via.empty()) {
-      brief["via"] = reached[node->id].via;
+    brief["depth"] = reached.at(node->id).depth;
+    if (!reached.at(node->id).via.empty()) {
+      brief["via"] = reached.at(node->id).via;
     }
     nodes.push_back(std::move(brief));
   }
@@ -1020,7 +976,8 @@ struct StructuralIntent {
 [[nodiscard]] nlohmann::json pack_context(
     const GraphSnapshot& graph,
     const nlohmann::json& params,
-    SnapshotSourceReader& source_reader) {
+    SnapshotSourceReader& source_reader,
+    std::span<const std::string> explicit_seeds = {}) {
   // Read signed and clamp: a negative budget must floor at 0 (focal-only,
   // truncated), not wrap to a practically-unbounded unsigned ceiling.
   const auto raw_budget =
@@ -1060,6 +1017,16 @@ struct StructuralIntent {
   // a single lexical seed is the right symbol only ~23% of the time).
   // An ambiguous id is reported, never papered over by the free-text fallback.
   std::vector<const Node*> seeds;
+  for (const auto& seed_id : explicit_seeds) {
+    const auto found = by_id.find(seed_id);
+    if (found == by_id.end()) {
+      throw std::invalid_argument("context seed is absent from its snapshot");
+    }
+    seeds.push_back(found->second);
+  }
+  if (!seeds.empty()) {
+    focal = seeds.front();
+  }
   if (focal == nullptr && !focal_lookup.ambiguous() && !needle.empty()) {
     for (const auto* match : matching_nodes(graph, needle)) {
       if (is_enrichment_node_id(match->id)) {
@@ -1218,8 +1185,8 @@ struct StructuralIntent {
     }
   }
   std::ranges::sort(candidates, [&](const Node* lhs, const Node* rhs) {
-    const auto ld = reached[lhs->id].depth;
-    const auto rd = reached[rhs->id].depth;
+    const auto ld = reached.at(lhs->id).depth;
+    const auto rd = reached.at(rhs->id).depth;
     if (ld != rd) {
       return ld < rd;  // nearer first
     }
@@ -1252,12 +1219,12 @@ struct StructuralIntent {
     for (std::size_t i = 0; i < candidates.size(); ++i) {
       const auto* node = candidates[i];
       weight[i] = slice_token_cost(*node);
-      const auto depth = reached[node->id].depth;
+      const auto depth = reached.at(node->id).depth;
       const auto overlap = query_term_overlap(query_terms, node->label);
       // Same-file admission is an inferred relationship, so it earns lexical
       // value only. Giving it the ordinary hop bonus displaced real graph
       // neighbors when lexical focal resolution chose an ambiguous primary.
-      value[i] = reached[node->id].via == "same_file"
+      value[i] = reached.at(node->id).via == "same_file"
                      ? overlap
                      : 1.0 / (1.0 + static_cast<double>(depth)) + overlap;
       // Scale by sqrt(slice size): with per-ITEM value the DP's optimum is many
@@ -1310,8 +1277,8 @@ struct StructuralIntent {
 
     // Emit nearest-first for a stable, readable bundle (selection is the DP above).
     std::ranges::sort(chosen, [&](const Node* lhs, const Node* rhs) {
-      const auto ld = reached[lhs->id].depth;
-      const auto rd = reached[rhs->id].depth;
+      const auto ld = reached.at(lhs->id).depth;
+      const auto rd = reached.at(rhs->id).depth;
       if (ld != rd) {
         return ld < rd;
       }
@@ -1436,7 +1403,7 @@ struct StructuralIntent {
     // has no value gate, so the equivalent is skipping the candidate outright --
     // otherwise a generous budget floods the bundle with unrelated same-file
     // siblings.
-    if (reached[node->id].via == "same_file" &&
+    if (reached.at(node->id).via == "same_file" &&
         query_term_overlap(query_terms, node->label) == 0.0) {
       continue;
     }
@@ -2125,6 +2092,58 @@ void mutate_graph_snapshot(DaemonState& state, const std::function<void(GraphSna
   auto graph = *read_graph_snapshot(state);
   mutator(graph);
   publish_graph_snapshot(state, std::move(graph));
+}
+
+std::size_t serialized_context_tokens(const nlohmann::json& value) {
+  return estimate_report_tokens(value.dump());
+}
+
+std::unordered_map<std::string, ImpactReach> trace_impact(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::string_view direction, std::string_view relation, int max_depth) {
+  struct Link { std::string to; const Edge* edge; };
+  std::unordered_map<std::string, std::vector<Link>> adjacency;
+  for (const auto& edge : graph.edges) {
+    if (!relation.empty() && edge.relation != relation) continue;
+    if (direction == "dependents" || direction == "both")
+      adjacency[edge.target].push_back({edge.source, &edge});
+    if (direction == "dependencies" || direction == "both")
+      adjacency[edge.source].push_back({edge.target, &edge});
+  }
+  for (auto& [_, links] : adjacency) {
+    std::ranges::sort(links, [](const Link& a, const Link& b) {
+      return std::tie(a.to, a.edge->relation, a.edge->source, a.edge->target) <
+             std::tie(b.to, b.edge->relation, b.edge->source, b.edge->target);
+    });
+  }
+  std::unordered_map<std::string, ImpactReach> reached;
+  std::queue<std::string> frontier;
+  for (const auto& seed : seeds) {
+    if (reached.emplace(seed, ImpactReach{.changed_id = seed}).second) frontier.push(seed);
+  }
+  while (!frontier.empty()) {
+    const auto current = frontier.front();
+    frontier.pop();
+    const auto current_reach = reached.at(current);
+    if (current_reach.depth >= max_depth) continue;
+    const auto links = adjacency.find(current);
+    if (links == adjacency.end()) continue;
+    for (const auto& link : links->second) {
+      if (reached.contains(link.to)) continue;
+      reached.emplace(link.to, ImpactReach{.depth = current_reach.depth + 1,
+          .via = link.edge->relation, .predecessor = current,
+          .changed_id = current_reach.changed_id, .edge = *link.edge});
+      frontier.push(link.to);
+    }
+  }
+  return reached;
+}
+
+nlohmann::json pack_seed_context(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::size_t budget, int max_depth, SnapshotSourceReader& reader) {
+  return pack_context(graph, {{"budget", budget}, {"max_depth", max_depth},
+                              {"gather", "fixed"}}, reader, seeds);
 }
 
 // An id-taking read with no key names nothing. `explain {}` (a mistyped

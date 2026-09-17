@@ -1,3 +1,4 @@
+#include "cgraph/change_context.hpp"
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_identity.hpp"
@@ -44,6 +45,9 @@ void print_usage() {
   std::cout <<
       "usage:\n"
       "  cgraph [--root PATH] [--out PATH]                build the graph and write exports\n"
+      "  cgraph change-context --base-root ROOT --target-root ROOT --diff FILE [--budget N]\n"
+      "        [--max-depth N] [--expected-base-content-root SHA] [--expected-target-content-root SHA]\n"
+      "        source-pinned advisory change evidence; JSON output\n"
       "  cgraph enrich-plan   [--root PATH] [--out PATH] [--drop DIR]\n"
       "        emit a semantic chunk plan + manifest for hosts to enrich\n"
       "  cgraph enrich-ingest [--root PATH] [--out PATH] [--drop DIR]\n"
@@ -113,6 +117,33 @@ struct Args {
     args.drop = cgraph::default_semantic_drop_dir(args.output);
   }
   return true;
+}
+
+int run_change_context(int argc, char** argv) {
+  try {
+    nlohmann::json params = nlohmann::json::object();
+    for (int i = 2; i < argc; ++i) {
+      const std::string arg = argv[i];
+      if (i + 1 >= argc) throw std::invalid_argument("missing value for " + arg);
+      const std::string value = argv[++i];
+      if (arg == "--base-root") params["base_root"] = value;
+      else if (arg == "--target-root") params["target_root"] = value;
+      else if (arg == "--diff") params["diff_path"] = value;
+      else if (arg == "--expected-base-content-root") params["expected_base_content_root"] = value;
+      else if (arg == "--expected-target-content-root") params["expected_target_content_root"] = value;
+      else if (arg == "--budget" || arg == "--max-depth") {
+        std::size_t consumed = 0;
+        const auto number = std::stoll(value, &consumed);
+        if (consumed != value.size()) throw std::invalid_argument("invalid numeric argument");
+        params[arg == "--budget" ? "budget" : "max_depth"] = number;
+      } else throw std::invalid_argument("unknown argument: " + arg);
+    }
+    std::cout << cgraph::change_context(params).dump() << '\n';
+    return 0;
+  } catch (const std::exception& error) {
+    std::cout << nlohmann::json{{"error", error.what()}}.dump() << '\n';
+    return 1;
+  }
 }
 
 int run_build(const Args& args) {
@@ -1034,6 +1065,7 @@ int run_drain_command(int argc, char** argv) {
 int main(int argc, char** argv) {
   if (argc > 1) {
     const std::string first = argv[1];
+    if (first == "change-context") return run_change_context(argc, argv);
     if (first == "--version") {
       const auto info = cgraph::build_info();
       std::cout << info.name << " " << info.version << " (" << info.revision << ")" << '\n';
