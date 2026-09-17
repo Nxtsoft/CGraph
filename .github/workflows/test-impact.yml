@@ -27,7 +27,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release download bin-v0.1.0 --repo Nxtsoft/CGraph \
+          gh release download bin-v0.4.0 --repo Nxtsoft/CGraph \
             --pattern cgraph-linux-x64.tar.gz --output cgraph-bin.tar.gz
           mkdir -p "$HOME/.local/bin"
           tar -xzf cgraph-bin.tar.gz -C "$HOME/.local/bin"
