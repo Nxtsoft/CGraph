@@ -22,16 +22,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install cgraph (prebuilt release binaries)
+      # Tracks the latest published release rather than a pinned tag. A pin
+      # silently rotted here once: this step sat on bin-v0.1.0 for three
+      # releases, so the dogfood graph predated every resolution fix that
+      # shipped in between. Auto-bumping the pin instead would need a PR that
+      # edits this file, and the Actions permissions block has no `workflows`
+      # scope -- GITHUB_TOKEN cannot write workflow files. Tracking latest
+      # needs no future edit at all.
+      - name: Install cgraph (latest published release)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release download bin-v0.4.0 --repo Nxtsoft/CGraph \
+          gh release download --repo Nxtsoft/CGraph \
             --pattern cgraph-linux-x64.tar.gz --output cgraph-bin.tar.gz
           mkdir -p "$HOME/.local/bin"
           tar -xzf cgraph-bin.tar.gz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Which build selected these tests, in the log next to the selection.
+      - name: Record the cgraph build
+        run: cgraph --version
 
       - name: Build the self-graph
         run: cgraph --root . --out /tmp/self-graph
