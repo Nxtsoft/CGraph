@@ -81,6 +81,15 @@ int main() {
   guard.nodes.push_back(route("endpoint:GET /api/v1/notebooks/:id/notes", "GET /api/v1/notebooks/:id/notes"));
   guard.nodes.push_back(route("endpoint:GET /api/v1/notebooks/:id/votes", "GET /api/v1/notebooks/:id/votes"));
   guard.nodes.push_back(route("endpoint:GET /api/v1/notebooks/:id/note", "GET /api/v1/notebooks/:id/note"));
+  // Contract schemas likewise: `NotebookResponse` beside `NotebooksResponse`.
+  for (const char* name : {"NotebookResponse", "NotebooksResponse", "NotebookResponses"}) {
+    guard.nodes.push_back(cgraph::Node{.id = std::string("schema:") + name,
+                                       .label = name,
+                                       .source_file = "openapi.json",
+                                       .source_location = cgraph::SourceLocation{.start_line = 12, .end_line = 12},
+                                       .kind = "schema",
+                                       .properties = {{"community", "3"}}});
+  }
   guard.nodes.push_back(cgraph::Node{.id = "mb", .label = "MessageBubbleProps", .source_file = "mb.tsx", .kind = "type"});
   guard.nodes.push_back(cgraph::Node{.id = "mf", .label = "MessageBubble", .source_file = "mb.tsx", .kind = "function"});
   guard.nodes.push_back(cgraph::Node{.id = "h1", .label = "HelperWidget", .source_file = "one.tsx", .kind = "function"});
@@ -233,6 +242,14 @@ int main() {
   }
   if (endpoint_nodes != 3) {
     std::cerr << "sibling endpoints were merged: " << endpoint_nodes << " of 3 survive\n";
+    return 1;
+  }
+  std::size_t schema_nodes = 0;
+  for (const auto& node : guard.nodes) {
+    schema_nodes += node.kind == "schema" ? 1 : 0;
+  }
+  if (schema_nodes != 3) {
+    std::cerr << "sibling schemas were merged: " << schema_nodes << " of 3 survive\n";
     return 1;
   }
   if (!saw_props || !saw_func) {

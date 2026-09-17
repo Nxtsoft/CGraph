@@ -544,8 +544,9 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
     add_node(std::move(service));
   }
 
-  std::unordered_map<std::string, std::unordered_set<std::string>> served_by;    // endpoint -> services
-  std::unordered_map<std::string, std::unordered_set<std::string>> consumed_by;  // endpoint -> services
+  std::unordered_map<std::string, std::unordered_set<std::string>> served_by;      // endpoint -> services
+  std::unordered_map<std::string, std::unordered_set<std::string>> consumed_by;    // endpoint -> services
+  std::unordered_map<std::string, std::unordered_set<std::string>> documented_by;  // endpoint -> services
   for (const auto& [name, graph] : loaded) {
     std::unordered_map<std::string, std::vector<const SeamEdge*>> handled;   // endpoint -> handled_by edges
     std::unordered_map<std::string, std::vector<const SeamEdge*>> consumed;  // endpoint -> CONSUMES edges
@@ -556,13 +557,21 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         consumed[edge.target].push_back(&edge);
       }
     }
+    // The document node an endpoint was declared in, by source path.
+    std::unordered_map<std::string, const SeamNode*> file_by_path;
+    for (const auto& node : graph.nodes()) {
+      if (node.kind == "file") {
+        file_by_path.emplace(node.source_file, &node);
+      }
+    }
     for (const auto& node : graph.nodes()) {
       if (node.kind != "endpoint") {
         continue;
       }
       const bool served = handled.contains(node.id);
       const bool used = consumed.contains(node.id);
-      if (!served && !used) {
+      const bool documented = node.properties.contains("documented");
+      if (!served && !used && !documented) {
         continue;
       }
       Node endpoint;
@@ -575,18 +584,25 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         }
       }
       if (const auto existing = index.find(node.id); existing != index.end()) {
-        // A served copy carries the provider's spelling and anchor; it wins
+        // A served or documented copy carries the provider's spelling; it wins
         // over a consumer's canonical placeholder copy.
-        if (served && nodes[existing->second].properties.contains("served")) {
+        if ((served || documented) && nodes[existing->second].properties.contains("served")) {
           nodes[existing->second].label = endpoint.label;
           nodes[existing->second].properties.erase("served");
           nodes[existing->second].properties["path"] = endpoint.properties["path"];
         }
       } else {
-        if (!served) {
+        if (!served && !documented) {
           endpoint.properties["served"] = "false";
         }
         add_node(std::move(endpoint));
+      }
+      if (documented) {
+        documented_by[node.id].insert(name);
+        if (const auto file = file_by_path.find(node.source_file); file != file_by_path.end()) {
+          add_node(code_ref_shadow(name, *file->second));
+          add_edge(node.id, file->second->id, "DOCUMENTED_IN");
+        }
       }
       if (served) {
         served_by[node.id].insert(name);
@@ -614,37 +630,60 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
   std::size_t matched = 0;
   std::size_t consumer_only = 0;
   std::size_t provider_only = 0;
+  std::size_t documented_only = 0;
+  std::size_t documented_not_served = 0;
+  std::size_t served_not_documented = 0;
   for (const auto& node : nodes) {
     if (node.kind != "endpoint") {
       continue;
     }
     const bool served = served_by.contains(node.id);
     const bool used = consumed_by.contains(node.id);
+    const bool documented = documented_by.contains(node.id);
     if (served && used) {
       ++matched;
     } else if (used) {
       ++consumer_only;
-    } else {
+    } else if (served) {
       ++provider_only;
+    } else {
+      ++documented_only;
+    }
+    if (documented && !served) {
+      ++documented_not_served;
+    }
+    if (served && !documented) {
+      ++served_not_documented;
     }
   }
   for (const auto& [name, graph] : loaded) {
     std::size_t serves = 0;
     std::size_t consumes = 0;
+    std::size_t documents = 0;
     for (const auto& [endpoint, services] : served_by) {
       serves += services.contains(name) ? 1 : 0;
     }
     for (const auto& [endpoint, services] : consumed_by) {
       consumes += services.contains(name) ? 1 : 0;
     }
+    for (const auto& [endpoint, services] : documented_by) {
+      documents += services.contains(name) ? 1 : 0;
+    }
     result.resolution_log.push_back("service " + name + ": serves " + std::to_string(serves) + " endpoints, consumes " +
-                                    std::to_string(consumes));
+                                    std::to_string(consumes) + ", documents " + std::to_string(documents));
   }
   result.resolution_log.push_back("matched " + std::to_string(matched) +
                                   " endpoints (served by one service, consumed by another or itself); " +
                                   std::to_string(consumer_only) + " consumed with no provider among these graphs; " +
                                   std::to_string(provider_only) + " served with no consumer");
-  if (matched == 0 && consumer_only == 0 && provider_only == 0) {
+  if (!documented_by.empty()) {
+    // Contract drift: what the documents say against what the code serves.
+    result.resolution_log.push_back("drift: " + std::to_string(documented_not_served) +
+                                    " documented but served by no service here, " +
+                                    std::to_string(served_not_documented) + " served but in no document; " +
+                                    std::to_string(documented_only) + " only documented (neither served nor consumed)");
+  }
+  if (matched == 0 && consumer_only == 0 && provider_only == 0 && documented_only == 0) {
     result.resolution_log.push_back("no endpoint nodes: build the graphs with a cgraph that discovers contracts");
   }
   result.fragment.nodes = std::move(nodes);

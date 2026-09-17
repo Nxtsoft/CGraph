@@ -9,6 +9,7 @@ add_library(cgraph_engine STATIC
   daemon_supervisor.cpp
   daemon_identity.cpp
   dedup.cpp
+  contract_schemas.cpp
   contracts.cpp
   cpp_extractor.cpp
   detect.cpp

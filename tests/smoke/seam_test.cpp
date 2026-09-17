@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <unordered_map>
 
@@ -138,8 +139,49 @@ int test_discover(const fs::path& root) {
                    {{{"source", "web::useStarred"}, {"target", "endpoint:GET /api/v1/notebooks/starred-notes"}, {"relation", "CONSUMES"}},
                     {{"source", "web::useStarred"}, {"target", "endpoint:POST /api/v1/orphan"}, {"relation", "CONSUMES"}}}}});
 
-  const auto res = cgraph::discover_seam({{"api", api_graph}, {"web", web_graph}});
+  // A third graph holds only a contract document: its endpoints are documented,
+  // neither served nor consumed there.
+  const auto spec_graph = root / "spec.json";
+  write_json(spec_graph,
+             json{{"nodes",
+                   {{{"id", "spec::file"}, {"label", "api/openapi.json"}, {"type", "file"}, {"source_file", "spec/api/openapi.json"}},
+                    {{"id", "endpoint:GET /api/v1/notebooks/starred-notes"},
+                     {"label", "GET /api/v1/notebooks/starred-notes"},
+                     {"type", "endpoint"},
+                     {"source_file", "spec/api/openapi.json"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/v1/notebooks/starred-notes"}, {"documented", "true"}}}},
+                    {{"id", "endpoint:GET /api/v1/removed"},
+                     {"label", "GET /api/v1/removed"},
+                     {"type", "endpoint"},
+                     {"source_file", "spec/api/openapi.json"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/v1/removed"}, {"documented", "true"}}}}}},
+                  {"links", json::array()}});
+
+  const auto res = cgraph::discover_seam({{"api", api_graph}, {"web", web_graph}, {"spec", spec_graph}});
   if (!res.ok || !res.errors.empty()) {
+    return 1;
+  }
+  // Documented endpoints: DOCUMENTED_IN the document's shadow, kept when only
+  // documented, and the drift line counts what the document and the code disagree on.
+  if (!has_edge(res.fragment, "endpoint:GET /api/v1/notebooks/starred-notes", "spec::file", "DOCUMENTED_IN") ||
+      find_node(res.fragment, "spec::file") == nullptr || find_node(res.fragment, "spec::file")->kind != "code-ref") {
+    return 1;
+  }
+  const auto* removed = find_node(res.fragment, "endpoint:GET /api/v1/removed");
+  if (removed == nullptr || removed->properties.contains("served")) {
+    return 1;
+  }
+  bool drift_line = false;
+  bool documents_line = false;
+  for (const auto& line : res.resolution_log) {
+    // starred-notes and removed are documented; only starred-notes is served -> 1
+    // documented-but-unserved; api serves starred-notes and health, neither in the
+    // document... starred-notes is: so 1 served-but-undocumented (health).
+    drift_line = drift_line || line == "drift: 1 documented but served by no service here, 1 served but in no document; 1 only documented (neither served nor consumed)";
+    documents_line = documents_line || line == "service spec: serves 0 endpoints, consumes 0, documents 2";
+  }
+  if (!drift_line || !documents_line) {
+    for (const auto& line : res.resolution_log) std::cerr << "log: " << line << '\n';
     return 1;
   }
   const auto& frag = res.fragment;
@@ -191,13 +233,17 @@ int test_discover(const fs::path& root) {
   web_snapshot.nodes.push_back({.id = "web::useStarred", .label = "useStarred", .source_file = "web/lib/hooks/use-starred.ts", .kind = "function"});
   web_snapshot.nodes.push_back({.id = starred, .label = "GET /api/v1/notebooks/starred-notes", .kind = "endpoint"});
   web_snapshot.nodes.push_back({.id = "endpoint:POST /api/v1/orphan", .label = "POST /api/v1/orphan", .kind = "endpoint"});
-  const auto fused = cgraph::fuse_seam(frag, {{"api", api_snapshot}, {"web", web_snapshot}});
+  cgraph::GraphSnapshot spec_snapshot;
+  spec_snapshot.nodes.push_back({.id = "spec::file", .label = "api/openapi.json", .source_file = "spec/api/openapi.json", .kind = "file"});
+  spec_snapshot.nodes.push_back({.id = starred, .label = "GET /api/v1/notebooks/starred-notes", .kind = "endpoint"});
+  spec_snapshot.nodes.push_back({.id = "endpoint:GET /api/v1/removed", .label = "GET /api/v1/removed", .kind = "endpoint"});
+  const auto fused = cgraph::fuse_seam(frag, {{"api", api_snapshot}, {"web", web_snapshot}, {"spec", spec_snapshot}});
   if (!fused.ok || find_in(fused.graph, starred) == nullptr ||
       !has_snapshot_edge(fused.graph, "service:web", starred, "CONSUMES")) {
     return 1;
   }
   // Byte-stable regeneration.
-  const auto again = cgraph::discover_seam({{"api", api_graph}, {"web", web_graph}});
+  const auto again = cgraph::discover_seam({{"api", api_graph}, {"web", web_graph}, {"spec", spec_graph}});
   if (!again.ok || cgraph::to_json(again.fragment).dump() != cgraph::to_json(frag).dump()) {
     return 1;
   }

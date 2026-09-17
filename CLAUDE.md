@@ -48,7 +48,8 @@ shells over it. Core data types (`Node`, `Edge`, `Hyperedge`, `Fragment`, `Graph
 
 **Deterministic pipeline** (`pipeline.cpp::run_one_shot`, the canonical flow):
 `detect_project_files` → per-file `extract_detected_file` (tree-sitter via `parser_pool`,
-language-specific `python_extractor`/`javascript_extractor`/`non_grammar_extractors`,
+language-specific `python_extractor`/`javascript_extractor`/`non_grammar_extractors`, the
+latter including `contract_schemas` for OpenAPI JSON, `.proto` and `.graphql` documents,
 configured by `language_config`/`configured_extractors`; every function body also gets a
 rename-insensitive `fingerprint` for `report clones`, runtime-only, never exported) → `merge_fragments`
 (`graph_builder`) → `resolve_raw_calls` → `resolve_raw_relations` → `resolve_contracts`

@@ -100,6 +100,12 @@ std::string join_route_path(std::string_view prefix, std::string_view path) {
 }
 
 std::string canonical_route_path(std::string_view path) {
+  // A trailing slash is spelling, not identity: an OpenAPI document renders
+  // `.get('/')` under `/composites` as `/api/v1/composites/`, the router
+  // serves `/api/v1/composites`, and a client calls either.
+  while (path.size() > 1 && path.back() == '/') {
+    path.remove_suffix(1);
+  }
   std::string canonical;
   canonical.reserve(path.size());
   std::size_t start = 0;
@@ -493,6 +499,14 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
     if (add_edge(relation.source_id, id, kConsumes, "", {})) {
       ++tally.consumes;
+    }
+  }
+
+  // Documented endpoints come from contract documents at extraction, so a route
+  // or a consumer of the same id attached to them above rather than minting.
+  for (const auto& node : graph.nodes) {
+    if (node.kind == kEndpointKind && node.properties.contains("documented")) {
+      ++tally.endpoints_documented;
     }
   }
 

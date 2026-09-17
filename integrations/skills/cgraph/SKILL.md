@@ -119,7 +119,15 @@ grep/read calls that burn context.
   fixes the prefix. An endpoint this repo only calls carries `served: false`
   and no source; "who calls `GET /api/v1/…`" is `graph_impact` on the endpoint
   with `dependents`. Across repos, `cgraph seam discover --graph a=… --graph b=…`
-  joins the two graphs' endpoints with no spec and `seam fuse` renders them. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
+  joins the two graphs' endpoints with no spec and `seam fuse` renders them.
+  Contract documents count too: an OpenAPI JSON, `.proto` or `.graphql` file,
+  or the openapi-typescript `paths` a client is typed against, gives
+  `documented: true` endpoints and `schema` nodes with fields
+  (`RESPONDS_WITH` / `ACCEPTS` link them). "Does the code match the API
+  spec?" is the `drift:` line `seam discover` prints when a graph documents
+  endpoints: promised but unserved, served but undocumented. "Is this type a
+  copy of an API schema?" is `graph_report` `{view:"types"}`, where schemas
+  are type owners. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
   inline to `.use()`, aliased imports and cast re-exports all compose. A
   route on a router the file only receives as a function parameter is not
   minted (its mount is unknowable from that file); `stats.json`
