@@ -65,6 +65,8 @@ void print_usage() {
       "        each, and layers by call distance\n"
       "  cgraph seam gen --seam SPEC.json --graphs NAME=graph.json [--graphs ...] --out DROPDIR\n"
       "        resolve a cross-service seam spec against consumer graphs into a contract fragment\n"
+      "  cgraph seam discover --graph NAME=graph.json [--graph ...] --out DROPDIR\n"
+      "        write a seam fragment from the endpoints each graph serves (handled_by) and consumes (CONSUMES); no spec\n"
       "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] --out DIR\n"
       "        merge a seam fragment + service graphs into a clustered graph.json + graph.html view\n"
       "  cgraph seam query --graph FUSED.json <query|path|explain|impact|context> [PARAMS_JSON]\n"
@@ -400,6 +402,49 @@ int run_seam_gen(int argc, char** argv) {
   std::ofstream(out_file) << cgraph::to_json(result.fragment).dump(2) << '\n';
   std::cerr << "seam gen: wrote " << out_file << " (" << result.fragment.nodes.size()
             << " nodes, " << result.fragment.edges.size() << " edges)\n";
+  return 0;
+}
+
+// cgraph seam discover --graph NAME=path [--graph ...] --out DROPDIR
+int run_seam_discover(int argc, char** argv) {
+  std::filesystem::path out_dir;
+  std::vector<std::pair<std::string, std::filesystem::path>> graph_specs;
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    if (arg == "--out" && index + 1 < argc) {
+      out_dir = argv[++index];
+    } else if (arg == "--graph" && index + 1 < argc) {
+      const std::string pair = argv[++index];
+      const auto eq = pair.find('=');
+      if (eq == std::string::npos) {
+        std::cerr << "seam discover: --graph expects NAME=path, got '" << pair << "'\n";
+        return 2;
+      }
+      graph_specs.emplace_back(pair.substr(0, eq), pair.substr(eq + 1));
+    } else {
+      std::cerr << "seam discover: unexpected argument '" << arg << "'\n";
+      return 2;
+    }
+  }
+  if (graph_specs.empty() || out_dir.empty()) {
+    std::cerr << "seam discover: at least one --graph NAME=graph.json and --out are required\n";
+    return 2;
+  }
+  const auto result = cgraph::discover_seam(graph_specs);
+  if (!result.ok) {
+    for (const auto& error : result.errors) {
+      std::cerr << "seam discover: ERROR: " << error << '\n';
+    }
+    return 1;
+  }
+  for (const auto& line : result.resolution_log) {
+    std::cerr << "  " << line << '\n';
+  }
+  std::filesystem::create_directories(out_dir);
+  const auto out_file = out_dir / "chunk_00.json";
+  std::ofstream(out_file) << cgraph::to_json(result.fragment).dump(2) << '\n';
+  std::cerr << "seam discover: wrote " << out_file << " (" << result.fragment.nodes.size() << " nodes, "
+            << result.fragment.edges.size() << " edges)\n";
   return 0;
 }
 
@@ -917,13 +962,16 @@ int main(int argc, char** argv) {
       if (sub == "gen") {
         return run_seam_gen(argc, argv);
       }
+      if (sub == "discover") {
+        return run_seam_discover(argc, argv);
+      }
       if (sub == "fuse") {
         return run_seam_fuse(argc, argv);
       }
       if (sub == "query") {
         return run_seam_query(argc, argv);
       }
-      std::cerr << "usage: cgraph seam <gen|fuse|query> ...\n";
+      std::cerr << "usage: cgraph seam <gen|discover|fuse|query> ...\n";
       return 2;
     }
     if (first == "daemon") {

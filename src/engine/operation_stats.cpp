@@ -138,6 +138,10 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
            {"mounts", stats.contracts.mounts},
            {"mounts_unresolved", stats.contracts.mounts_unresolved},
            {"endpoints", stats.contracts.endpoints},
+           {"calls", stats.contracts.calls},
+           {"calls_unresolved", stats.contracts.calls_unresolved},
+           {"consumes", stats.contracts.consumes},
+           {"endpoints_external", stats.contracts.endpoints_external},
        }},
   };
   // Modeled, labeled, and omitted when it cannot be honestly formed.

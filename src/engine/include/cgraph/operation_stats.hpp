@@ -103,11 +103,15 @@ struct CallResolution {
 // route leaves no node, so like calls it has to be counted or it cannot be
 // known.
 struct ContractResolution {
-  std::size_t routes = 0;             // route registrations seen
-  std::size_t routes_unresolved = 0;  // handler missing, or its router chain unknown to the file
-  std::size_t mounts = 0;             // `.use(child)` / `.route(path, child)` mounts seen
-  std::size_t mounts_unresolved = 0;  // child identifier no import or declaration explains
-  std::size_t endpoints = 0;          // distinct endpoint nodes minted
+  std::size_t routes = 0;              // route registrations seen
+  std::size_t routes_unresolved = 0;   // handler missing, or its router chain unknown to the file
+  std::size_t mounts = 0;              // `.use(child)` / `.route(path, child)` mounts and aliases seen
+  std::size_t mounts_unresolved = 0;   // child identifier no import or declaration explains
+  std::size_t endpoints = 0;           // endpoint nodes minted from routes this repo serves
+  std::size_t calls = 0;               // client calls (fetch / api.GET / a wrapper) seen
+  std::size_t calls_unresolved = 0;    // URL in a local variable, absolute external URL, or caller no node names
+  std::size_t consumes = 0;            // CONSUMES edges added
+  std::size_t endpoints_external = 0;  // endpoint nodes minted for consumed routes this repo does not serve
 };
 
 struct BuildStats {

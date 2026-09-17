@@ -41,6 +41,19 @@ struct SeamResult {
     const nlohmann::json& spec,
     const std::unordered_map<std::string, std::filesystem::path>& graph_paths);
 
+// Generate a cross-service contract fragment from the contracts each graph already
+// carries (contracts.hpp): `endpoint` nodes with `handled_by` edges are what a
+// service serves, `CONSUMES` edges are what it calls. No spec: endpoints join by
+// their repo-free canonical id. The fragment has a `service` node per graph,
+// every served or consumed endpoint, `SERVED_BY` (endpoint -> service),
+// `HANDLED_BY` (endpoint -> handler code-ref), `CONSUMES` (service -> endpoint)
+// and `CONSUMED_AT` (endpoint -> caller code-ref). `resolution_log` reports per
+// service what it serves and consumes, how many endpoints matched across
+// services, and how many are consumed with no provider among the given graphs.
+// Fails loud only when a graph cannot be read.
+[[nodiscard]] SeamResult discover_seam(
+    const std::vector<std::pair<std::string, std::filesystem::path>>& graphs);
+
 // Result of fusing a seam fragment with its service graphs into one view graph.
 struct SeamFuseResult {
   bool ok = false;

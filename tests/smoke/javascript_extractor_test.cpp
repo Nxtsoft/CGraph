@@ -458,6 +458,60 @@ export const deckModule: Elysia = deck as unknown as Elysia;
     if (!inline_label) return 1;
   }
 
+  // HTTP consumer facts (CGR-13 slice 2): a wrapper records the prefix its own
+  // client call appends its first parameter to; calls record the client, the
+  // method when literal, and the path with `{}` for interpolated segments; a
+  // URL in a variable records an empty path; a handler argument is a route.
+  {
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/api.ts", .source = R"ts(
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const base = `${API_URL}/api/v1`;
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${base}${path}`, { ...options });
+  return res.json();
+}
+export async function del(path: string) { return fetch(`${API_URL}${path}`, { method: 'DELETE' }); }
+export async function put(path: string) { return fetch(`${IMPORTED_BASE}${path}`, { method: 'PUT' }); }
+export const notebooksApi = { get: (id: string) => apiFetch<Notebook>(`/notebooks/${id}?expand=1`) };
+export async function publish(projectId: string) {
+  await fetch(`${API_URL}/api/v1/projects/${projectId}/publish`, { method: 'POST' });
+  const { data } = await api.GET('/api/v1/projects/{id}', { params: { path: { id: projectId } } });
+  const url = build();
+  await fetch(url);
+  await axios.post(API_URL + '/api/v1/events', {});
+  http.get('/mocked', () => new Response());
+  cache.get('/api/v1/key');
+  return data;
+}
+)ts"});
+    std::set<std::string> facts;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation == "http_call" || relation.relation == "http_wrapper" || relation.relation == "url_const") {
+        facts.insert(relation.relation + "|" + relation.source_id + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto fn = [](std::string_view name) { return cgraph::make_id(std::string("lib/api.ts:") + std::string(name)); };
+    const auto file = cgraph::make_id("lib/api.ts");
+    const std::set<std::string> expected{
+        // URL constants: the env host holds no path; `base` holds `/api/v1`.
+        "url_const|" + file + "|API_URL|",
+        "url_const|" + file + "|base|/api/v1",
+        "http_wrapper|" + fn("apiFetch") + "|fetch| /api/v1",
+        "http_wrapper|" + fn("del") + "|fetch|DELETE ",
+        // An imported base stays a placeholder for project-wide resolution.
+        "http_wrapper|" + fn("put") + "|fetch|PUT ${IMPORTED_BASE}",
+        "http_call|" + fn("notebooksApi") + "|apiFetch| /notebooks/{}",
+        "http_call|" + fn("publish") + "|fetch|POST /api/v1/projects/{}/publish",
+        "http_call|" + fn("publish") + "|api.GET| /api/v1/projects/{id}",
+        "http_call|" + fn("publish") + "|fetch| ",
+        "http_call|" + fn("publish") + "|axios.post| /api/v1/events",
+    };
+    if (facts != expected) {
+      for (const auto& fact : facts) std::cerr << "consumer fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
   // Next.js route file: the exported verb functions record a file-derived path
   // and no chain; a helper in the same file records nothing.
   {

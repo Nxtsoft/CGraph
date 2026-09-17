@@ -29,7 +29,7 @@ grep/read calls that burn context.
 | "Which types are duplicated / redundant / bloated? Which interfaces or structs have the same shape? Which types are dead?" | `graph_report` `{view:"types", format:"markdown", scope?, threshold?, min_members?}` — `identical` (groups of differently named types with the same members), `duplicates` (one name in several files, with member overlap), `overlaps` (subset / ≥ threshold Jaccard pairs), `unreferenced` (no other symbol or file refers to them), each with file:line and members |
 | "Where is copy-pasted code? Which functions are near-duplicates? What should be extracted into a shared helper?" | `graph_report` `{view:"clones", format:"markdown", scope?, threshold?, min_tokens?}` — `classes` of functions whose bodies are ≥ threshold similar after renaming (members with file:line-line, lowest pairwise similarity, shortest body in tokens); test-only classes in `test_classes` |
 | "How does this program start? What are the main flows? Where does a request go? Give me a program-design overview." | `graph_report` `{view:"design", format:"markdown" or "mermaid", scope?, hops?}` — `entry_points` (main / route / page / root) ranked by reach, the top call `flow` from each to `hops`, `layers` by call distance, `unreached` count |
-| "Which HTTP endpoints does this service expose? Which handler serves `GET /api/v1/…`? What breaks for API callers if I change this handler?" | `graph_query` `{query:"GET /api/v1/notebooks"}` — `endpoint` nodes (id `endpoint:<METHOD> <full path>`, one per route with its prefixes and mounts composed); `graph_explain` on one shows `handled_by` → the handler; `graph_impact` `{id: <handler>, direction:"dependents"}` reaches the endpoint |
+| "Which HTTP endpoints does this service expose? Which handler serves `GET /api/v1/…`? Who calls this endpoint? What breaks for API callers if I change this handler?" | `graph_query` `{query:"GET /api/v1/notebooks"}` — `endpoint` nodes (id `endpoint:<METHOD> <path>` with `{}` per parameter, one per route with its prefixes and mounts composed); `graph_explain` on one shows `handled_by` → the handler and `CONSUMES` ← every caller; `graph_impact` `{id: <handler>, direction:"dependents"}` reaches the endpoint and then its callers |
 | "Verify the graph is current before I rely on it" | `graph_update {path:"."}` — blocking content-verified synchronization; returns `freshness.content_root`. Pin subsequent reads by passing the root as `expected_content_root`. |
 | "Is the graph current? / I just changed files" | Nothing for ordinary reads — the daemon watches the tree and folds edits in within seconds. Use `graph_update` when you need a verified content_root to pin reads. |
 
@@ -111,9 +111,15 @@ grep/read calls that burn context.
   `prefix`, `.basePath()` and `.use()` mount across files (turing-api's
   `notebookRoutes.get('/starred-notes')` under `/notebooks` under `/api/v1` is
   `endpoint:GET /api/v1/notebooks/starred-notes`), and a Next.js
-  `app/api/x/[id]/route.ts` exporting `GET` is `endpoint:GET /api/x/:id`. The
-  id carries no repo, so the same path in another repo's graph is the same
-  node. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
+  `app/api/x/[id]/route.ts` exporting `GET` is `endpoint:GET /api/x/{}`. The
+  id carries no repo and `{}` for every parameter, so the same path in another
+  repo's graph is the same node. Callers are `CONSUMES` edges into the
+  endpoint: direct `fetch`, `api.GET`/`axios.post`, and calls through path
+  wrappers like `apiFetch('/notebooks')` whose own `fetch(\`${base}${path}\`)`
+  fixes the prefix. An endpoint this repo only calls carries `served: false`
+  and no source; "who calls `GET /api/v1/…`" is `graph_impact` on the endpoint
+  with `dependents`. Across repos, `cgraph seam discover --graph a=… --graph b=…`
+  joins the two graphs' endpoints with no spec and `seam fuse` renders them. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
   inline to `.use()`, aliased imports and cast re-exports all compose. A
   route on a router the file only receives as a function parameter is not
   minted (its mount is unknowable from that file); `stats.json`

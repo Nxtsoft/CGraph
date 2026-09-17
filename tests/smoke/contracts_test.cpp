@@ -411,6 +411,205 @@ export { app };
   return 0;
 }
 
+// Endpoint ids are canonical (`{}` for every parameter segment) so a consumer in
+// another repo joins by construction; the label keeps the provider's spelling.
+int test_canonical_ids() {
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {"/api/v1/notebooks/:id/notes", "/api/v1/notebooks/{}/notes"},
+      {"/api/v1/projects/{projectId}/publish", "/api/v1/projects/{}/publish"},
+      {"/api/admin/[id]/disable", "/api/admin/{}/disable"},
+      {"/docs/*", "/docs/*"},
+      {"/notes/{}/star", "/notes/{}/star"},
+      {"/", "/"},
+  };
+  for (const auto& [input, expected] : cases) {
+    if (const auto actual = cgraph::canonical_route_path(input); actual != expected) {
+      return fail("canonical_route_path(" + input + ") = " + actual + ", want " + expected);
+    }
+  }
+  const auto built = build({
+      {"/proj/k/app.ts", R"ts(
+import { Elysia } from 'elysia';
+export const app = new Elysia({ prefix: '/api/v1' }).get('/notebooks/:id/notes', () => { return one(); });
+)ts"},
+  });
+  const auto* notes = endpoint(built.graph, "GET /api/v1/notebooks/:id/notes");
+  if (notes == nullptr || notes->id != "endpoint:GET /api/v1/notebooks/{}/notes" ||
+      notes->properties.at("path") != "/api/v1/notebooks/:id/notes") {
+    return fail("a served endpoint keeps the provider's spelling in label and path, `{}` in the id");
+  }
+  return 0;
+}
+
+// Consumers: the webapp's shapes. A `fetch` with the host interpolated then a
+// literal path; a wrapper (`apiFetch(path)` over `\`${base}${path}\`` with `base`
+// a module const) whose callers are the consumers; openapi-fetch `api.GET`
+// with `{id}` params; an intra-repo call to this repo's own Next.js route; a
+// URL in a local variable and an absolute external URL, both refused; and
+// `map.get('/key')`, which is no request at all.
+int test_consumers() {
+  const auto built = build({
+      {"/proj/w/app/api/auth/token/route.ts", R"ts(
+export async function GET(req: Request) { return ok(); }
+)ts"},
+      {"/proj/w/lib/hooks/notebooks/api.ts", R"ts(
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const base = `${API_URL}/api/v1`;
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${base}${path}`, { ...options, headers });
+  return res.json();
+}
+export const notebooksApi = {
+  list: () => apiFetch<Notebook[]>('/notebooks'),
+  get: (id: string) => apiFetch<Notebook>(`/notebooks/${id}`),
+  create: (input: CreateNotebookInput) =>
+    apiFetch<Notebook>('/notebooks', { method: 'POST', body: JSON.stringify(input) }),
+};
+export async function starred() {
+  return apiFetch('/notebooks/starred-notes');
+}
+)ts"},
+      {"/proj/w/lib/project-visibility-api.ts", R"ts(
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+export async function publishProject(projectId: string) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/projects/${projectId}/publish`, { method: 'POST' });
+  return res.json();
+}
+export async function post(path: string, body: unknown) {
+  return fetch(`${API_BASE_URL}${path}`, { method: 'POST', body: JSON.stringify(body) });
+}
+export function suppliers() { return post('/api/v1/suppliers', {}); }
+export async function token() {
+  const res = await fetch('/api/auth/token');
+  const url = buildUrl();
+  const other = await fetch(url);
+  const gh = await fetch('https://api.github.com/repos/x/y');
+  const cache = new Map<string, number>();
+  cache.get('/api/v1/not-a-request');
+  return res;
+}
+)ts"},
+      {"/proj/w/lib/config.ts", R"ts(
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+export const API_BASE = `${API_URL}/api/v1`;
+export const AMBIGUOUS = `${API_URL}/one`;
+)ts"},
+      {"/proj/w/lib/other-config.ts", R"ts(
+export const AMBIGUOUS = '/two';
+)ts"},
+      {"/proj/w/lib/definition-api.ts", R"ts(
+import { API_BASE, AMBIGUOUS } from './config';
+import { apiFetch } from './hooks/notebooks/api';
+export async function del(path: string) { return fetch(`${API_BASE}${path}`, { method: 'DELETE' }); }
+export function removeDefinition(id: string) { return del(`/definitions/${id}`); }
+export function generic(entity: string, id: string) { return apiFetch(`/${entity}/${id}`); }
+export async function ambiguous() { return fetch(`${AMBIGUOUS}/things`); }
+)ts"},
+      {"/proj/w/lib/projects.ts", R"ts(
+import { api } from './api-client';
+export async function loadProject(id: string) {
+  const { data } = await api.GET('/api/v1/projects/{id}', { params: { path: { id } } });
+  await api.DELETE('/api/v1/projects/{id}/members/{userId}', { params: { path: { id, userId: 'u' } } });
+  return data;
+}
+)ts"},
+  });
+  const auto& graph = built.graph;
+  const auto consumers_of = [&](std::string_view label) {
+    std::vector<std::string> callers;
+    const auto* node = endpoint(graph, label);
+    if (node == nullptr) {
+      return callers;
+    }
+    for (const auto& edge : graph.edges) {
+      if (edge.relation == "CONSUMES" && edge.target == node->id) {
+        callers.push_back(edge.source);
+      }
+    }
+    std::ranges::sort(callers);
+    return callers;
+  };
+  const auto notebooks_api = cgraph::make_id("/proj/w/lib/hooks/notebooks/api.ts:notebooksApi");
+  // Wrapper: prefix `/api/v1` inlined from `base`, method from the call's options
+  // or GET; the object-literal arrows attribute to the module-level variable.
+  if (consumers_of("GET /api/v1/notebooks") != std::vector<std::string>{notebooks_api} ||
+      consumers_of("GET /api/v1/notebooks/{}") != std::vector<std::string>{notebooks_api} ||
+      consumers_of("POST /api/v1/notebooks") != std::vector<std::string>{notebooks_api} ||
+      consumers_of("GET /api/v1/notebooks/starred-notes") !=
+          std::vector<std::string>{cgraph::make_id("/proj/w/lib/hooks/notebooks/api.ts:starred")}) {
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << '\n';
+    }
+    for (const auto& edge : graph.edges) {
+      if (edge.relation == "CONSUMES") std::cerr << "  consumes: " << edge.source << " -> " << edge.target << '\n';
+    }
+    return fail("apiFetch wrapper consumers");
+  }
+  const auto* starred = endpoint(graph, "GET /api/v1/notebooks/starred-notes");
+  if (starred->properties.at("served") != "false" || !starred->source_file.empty() ||
+      starred->id != "endpoint:GET /api/v1/notebooks/starred-notes") {
+    return fail("a consumed endpoint this repo does not serve is minted as served:false with no source");
+  }
+  // Direct fetch with the host interpolated; a segment parameter; a fixed-method wrapper.
+  if (consumers_of("POST /api/v1/projects/{}/publish") !=
+          std::vector<std::string>{cgraph::make_id("/proj/w/lib/project-visibility-api.ts:publishProject")} ||
+      consumers_of("POST /api/v1/suppliers") !=
+          std::vector<std::string>{cgraph::make_id("/proj/w/lib/project-visibility-api.ts:suppliers")}) {
+    return fail("direct fetch and fixed-method wrapper consumers");
+  }
+  // openapi-fetch: verb from the property, `{id}` canonicalised.
+  const auto load_project = cgraph::make_id("/proj/w/lib/projects.ts:loadProject");
+  if (consumers_of("GET /api/v1/projects/{}") != std::vector<std::string>{load_project} ||
+      consumers_of("DELETE /api/v1/projects/{}/members/{}") != std::vector<std::string>{load_project}) {
+    return fail("openapi-fetch consumers");
+  }
+  // Intra-repo: the Next.js route file serves what `token()` fetches, so the
+  // one endpoint node has both a handler and a consumer.
+  const auto* own = endpoint(graph, "GET /api/auth/token");
+  if (own == nullptr || own->properties.contains("served") ||
+      consumers_of("GET /api/auth/token") !=
+          std::vector<std::string>{cgraph::make_id("/proj/w/lib/project-visibility-api.ts:token")} ||
+      !has_edge(graph, own->id, cgraph::make_id("/proj/w/app/api/auth/token/route.ts:GET"), "handled_by")) {
+    return fail("a consumer of this repo's own route joins the served endpoint");
+  }
+  // A wrapper over an imported base constant resolves the constant project-wide
+  // when one file defines it: `del(\`/definitions/${id}\`)` is `DELETE
+  // /api/v1/definitions/{}`, not `DELETE /definitions/{}`. A name two files
+  // define differently is refused; so is a call whose own path is all parameters.
+  if (consumers_of("DELETE /api/v1/definitions/{}") !=
+      std::vector<std::string>{cgraph::make_id("/proj/w/lib/definition-api.ts:removeDefinition")}) {
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << '\n';
+    }
+    return fail("a wrapper over an imported base constant inlines the constant");
+  }
+  if (endpoint(graph, "GET /repos/x/y") != nullptr || endpoint(graph, "GET /api/v1/not-a-request") != nullptr ||
+      endpoint(graph, "DELETE /definitions/{}") != nullptr || endpoint(graph, "GET /api/v1/{}/{}") != nullptr ||
+      endpoint(graph, "GET /one/things") != nullptr || endpoint(graph, "GET /things") != nullptr) {
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << '\n';
+    }
+    return fail("an external URL, a Map lookup, an ambiguous base and an all-parameter path are not endpoints");
+  }
+  std::size_t external = 0;
+  for (const auto& node : graph.nodes) {
+    external += node.kind == "endpoint" && node.properties.contains("served") ? 1 : 0;
+  }
+  // 10 resolved client calls: 4 apiFetch, publish, post('/api/v1/suppliers'), 2 api.*,
+  // fetch('/api/auth/token'), del('/definitions/...'); 4 unresolved: fetch(url),
+  // fetch('https://...'), the all-parameter apiFetch, the ambiguous base -> 14 counted.
+  // 9 endpoints this repo does not serve (the 10 consumers minus the own route).
+  if (built.stats.calls != 14 || built.stats.calls_unresolved != 4 || built.stats.consumes != 10 ||
+      built.stats.endpoints_external != 9 || external != 9 || built.stats.endpoints != 1) {
+    std::cerr << "  calls " << built.stats.calls << " unresolved " << built.stats.calls_unresolved << " consumes "
+              << built.stats.consumes << " external " << built.stats.endpoints_external << '/' << external
+              << " endpoints " << built.stats.endpoints << '\n';
+    return fail("consumer tally");
+  }
+  return 0;
+}
+
 // A mount cycle terminates and still mints the route once.
 int test_mount_cycle_terminates() {
   const auto built = build({
@@ -465,6 +664,8 @@ int main() {
   failures += test_inline_grouped_and_aliased_chains();
   failures += test_next_route_file();
   failures += test_type_named_like_chain();
+  failures += test_canonical_ids();
+  failures += test_consumers();
   failures += test_mount_cycle_terminates();
   failures += test_no_routes_no_change();
   return failures == 0 ? 0 : 1;

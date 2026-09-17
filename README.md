@@ -158,13 +158,36 @@ prefix: '/notebooks' })`, `.basePath('/v1')`) beneath every `.use(child)`, `.use
 inside `.use(new Elysia({ prefix }).get(…))`, a `.group('/v2', app => app.get(…))` or `.guard()`
 callback, and a module re-exported as `export const deckModule = deckRoutes as unknown as Elysia`
 all compose the same way. A Next.js `app/api/x/[id]/route.ts` exporting `GET` is `GET /api/x/:id`.
-The node's id is `endpoint:GET /api/v1/notebooks/starred-notes` with no repository in it, its
-label is the same without the prefix, and it carries `method` and `path`, the handler's file and
+The node's id is `endpoint:GET /api/v1/notebooks/{}/notes` with no repository in it and `{}` for
+every parameter segment (`:id`, `{id}`, `[id]`), its label keeps the provider's spelling
+(`GET /api/v1/notebooks/:id/notes`), and it carries `method` and `path`, the handler's file and
 span, a `contains` edge from that file and a `handled_by` edge to the handler, so `graph_impact`
 on a handler reaches its endpoint. Chains mounted twice serve their routes twice; a route on a
 router the file only receives as a function parameter (`function register(app) { app.get(…) }`)
-is not minted, and `stats.json` counts it under `route_resolution.routes_unresolved`. A repository
-without routers gains nothing.
+is not minted, and `stats.json` counts it under `route_resolution.routes_unresolved`.
+
+The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/publish\`, { method:
+'POST' })`, an openapi-fetch `api.GET('/api/v1/projects/{id}', …)`, an `axios.post(…)`, and a call
+through a path wrapper (`apiFetch(path)` whose own `fetch(\`${base}${path}\`)` appends its first
+parameter to a module constant) each give the calling function (or the module-level object the
+arrow initialises) a `CONSUMES` edge to `endpoint:<METHOD> <canonical path>`. The host
+interpolation is dropped, a whole-segment interpolation is `{}`, the method comes from the call's
+literal `method` option, the wrapper's own, or the client verb, else GET. When this repository
+does not serve the route the node is minted with `served: false` and no source; when it does
+(a Next.js route file fetched from the same app) the one node has both a handler and its callers.
+A URL assembled in a variable or spelled as an absolute `https://` literal adds nothing and is
+counted under `route_resolution.calls_unresolved`. Because the id carries no repository, two
+graphs built separately share their endpoint nodes:
+
+```sh
+cgraph seam discover --graph api=api-out/graph.json --graph web=web-out/graph.json --out seam-drop
+cgraph seam fuse --seam seam-drop/chunk_00.json --graph api=api-out/graph.json --graph web=web-out/graph.json --out fused
+```
+
+`seam discover` writes the seam fragment from what each graph serves (`SERVED_BY`, `HANDLED_BY`)
+and consumes (`CONSUMES`, `CONSUMED_AT`) with no hand-written spec, and reports how many endpoints
+matched across services and how many are consumed with no provider among the graphs. A repository
+without routers or HTTP client calls gains nothing.
 
 ## Quick start
 

@@ -758,10 +758,448 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
   }
 }
 
-void js_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/,
+// ---- HTTP consumers (contracts.hpp: http_call / http_wrapper) -------------
+
+// The value of a module-level `const NAME = ...` in this file (through casts),
+// or null. Base URLs are spelled this way (`const base = \`${API_URL}/api/v1\``)
+// and a wrapper's template inlines them.
+[[nodiscard]] TSNode module_const_value(const TSNode& from, std::string_view name, std::string_view source) {
+  TSNode program = from;
+  for (TSNode parent = ts_node_parent(program); !ts_node_is_null(parent); parent = ts_node_parent(program)) {
+    program = parent;
+  }
+  const auto count = ts_node_named_child_count(program);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    TSNode statement = ts_node_named_child(program, index);
+    if (std::string_view(ts_node_type(statement)) == "export_statement") {
+      statement = ts_node_child_by_field_name(statement, "declaration", 11);
+      if (ts_node_is_null(statement)) {
+        continue;
+      }
+    }
+    const std::string_view type = ts_node_type(statement);
+    if (type != "lexical_declaration" && type != "variable_declaration") {
+      continue;
+    }
+    const auto declarators = ts_node_named_child_count(statement);
+    for (std::uint32_t d = 0; d < declarators; ++d) {
+      const TSNode declarator = ts_node_named_child(statement, d);
+      if (std::string_view(ts_node_type(declarator)) == "variable_declarator" &&
+          field_text(declarator, "name", source) == name) {
+        return unwrap_expression(ts_node_child_by_field_name(declarator, "value", 5));
+      }
+    }
+  }
+  return TSNode{};
+}
+
+// A URL argument reduced to the path it names. Literal text is kept; an
+// interpolation at the start is the host and is dropped; one that fills a whole
+// segment is a parameter, `{}`; the enclosing function's first parameter at the
+// end is the tail a wrapper appends its argument to; anything else mid-segment
+// makes the URL unresolvable. The query string and fragment are not part of the
+// route. A literal absolute URL names another service and is unresolvable here.
+struct UrlTemplate {
+  std::string path;
+  bool tail = false;
+  bool resolvable = true;
+  bool in_query = false;
+  bool dropped_host = false;
+
+  void literal(std::string_view text) {
+    if (in_query) {
+      return;
+    }
+    if (tail && !text.empty()) {
+      resolvable = false;  // text after the appended argument: not a prefix wrapper
+      return;
+    }
+    const auto cut = text.find_first_of("?#");
+    path.append(text.substr(0, cut));
+    if (cut != std::string_view::npos) {
+      in_query = true;
+    }
+  }
+  // An interpolation whose value this file cannot read. `opaque` says whether it
+  // could hold a path: an in-file constant built from `process.env` is a host
+  // and nothing more, while an imported `API_BASE` or a `config.baseUrl` member
+  // may well end in `/api/v1`.
+  void unknown(bool opaque) {
+    if (in_query) {
+      return;
+    }
+    if (path.empty()) {
+      dropped_host = dropped_host || opaque;  // the host: `${API_URL}/api/v1/...`
+      return;
+    }
+    if (path.back() == '/') {
+      path += "{}";  // a whole-segment parameter: `/notes/${id}/star`
+      return;
+    }
+    resolvable = false;  // `/v1-${x}`: a partial segment no router template matches
+  }
+  // The enclosing function's first parameter interpolated into the URL. After a
+  // slash it fills a segment like any other value (`/projects/${projectId}/publish`
+  // in `publishProject(projectId)`); appended to text (`${base}${path}`) or
+  // standing alone (`fetch(url)`) it is the tail a wrapper forwards.
+  void parameter(std::string_view /*name*/) {
+    if (in_query) {
+      return;
+    }
+    if (!path.empty() && path.back() == '/') {
+      path += "{}";
+      return;
+    }
+    if (path.empty() && dropped_host) {
+      // `${API_BASE}${path}` with a base this file does not define: the base may
+      // hold a path (`/api/v1`) we cannot see, so the prefix is unknowable. An
+      // in-file `process.env` host before the tail is fine: the prefix is empty.
+      resolvable = false;
+      return;
+    }
+    tail = true;
+  }
+  // An identifier this file does not define, in the base position: kept as a
+  // `${NAME}` placeholder for resolve_contracts, which inlines the constant when
+  // exactly one file in the project defines a URL constant of that name.
+  void reference(std::string_view name) {
+    if (in_query) {
+      return;
+    }
+    if (!path.empty()) {
+      unknown(true);
+      return;
+    }
+    path = "${" + std::string(name) + "}";
+  }
+  void finish() {
+    if (path.starts_with("http://") || path.starts_with("https://")) {
+      resolvable = false;  // another host, spelled out: not this repository's contract
+      return;
+    }
+    if (!tail && (path.empty() || (path.front() != '/' && !path.starts_with("${")))) {
+      resolvable = false;
+    }
+  }
+};
+
+constexpr int kMaxUrlInlineDepth = 3;
+
+void collect_url_template(const TSNode& node, const ExtractionContext& context, std::string_view tail_parameter,
+                          UrlTemplate& url, int depth) {
+  const TSNode expression = unwrap_expression(node);
+  if (ts_node_is_null(expression)) {
+    url.resolvable = false;
+    return;
+  }
+  const std::string_view type = ts_node_type(expression);
+  if (type == "string") {
+    url.literal(strip_string_quotes(node_text(expression, context.source)));
+    return;
+  }
+  if (type == "template_string") {
+    const auto count = ts_node_named_child_count(expression);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode part = ts_node_named_child(expression, index);
+      const std::string_view part_type = ts_node_type(part);
+      if (part_type == "string_fragment") {
+        url.literal(node_text(part, context.source));
+      } else if (part_type == "template_substitution") {
+        if (ts_node_named_child_count(part) == 0) {
+          url.unknown(true);
+          continue;
+        }
+        collect_url_template(ts_node_named_child(part, 0), context, tail_parameter, url, depth);
+      }
+    }
+    return;
+  }
+  if (type == "binary_expression") {
+    const TSNode op = ts_node_child_by_field_name(expression, "operator", 8);
+    if (ts_node_is_null(op)) {
+      url.unknown(true);
+      return;
+    }
+    const auto op_text = node_text(op, context.source);
+    if (op_text == "||" || op_text == "??") {
+      // `process.env.API_URL || 'http://localhost:8080'`: a host with a fallback.
+      url.unknown(false);
+      return;
+    }
+    if (op_text != "+") {
+      url.unknown(true);
+      return;
+    }
+    // `API + '/notebooks'`: string concatenation reads like a template.
+    collect_url_template(ts_node_child_by_field_name(expression, "left", 4), context, tail_parameter, url, depth);
+    collect_url_template(ts_node_child_by_field_name(expression, "right", 5), context, tail_parameter, url, depth);
+    return;
+  }
+  if (type == "identifier") {
+    const auto name = node_text(expression, context.source);
+    if (!tail_parameter.empty() && name == tail_parameter) {
+      url.parameter(name);
+      return;
+    }
+    if (depth < kMaxUrlInlineDepth) {
+      if (const TSNode value = module_const_value(expression, name, context.source); !ts_node_is_null(value)) {
+        const std::string_view value_type = ts_node_type(value);
+        if (value_type == "string" || value_type == "template_string" || value_type == "binary_expression") {
+          collect_url_template(value, context, {}, url, depth + 1);
+          return;
+        }
+        // Defined here from something that is not a string (`process.env.X`, a
+        // call): whatever it is, it is the host.
+        url.unknown(false);
+        return;
+      }
+    }
+    // A variable declared in an enclosing function body (`const url = build();
+    // fetch(url)`) is local: no constant anywhere can stand for it.
+    for (TSNode ancestor = ts_node_parent(expression); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+      if (is_function_node(ts_node_type(ancestor)) &&
+          declares_local(ts_node_child_by_field_name(ancestor, "body", 4), name, context.source)) {
+        url.unknown(true);
+        return;
+      }
+    }
+    url.reference(name);  // imported or otherwise unknown: resolved project-wide, or refused
+    return;
+  }
+  if (type == "member_expression" && node_text(expression, context.source).starts_with("process.env.")) {
+    url.unknown(false);
+    return;
+  }
+  url.unknown(true);
+}
+
+// The receiver of `X.get(url)` is an HTTP client when its name says so. Without
+// this, `map.get('/key')` and `router.get('/path', handler)` would read as
+// requests; the route shape is excluded separately by its handler argument.
+[[nodiscard]] bool looks_like_http_client(std::string_view receiver) {
+  std::string lower(receiver);
+  for (auto& ch : lower) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  for (const auto* hint : {"api", "client", "axios", "ky", "got", "http", "fetch", "request", "agent"}) {
+    if (lower.find(hint) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// What a consumer call is attributed to: the enclosing function when there is
+// one, else the module-level variable the call helps initialise (`export const
+// notebooksApi = { list: () => apiFetch('/notebooks') }`: the arrow is a
+// boundary, the object is the symbol), else the file.
+[[nodiscard]] std::string consumer_scope_id(const TSNode& node, const ExtractionContext& context,
+                                            const std::string& function_scope_id) {
+  if (!function_scope_id.empty()) {
+    return function_scope_id;
+  }
+  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+    if (std::string_view(ts_node_type(ancestor)) != "variable_declarator") {
+      continue;
+    }
+    const TSNode declaration = ts_node_parent(ancestor);
+    if (!ts_node_is_null(declaration) && is_module_level_declaration(declaration)) {
+      return make_id(context.source_file + ":" + field_text(ancestor, "name", context.source));
+    }
+  }
+  return make_id(context.source_file);
+}
+
+// The `method: 'POST'` of an options object literal, uppercased; empty when the
+// options are absent, not a literal, or carry no literal method.
+[[nodiscard]] std::string options_method(const TSNode& options, std::string_view source) {
+  const TSNode object = unwrap_expression(options);
+  if (ts_node_is_null(object) || std::string_view(ts_node_type(object)) != "object") {
+    return {};
+  }
+  const auto count = ts_node_named_child_count(object);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode pair = ts_node_named_child(object, index);
+    if (std::string_view(ts_node_type(pair)) != "pair" || strip_string_quotes(field_text(pair, "key", source)) != "method") {
+      continue;
+    }
+    const TSNode value = ts_node_child_by_field_name(pair, "value", 5);
+    if (ts_node_is_null(value) || !is_string_value(value)) {
+      return {};
+    }
+    std::string method = strip_string_quotes(node_text(value, source));
+    for (auto& ch : method) {
+      ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return method;
+  }
+  return {};
+}
+
+// `fetch(url, opts)`, `api.GET('/path')`, `axios.post(url)` and calls to a
+// wrapper with a path-like first argument record `http_call` facts; a function
+// whose own client call appends its first parameter to a fixed prefix records an
+// `http_wrapper` fact instead of a call of its own.
+void http_call_handler(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                       std::vector<RawRelation>& out) {
+  if (std::string_view(ts_node_type(node)) != "call_expression") {
+    return;
+  }
+  const TSNode callee = unwrap_expression(ts_node_child_by_field_name(node, "function", 8));
+  if (ts_node_is_null(callee)) {
+    return;
+  }
+  std::string client;
+  std::string verb;
+  const std::string_view callee_type = ts_node_type(callee);
+  if (callee_type == "identifier") {
+    client = node_text(callee, context.source);
+  } else if (callee_type == "member_expression") {
+    const auto property = field_text(callee, "property", context.source);
+    std::string lower(property);
+    for (auto& ch : lower) {
+      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (!is_http_verb(lower) || lower == "all") {
+      return;
+    }
+    const TSNode receiver = unwrap_expression(ts_node_child_by_field_name(callee, "object", 6));
+    if (ts_node_is_null(receiver)) {
+      return;
+    }
+    const std::string_view receiver_type = ts_node_type(receiver);
+    const auto receiver_name = receiver_type == "identifier"
+                                   ? node_text(receiver, context.source)
+                                   : receiver_type == "member_expression" ? field_text(receiver, "property", context.source)
+                                                                          : std::string{};
+    if (!looks_like_http_client(receiver_name)) {
+      return;
+    }
+    client = receiver_name + "." + property;
+    verb = lower;
+  } else {
+    return;
+  }
+  const TSNode arguments = ts_node_child_by_field_name(node, "arguments", 9);
+  if (ts_node_is_null(arguments)) {
+    return;
+  }
+  const auto argument_count = ts_node_named_child_count(arguments);
+  if (argument_count == 0) {
+    return;
+  }
+  for (std::uint32_t index = 0; index < argument_count; ++index) {
+    if (is_function_value(ts_node_named_child(arguments, index))) {
+      return;  // a handler argument: this is a route registration (or a callback API), not a request
+    }
+  }
+  const TSNode first = ts_node_named_child(arguments, 0);
+  const std::string_view first_type = ts_node_type(unwrap_expression(first));
+  if (first_type != "string" && first_type != "template_string" && first_type != "identifier" &&
+      first_type != "binary_expression") {
+    return;
+  }
+  const bool primitive = client == "fetch" || !verb.empty();
+  // The first parameter of the function the call sits in: a wrapper appends it.
+  std::string tail_parameter;
+  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+    if (is_function_node(ts_node_type(ancestor))) {
+      std::vector<std::string> parameters;
+      parameter_names(ancestor, context.source, parameters);
+      if (!parameters.empty()) {
+        tail_parameter = parameters.front();
+      }
+      break;
+    }
+  }
+  UrlTemplate url;
+  collect_url_template(first, context, tail_parameter, url, 0);
+  url.finish();
+  const auto method = argument_count >= 2 ? options_method(ts_node_named_child(arguments, 1), context.source)
+                                          : std::string{};
+  if (url.tail) {
+    // This call appends the enclosing function's first parameter: the function
+    // is a wrapper, and callers of it are the consumers.
+    if (primitive && url.resolvable && !function_scope_id.empty()) {
+      out.push_back(RawRelation{
+          .source_id = function_scope_id,
+          .target_label = client,
+          .relation = "http_wrapper",
+          .context = method + " " + url.path,
+          .source_file = context.source_file,
+      });
+    }
+    return;
+  }
+  if (!primitive && (!url.resolvable || url.path.empty())) {
+    return;  // a function taking some string: only a path-like literal marks a wrapper call
+  }
+  out.push_back(RawRelation{
+      .source_id = consumer_scope_id(node, context, function_scope_id),
+      .target_label = std::move(client),
+      .relation = "http_call",
+      .context = method + " " + (url.resolvable ? url.path : std::string{}),
+      .source_file = context.source_file,
+  });
+}
+
+// Module-level string constants that read as a URL or a URL prefix
+// (`export const API_BASE = \`${API_URL}/api/v1\``, `const API_URL =
+// process.env.X || 'http://localhost'`) record `url_const` facts: name and the
+// path they hold (empty for a bare host), so a wrapper in another file that
+// appends its argument to an imported base resolves the base project-wide.
+void url_const_handler(const TSNode& node, const ExtractionContext& context, std::vector<RawRelation>& out) {
+  const std::string_view type = ts_node_type(node);
+  if ((type != "lexical_declaration" && type != "variable_declaration") || !is_module_level_declaration(node)) {
+    return;
+  }
+  const auto count = ts_node_named_child_count(node);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode declarator = ts_node_named_child(node, index);
+    if (std::string_view(ts_node_type(declarator)) != "variable_declarator") {
+      continue;
+    }
+    const TSNode value = unwrap_expression(ts_node_child_by_field_name(declarator, "value", 5));
+    if (ts_node_is_null(value)) {
+      continue;
+    }
+    const std::string_view value_type = ts_node_type(value);
+    // `process.env.X || 'http://localhost'`, `(process.env.X || '…').replace(/\/$/, '')`:
+    // however it is trimmed, an environment-derived value is a host.
+    const bool mentions_env = node_text(value, context.source).find("process.env.") != std::string::npos;
+    std::string path;
+    bool is_url = false;
+    if (value_type == "string" || value_type == "template_string" || value_type == "binary_expression") {
+      UrlTemplate url;
+      collect_url_template(value, context, {}, url, 0);
+      url.finish();
+      if (url.resolvable && !url.tail) {
+        path = url.path;
+        is_url = true;
+      }
+    }
+    if (!is_url && mentions_env) {
+      is_url = true;  // a bare host
+    }
+    if (!is_url) {
+      continue;  // `const TITLE = 'Hello'`: a string, not a URL
+    }
+    out.push_back(RawRelation{
+        .source_id = make_id(context.source_file),
+        .target_label = field_text(declarator, "name", context.source),
+        .relation = "url_const",
+        .context = std::move(path),
+        .source_file = context.source_file,
+    });
+  }
+}
+
+void js_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
                    Fragment& fragment, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& raw_relations) {
   module_const_handler(node, context, fragment, raw_relations);
   route_mount_handler(node, context, raw_relations);
+  url_const_handler(node, context, raw_relations);
+  http_call_handler(node, context, function_scope_id, raw_relations);
 }
 
 // TS primitive/builtin type names that never become a `references` target.

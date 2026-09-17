@@ -8,6 +8,7 @@
 #include <cctype>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,7 +27,11 @@ constexpr std::string_view kRouteRelation = "route";
 constexpr std::string_view kFileRouteRelation = "file_route";
 constexpr std::string_view kMountsRelation = "mounts";
 constexpr std::string_view kAliasRelation = "aliases";
+constexpr std::string_view kHttpCallRelation = "http_call";
+constexpr std::string_view kHttpWrapperRelation = "http_wrapper";
+constexpr std::string_view kUrlConstRelation = "url_const";
 constexpr std::string_view kHandledBy = "handled_by";
+constexpr std::string_view kConsumes = "CONSUMES";
 constexpr std::string_view kRoutePrefix = "route_prefix";
 // A chain mounted under many parents serves its routes at every mount path.
 // Real code mounts a router once or twice; past this the mount graph is not a
@@ -49,6 +54,20 @@ struct Mount {
   std::string parent;  // the mounting chain's variable node id
   std::string prefix;  // the mount path, empty when the framework takes none
 };
+
+// "<METHOD or empty> <path>" as the extractor spells a route or call context.
+struct MethodPath {
+  std::string method;
+  std::string path;
+};
+
+[[nodiscard]] MethodPath split_context(const std::string& context) {
+  const auto space = context.find(' ');
+  if (space == std::string::npos) {
+    return MethodPath{.method = context, .path = {}};
+  }
+  return MethodPath{.method = context.substr(0, space), .path = context.substr(space + 1)};
+}
 
 }  // namespace
 
@@ -78,6 +97,27 @@ std::string join_route_path(std::string_view prefix, std::string_view path) {
     joined.pop_back();
   }
   return joined;
+}
+
+std::string canonical_route_path(std::string_view path) {
+  std::string canonical;
+  canonical.reserve(path.size());
+  std::size_t start = 0;
+  while (start <= path.size()) {
+    const auto slash = path.find('/', start);
+    const auto segment = path.substr(start, slash == std::string_view::npos ? std::string_view::npos : slash - start);
+    const bool parameter =
+        (!segment.empty() && segment.front() == ':') ||
+        (segment.size() >= 2 && segment.front() == '{' && segment.back() == '}') ||
+        (segment.size() >= 2 && segment.front() == '[' && segment.back() == ']');
+    canonical += parameter ? std::string_view{"{}"} : segment;
+    if (slash == std::string_view::npos) {
+      break;
+    }
+    canonical.push_back('/');
+    start = slash + 1;
+  }
+  return canonical;
 }
 
 std::optional<std::string> next_route_path(std::string_view source_file) {
@@ -194,7 +234,9 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
     if (seen_edges.insert(edge_identity(edge)).second) {
       new_edges.push_back(std::move(edge));
+      return true;
     }
+    return false;
   };
 
   // 1. Mounts: child chain id -> the chains that mount it, with mount paths. An
@@ -267,9 +309,36 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     return memo.emplace(chain, std::move(result)).first->second;
   };
 
+  // Endpoint nodes minted this resolve, by id. A route mints with the
+  // provider's spelling as label; a consumer that finds no provider mints with
+  // the canonical spelling and `served: false`.
+  std::unordered_map<std::string, std::size_t> minted;  // id -> index in new_nodes
+  const auto mint = [&](const std::string& id, std::string label, const std::string& method,
+                        const std::string& path, const Node* handler) -> bool {
+    if (by_id.contains(id) || minted.contains(id)) {
+      return false;
+    }
+    Node endpoint{
+        .id = id,
+        .label = std::move(label),
+        .kind = std::string(kEndpointKind),
+        .confidence = Confidence::Extracted,
+    };
+    endpoint.properties.emplace("method", method);
+    endpoint.properties.emplace("path", path);
+    if (handler != nullptr) {
+      endpoint.source_file = handler->source_file;
+      endpoint.source_location = handler->source_location;
+    } else {
+      endpoint.properties.emplace("served", "false");
+    }
+    minted.emplace(id, new_nodes.size());
+    new_nodes.push_back(std::move(endpoint));
+    return true;
+  };
+
   // 3. Routes: one endpoint per (method, full path); a handler registered on a
   //    chain served under two paths gets two endpoints, both handled by it.
-  std::unordered_set<std::string> minted;
   for (const auto& relation : raw_relations) {
     const bool file_routed = relation.relation == kFileRouteRelation;
     if (relation.relation != kRouteRelation && !file_routed) {
@@ -281,9 +350,7 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       ++tally.routes_unresolved;
       continue;
     }
-    const auto space = relation.context.find(' ');
-    const auto verb = relation.context.substr(0, space);
-    const auto route = space == std::string::npos ? std::string{} : relation.context.substr(space + 1);
+    const auto [verb, route] = split_context(relation.context);
     if (!is_http_verb(verb)) {
       ++tally.routes_unresolved;
       continue;
@@ -306,26 +373,126 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     const auto method = to_upper(verb);
     for (const auto& base : bases) {
       const auto path = join_route_path(base, route);
-      const auto label = method + " " + path;
-      const auto id = "endpoint:" + label;
-      if (!by_id.contains(id) && minted.insert(id).second) {
+      const auto id = "endpoint:" + method + " " + canonical_route_path(path);
+      if (mint(id, method + " " + path, method, path, handler->second)) {
         ++tally.endpoints;
-        Node endpoint{
-            .id = id,
-            .label = label,
-            .source_file = handler->second->source_file,
-            .source_location = handler->second->source_location,
-            .kind = std::string(kEndpointKind),
-            .confidence = Confidence::Extracted,
-        };
-        endpoint.properties.emplace("method", method);
-        endpoint.properties.emplace("path", path);
-        new_nodes.push_back(std::move(endpoint));
         if (const auto file_id = make_id(handler->second->source_file); by_id.contains(file_id)) {
           add_edge(file_id, id, "contains", "", {});
         }
+      } else if (const auto slot = minted.find(id); slot != minted.end()) {
+        // A consumer minted it first, or a second handler serves the same route:
+        // the served spelling and anchor win.
+        auto& endpoint = new_nodes[slot->second];
+        if (endpoint.properties.erase("served") > 0) {
+          endpoint.label = method + " " + path;
+          endpoint.properties["path"] = path;
+          endpoint.source_file = handler->second->source_file;
+          endpoint.source_location = handler->second->source_location;
+          if (const auto file_id = make_id(handler->second->source_file); by_id.contains(file_id)) {
+            add_edge(file_id, id, "contains", "", {});
+          }
+        }
       }
       add_edge(id, relation.source_id, kHandledBy, "", {});
+    }
+  }
+
+  // 4. Wrappers: functions whose own client call appends their first parameter
+  //    to a fixed prefix. `apiFetch('/notebooks')` is then a consumer of
+  //    `/api/v1/notebooks`.
+  struct Wrapper {
+    std::string method;  // fixed by the wrapper's own call (`method: 'POST'`), else empty
+    std::string prefix;
+  };
+  std::unordered_map<std::string, Wrapper> wrappers;
+  for (const auto& relation : raw_relations) {
+    if (relation.relation != kHttpWrapperRelation || !by_id.contains(relation.source_id)) {
+      continue;
+    }
+    const auto [method, prefix] = split_context(relation.context);
+    wrappers.emplace(relation.source_id, Wrapper{.method = method, .prefix = prefix});
+  }
+
+  // 5. URL constants by name, project-wide. A path spelled `${API_BASE}...`
+  //    refers to a constant its file imports; when exactly one file defines a
+  //    URL constant of that name the value is inlined (itself expanded), else
+  //    the path is unresolvable. Two files defining the same name differently
+  //    is the ambiguity that refuses it.
+  std::unordered_map<std::string, std::unordered_set<std::string>> url_consts;
+  for (const auto& relation : raw_relations) {
+    if (relation.relation == kUrlConstRelation) {
+      url_consts[relation.target_label].insert(relation.context);
+    }
+  }
+  const auto expand = [&](std::string path) -> std::optional<std::string> {
+    for (int depth = 0; depth < 4 && path.starts_with("${"); ++depth) {
+      const auto close = path.find('}');
+      if (close == std::string::npos) {
+        return std::nullopt;
+      }
+      const auto values = url_consts.find(path.substr(2, close - 2));
+      if (values == url_consts.end() || values->second.size() != 1) {
+        return std::nullopt;
+      }
+      path = *values->second.begin() + path.substr(close + 1);
+    }
+    return path.starts_with("${") ? std::nullopt : std::optional<std::string>{std::move(path)};
+  };
+
+  // 6. Consumers: every client call with a resolvable path becomes a CONSUMES
+  //    edge from its caller to the endpoint, minting the endpoint when this
+  //    repo does not serve it. A call through a name that resolves to no
+  //    wrapper is an ordinary function taking a path-like string, not a
+  //    consumer, and is skipped without a tally.
+  for (const auto& relation : raw_relations) {
+    if (relation.relation != kHttpCallRelation) {
+      continue;
+    }
+    const auto [explicit_method, raw_call_path] = split_context(relation.context);
+    std::string method = explicit_method;
+    std::string prefix;
+    const bool primitive = relation.target_label == "fetch" || relation.target_label.find('.') != std::string::npos;
+    if (!primitive) {
+      const auto callee = resolve_scoped_name(scopes, relation.source_file, make_id(relation.target_label), true);
+      const auto wrapper = callee.empty() ? wrappers.end() : wrappers.find(callee);
+      if (wrapper == wrappers.end()) {
+        continue;
+      }
+      prefix = wrapper->second.prefix;
+      if (method.empty()) {
+        method = wrapper->second.method;
+      }
+    } else if (method.empty() && relation.target_label != "fetch") {
+      // `api.GET(...)`, `axios.post(...)`: the verb is the property.
+      method = to_upper(relation.target_label.substr(relation.target_label.rfind('.') + 1));
+    }
+    ++tally.calls;
+    const auto expanded_prefix = expand(prefix);
+    const auto expanded_path = raw_call_path.empty() ? std::optional<std::string>{} : expand(raw_call_path);
+    if (!expanded_prefix || !expanded_path || expanded_path->empty() || !by_id.contains(relation.source_id)) {
+      // A URL held in a local variable, an absolute external URL, a base
+      // constant no single file defines, or a caller no node names.
+      ++tally.calls_unresolved;
+      continue;
+    }
+    prefix = *expanded_prefix;
+    const auto& call_path = *expanded_path;
+    if (method.empty()) {
+      method = "GET";
+    }
+    // A call whose own path is parameters only (`apiFetch(\`/${entity}/${id}\`)`,
+    // a generic helper) names no route: `/api/v1/{}/{}` would match everything.
+    if (canonical_route_path(call_path).find_first_not_of("/{}") == std::string::npos) {
+      ++tally.calls_unresolved;
+      continue;
+    }
+    const auto path = canonical_route_path(join_route_path(prefix, call_path));
+    const auto id = "endpoint:" + method + " " + path;
+    if (mint(id, method + " " + path, method, path, nullptr)) {
+      ++tally.endpoints_external;
+    }
+    if (add_edge(relation.source_id, id, kConsumes, "", {})) {
+      ++tally.consumes;
     }
   }
 
