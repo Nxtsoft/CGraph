@@ -127,7 +127,17 @@ grep/read calls that burn context.
   spec?" is the `drift:` line `seam discover` prints when a graph documents
   endpoints: promised but unserved, served but undocumented. "Is this type a
   copy of an API schema?" is `graph_report` `{view:"types"}`, where schemas
-  are type owners. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
+  are type owners.
+- **Workspaces.** When the project root holds `cgraph.workspace.json`, every
+  tool answers across the repositories it names, with no new tool and nothing
+  copied: each repo keeps its own daemon and watcher. `graph_impact` on an API
+  handler then reports the frontend callers too, reached through the shared
+  `endpoint:` node, each witness carrying `repo` and `bridged_through`;
+  `graph_path` joins two repos at a contract; `graph_query` and
+  `graph_explain` merge and tag. A repo whose daemon is down is listed in
+  `unreachable`, never dropped. `graph_report` and `graph_context` are
+  per-project: at a workspace root they return `workspace_op_unsupported`
+  naming the repo roots, so call them with one repo's root. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
   inline to `.use()`, aliased imports and cast re-exports all compose. A
   route on a router the file only receives as a function parameter is not
   minted (its mount is unknowable from that file); `stats.json`

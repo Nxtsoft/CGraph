@@ -3,6 +3,7 @@
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_server.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/workspace.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -146,6 +147,34 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
   ClientResult result;
   if (request.operation.empty()) {
     result.error = "missing operation";
+    return result;
+  }
+  // A workspace root is not a project: it federates the op to the member repos,
+  // each of which is reached exactly as a lone project would be (same hooks, same
+  // auto-spawn, same daemon per root). This is the only place federation is
+  // entered, so the thin client and the MCP server both get it.
+  if (is_workspace_root(request.project_root)) {
+    const auto workspace = load_workspace(request.project_root);
+    std::size_t spawned = 0;
+    int attempts = 0;
+    const RepoAsk ask = [&](const WorkspaceRepo& repo, const std::string& op, const nlohmann::json& params,
+                            std::string& error) -> std::optional<nlohmann::json> {
+      ClientRequest forwarded = request;
+      forwarded.project_root = repo.root;
+      forwarded.operation = op;
+      forwarded.params = params;
+      auto answer = send_thin_client_request(forwarded, hooks);
+      spawned += answer.spawned ? 1 : 0;
+      attempts += answer.connect_attempts;
+      if (!answer.response) {
+        error = answer.error;
+        return std::nullopt;
+      }
+      return std::move(*answer.response);
+    };
+    result.response = federate_workspace_request(workspace, request.operation, request.params, ask);
+    result.spawned = spawned > 0;
+    result.connect_attempts = attempts;
     return result;
   }
   if (request.max_connect_attempts <= 0) {

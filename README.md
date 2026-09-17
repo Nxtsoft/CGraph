@@ -207,6 +207,29 @@ consumed one, so it is one node with `handled_by`, `CONSUMES` and its document a
 in `report types`, so an API schema and its hand-written TypeScript mirror show up as a duplicate
 or identical shape. A repository with none of these files gains nothing.
 
+### Workspaces
+
+`seam discover` joins two graphs offline; a **workspace** joins them live. Put a
+`cgraph.workspace.json` in a directory naming its member repositories and point any of the tools
+at that directory instead of a project:
+
+```sh
+cgraph workspace init --root ~/work --repo api=./turing-api --repo web=./turing-webapp
+cgraph workspace status --root ~/work
+cgraph-client --root ~/work impact '{"id": "<the handler>", "direction": "dependents"}'
+```
+
+Each repository keeps its own daemon, its own watcher and its own incremental updates; nothing is
+copied into a workspace process. A federated `impact` asks every member about the seed, and where
+the traversal reaches an `endpoint:` node it forwards that contract once to the other repositories
+with the depth that remains, so changing an API handler reports the frontend hooks that call it,
+each witness tagged with its `repo` and the contract it came through. `path` joins two repositories
+at a contract the same way, `query` and `explain` merge and tag, `update` fans out, and
+`workspace init` with no `--repo` discovers every git repository one level down. A repository
+whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
+`context` and the memory ops are answered per project and say so, naming the roots to use. The
+MCP server federates too when its root is a workspace, with no new tool.
+
 ## Quick start
 
 Download the current Linux x64 release and build your first graph:
