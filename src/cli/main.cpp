@@ -17,6 +17,7 @@
 #include "cgraph/seam.hpp"
 #include "cgraph/semantic_orchestration.hpp"
 #include "cgraph/skills_install.hpp"
+#include "cgraph/workspace.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -65,6 +66,10 @@ void print_usage() {
       "        each, and layers by call distance\n"
       "  cgraph seam gen --seam SPEC.json --graphs NAME=graph.json [--graphs ...] --out DROPDIR\n"
       "        resolve a cross-service seam spec against consumer graphs into a contract fragment\n"
+      "  cgraph workspace init [--root PATH] [--name NAME] [--repo NAME=PATH ...]\n"
+      "        write cgraph.workspace.json (repos discovered one level down when none are named)\n"
+      "  cgraph workspace status [--root PATH] [--daemon PATH]\n"
+      "        each repo's daemon, node/edge counts and workspace totals\n"
       "  cgraph seam discover --graph NAME=graph.json [--graph ...] --out DROPDIR\n"
       "        write a seam fragment from the endpoints each graph serves (handled_by) and consumes (CONSUMES); no spec\n"
       "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] --out DIR\n"
@@ -403,6 +408,100 @@ int run_seam_gen(int argc, char** argv) {
   std::cerr << "seam gen: wrote " << out_file << " (" << result.fragment.nodes.size()
             << " nodes, " << result.fragment.edges.size() << " edges)\n";
   return 0;
+}
+
+// cgraph workspace init [--root DIR] [--name NAME] [--repo NAME=PATH ...]
+int run_workspace_init(int argc, char** argv) {
+  std::filesystem::path root = std::filesystem::current_path();
+  std::string name;
+  std::vector<std::pair<std::string, std::filesystem::path>> declared;
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    const bool has_value = index + 1 < argc;
+    if ((arg == "--root" || arg == "-r") && has_value) {
+      root = argv[++index];
+    } else if (arg == "--name" && has_value) {
+      name = argv[++index];
+    } else if (arg == "--repo" && has_value) {
+      const std::string pair = argv[++index];
+      const auto equals = pair.find('=');
+      if (equals == std::string::npos) {
+        std::cerr << "workspace init: --repo expects NAME=path, got '" << pair << "'\n";
+        return 2;
+      }
+      declared.emplace_back(pair.substr(0, equals), pair.substr(equals + 1));
+    } else {
+      std::cerr << "workspace init: unexpected argument '" << arg << "'\n";
+      return 2;
+    }
+  }
+
+  cgraph::Workspace workspace;
+  std::error_code error;
+  workspace.root = std::filesystem::weakly_canonical(root, error);
+  if (error) {
+    workspace.root = root;
+  }
+  workspace.name = name.empty() ? workspace.root.filename().generic_string() : name;
+  if (declared.empty()) {
+    workspace.repos = cgraph::discover_workspace_repos(workspace.root);
+    if (workspace.repos.empty()) {
+      std::cerr << "workspace init: no git repositories directly under " << workspace.root
+                << "; name them with --repo NAME=PATH\n";
+      return 1;
+    }
+  } else {
+    for (auto& [repo_name, repo_root] : declared) {
+      auto resolved = repo_root.is_absolute() ? repo_root : workspace.root / repo_root;
+      resolved = std::filesystem::weakly_canonical(resolved, error);
+      if (error || !std::filesystem::is_directory(resolved, error)) {
+        std::cerr << "workspace init: repo '" << repo_name << "' is not a directory: " << repo_root << '\n';
+        return 1;
+      }
+      workspace.repos.push_back(cgraph::WorkspaceRepo{.name = repo_name, .root = std::move(resolved)});
+    }
+  }
+
+  const auto manifest = workspace.root / std::filesystem::path(std::string(cgraph::kWorkspaceFile));
+  std::ofstream(manifest) << cgraph::workspace_manifest_json(workspace).dump(2) << '\n';
+  std::cerr << "workspace init: wrote " << manifest << " (" << workspace.repos.size() << " repos)\n";
+  for (const auto& repo : workspace.repos) {
+    std::cerr << "  " << repo.name << "  " << repo.root.generic_string() << '\n';
+  }
+  return 0;
+}
+
+// cgraph workspace status [--root DIR] [--daemon PATH]
+int run_workspace_status(int argc, char** argv) {
+  cgraph::ClientRequest request{
+      .project_root = std::filesystem::current_path(),
+      .operation = "status",
+  };
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    const bool has_value = index + 1 < argc;
+    if ((arg == "--root" || arg == "-r") && has_value) {
+      request.project_root = argv[++index];
+    } else if (arg == "--daemon" && has_value) {
+      request.daemon_path = argv[++index];
+    } else {
+      std::cerr << "workspace status: unexpected argument '" << arg << "'\n";
+      return 2;
+    }
+  }
+  if (!cgraph::is_workspace_root(request.project_root)) {
+    std::cerr << "workspace status: no " << cgraph::kWorkspaceFile << " at " << request.project_root
+              << " (run `cgraph workspace init` there first)\n";
+    return 1;
+  }
+  const auto hooks = cgraph::default_client_runtime_hooks(request);
+  const auto result = cgraph::send_thin_client_request(request, hooks);
+  if (!result.response) {
+    std::cerr << "workspace status: " << result.error << '\n';
+    return 1;
+  }
+  std::cout << result.response->dump(2) << '\n';
+  return result.response->value("ok", false) ? 0 : 1;
 }
 
 // cgraph seam discover --graph NAME=path [--graph ...] --out DROPDIR
@@ -972,6 +1071,17 @@ int main(int argc, char** argv) {
         return run_seam_query(argc, argv);
       }
       std::cerr << "usage: cgraph seam <gen|discover|fuse|query> ...\n";
+      return 2;
+    }
+    if (first == "workspace") {
+      const std::string sub = argc >= 3 ? argv[2] : "";
+      if (sub == "init") {
+        return run_workspace_init(argc, argv);
+      }
+      if (sub == "status") {
+        return run_workspace_status(argc, argv);
+      }
+      std::cerr << "usage: cgraph workspace <init|status> ...\n";
       return 2;
     }
     if (first == "daemon") {

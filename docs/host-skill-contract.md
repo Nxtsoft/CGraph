@@ -63,6 +63,18 @@ contract drift between documents and code, `fuse`
 builds a fused multi-repo render, and a fused seam directory can be served resident by the
 daemon. Seam fragments follow the same fragment schema as semantic enrichment drops.
 
+## Workspaces
+
+A seam is an artifact; a workspace is live. When the root a host passes holds
+`cgraph.workspace.json` (written by `cgraph workspace init`, naming member repositories), the
+thin client, the CLI and the MCP server answer across those repositories with no new tool: each
+is asked exactly as a lone project would be, keeping its own daemon, watcher and incremental
+updates. `impact` and `path` cross between repositories at the `endpoint:` contract nodes they
+share, one hop per contract, and every returned node carries the `repo` it came from. A
+repository whose daemon cannot be reached is listed in `unreachable` rather than omitted.
+`report`, `context` and the session-memory ops are answered per project: at a workspace root they
+return `ok:false` with `code: "workspace_op_unsupported"` and the repository roots to use.
+
 ## Chunk Plan Dispatch
 
 The native tool emits semantic chunk plans for uncached or stale documentation, media, and semantic inputs. Code extraction stays deterministic and does not require host model work.
