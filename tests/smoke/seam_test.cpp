@@ -90,6 +90,124 @@ json make_spec() {
 
 }  // namespace
 
+// seam discover: the contracts each graph already carries become the fragment,
+// with no spec. The api graph serves an endpoint (handled_by); the web graph
+// consumes the same canonical id (CONSUMES) and one nobody serves.
+int test_discover(const fs::path& root) {
+  const auto api_graph = root / "api.json";
+  const auto web_graph = root / "web.json";
+  write_json(api_graph,
+             json{{"nodes",
+                   {{{"id", "api::handler"},
+                     {"label", "notebookRoutes.get /starred-notes"},
+                     {"type", "function"},
+                     {"source_file", "api/src/modules/notebooks/index.ts"},
+                     {"source_location", {{"start_line", 75}, {"end_line", 82}}}},
+                    {{"id", "endpoint:GET /api/v1/notebooks/starred-notes"},
+                     {"label", "GET /api/v1/notebooks/starred-notes"},
+                     {"type", "endpoint"},
+                     {"source_file", "api/src/modules/notebooks/index.ts"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/v1/notebooks/starred-notes"}}}},
+                    {{"id", "endpoint:GET /api/v1/health"},
+                     {"label", "GET /api/v1/health"},
+                     {"type", "endpoint"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/v1/health"}}}}}},
+                  {"links",
+                   {{{"source", "endpoint:GET /api/v1/notebooks/starred-notes"}, {"target", "api::handler"}, {"relation", "handled_by"}},
+                    {{"source", "endpoint:GET /api/v1/health"}, {"target", "api::missing-handler"}, {"relation", "handled_by"}}}}});
+  write_json(web_graph,
+             json{{"nodes",
+                   {{{"id", "web::useStarred"},
+                     {"label", "useStarred"},
+                     {"type", "function"},
+                     {"source_file", "web/lib/hooks/use-starred.ts"},
+                     {"source_location", {{"start_line", 9}, {"end_line", 14}}}},
+                    {{"id", "endpoint:GET /api/v1/notebooks/starred-notes"},
+                     {"label", "GET /api/v1/notebooks/starred-notes"},
+                     {"type", "endpoint"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/v1/notebooks/starred-notes"}, {"served", "false"}}}},
+                    {{"id", "endpoint:POST /api/v1/orphan"},
+                     {"label", "POST /api/v1/orphan"},
+                     {"type", "endpoint"},
+                     {"properties", {{"method", "POST"}, {"path", "/api/v1/orphan"}, {"served", "false"}}}},
+                    {{"id", "endpoint:GET /api/v1/unused"},
+                     {"label", "GET /api/v1/unused"},
+                     {"type", "endpoint"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/v1/unused"}, {"served", "false"}}}}}},
+                  {"links",
+                   {{{"source", "web::useStarred"}, {"target", "endpoint:GET /api/v1/notebooks/starred-notes"}, {"relation", "CONSUMES"}},
+                    {{"source", "web::useStarred"}, {"target", "endpoint:POST /api/v1/orphan"}, {"relation", "CONSUMES"}}}}});
+
+  const auto res = cgraph::discover_seam({{"api", api_graph}, {"web", web_graph}});
+  if (!res.ok || !res.errors.empty()) {
+    return 1;
+  }
+  const auto& frag = res.fragment;
+  const std::string starred = "endpoint:GET /api/v1/notebooks/starred-notes";
+  if (find_node(frag, "service:api") == nullptr || find_node(frag, "service:web") == nullptr) {
+    return 1;
+  }
+  const auto* endpoint = find_node(frag, starred);
+  if (endpoint == nullptr || endpoint->kind != "endpoint" || endpoint->properties.contains("served")) {
+    return 1;  // the served copy wins; no `served: false` placeholder survives
+  }
+  if (!has_edge(frag, starred, "service:api", "SERVED_BY") || !has_edge(frag, "service:web", starred, "CONSUMES") ||
+      !has_edge(frag, starred, "api::handler", "HANDLED_BY") || !has_edge(frag, starred, "web::useStarred", "CONSUMED_AT")) {
+    return 1;
+  }
+  const auto* handler = find_node(frag, "api::handler");
+  const auto* caller = find_node(frag, "web::useStarred");
+  if (handler == nullptr || handler->kind != "code-ref" || handler->properties.at("service") != "api" ||
+      caller == nullptr || caller->kind != "code-ref" || caller->properties.at("service") != "web") {
+    return 1;
+  }
+  // A consumed endpoint no graph serves stays, marked; an endpoint neither served
+  // nor consumed is not a contract; a handled_by whose handler node is missing
+  // still marks the endpoint served but adds no shadow.
+  const auto* orphan = find_node(frag, "endpoint:POST /api/v1/orphan");
+  if (orphan == nullptr || orphan->properties.at("served") != "false" || find_node(frag, "endpoint:GET /api/v1/unused") != nullptr) {
+    return 1;
+  }
+  if (!has_edge(frag, "endpoint:GET /api/v1/health", "service:api", "SERVED_BY") || find_node(frag, "api::missing-handler") != nullptr) {
+    return 1;
+  }
+  bool matched_line = false;
+  for (const auto& line : res.resolution_log) {
+    matched_line = matched_line || line.find("matched 1 endpoints") != std::string::npos;
+  }
+  if (!matched_line) {
+    return 1;
+  }
+  // The fragment ingests unchanged and fuses with the two service graphs.
+  if (!cgraph::validate_semantic_fragment_json(cgraph::to_json(frag)).valid) {
+    return 1;
+  }
+  cgraph::GraphSnapshot api_snapshot;
+  api_snapshot.nodes.push_back({.id = "api::handler", .label = "handler", .source_file = "api/src/modules/notebooks/index.ts", .kind = "function"});
+  api_snapshot.nodes.push_back({.id = starred, .label = "GET /api/v1/notebooks/starred-notes", .kind = "endpoint"});
+  api_snapshot.nodes.push_back({.id = "endpoint:GET /api/v1/health", .label = "GET /api/v1/health", .kind = "endpoint"});
+  api_snapshot.nodes.push_back({.id = "api::missing-handler", .label = "h", .kind = "function"});
+  cgraph::GraphSnapshot web_snapshot;
+  web_snapshot.nodes.push_back({.id = "web::useStarred", .label = "useStarred", .source_file = "web/lib/hooks/use-starred.ts", .kind = "function"});
+  web_snapshot.nodes.push_back({.id = starred, .label = "GET /api/v1/notebooks/starred-notes", .kind = "endpoint"});
+  web_snapshot.nodes.push_back({.id = "endpoint:POST /api/v1/orphan", .label = "POST /api/v1/orphan", .kind = "endpoint"});
+  const auto fused = cgraph::fuse_seam(frag, {{"api", api_snapshot}, {"web", web_snapshot}});
+  if (!fused.ok || find_in(fused.graph, starred) == nullptr ||
+      !has_snapshot_edge(fused.graph, "service:web", starred, "CONSUMES")) {
+    return 1;
+  }
+  // Byte-stable regeneration.
+  const auto again = cgraph::discover_seam({{"api", api_graph}, {"web", web_graph}});
+  if (!again.ok || cgraph::to_json(again.fragment).dump() != cgraph::to_json(frag).dump()) {
+    return 1;
+  }
+  // A missing graph is a hard error.
+  if (cgraph::discover_seam({{"api", root / "nope.json"}}).ok) {
+    return 1;
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-seam-test";
   fs::remove_all(root);
@@ -310,6 +428,10 @@ int main() {
   std::ofstream(seamdir / std::string(cgraph::kSeamMarkerFile)) << "x";
   if (!cgraph::is_seam_directory(seamdir)) {
     return 1;  // marker present
+  }
+
+  if (test_discover(root) != 0) {
+    return 1;
   }
 
   fs::remove_all(root);

@@ -53,7 +53,8 @@ configured by `language_config`/`configured_extractors`; every function body als
 rename-insensitive `fingerprint` for `report clones`, runtime-only, never exported) → `merge_fragments`
 (`graph_builder`) → `resolve_raw_calls` → `resolve_raw_relations` → `resolve_contracts`
 (`contracts`: route registrations and router mounts become `endpoint` nodes with full paths
-composed across files) → `semantic_dedup` (`dedup`) → `detect_communities`
+composed across files; `fetch`/client/wrapper calls become `CONSUMES` edges to them) →
+`semantic_dedup` (`dedup`) → `detect_communities`
 (`analysis`/igraph clustering) → `analyze_graph` → `write_exports` (`export_json`). ID
 normalization (`normalize.cpp`) preserves Graphify's ID contract — this is a parity surface,
 treat it as load-bearing.
