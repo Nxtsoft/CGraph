@@ -527,12 +527,27 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     const auto found = remap.find(id);
     return found == remap.end() ? id : found->second;
   };
+  // An aliased import (`import { config as configModule }`) is referred to by
+  // its alias in the importing file. The stub carried it; the relinked edge
+  // keeps it, so build_relation_scopes can bind the name the file actually uses.
+  std::unordered_map<std::string, std::string> alias_of;
+  for (const auto& node : graph.nodes) {
+    if (!removed.contains(node.id)) {
+      continue;
+    }
+    if (const auto alias = node.properties.find("alias"); alias != node.properties.end()) {
+      alias_of.emplace(node.id, alias->second);
+    }
+  }
   std::unordered_set<std::string> seen_edges;
   std::vector<Edge> rewritten;
   rewritten.reserve(graph.edges.size());
   for (auto edge : graph.edges) {
     if (dropped.contains(edge.source) || dropped.contains(edge.target)) {
       continue;  // edge to a dropped third-party import
+    }
+    if (const auto alias = alias_of.find(edge.target); alias != alias_of.end()) {
+      edge.properties.emplace("alias", alias->second);
     }
     edge.source = canonical(edge.source);
     edge.target = canonical(edge.target);
@@ -1141,25 +1156,22 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   }
 }
 
-void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> raw_relations) {
-  std::unordered_set<std::string> node_ids;
-  std::unordered_map<std::string, std::string> label_by_id;
-  node_ids.reserve(graph.nodes.size());
+RelationScopes build_relation_scopes(const GraphSnapshot& graph) {
+  RelationScopes scopes;
+  scopes.label_by_id.reserve(graph.nodes.size());
 
   // Per-file declared symbols (label -> id, empty when ambiguous), the same
   // index used for same-file call resolution. Heritage relations may resolve a
   // base type to a declaration in the same file.
-  std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;
   for (const auto& node : graph.nodes) {
-    node_ids.insert(node.id);
-    label_by_id.emplace(node.id, node.label);
+    scopes.label_by_id.emplace(node.id, node.label);
     if (node.source_file.empty()) {
       continue;
     }
     if (node.kind != "function" && node.kind != "class" && node.kind != "type" && node.kind != "variable") {
       continue;
     }
-    auto& by_label = local_by_file[node.source_file];
+    auto& by_label = scopes.local_by_file[node.source_file];
     const auto [slot, inserted] = by_label.emplace(make_id(node.label), node.id);
     if (!inserted && slot->second != node.id) {
       slot->second.clear();
@@ -1169,15 +1181,48 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
   // Per-file imported names (file id -> label -> imported target id), built from
   // the import/re_export edges left by resolve_imports. This is the import-alias
   // map every relation target is resolved through.
-  std::unordered_map<std::string, std::unordered_map<std::string, std::string>> imported_by_file;
   for (const auto& edge : graph.edges) {
     if (edge.relation != "imports" && edge.relation != "re_exports") {
       continue;
     }
-    if (const auto label = label_by_id.find(edge.target); label != label_by_id.end()) {
-      imported_by_file[edge.source].emplace(make_id(label->second), edge.target);
+    if (const auto label = scopes.label_by_id.find(edge.target); label != scopes.label_by_id.end()) {
+      auto& names = scopes.imported_by_file[edge.source];
+      names.emplace(make_id(label->second), edge.target);
+      // `import { config as configModule }`: the file says `configModule`.
+      if (const auto alias = edge.properties.find("alias"); alias != edge.properties.end()) {
+        names.emplace(make_id(alias->second), edge.target);
+      }
     }
   }
+  return scopes;
+}
+
+std::string resolve_scoped_name(const RelationScopes& scopes, const std::string& source_file,
+                                const std::string& name_key, bool allow_same_file) {
+  if (const auto file = scopes.imported_by_file.find(make_id(source_file)); file != scopes.imported_by_file.end()) {
+    if (const auto slot = file->second.find(name_key); slot != file->second.end()) {
+      return slot->second;
+    }
+  }
+  if (allow_same_file) {
+    if (const auto file = scopes.local_by_file.find(source_file); file != scopes.local_by_file.end()) {
+      if (const auto slot = file->second.find(name_key); slot != file->second.end()) {
+        return slot->second;  // empty when the file declares the name twice
+      }
+    }
+  }
+  return {};
+}
+
+void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> raw_relations) {
+  std::unordered_set<std::string> node_ids;
+  node_ids.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) {
+    node_ids.insert(node.id);
+  }
+  const auto scopes = build_relation_scopes(graph);
+  const auto& local_by_file = scopes.local_by_file;
+  const auto& imported_by_file = scopes.imported_by_file;
 
   // C/C++ `#include` imports a whole file, not named symbols, so a referenced
   // type (a base class, a parameter type) is declared in an included *file*
@@ -1275,6 +1320,10 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
   };
 
   for (const auto& relation : raw_relations) {
+    if (relation.relation == "route" || relation.relation == "file_route" || relation.relation == "mounts" ||
+        relation.relation == "aliases") {
+      continue;  // HTTP contract facts: resolve_contracts mints endpoints from these
+    }
     if (relation.source_id.empty() || relation.target_label.empty() || !node_ids.contains(relation.source_id)) {
       continue;
     }

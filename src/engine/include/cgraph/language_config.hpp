@@ -44,11 +44,17 @@ struct RawCall {
 // annotation. The target is a bare type name resolved by import (and, for
 // heritage only, a same-file declaration) — mirroring Graphify, which never
 // resolves these by a project-wide name guess.
+//
+// Two further kinds carry HTTP contract facts for resolve_contracts (see
+// contracts.hpp) and are skipped by resolve_raw_relations: `route` (source = an
+// inline handler, target = its router chain's identifier, context = "<verb>
+// <path>") and `mounts` (source = the mounting chain's variable node, target =
+// the mounted chain's identifier, context = the mount path or empty).
 struct RawRelation {
   std::string source_id;      // the class / interface / method node id
   std::string target_label;   // the referenced type name
-  std::string relation;       // "inherits" | "implements" | "references"
-  std::string context;        // "type" | "parameter_type" | "return_type" | "field" | "generic_arg"
+  std::string relation;       // "inherits" | "implements" | "references" | "route" | "mounts"
+  std::string context;        // "type" | "parameter_type" | "return_type" | "field" | "generic_arg" | route/mount text
   std::string source_file;
   bool allow_same_file = false;  // heritage may resolve to a same-file declaration; references may not
 };
@@ -66,8 +72,10 @@ using ResolveCalleeName = std::function<std::string(const TSNode&, const Extract
 using ResolveCalleeScope = std::function<std::string(const TSNode&, const ExtractionContext&)>;
 // The third argument is the innermost enclosing function scope (empty at file /
 // class / type scope) — the caller id for any RawCall the walk emits. Handlers
-// that emit no calls ignore it.
-using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, Fragment&, std::vector<RawCall>&)>;
+// that emit no calls ignore it. The last argument collects relation facts the
+// walk finds on non-symbol nodes (JavaScript's router mounts); handlers that
+// emit none ignore it.
+using ExtraWalk = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, Fragment&, std::vector<RawCall>&, std::vector<RawRelation>&)>;
 // True when a function node is a method by its surrounding context rather than
 // its grammar shape (Rust's `function_item` inside an `impl_item` — the node
 // type alone cannot tell a method from a free function). Complements

@@ -3,6 +3,7 @@
 #include "cgraph/analysis.hpp"
 #include "cgraph/configured_extractors.hpp"
 #include "cgraph/content_root.hpp"
+#include "cgraph/contracts.hpp"
 #include "cgraph/detect.hpp"
 #include "cgraph/dedup.hpp"
 #include "cgraph/file_cache.hpp"
@@ -68,6 +69,7 @@ namespace {
   resolve_imports(graph, index.aliases);
   resolve_raw_calls(graph, raw_calls);
   resolve_raw_relations(graph, raw_relations);
+  resolve_contracts(graph, raw_relations);
   resolve_interface_dispatch(graph, raw_calls);
   return graph;
 }

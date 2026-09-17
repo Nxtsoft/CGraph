@@ -9,6 +9,7 @@
 #include "cgraph/export_json.hpp"
 #include "cgraph/report.hpp"
 #include "cgraph/file_extraction.hpp"
+#include "cgraph/contracts.hpp"
 #include "cgraph/graph_builder.hpp"
 
 #include <fstream>
@@ -89,6 +90,7 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
     resolve_imports(result.graph, aliases);
     resolve_raw_calls(result.graph, raw_calls, &result.stats.calls);
     resolve_raw_relations(result.graph, raw_relations);
+    resolve_contracts(result.graph, raw_relations, &result.stats.contracts);
     resolve_interface_dispatch(result.graph, raw_calls);
   }
   {

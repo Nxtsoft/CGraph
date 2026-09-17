@@ -44,6 +44,6 @@ void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fr
 // namespace, it lets resolution refuse `std::find` -> project `find`.
 [[nodiscard]] std::string cpp_callee_scope(const TSNode& node, const ExtractionContext& context);
 void cpp_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id, std::vector<RawRelation>& out);
-void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id, Fragment& fragment, std::vector<RawCall>& raw_calls);
+void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id, Fragment& fragment, std::vector<RawCall>& raw_calls, std::vector<RawRelation>& raw_relations);
 
 }  // namespace cgraph
