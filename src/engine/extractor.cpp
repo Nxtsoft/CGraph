@@ -418,7 +418,7 @@ void walk_node(
     add_raw_call(node, config, context, child_function_scope, raw_calls);
   }
   if (config.extra_walk) {
-    config.extra_walk(node, context, child_function_scope, fragment, raw_calls);
+    config.extra_walk(node, context, child_function_scope, fragment, raw_calls, raw_relations);
   }
 
   const auto child_count = ts_node_child_count(node);

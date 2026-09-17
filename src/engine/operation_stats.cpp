@@ -130,6 +130,15 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
            {"resolved_rate", stats.calls.resolved_rate()},
            {"balances", stats.calls.balances()},
        }},
+      // Likewise an unresolved route mints no endpoint node.
+      {"route_resolution",
+       {
+           {"routes", stats.contracts.routes},
+           {"routes_unresolved", stats.contracts.routes_unresolved},
+           {"mounts", stats.contracts.mounts},
+           {"mounts_unresolved", stats.contracts.mounts_unresolved},
+           {"endpoints", stats.contracts.endpoints},
+       }},
   };
   // Modeled, labeled, and omitted when it cannot be honestly formed.
   if (const auto saved = modeled_cache_saved_ms(stats.files_cache_hit, stats.files_extracted, stats.extract_ms)) {

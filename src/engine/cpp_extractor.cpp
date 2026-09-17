@@ -616,7 +616,7 @@ void cpp_relation_handler(const TSNode& node, const ExtractionContext& context, 
   }
 }
 
-void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/, Fragment& fragment, std::vector<RawCall>&) {
+void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/, Fragment& fragment, std::vector<RawCall>&, std::vector<RawRelation>&) {
   stamp_namespace_scope(node, context, fragment);
   const std::string_view node_type = ts_node_type(node);
   if (node_type != "class_specifier" && node_type != "struct_specifier") {

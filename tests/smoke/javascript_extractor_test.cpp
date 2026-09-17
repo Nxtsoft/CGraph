@@ -2,6 +2,7 @@
 
 #include <string_view>
 #include "cgraph/normalize.hpp"
+#include <iostream>
 #include <set>
 #include <string>
 #include <vector>
@@ -333,6 +334,146 @@ describe('suite', () => { run(); });
     }
     for (const auto& call : routes.raw_calls) {
       if (call.callee_label == "transform" || call.callee_label == "run" || call.callee_label == "next") return 1;
+    }
+  }
+
+  // HTTP contract facts (CGR-13): a route handler records the chain it is
+  // registered on and the route as written; a chain variable carries its own
+  // prefix; `.use(x)` / `.use('/p', x)` / `.route('/p', x)` record mounts. The
+  // TS2589-dodging casts turing-api wraps its chains in are read through.
+  {
+    const auto facts = cgraph::extract_typescript({.source_file = "src/app.ts", .source = R"ts(
+import { Elysia } from 'elysia';
+import { user } from './modules/user';
+import { docsModule } from './modules/docs';
+export const apiRoutes = new Elysia({ prefix: '/api/v1', tags: ['Api'] })
+  .use(user)
+  .get('/health', () => { return ok(); });
+const suite: Elysia = new Elysia()
+  .use(docsModule) as unknown as Elysia;
+const app = new Elysia()
+  .use(cors())
+  .use(apiRoutes as any)
+  .use(suite);
+app.route('/v2', suite);
+app.use('/legacy', user);
+const hono = new Hono().basePath('/v1').get('/ping', (c) => c.text(pong()));
+router.route('/x').get((req, res) => res.end());
+)ts"});
+    std::set<std::string> routes;
+    std::set<std::string> mounts;
+    for (const auto& relation : facts.raw_relations) {
+      if (relation.relation == "route") {
+        routes.insert(relation.target_label + "|" + relation.context + "|" + relation.source_id);
+      } else if (relation.relation == "mounts") {
+        mounts.insert(relation.source_id + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto var = [](std::string_view name) { return cgraph::make_id(std::string("src/app.ts:") + std::string(name)); };
+    if (routes != std::set<std::string>{
+                      "apiRoutes|get /health|" + cgraph::make_id("src/app.ts:apiRoutes.get /health"),
+                      "hono|get /ping|" + cgraph::make_id("src/app.ts:hono.get /ping"),
+                  }) {
+      for (const auto& route : routes) std::cerr << "route fact: " << route << '\n';
+      return 1;
+    }
+    // Every mount, including the ones behind `as any` and `as unknown as Elysia`;
+    // not `.use(cors())` (a call) and not `router.route('/x')` (one argument).
+    if (mounts != std::set<std::string>{
+                      var("apiRoutes") + "|user|",
+                      var("suite") + "|docsModule|",
+                      var("app") + "|apiRoutes|",
+                      var("app") + "|suite|",
+                      var("app") + "|suite|/v2",
+                      var("app") + "|user|/legacy",
+                  }) {
+      for (const auto& mount : mounts) std::cerr << "mount fact: " << mount << '\n';
+      return 1;
+    }
+    const auto prefix_of = [&](std::string_view label) -> std::string {
+      for (const auto& node : facts.fragment.nodes) {
+        if (node.label == label && node.kind == "variable") {
+          const auto slot = node.properties.find("route_prefix");
+          return slot == node.properties.end() ? std::string{"<none>"} : slot->second;
+        }
+      }
+      return "<no node>";
+    };
+    if (prefix_of("apiRoutes") != "/api/v1" || prefix_of("hono") != "/v1" || prefix_of("app") != "<none>" ||
+        prefix_of("suite") != "<none>") {
+      std::cerr << "prefixes: " << prefix_of("apiRoutes") << ' ' << prefix_of("hono") << ' ' << prefix_of("app") << ' '
+                << prefix_of("suite") << '\n';
+      return 1;
+    }
+  }
+
+  // An aliased import keeps its alias on the stub; a chain passed inline to
+  // `.use()` and a `.group()` callback parameter both root at the enclosing
+  // chain with the path beneath it; a parameter of an ordinary function is
+  // unresolvable and leaves the chain empty; a cast alias records `aliases`.
+  {
+    const auto shapes = cgraph::extract_typescript({.source_file = "src/shapes.ts", .source = R"ts(
+import { config as configModule, deck } from './modules';
+export const api = new Elysia({ prefix: '/api' })
+  .use(configModule)
+  .use(new Elysia({ prefix: '/inline' }).get('/protected', () => { return one(); }))
+  .group('/v2', (app) => app.get('/x', () => { return two(); }).use(deck));
+export function register(app) { app.get('/loose', () => { return three(); }); }
+export const deckModule: Elysia = deck as unknown as Elysia;
+)ts"});
+    std::string alias;
+    for (const auto& node : shapes.fragment.nodes) {
+      if (node.kind == "import" && node.label == "config") {
+        const auto slot = node.properties.find("alias");
+        alias = slot == node.properties.end() ? "<none>" : slot->second;
+      }
+    }
+    if (alias != "configModule") {
+      std::cerr << "import alias: " << alias << '\n';
+      return 1;
+    }
+    std::set<std::string> facts;
+    for (const auto& relation : shapes.raw_relations) {
+      if (relation.relation == "route" || relation.relation == "mounts" || relation.relation == "aliases") {
+        facts.insert(relation.relation + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto api = cgraph::make_id("src/shapes.ts:api");
+    if (facts != std::set<std::string>{
+                     "route|api|get /inline/protected",
+                     "route|api|get /v2/x",
+                     "route||get /loose",
+                     "mounts|configModule|",
+                     "mounts|deck|/v2",
+                     "aliases|deck|",
+                 }) {
+      for (const auto& fact : facts) std::cerr << "shape fact: " << fact << '\n';
+      return 1;
+    }
+    (void)api;
+    bool inline_label = false;
+    for (const auto& node : shapes.fragment.nodes) {
+      inline_label = inline_label || node.label == "api.get /inline/protected";
+    }
+    if (!inline_label) return 1;
+  }
+
+  // Next.js route file: the exported verb functions record a file-derived path
+  // and no chain; a helper in the same file records nothing.
+  {
+    const auto next = cgraph::extract_typescript({.source_file = "/w/app/api/items/[id]/route.ts", .source = R"ts(
+export async function GET(req: Request) { return ok(); }
+export const PATCH = async () => { return ok(); };
+function helper() { return 1; }
+)ts"});
+    std::set<std::string> routes;
+    for (const auto& relation : next.raw_relations) {
+      if (relation.relation == "file_route") routes.insert(relation.target_label + "|" + relation.context);
+      if (relation.relation == "route") routes.insert("chain-routed:" + relation.context);
+    }
+    if (routes != std::set<std::string>{"|get /api/items/:id", "|patch /api/items/:id"}) {
+      for (const auto& route : routes) std::cerr << "next route fact: " << route << '\n';
+      return 1;
     }
   }
 

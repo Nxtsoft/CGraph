@@ -68,6 +68,19 @@ int main() {
   // prefix-extension pair must never merge. Likewise a name shared across two
   // files ("Helper" in two modules) is two symbols, not one.
   cgraph::GraphSnapshot guard;
+  // Sibling endpoints are near-identical high-entropy strings in one community
+  // and one file; only the endpoint kind exemption keeps them apart.
+  const auto route = [](std::string id, std::string label) {
+    return cgraph::Node{.id = std::move(id),
+                        .label = std::move(label),
+                        .source_file = "routes.ts",
+                        .source_location = cgraph::SourceLocation{.start_line = 40, .end_line = 44},
+                        .kind = "endpoint",
+                        .properties = {{"community", "3"}}};
+  };
+  guard.nodes.push_back(route("endpoint:GET /api/v1/notebooks/:id/notes", "GET /api/v1/notebooks/:id/notes"));
+  guard.nodes.push_back(route("endpoint:GET /api/v1/notebooks/:id/votes", "GET /api/v1/notebooks/:id/votes"));
+  guard.nodes.push_back(route("endpoint:GET /api/v1/notebooks/:id/note", "GET /api/v1/notebooks/:id/note"));
   guard.nodes.push_back(cgraph::Node{.id = "mb", .label = "MessageBubbleProps", .source_file = "mb.tsx", .kind = "type"});
   guard.nodes.push_back(cgraph::Node{.id = "mf", .label = "MessageBubble", .source_file = "mb.tsx", .kind = "function"});
   guard.nodes.push_back(cgraph::Node{.id = "h1", .label = "HelperWidget", .source_file = "one.tsx", .kind = "function"});
@@ -212,6 +225,14 @@ int main() {
   }
   if (file_nodes != 2) {
     std::cerr << "sibling file nodes were incorrectly merged\n";
+    return 1;
+  }
+  std::size_t endpoint_nodes = 0;
+  for (const auto& node : guard.nodes) {
+    endpoint_nodes += node.kind == "endpoint" ? 1 : 0;
+  }
+  if (endpoint_nodes != 3) {
+    std::cerr << "sibling endpoints were merged: " << endpoint_nodes << " of 3 survive\n";
     return 1;
   }
   if (!saw_props || !saw_func) {

@@ -148,6 +148,24 @@ no node; only the body-bearing definition does.
 Fields are members, not navigation targets: `graph_context` packs the owner (whose snippet spans its
 members) rather than the members, and `report modules` symbol counts exclude them.
 
+### HTTP endpoints
+
+JavaScript and TypeScript services get one `endpoint` node per route the code serves, with the
+full path composed across files: an Elysia, Express or Hono chain's own prefix (`new Elysia({
+prefix: '/notebooks' })`, `.basePath('/v1')`) beneath every `.use(child)`, `.use('/p', child)` or
+`.route('/p', child)` that mounts it, up to the top-level chain, read through `as any` and
+`as unknown as T` casts and resolved through imports (aliased ones included). A chain built inline
+inside `.use(new Elysia({ prefix }).get(…))`, a `.group('/v2', app => app.get(…))` or `.guard()`
+callback, and a module re-exported as `export const deckModule = deckRoutes as unknown as Elysia`
+all compose the same way. A Next.js `app/api/x/[id]/route.ts` exporting `GET` is `GET /api/x/:id`.
+The node's id is `endpoint:GET /api/v1/notebooks/starred-notes` with no repository in it, its
+label is the same without the prefix, and it carries `method` and `path`, the handler's file and
+span, a `contains` edge from that file and a `handled_by` edge to the handler, so `graph_impact`
+on a handler reaches its endpoint. Chains mounted twice serve their routes twice; a route on a
+router the file only receives as a function parameter (`function register(app) { app.get(…) }`)
+is not minted, and `stats.json` counts it under `route_resolution.routes_unresolved`. A repository
+without routers gains nothing.
+
 ## Quick start
 
 Download the current Linux x64 release and build your first graph:

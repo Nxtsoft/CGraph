@@ -536,6 +536,18 @@ cgraph_enable_sanitizers(cgraph_dedup_test)
 
 add_test(NAME cgraph_dedup_test COMMAND cgraph_dedup_test)
 
+add_executable(cgraph_contracts_test
+  contracts_test.cpp)
+
+target_link_libraries(cgraph_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_contracts_test)
+cgraph_enable_sanitizers(cgraph_contracts_test)
+
+add_test(NAME cgraph_contracts_test COMMAND cgraph_contracts_test)
+
 add_executable(cgraph_analysis_test
   analysis_test.cpp)
 

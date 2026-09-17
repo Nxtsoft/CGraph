@@ -571,7 +571,7 @@ void go_relation_handler(const TSNode& node, const ExtractionContext& context, c
 // method is a contract entry, never the same node as an implementation.
 void go_extra_walk(const TSNode& node, const ExtractionContext& context,
                    const std::string& /*function_scope_id*/, Fragment& fragment,
-                   std::vector<RawCall>& raw_calls) {
+                   std::vector<RawCall>& raw_calls, std::vector<RawRelation>&) {
   (void)raw_calls;
   if (std::string_view(ts_node_type(node)) != "type_spec") {
     return;
@@ -1035,7 +1035,7 @@ void rust_scan_macro_tokens(const TSNode& token_tree, const ExtractionContext& c
 // allowlist-driven walk, so they share the one extra_walk slot.
 void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
                      const std::string& function_scope_id, Fragment& fragment,
-                     std::vector<RawCall>& raw_calls) {
+                     std::vector<RawCall>& raw_calls, std::vector<RawRelation>&) {
   const std::string_view type = ts_node_type(node);
   if (type == "macro_invocation") {
     // Same rule as call_expression extraction: a macro at file/type scope has

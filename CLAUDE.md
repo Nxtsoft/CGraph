@@ -51,7 +51,9 @@ shells over it. Core data types (`Node`, `Edge`, `Hyperedge`, `Fragment`, `Graph
 language-specific `python_extractor`/`javascript_extractor`/`non_grammar_extractors`,
 configured by `language_config`/`configured_extractors`; every function body also gets a
 rename-insensitive `fingerprint` for `report clones`, runtime-only, never exported) → `merge_fragments`
-(`graph_builder`) → `resolve_raw_calls` → `semantic_dedup` (`dedup`) → `detect_communities`
+(`graph_builder`) → `resolve_raw_calls` → `resolve_raw_relations` → `resolve_contracts`
+(`contracts`: route registrations and router mounts become `endpoint` nodes with full paths
+composed across files) → `semantic_dedup` (`dedup`) → `detect_communities`
 (`analysis`/igraph clustering) → `analyze_graph` → `write_exports` (`export_json`). ID
 normalization (`normalize.cpp`) preserves Graphify's ID contract — this is a parity surface,
 treat it as load-bearing.

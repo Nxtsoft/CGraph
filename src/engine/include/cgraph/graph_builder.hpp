@@ -6,10 +6,31 @@
 #include "cgraph/types.hpp"
 
 #include <span>
+#include <string>
+#include <unordered_map>
 
 namespace cgraph {
 
 [[nodiscard]] GraphSnapshot merge_fragments(std::span<const Fragment> fragments);
+
+// The per-file name scopes a bare identifier is resolved through after merge:
+// what each file declares (function/class/type/variable label key -> node id,
+// empty when the file declares the name twice) and what each file imports
+// (file node id -> label key -> the imported target's id, from the imports /
+// re_exports edges resolve_imports left). Shared by resolve_raw_relations and
+// resolve_contracts so both bind a name the same way.
+struct RelationScopes {
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;     // keyed by source path
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>> imported_by_file;  // keyed by file node id
+  std::unordered_map<std::string, std::string> label_by_id;
+};
+[[nodiscard]] RelationScopes build_relation_scopes(const GraphSnapshot& graph);
+
+// The node id `name_key` (a make_id'd label) denotes in `source_file`: the
+// file's import of that name first, then -- when allowed -- its own declaration.
+// Empty when neither explains the name or the declaration is ambiguous.
+[[nodiscard]] std::string resolve_scoped_name(const RelationScopes& scopes, const std::string& source_file,
+                                              const std::string& name_key, bool allow_same_file);
 void merge_fragment(GraphSnapshot& graph, const Fragment& fragment);
 
 // Canonical node identity used by merge: an explicit `id` if present, otherwise

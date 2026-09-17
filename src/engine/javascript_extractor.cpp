@@ -1,11 +1,14 @@
 #include "cgraph/javascript_extractor.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -62,12 +65,165 @@ constexpr std::array<std::string_view, 8> kRouteVerbs = {
   return type == "string" || type == "template_string";
 }
 
-// The identifier a fluent chain hangs off. `app.get(...)` and
-// `app.use(x).get(...)` both reduce to `app`; a chain rooted in a constructor
-// (`new Elysia({...}).use(x).get(...)`) has no identifier, so the variable the
-// whole chain is assigned to names it (`const notebookRoutes = ...`). Empty when
-// neither exists (an unassigned `new Hono().get(...)` expression statement).
-[[nodiscard]] std::string chain_root_name(const TSNode& call, const ExtractionContext& context) {
+// TypeScript wrappers that change an expression's static type but not its value:
+// `x as any`, `x satisfies T`, `x!`, `(x)`, `<T>x`. A router chain is routinely
+// wrapped in these (`app.use(apiRoutes as any)`, `new Elysia().use(a) as unknown
+// as Elysia` to dodge TS2589), and the chain must read through them.
+[[nodiscard]] bool is_type_wrapper(std::string_view type) {
+  return type == "as_expression" || type == "satisfies_expression" || type == "non_null_expression" ||
+         type == "parenthesized_expression" || type == "type_assertion";
+}
+
+[[nodiscard]] TSNode unwrap_expression(TSNode node) {
+  while (!ts_node_is_null(node) && is_type_wrapper(ts_node_type(node))) {
+    const auto count = ts_node_named_child_count(node);
+    if (count == 0) {
+      break;
+    }
+    // `<T>x` puts the type first; every other wrapper puts the expression first.
+    node = ts_node_named_child(node, std::string_view(ts_node_type(node)) == "type_assertion" ? count - 1 : 0);
+  }
+  return node;
+}
+
+[[nodiscard]] std::string chain_route_prefix(const TSNode& value, std::string_view source);
+
+// Where a fluent router chain is rooted, for resolve_contracts (contracts.hpp).
+struct ChainRef {
+  std::string root;     // the module-level identifier the chain hangs off; empty when unknown
+  std::string prefix;   // path accumulated from enclosing `.group('/p')`, `.route('/p', …)` and inline constructors
+  bool resolvable = true;
+};
+
+[[nodiscard]] std::string compose_prefix(const std::string& outer, const std::string& inner) {
+  if (outer.empty() && inner.empty()) {
+    return {};
+  }
+  return join_route_path(outer, inner);
+}
+
+[[nodiscard]] bool is_function_node(std::string_view type) {
+  return type == "arrow_function" || type == "function_expression" || type == "function_declaration" ||
+         type == "method_definition" || type == "generator_function_declaration";
+}
+
+// The identifiers a function's parameter list binds: `(app) => …`, `app => …`,
+// `function (req, res) {}`. Destructured parameters bind no chain and add nothing.
+void parameter_names(const TSNode& function, std::string_view source, std::vector<std::string>& out) {
+  if (const TSNode single = ts_node_child_by_field_name(function, "parameter", 9); !ts_node_is_null(single)) {
+    if (std::string_view(ts_node_type(single)) == "identifier") {
+      out.push_back(node_text(single, source));
+    }
+    return;
+  }
+  const TSNode parameters = ts_node_child_by_field_name(function, "parameters", 10);
+  if (ts_node_is_null(parameters)) {
+    return;
+  }
+  const auto count = ts_node_named_child_count(parameters);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode parameter = ts_node_named_child(parameters, index);
+    if (std::string_view(ts_node_type(parameter)) == "identifier") {
+      out.push_back(node_text(parameter, source));
+      continue;
+    }
+    if (const TSNode pattern = ts_node_child_by_field_name(parameter, "pattern", 7);
+        !ts_node_is_null(pattern) && std::string_view(ts_node_type(pattern)) == "identifier") {
+      out.push_back(node_text(pattern, source));
+    }
+  }
+}
+
+// True when a statement directly in `body` declares `name` with `const` / `let`
+// / `var`: a chain built inside a test callback (`describe(() => { const app =
+// new Elysia(); app.get(...) })`) is local to it, and must not bind to a
+// module-level variable of the same name. Nested blocks are not searched.
+[[nodiscard]] bool declares_local(const TSNode& body, std::string_view name, std::string_view source) {
+  if (ts_node_is_null(body) || std::string_view(ts_node_type(body)) != "statement_block") {
+    return false;
+  }
+  const auto count = ts_node_named_child_count(body);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode statement = ts_node_named_child(body, index);
+    const std::string_view type = ts_node_type(statement);
+    if (type != "lexical_declaration" && type != "variable_declaration") {
+      continue;
+    }
+    const auto declarators = ts_node_named_child_count(statement);
+    for (std::uint32_t d = 0; d < declarators; ++d) {
+      const TSNode declarator = ts_node_named_child(statement, d);
+      if (std::string_view(ts_node_type(declarator)) == "variable_declarator" &&
+          field_text(declarator, "name", source) == name) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The outermost node of the chain `call` belongs to: `a.use(x).get(…)` read up
+// through every member access, call and type wrapper.
+[[nodiscard]] TSNode chain_top(const TSNode& call) {
+  TSNode top = call;
+  for (TSNode parent = ts_node_parent(top); !ts_node_is_null(parent); parent = ts_node_parent(top)) {
+    const std::string_view type = ts_node_type(parent);
+    if (type != "member_expression" && type != "call_expression" && !is_type_wrapper(type)) {
+      break;
+    }
+    top = parent;
+  }
+  return top;
+}
+
+// The router method (`use`, `group`, …) of the call whose argument list holds
+// `argument`, or empty when the argument is not inside such a call. `call` and
+// `arguments` receive the enclosing call and its argument list.
+[[nodiscard]] std::string enclosing_router_call(const TSNode& argument, std::string_view source, TSNode& call, TSNode& arguments) {
+  arguments = ts_node_parent(argument);
+  if (ts_node_is_null(arguments) || std::string_view(ts_node_type(arguments)) != "arguments") {
+    return {};
+  }
+  call = ts_node_parent(arguments);
+  if (ts_node_is_null(call) || std::string_view(ts_node_type(call)) != "call_expression") {
+    return {};
+  }
+  const TSNode callee = ts_node_child_by_field_name(call, "function", 8);
+  if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "member_expression") {
+    return {};
+  }
+  return field_text(callee, "property", source);
+}
+
+// The string a router call mounts under: the first argument of `.group('/p', …)`,
+// `.route('/p', x)` or `.use('/p', x)` when it is a string and not `argument` itself.
+[[nodiscard]] std::string mount_path_argument(const TSNode& arguments, const TSNode& argument, std::string_view source) {
+  if (ts_node_named_child_count(arguments) < 2) {
+    return {};
+  }
+  const TSNode first = ts_node_named_child(arguments, 0);
+  if (!is_string_value(first) || ts_node_eq(first, argument)) {
+    return {};
+  }
+  return strip_string_quotes(node_text(first, source));
+}
+
+// The identifier a fluent chain hangs off, and the path it is served under
+// relative to that identifier's own chain. `app.get(...)` and
+// `app.use(x).get(...)` both reduce to `app`. A chain rooted in a constructor
+// (`new Elysia({...}).use(x).get(...)`) has no identifier: the variable it is
+// assigned to names it (`const notebookRoutes = ...`); passed inline to an
+// enclosing chain's `.use(...)` / `.route('/p', ...)` it belongs to that chain,
+// under the mount path and its own constructor prefix. A chain that is the
+// parameter of a `.group('/p', app => ...)` / `.guard(opts, app => ...)`
+// callback is the enclosing chain under the group's path. A parameter of any
+// other function (`function register(app) { app.get(...) }`), or an unassigned
+// chain in an expression statement, is unresolvable: its mount is unknowable
+// from this file, and a guessed path would be worse than none.
+[[nodiscard]] ChainRef resolve_chain(const TSNode& call, const ExtractionContext& context, int depth = 0) {
+  constexpr int kMaxNesting = 8;
+  if (depth > kMaxNesting) {
+    return ChainRef{.resolvable = false};
+  }
   TSNode base = call;
   for (;;) {
     const std::string_view type = ts_node_type(base);
@@ -76,29 +232,65 @@ constexpr std::array<std::string_view, 8> kRouteVerbs = {
       next = ts_node_child_by_field_name(base, "function", 8);
     } else if (type == "member_expression") {
       next = ts_node_child_by_field_name(base, "object", 6);
+    } else if (is_type_wrapper(type)) {
+      next = unwrap_expression(base);
     } else {
       break;
     }
-    if (ts_node_is_null(next)) {
+    if (ts_node_is_null(next) || ts_node_eq(next, base)) {
       break;
     }
     base = next;
   }
   if (std::string_view(ts_node_type(base)) == "identifier") {
-    return node_text(base, context.source);
-  }
-  TSNode top = call;
-  for (TSNode parent = ts_node_parent(top); !ts_node_is_null(parent); parent = ts_node_parent(top)) {
-    const std::string_view type = ts_node_type(parent);
-    if (type != "member_expression" && type != "call_expression") {
-      if (type == "variable_declarator") {
-        return field_text(parent, "name", context.source);
+    const auto name = node_text(base, context.source);
+    for (TSNode ancestor = ts_node_parent(call); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+      if (!is_function_node(ts_node_type(ancestor))) {
+        continue;
       }
-      break;
+      if (declares_local(ts_node_child_by_field_name(ancestor, "body", 4), name, context.source)) {
+        return ChainRef{.resolvable = false};  // a chain local to this function: its mount is unknowable
+      }
+      std::vector<std::string> parameters;
+      parameter_names(ancestor, context.source, parameters);
+      if (std::ranges::find(parameters, name) == parameters.end()) {
+        continue;
+      }
+      TSNode outer;
+      TSNode arguments;
+      const auto method = enclosing_router_call(ancestor, context.source, outer, arguments);
+      if (method != "group" && method != "guard") {
+        return ChainRef{.resolvable = false};
+      }
+      auto enclosing = resolve_chain(outer, context, depth + 1);
+      enclosing.prefix = compose_prefix(
+          enclosing.prefix, method == "group" ? mount_path_argument(arguments, ancestor, context.source) : std::string{});
+      return enclosing;
     }
-    top = parent;
+    return ChainRef{.root = name};
   }
-  return {};
+  const TSNode top = chain_top(call);
+  const TSNode parent = ts_node_parent(top);
+  if (ts_node_is_null(parent)) {
+    return ChainRef{.resolvable = false};
+  }
+  if (std::string_view(ts_node_type(parent)) == "variable_declarator") {
+    auto name = field_text(parent, "name", context.source);
+    if (name.empty()) {
+      return ChainRef{.resolvable = false};
+    }
+    return ChainRef{.root = std::move(name)};
+  }
+  TSNode outer;
+  TSNode arguments;
+  const auto method = enclosing_router_call(top, context.source, outer, arguments);
+  if (method != "use" && method != "route") {
+    return ChainRef{.resolvable = false};
+  }
+  auto enclosing = resolve_chain(outer, context, depth + 1);
+  enclosing.prefix = compose_prefix(compose_prefix(enclosing.prefix, mount_path_argument(arguments, top, context.source)),
+                                    chain_route_prefix(top, context.source));
+  return enclosing;
 }
 
 // Names the inline handler of an HTTP route registration from the call that
@@ -112,33 +304,40 @@ constexpr std::array<std::string_view, 8> kRouteVerbs = {
 // call that is not a route registration: the callee must be `<x>.<verb>` with
 // an HTTP verb, the first argument a string, and `node` the last function
 // argument.
-[[nodiscard]] std::string route_handler_name(const TSNode& node, const ExtractionContext& context) {
+struct RouteRegistration {
+  std::string root;  // the chain's identifier, empty when unknown
+  std::string verb;  // lowercase, as the router method is spelled
+  std::string path;  // as written (quotes stripped), beneath any enclosing group / inline prefix
+  bool resolvable = true;
+};
+
+[[nodiscard]] std::optional<RouteRegistration> route_registration(const TSNode& node, const ExtractionContext& context) {
   if (!is_function_value(node)) {
-    return {};
+    return std::nullopt;
   }
   const TSNode arguments = ts_node_parent(node);
   if (ts_node_is_null(arguments) || std::string_view(ts_node_type(arguments)) != "arguments") {
-    return {};
+    return std::nullopt;
   }
   const TSNode call = ts_node_parent(arguments);
   if (ts_node_is_null(call) || std::string_view(ts_node_type(call)) != "call_expression") {
-    return {};
+    return std::nullopt;
   }
   const TSNode callee = ts_node_child_by_field_name(call, "function", 8);
   if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "member_expression") {
-    return {};
+    return std::nullopt;
   }
-  const auto verb = field_text(callee, "property", context.source);
+  auto verb = field_text(callee, "property", context.source);
   if (std::ranges::find(kRouteVerbs, std::string_view(verb)) == kRouteVerbs.end()) {
-    return {};
+    return std::nullopt;
   }
   const auto argument_count = ts_node_named_child_count(arguments);
   if (argument_count < 2) {
-    return {};
+    return std::nullopt;
   }
   const TSNode path = ts_node_named_child(arguments, 0);
   if (!is_string_value(path)) {
-    return {};
+    return std::nullopt;
   }
   TSNode handler;
   for (std::uint32_t index = argument_count; index-- > 1;) {
@@ -149,11 +348,28 @@ constexpr std::array<std::string_view, 8> kRouteVerbs = {
     }
   }
   if (ts_node_is_null(handler) || !ts_node_eq(handler, node)) {
+    return std::nullopt;
+  }
+  auto chain = resolve_chain(call, context);
+  auto route = strip_string_quotes(node_text(path, context.source));
+  if (!chain.prefix.empty()) {
+    route = join_route_path(chain.prefix, route);
+  }
+  return RouteRegistration{
+      .root = std::move(chain.root),
+      .verb = std::move(verb),
+      .path = std::move(route),
+      .resolvable = chain.resolvable,
+  };
+}
+
+[[nodiscard]] std::string route_handler_name(const TSNode& node, const ExtractionContext& context) {
+  const auto registration = route_registration(node, context);
+  if (!registration) {
     return {};
   }
-  const auto root = chain_root_name(call, context);
-  const auto route = strip_string_quotes(node_text(path, context.source));
-  return (root.empty() ? verb : root + "." + verb) + " " + route;
+  const auto& root = registration->root;
+  return (root.empty() ? registration->verb : root + "." + registration->verb) + " " + registration->path;
 }
 
 // Names an arrow function / function expression from the construct it is bound
@@ -219,15 +435,18 @@ constexpr std::array<std::string_view, 8> kRouteVerbs = {
   return spec;
 }
 
-// Pushes the bare imported/exported symbol names (skipping `as` aliases) found
-// under an import_clause / export_clause / namespace_(im|ex)port subtree.
-void collect_specifier_names(const TSNode& node, std::string_view source, std::vector<std::string>& out) {
+// Pushes the imported/exported symbol names found under an import_clause /
+// export_clause / namespace_(im|ex)port subtree, each with the local alias an
+// `as` clause gives it (empty when there is none). The stub is keyed by the
+// imported name, since that is what the source module declares; the alias is
+// what the importing file's own code refers to.
+void collect_specifier_names(const TSNode& node, std::string_view source, std::vector<std::pair<std::string, std::string>>& out) {
   const std::string_view type = ts_node_type(node);
   if (type == "import_specifier" || type == "export_specifier") {
     if (const auto name = ts_node_child_by_field_name(node, "name", 4); !ts_node_is_null(name)) {
       auto text = node_text(name, source);
       if (!text.empty()) {
-        out.push_back(std::move(text));
+        out.emplace_back(std::move(text), field_text(node, "alias", source));
       }
     }
     return;  // do not descend into the alias
@@ -241,7 +460,7 @@ void collect_specifier_names(const TSNode& node, std::string_view source, std::v
     if (child_type == "identifier") {
       auto text = node_text(child, source);
       if (!text.empty()) {
-        out.push_back(std::move(text));
+        out.emplace_back(std::move(text), std::string{});
       }
       continue;
     }
@@ -305,9 +524,9 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
   const auto module_key = has_source
       ? resolve_module_spec(context.source_file, strip_string_quotes(node_text(source, context.source)))
       : context.source_file;
-  std::vector<std::string> names;
+  std::vector<std::pair<std::string, std::string>> names;
   collect_specifier_names(node, context.source, names);
-  for (auto& name : names) {
+  for (auto& [name, alias] : names) {
     // Namespaced for the same reason as module_id above: with an
     // extension-spelled specifier, make_id(module_key + ":" + name) is exactly
     // the id add_symbol_node gives the real declared symbol, and the squatting
@@ -323,6 +542,12 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
         // declared symbol in the imported file when that file is in the graph.
         .properties = {{"import_path", module_key}},
     });
+    if (!alias.empty() && alias != name) {
+      // `import { config as configModule }`: the file's own code says
+      // `configModule`. resolve_imports carries this onto the relinked edge so
+      // name resolution in this file can bind the alias.
+      fragment.nodes.back().properties.emplace("alias", alias);
+    }
     fragment.edges.push_back(Edge{
         .source = file_id,
         .target = symbol_id,
@@ -358,7 +583,121 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
 // (`useStore()`) resolve to a real target instead of dropping. Arrow-valued
 // consts are handled by the function branch of the generic walk, so they are
 // skipped here.
-void module_const_handler(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/, Fragment& fragment, std::vector<RawCall>&) {
+// The URL prefix a router chain gives every route registered on it: Elysia's
+// `new Elysia({ prefix: '/notebooks' })` option or Hono's `.basePath('/v1')`
+// link, read by walking the chain expression down to its constructor. Empty for
+// a chain with neither (`express()`, `Router()`, `new Elysia()`).
+[[nodiscard]] std::string chain_route_prefix(const TSNode& value, std::string_view source) {
+  std::string base_path;
+  TSNode current = unwrap_expression(value);
+  while (!ts_node_is_null(current)) {
+    const std::string_view type = ts_node_type(current);
+    if (type == "member_expression") {
+      current = unwrap_expression(ts_node_child_by_field_name(current, "object", 6));
+      continue;
+    }
+    if (type == "call_expression") {
+      const TSNode callee = ts_node_child_by_field_name(current, "function", 8);
+      if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "member_expression") {
+        break;  // a factory call (`express()`, `Router()`) carries no prefix
+      }
+      if (field_text(callee, "property", source) == "basePath") {
+        const TSNode arguments = ts_node_child_by_field_name(current, "arguments", 9);
+        if (!ts_node_is_null(arguments) && ts_node_named_child_count(arguments) > 0) {
+          if (const TSNode path = ts_node_named_child(arguments, 0); is_string_value(path)) {
+            base_path = strip_string_quotes(node_text(path, source));
+          }
+        }
+      }
+      current = unwrap_expression(ts_node_child_by_field_name(callee, "object", 6));
+      continue;
+    }
+    if (type == "new_expression") {
+      const TSNode arguments = ts_node_child_by_field_name(current, "arguments", 9);
+      if (ts_node_is_null(arguments) || ts_node_named_child_count(arguments) == 0) {
+        break;
+      }
+      const TSNode options = ts_node_named_child(arguments, 0);
+      if (std::string_view(ts_node_type(options)) != "object") {
+        break;
+      }
+      const auto pair_count = ts_node_named_child_count(options);
+      for (std::uint32_t index = 0; index < pair_count; ++index) {
+        const TSNode pair = ts_node_named_child(options, index);
+        if (std::string_view(ts_node_type(pair)) != "pair") {
+          continue;
+        }
+        if (strip_string_quotes(field_text(pair, "key", source)) != "prefix") {
+          continue;
+        }
+        if (const TSNode prefix = ts_node_child_by_field_name(pair, "value", 5);
+            !ts_node_is_null(prefix) && is_string_value(prefix)) {
+          return strip_string_quotes(node_text(prefix, source));
+        }
+      }
+      break;
+    }
+    break;
+  }
+  return base_path;
+}
+
+// `apiRoutes.use(notebookRoutes)`, `app.use('/api', router)`, `app.route('/api',
+// sub)`: the chain rooted at a module-level variable mounts the chain the
+// identifier names, under the mount path when the framework takes one. The
+// target is resolved after merge (it is usually imported), so this records the
+// fact; a plugin or middleware argument that is not a bare identifier
+// (`.use(cors())`) is not a mount.
+void route_mount_handler(const TSNode& node, const ExtractionContext& context, std::vector<RawRelation>& out) {
+  if (std::string_view(ts_node_type(node)) != "call_expression") {
+    return;
+  }
+  const TSNode callee = ts_node_child_by_field_name(node, "function", 8);
+  if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "member_expression") {
+    return;
+  }
+  const auto method = field_text(callee, "property", context.source);
+  if (method != "use" && method != "route") {
+    return;
+  }
+  const TSNode arguments = ts_node_child_by_field_name(node, "arguments", 9);
+  if (ts_node_is_null(arguments)) {
+    return;
+  }
+  const auto argument_count = ts_node_named_child_count(arguments);
+  if (argument_count == 0) {
+    return;
+  }
+  std::string prefix;
+  TSNode target = ts_node_named_child(arguments, 0);
+  if (is_string_value(target)) {
+    if (argument_count < 2) {
+      return;  // `router.route('/x')` opens an Express route chain, mounts nothing
+    }
+    prefix = strip_string_quotes(node_text(target, context.source));
+    target = ts_node_named_child(arguments, 1);
+  }
+  target = unwrap_expression(target);
+  if (ts_node_is_null(target) || std::string_view(ts_node_type(target)) != "identifier") {
+    return;
+  }
+  const auto chain = resolve_chain(node, context);
+  if (chain.root.empty() || !chain.resolvable) {
+    return;
+  }
+  if (!chain.prefix.empty()) {
+    prefix = join_route_path(chain.prefix, prefix);  // a mount inside a `.group('/p', …)` callback
+  }
+  out.push_back(RawRelation{
+      .source_id = make_id(context.source_file + ":" + chain.root),
+      .target_label = node_text(target, context.source),
+      .relation = "mounts",
+      .context = std::move(prefix),
+      .source_file = context.source_file,
+  });
+}
+
+void module_const_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment, std::vector<RawRelation>& raw_relations) {
   const std::string_view type = ts_node_type(node);
   if (type != "lexical_declaration" && type != "variable_declaration") {
     return;
@@ -395,6 +734,21 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
         .kind = "variable",
         .confidence = Confidence::Extracted,
     });
+    if (auto prefix = chain_route_prefix(value, context.source); !prefix.empty()) {
+      fragment.nodes.back().properties.emplace("route_prefix", std::move(prefix));
+    }
+    // `export const deckModule: Elysia = deckRoutes as unknown as Elysia;` is the
+    // same chain under a second name (turing-api type-collapses modules this
+    // way). resolve_contracts treats the alias as a mount with no path.
+    if (const TSNode aliased = unwrap_expression(value);
+        !ts_node_is_null(aliased) && std::string_view(ts_node_type(aliased)) == "identifier") {
+      raw_relations.push_back(RawRelation{
+          .source_id = id,
+          .target_label = node_text(aliased, context.source),
+          .relation = "aliases",
+          .source_file = context.source_file,
+      });
+    }
     fragment.edges.push_back(Edge{
         .source = file_id,
         .target = std::move(id),
@@ -402,6 +756,12 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
         .confidence = Confidence::Extracted,
     });
   }
+}
+
+void js_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope_id*/,
+                   Fragment& fragment, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& raw_relations) {
+  module_const_handler(node, context, fragment, raw_relations);
+  route_mount_handler(node, context, raw_relations);
 }
 
 // TS primitive/builtin type names that never become a `references` target.
@@ -511,11 +871,72 @@ void collect_heritage_names(const TSNode& clause, std::string_view source, std::
 // node id is the class or interface node; method references are sourced from the
 // method node id, built with the same scheme the generic walk uses
 // (`make_id(source_file + ":" + method_name)`) so they land on a real node.
+// HTTP contract facts for resolve_contracts (contracts.hpp). An inline route
+// handler records the chain it is registered on and the route as written; an
+// exported `GET`/`POST`/... at the top of a Next.js `app/**/route.ts` records
+// the path its file serves, with no chain. The endpoint node itself is minted
+// after merge, once the chain's mounts across files are known.
+void push_route_facts(const TSNode& node, const ExtractionContext& context, const std::string& node_id, std::vector<RawRelation>& out) {
+  if (const auto registration = route_registration(node, context)) {
+    // An unresolvable chain leaves the target empty: resolve_contracts counts
+    // it rather than guessing a path.
+    out.push_back(RawRelation{
+        .source_id = node_id,
+        .target_label = registration->resolvable ? registration->root : std::string{},
+        .relation = "route",
+        .context = registration->verb + " " + registration->path,
+        .source_file = context.source_file,
+    });
+    return;
+  }
+  const auto file_path = next_route_path(context.source_file);
+  if (!file_path) {
+    return;
+  }
+  std::string name;
+  const std::string_view type = ts_node_type(node);
+  if (type == "function_declaration") {
+    if (!is_module_level_declaration(node)) {
+      return;
+    }
+    name = field_text(node, "name", context.source);
+  } else if (is_function_value(node)) {
+    const TSNode declarator = ts_node_parent(node);
+    if (ts_node_is_null(declarator) || std::string_view(ts_node_type(declarator)) != "variable_declarator") {
+      return;
+    }
+    const TSNode declaration = ts_node_parent(declarator);
+    if (ts_node_is_null(declaration) || !is_module_level_declaration(declaration)) {
+      return;
+    }
+    name = field_text(declarator, "name", context.source);
+  } else {
+    return;
+  }
+  // Next.js exports the verb in capitals; a lowercase `get` in a route file is
+  // an ordinary helper.
+  std::string verb(name);
+  for (auto& ch : verb) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  if (verb.empty() || verb == name || !is_http_verb(verb)) {
+    return;
+  }
+  out.push_back(RawRelation{
+      .source_id = node_id,
+      .target_label = {},
+      .relation = "file_route",  // the path is the file's: absolute, no chain to compose
+      .context = verb + " " + *file_path,
+      .source_file = context.source_file,
+  });
+}
+
 void ts_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id, std::vector<RawRelation>& out) {
   const std::string_view node_type = ts_node_type(node);
   const bool is_class = node_type == "class_declaration" || node_type == "abstract_class_declaration";
   const bool is_interface = node_type == "interface_declaration";
   if (!is_class && !is_interface) {
+    push_route_facts(node, context, node_id, out);
     return;  // type aliases and enums have no heritage or members
   }
 
@@ -719,7 +1140,7 @@ void ts_member_handler(const TSNode& node, const ExtractionContext& context,
       .call_member_field = "property",
       .import_handler = module_import_handler,
       .resolve_function_name = resolve_js_function_name,
-      .extra_walk = module_const_handler,
+      .extra_walk = js_extra_walk,
       .relation_handler = ts_relation_handler,
       .nested_function_scope = is_route_handler,
   };

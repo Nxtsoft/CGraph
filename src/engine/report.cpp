@@ -1,5 +1,6 @@
 #include "cgraph/report.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/fingerprint.hpp"
 
 #include <algorithm>
@@ -1934,7 +1935,7 @@ constexpr std::array<std::string_view, 8> kHttpVerbs = {"get", "post", "put", "p
 }
 
 [[nodiscard]] bool is_route_file_handler(const std::string& source_file, std::string_view label) {
-  if (file_stem(source_file) != "route" || !under_directory(source_file, "app")) {
+  if (!next_route_path(source_file)) {
     return false;
   }
   std::string lower(label);

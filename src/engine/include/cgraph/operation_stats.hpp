@@ -98,6 +98,18 @@ struct CallResolution {
 
 // Per-phase timings and counters for one deterministic (re)build. Populated by
 // run_one_shot and the daemon rescan.
+// Contract discovery (resolve_contracts): route registrations and router mounts
+// found at extraction, and the endpoint nodes minted from them. An unresolved
+// route leaves no node, so like calls it has to be counted or it cannot be
+// known.
+struct ContractResolution {
+  std::size_t routes = 0;             // route registrations seen
+  std::size_t routes_unresolved = 0;  // handler missing, or its router chain unknown to the file
+  std::size_t mounts = 0;             // `.use(child)` / `.route(path, child)` mounts seen
+  std::size_t mounts_unresolved = 0;  // child identifier no import or declaration explains
+  std::size_t endpoints = 0;          // distinct endpoint nodes minted
+};
+
 struct BuildStats {
   double extract_ms = 0.0;
   double merge_ms = 0.0;
@@ -111,6 +123,7 @@ struct BuildStats {
   std::size_t nodes = 0;
   std::size_t edges = 0;
   CallResolution calls;
+  ContractResolution contracts;
   // Detected files no registered extractor handles, per language name. Empty
   // when coverage is total; nonzero means part of the tree is invisible to the
   // graph (fail-loud, so a coverage hole never hides in a per-file warning).
