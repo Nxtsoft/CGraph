@@ -31,6 +31,7 @@ add_library(cgraph_engine STATIC
   non_grammar_extractors.cpp
   normalize.cpp
   operation_stats.cpp
+  package_manifests.cpp
   parser_pool.cpp
   path_ignore.cpp
   pipeline.cpp

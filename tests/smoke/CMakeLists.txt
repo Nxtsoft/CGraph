@@ -536,6 +536,18 @@ cgraph_enable_sanitizers(cgraph_dedup_test)
 
 add_test(NAME cgraph_dedup_test COMMAND cgraph_dedup_test)
 
+add_executable(cgraph_package_manifests_test
+  package_manifests_test.cpp)
+
+target_link_libraries(cgraph_package_manifests_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_package_manifests_test)
+cgraph_enable_sanitizers(cgraph_package_manifests_test)
+
+add_test(NAME cgraph_package_manifests_test COMMAND cgraph_package_manifests_test)
+
 add_executable(cgraph_workspace_test
   workspace_test.cpp)
 

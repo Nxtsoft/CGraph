@@ -212,6 +212,7 @@ namespace {
            {"scope", string_param("root-relative path prefix, e.g. \"src\": only modules under it report "
                                   "their dependencies (targets outside it still appear)")},
            {"depth", integer_param("directory components per module (default 2: src/engine/x.cpp -> src/engine)")},
+           {"group_by", string_param("modules view: what names a module - auto (default: the repo's workspace packages when its manifest declares any, else directory depth), packages, or depth")},
            {"include_tests", {{"type", "boolean"}, {"description", "also report test roots (tests/, spec/, e2e/...) as sources (default false)"}}},
            {"budget", integer_param("token budget for the response (default 6000; 0 = unlimited)")},
            {"expected_content_root",
