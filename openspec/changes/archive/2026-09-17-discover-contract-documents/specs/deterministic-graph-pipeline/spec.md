@@ -16,6 +16,8 @@
 - **WHEN** a one-shot build writes `stats.json`
 - **THEN** it contains `route_resolution` with the ten counts, all zero for a repository without routers, HTTP client calls or contract documents
 
+## ADDED Requirements
+
 ### Requirement: Contract documents are detected
 `detect_language` SHALL classify `.proto` as `Protobuf`, `.graphql`, `.gql` and `.graphqls` as `GraphQL`, and a `.json` file whose name contains `openapi` or `swagger` (case-insensitive) as `OpenApi`; every other `.json` and every `.yaml` / `.yml` SHALL stay `Unknown`; and the three languages SHALL have registered non-grammar extractors so they never appear in `unextracted`.
 
