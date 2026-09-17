@@ -184,10 +184,28 @@ cgraph seam discover --graph api=api-out/graph.json --graph web=web-out/graph.js
 cgraph seam fuse --seam seam-drop/chunk_00.json --graph api=api-out/graph.json --graph web=web-out/graph.json --out fused
 ```
 
-`seam discover` writes the seam fragment from what each graph serves (`SERVED_BY`, `HANDLED_BY`)
-and consumes (`CONSUMES`, `CONSUMED_AT`) with no hand-written spec, and reports how many endpoints
-matched across services and how many are consumed with no provider among the graphs. A repository
-without routers or HTTP client calls gains nothing.
+`seam discover` writes the seam fragment from what each graph serves (`SERVED_BY`, `HANDLED_BY`),
+consumes (`CONSUMES`, `CONSUMED_AT`) and documents (`DOCUMENTED_IN`) with no hand-written spec,
+and reports how many endpoints matched across services, how many are consumed with no provider
+among the graphs, and, when a graph carries a contract document, the **drift**: endpoints the
+document promises that no service serves, and endpoints served that no document mentions.
+
+### Contract documents
+
+A contract stated in a document is read as one too. An OpenAPI JSON document (`openapi*.json`,
+`swagger*.json`; YAML is not read) gives one documented `endpoint` per path and method and one
+`schema` per component schema with a `field` per property, linked by `RESPONDS_WITH`, `ACCEPTS`,
+`references` and `inherits` (`allOf`). A `.proto` file gives a `schema` per message and enum, a
+`type` per service and an endpoint `POST /<package>.<Service>/<Method>` per rpc. A `.graphql`
+schema gives a `schema` per type, interface, input, enum, union and scalar, and an endpoint
+`QUERY <field>` / `MUTATION <field>` / `SUBSCRIPTION <field>` per root operation field. The
+openapi-typescript output a TypeScript client is typed against (`export interface paths` with
+`operations` and `components`) is read the same way, and its 455-member `paths` interface no
+longer yields 455 field nodes. A documented endpoint has the same canonical id as a served or
+consumed one, so it is one node with `handled_by`, `CONSUMES` and its document anchor together;
+`stats.json` counts them under `route_resolution.endpoints_documented`. Schemas are type owners
+in `report types`, so an API schema and its hand-written TypeScript mirror show up as a duplicate
+or identical shape. A repository with none of these files gains nothing.
 
 ## Quick start
 

@@ -420,6 +420,7 @@ int test_canonical_ids() {
       {"/api/admin/[id]/disable", "/api/admin/{}/disable"},
       {"/docs/*", "/docs/*"},
       {"/notes/{}/star", "/notes/{}/star"},
+      {"/api/v1/composites/", "/api/v1/composites"},  // an OpenAPI document's spelling of `.get('/')` under a prefix
       {"/", "/"},
   };
   for (const auto& [input, expected] : cases) {
@@ -610,6 +611,53 @@ export async function loadProject(id: string) {
   return 0;
 }
 
+// A documented endpoint (an openapi-typescript `paths` member here) is the node a
+// route serves and a client consumes: resolution attaches to it instead of
+// minting, keeps its document anchor, and counts it.
+int test_documented_endpoint_joins() {
+  const auto built = build({
+      {"/proj/d/lib/generated/api-types.d.ts", R"ts(
+export interface paths {
+    "/api/auth/token": { get: operations["getToken"]; post?: never; };
+    "/api/v1/notebooks": { get: operations["listNotebooks"]; };
+}
+export interface components { schemas: never; }
+export interface operations { getToken: { responses: { 200: { content: { "application/json": { token: string } } } } }; listNotebooks: { responses: { 200: { content: { "application/json": unknown } } } }; }
+)ts"},
+      {"/proj/d/app/api/auth/token/route.ts", R"ts(
+export async function GET() { return ok(); }
+)ts"},
+      {"/proj/d/lib/client.ts", R"ts(
+export async function listNotebooks() { return fetch('/api/v1/notebooks'); }
+)ts"},
+  });
+  const auto& graph = built.graph;
+  const auto* token = endpoint(graph, "GET /api/auth/token");
+  const auto* notebooks = endpoint(graph, "GET /api/v1/notebooks");
+  if (token == nullptr || notebooks == nullptr || endpoints(graph) != 2) {
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << " " << node.source_file << '\n';
+    }
+    return fail("documented endpoints are single nodes shared with routes and consumers");
+  }
+  if (token->properties.at("documented") != "true" || !token->source_file.ends_with("api-types.d.ts") ||
+      !has_edge(graph, token->id, cgraph::make_id("/proj/d/app/api/auth/token/route.ts:GET"), "handled_by") ||
+      token->properties.contains("served")) {
+    return fail("a served documented endpoint keeps its document anchor and gains handled_by");
+  }
+  if (!has_edge(graph, cgraph::make_id("/proj/d/lib/client.ts:listNotebooks"), notebooks->id, "CONSUMES") ||
+      notebooks->properties.contains("served")) {
+    return fail("a consumed documented endpoint gains CONSUMES and is not marked unserved");
+  }
+  if (built.stats.endpoints_documented != 2 || built.stats.endpoints != 0 || built.stats.endpoints_external != 0 ||
+      built.stats.consumes != 1 || built.stats.routes != 1) {
+    std::cerr << "  documented " << built.stats.endpoints_documented << " endpoints " << built.stats.endpoints << " external "
+              << built.stats.endpoints_external << " consumes " << built.stats.consumes << '\n';
+    return fail("documented tally");
+  }
+  return 0;
+}
+
 // A mount cycle terminates and still mints the route once.
 int test_mount_cycle_terminates() {
   const auto built = build({
@@ -666,6 +714,7 @@ int main() {
   failures += test_type_named_like_chain();
   failures += test_canonical_ids();
   failures += test_consumers();
+  failures += test_documented_endpoint_joins();
   failures += test_mount_cycle_terminates();
   failures += test_no_routes_no_change();
   return failures == 0 ? 0 : 1;

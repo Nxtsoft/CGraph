@@ -518,6 +518,41 @@ bool lists_unreferenced(const cgraph::TypesReport& report, const std::string& la
                      [&](const cgraph::TypeRef& t) { return t.label == label; });
 }
 
+// A contract `schema` (OpenAPI component, proto message, GraphQL type) is a type
+// owner too, so a hand-written TypeScript mirror of an API schema shows up: the
+// same name in two files as a duplicate, a renamed copy as an identical shape.
+int test_types_view_schemas() {
+  cgraph::GraphSnapshot graph;
+  graph.build_state = cgraph::BuildState::DeterministicReady;
+  for (const char* path : {"src/openapi.json", "src/types.ts"}) {
+    graph.nodes.push_back(file_node(path));
+  }
+  graph.nodes.push_back(type_node("src/openapi.json", "Notebook", "schema", 40));
+  add_members(graph, "src/openapi.json", "Notebook", {"id", "title", "owner"});
+  graph.nodes.push_back(type_node("src/types.ts", "Notebook", "type", 3));
+  add_members(graph, "src/types.ts", "Notebook", {"id", "title", "owner"});
+  graph.nodes.push_back(type_node("src/openapi.json", "NoteDto", "schema", 60));
+  add_members(graph, "src/openapi.json", "NoteDto", {"body", "createdAt", "authorId"});
+  graph.nodes.push_back(type_node("src/types.ts", "Note", "type", 12));
+  add_members(graph, "src/types.ts", "Note", {"authorId", "body", "createdAt"});
+  cgraph::ReportRequest request;
+  request.view = cgraph::ReportView::Types;
+  request.project_root = "/proj";
+  const auto report = cgraph::build_types_report(graph, request);
+  if (report.total_types != 4 || report.total_with_members != 4) {
+    return fail("schema owners count as types: " + std::to_string(report.total_types));
+  }
+  if (report.duplicates.size() != 1 || report.duplicates[0].label != "Notebook" || report.duplicates[0].declarations.size() != 2 ||
+      std::abs(report.duplicates[0].min_jaccard - 1.0) > 1e-9) {
+    return fail("an API schema and its TypeScript mirror are one duplicate row");
+  }
+  const auto* group = find_identical(report, "NoteDto");
+  if (group == nullptr || group->types.size() != 2) {
+    return fail("a renamed mirror of a schema is an identical shape");
+  }
+  return 0;
+}
+
 int test_types_view() {
   cgraph::ReportRequest request;
   request.view = cgraph::ReportView::Types;
@@ -1110,7 +1145,8 @@ int test_design_envelope() {
 int main() {
   for (const auto test : {test_grouping_and_test_exclusion, test_layers, test_cycles, test_scope_and_depth,
                           test_budget_shedding, test_renderers, test_daemon_envelope, test_types_view,
-                          test_types_budget_and_renderers, test_types_envelope, test_clones_view, test_clones_envelope,
+                          test_types_view_schemas, test_types_budget_and_renderers, test_types_envelope, test_clones_view,
+                          test_clones_envelope,
                           test_design_view, test_design_envelope}) {
     if (const int rc = test(); rc != 0) {
       return rc;

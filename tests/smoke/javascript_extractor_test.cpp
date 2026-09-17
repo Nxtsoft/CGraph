@@ -512,6 +512,101 @@ export async function publish(projectId: string) {
     }
   }
 
+  // openapi-typescript output (CGR-13 slice 3): `paths` members become documented
+  // endpoints (`never` methods skipped, no `field` per path), component schemas
+  // become `schema` nodes with fields, and operations link responses and bodies.
+  {
+    const auto spec = cgraph::extract_typescript({.source_file = "lib/generated/api-types.d.ts", .source = R"ts(
+export interface paths {
+    "/api/v1/notebooks": {
+        parameters: { query?: never; header?: never; path?: never; cookie?: never; };
+        get: operations["listNotebooks"];
+        put?: never;
+        post: operations["createNotebook"];
+        delete?: never;
+    };
+    "/api/v1/notebooks/{id}": {
+        get: { responses: { 200: { content: { "application/json": components["schemas"]["Notebook"] } } } };
+        delete: operations["deleteNotebook"];
+    };
+}
+export interface components {
+    schemas: {
+        Notebook: { id: string; title: string; owner?: components["schemas"]["User"]; tags: string[] };
+        User: { id: string };
+        CreateNotebook: { title: string };
+    };
+    responses: never;
+}
+export interface operations {
+    listNotebooks: {
+        responses: { 200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["Notebook"][] } } };
+    };
+    createNotebook: {
+        requestBody: { content: { "application/json": components["schemas"]["CreateNotebook"] } };
+        responses: { 201: { content: { "application/json": components["schemas"]["Notebook"] } }; 403: { content: { "application/json": { error: string } } } };
+    };
+    deleteNotebook: { responses: { 204: { content?: never } } };
+}
+)ts"});
+    const auto& fragment = spec.fragment;
+    const auto find = [&](std::string_view kind, std::string_view label) -> const cgraph::Node* {
+      for (const auto& node : fragment.nodes) {
+        if (node.kind == kind && node.label == label) return &node;
+      }
+      return nullptr;
+    };
+    const auto* list = find("endpoint", "GET /api/v1/notebooks");
+    const auto* create = find("endpoint", "POST /api/v1/notebooks");
+    const auto* get_one = find("endpoint", "GET /api/v1/notebooks/{id}");
+    const auto* del = find("endpoint", "DELETE /api/v1/notebooks/{id}");
+    if (list == nullptr || create == nullptr || get_one == nullptr || del == nullptr ||
+        get_one->id != "endpoint:GET /api/v1/notebooks/{}" || list->properties.at("documented") != "true" ||
+        list->properties.at("operation") != "listNotebooks" || list->source_location->start_line != 5) {
+      for (const auto& node : fragment.nodes) std::cerr << "spec node: " << node.kind << " " << node.label << '\n';
+      return 1;
+    }
+    std::size_t endpoints = 0;
+    std::size_t path_fields = 0;
+    for (const auto& node : fragment.nodes) {
+      endpoints += node.kind == "endpoint" ? 1 : 0;
+      path_fields += node.kind == "field" && node.label.starts_with("/api") ? 1 : 0;
+    }
+    if (endpoints != 4 || path_fields != 0) {
+      std::cerr << "spec endpoints " << endpoints << " path fields " << path_fields << '\n';
+      return 1;
+    }
+    const auto* notebook = find("schema", "Notebook");
+    const auto* user = find("schema", "User");
+    const auto* input = find("schema", "CreateNotebook");
+    if (notebook == nullptr || user == nullptr || input == nullptr) return 1;
+    std::set<std::string> notebook_fields;
+    for (const auto& edge : fragment.edges) {
+      if (edge.relation == "defines" && edge.source == notebook->id) {
+        for (const auto& node : fragment.nodes) {
+          if (node.id == edge.target && node.kind == "field") notebook_fields.insert(node.label + (node.properties.at("optional") == "true" ? "?" : ""));
+        }
+      }
+    }
+    if (notebook_fields != std::set<std::string>{"id", "title", "owner?", "tags"}) {
+      for (const auto& f : notebook_fields) std::cerr << "notebook field: " << f << '\n';
+      return 1;
+    }
+    const auto has = [&](const std::string& source, const std::string& target, std::string_view relation) {
+      for (const auto& edge : fragment.edges) {
+        if (edge.source == source && edge.target == target && edge.relation == relation) return true;
+      }
+      return false;
+    };
+    if (!has(list->id, notebook->id, "RESPONDS_WITH") || !has(create->id, notebook->id, "RESPONDS_WITH") ||
+        !has(create->id, input->id, "ACCEPTS") || !has(notebook->id, user->id, "references") ||
+        !has(cgraph::make_id("lib/generated/api-types.d.ts"), list->id, "contains") ||
+        !has(cgraph::make_id("lib/generated/api-types.d.ts:paths"), list->id, "defines")) {
+      for (const auto& edge : fragment.edges) std::cerr << "spec edge: " << edge.source << " -" << edge.relation << "-> " << edge.target << '\n';
+      return 1;
+    }
+  }
+
   // Next.js route file: the exported verb functions record a file-derived path
   // and no chain; a helper in the same file records nothing.
   {

@@ -112,6 +112,7 @@ struct ContractResolution {
   std::size_t calls_unresolved = 0;    // URL in a local variable, absolute external URL, or caller no node names
   std::size_t consumes = 0;            // CONSUMES edges added
   std::size_t endpoints_external = 0;  // endpoint nodes minted for consumed routes this repo does not serve
+  std::size_t endpoints_documented = 0;  // endpoint nodes a contract document (OpenAPI, proto, GraphQL) declares
 };
 
 struct BuildStats {

@@ -250,8 +250,8 @@ void semantic_dedup_impl(
     // `GET /notebooks/:id/votes`): a fuzzy match would fold two contracts into
     // one and misroute every consumer edge. resolve_contracts already minted one
     // node per distinct path, so endpoints never participate in dedup.
-    if (node.kind == "endpoint") {
-      continue;
+    if (node.kind == "endpoint" || node.kind == "schema") {
+      continue;  // a contract schema's identity is its exact name too (`Note` beside `Notes`)
     }
 
     // Pass 1: exact-label merge, restricted to one source file AND one

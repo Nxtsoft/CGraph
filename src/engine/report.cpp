@@ -997,8 +997,11 @@ namespace {
   return relation == "contains" || relation == "defines" || relation == "method" || relation == "method_of";
 }
 
+// A contract `schema` (an OpenAPI component, a proto message, a GraphQL type) is
+// a type with members like any other: the types view then finds a hand-written
+// TypeScript mirror of an API schema as an identical or overlapping shape.
 [[nodiscard]] bool is_type_kind(std::string_view kind) {
-  return kind == "class" || kind == "type";
+  return kind == "class" || kind == "type" || kind == "schema";
 }
 
 // A contained pair is a `subset` row only when the smaller type is at least

@@ -1507,9 +1507,305 @@ void ts_parameter_properties(const TSNode& method, const ExtractionContext& cont
   }
 }
 
+// ---- openapi-typescript (contract_schemas.hpp, the TypeScript form) --------
+//
+// `openapi-typescript` renders an OpenAPI document as `export interface paths`
+// (a property per path, a property per method whose type is `never` when the
+// method is absent), `export interface operations` (the request and response
+// shapes, keyed by operation id) and `export interface components` (`schemas`).
+// This is the contract artifact a TypeScript client is typed against, so its
+// paths are documented endpoints and its component schemas are `schema` nodes,
+// exactly as an OpenAPI JSON document's would be. The 455-member `paths`
+// interface no longer yields 455 `field` nodes.
+
+[[nodiscard]] bool is_openapi_typescript(std::string_view source) {
+  return source.find("export interface paths") != std::string_view::npos &&
+         source.find("export interface operations") != std::string_view::npos;
+}
+
+// The interface declaration named `name` at the top of the file, or null.
+[[nodiscard]] TSNode interface_named(const TSNode& from, std::string_view name, std::string_view source) {
+  TSNode program = from;
+  for (TSNode parent = ts_node_parent(program); !ts_node_is_null(parent); parent = ts_node_parent(program)) {
+    program = parent;
+  }
+  const auto count = ts_node_named_child_count(program);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    TSNode statement = ts_node_named_child(program, index);
+    if (std::string_view(ts_node_type(statement)) == "export_statement") {
+      statement = ts_node_child_by_field_name(statement, "declaration", 11);
+      if (ts_node_is_null(statement)) {
+        continue;
+      }
+    }
+    if (std::string_view(ts_node_type(statement)) == "interface_declaration" &&
+        field_text(statement, "name", source) == name) {
+      return statement;
+    }
+  }
+  return TSNode{};
+}
+
+// The type a property signature declares, unwrapped from its annotation.
+[[nodiscard]] TSNode property_type(const TSNode& member) {
+  if (ts_node_is_null(member)) {
+    return TSNode{};  // a member that was not found: tree-sitter dereferences a null node's tree
+  }
+  const TSNode annotation = ts_node_child_by_field_name(member, "type", 4);
+  if (ts_node_is_null(annotation) || ts_node_named_child_count(annotation) == 0) {
+    return TSNode{};
+  }
+  return ts_node_named_child(annotation, 0);
+}
+
+// The property signature named `key` (quotes stripped) directly in an object
+// type or interface body, or null.
+[[nodiscard]] TSNode member_named(const TSNode& body, std::string_view key, std::string_view source) {
+  if (ts_node_is_null(body)) {
+    return TSNode{};
+  }
+  const auto count = ts_node_named_child_count(body);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode member = ts_node_named_child(body, index);
+    if (std::string_view(ts_node_type(member)) == "property_signature" &&
+        strip_string_quotes(field_text(member, "name", source)) == key) {
+      return member;
+    }
+  }
+  return TSNode{};
+}
+
+// `components["schemas"]["Notebook"]`, possibly followed by `[]`: the schema name.
+[[nodiscard]] std::string components_schema_name(std::string_view type_text) {
+  static constexpr std::string_view kPrefix = "components[\"schemas\"][\"";
+  if (!type_text.starts_with(kPrefix)) {
+    return {};
+  }
+  const auto end = type_text.find("\"]", kPrefix.size());
+  return end == std::string_view::npos ? std::string{} : std::string(type_text.substr(kPrefix.size(), end - kPrefix.size()));
+}
+
+// Schema names an operation's 2xx responses and request body refer to.
+void operation_schema_refs(const TSNode& operation_type, std::string_view source, std::vector<std::string>& responds,
+                           std::vector<std::string>& accepts) {
+  if (ts_node_is_null(operation_type) || std::string_view(ts_node_type(operation_type)) != "object_type") {
+    return;
+  }
+  const auto media_refs = [&](const TSNode& holder, std::vector<std::string>& out) {
+    const TSNode content = property_type(member_named(holder, "content", source));
+    if (ts_node_is_null(content)) {
+      return;
+    }
+    const auto count = ts_node_named_child_count(content);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode media = ts_node_named_child(content, index);
+      if (std::string_view(ts_node_type(media)) != "property_signature") {
+        continue;
+      }
+      if (const TSNode type = property_type(media); !ts_node_is_null(type)) {
+        if (auto name = components_schema_name(node_text(type, source)); !name.empty()) {
+          out.push_back(std::move(name));
+        }
+      }
+    }
+  };
+  if (const TSNode responses = property_type(member_named(operation_type, "responses", source)); !ts_node_is_null(responses)) {
+    const auto count = ts_node_named_child_count(responses);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode response = ts_node_named_child(responses, index);
+      if (std::string_view(ts_node_type(response)) != "property_signature") {
+        continue;
+      }
+      const auto status = strip_string_quotes(field_text(response, "name", source));
+      if (status.starts_with('2') || status == "default") {
+        media_refs(property_type(response), responds);
+      }
+    }
+  }
+  media_refs(property_type(member_named(operation_type, "requestBody", source)), accepts);
+}
+
+void openapi_typescript_paths(const TSNode& node, const ExtractionContext& context, const std::string& owner_id,
+                              Fragment& fragment) {
+  const TSNode body = ts_node_child_by_field_name(node, "body", 4);
+  if (ts_node_is_null(body)) {
+    return;
+  }
+  const std::string file_id = make_id(context.source_file);
+  // Schema references resolve only when the file declares component schemas.
+  const TSNode components = interface_named(node, "components", context.source);
+  const TSNode schemas_type =
+      ts_node_is_null(components) ? TSNode{}
+                                  : property_type(member_named(ts_node_child_by_field_name(components, "body", 4), "schemas", context.source));
+  const bool has_schemas = !ts_node_is_null(schemas_type) && std::string_view(ts_node_type(schemas_type)) == "object_type";
+  const TSNode operations = interface_named(node, "operations", context.source);
+  const TSNode operations_body = ts_node_is_null(operations) ? TSNode{} : ts_node_child_by_field_name(operations, "body", 4);
+
+  std::unordered_set<std::string> seen_edges;
+  const auto add_edge = [&](const std::string& source, const std::string& target, const char* relation) {
+    if (seen_edges.insert(source + '\n' + relation + '\n' + target).second) {
+      fragment.edges.push_back(Edge{.source = source, .target = target, .relation = relation, .confidence = Confidence::Extracted});
+    }
+  };
+
+  const auto path_count = ts_node_named_child_count(body);
+  for (std::uint32_t index = 0; index < path_count; ++index) {
+    const TSNode path_member = ts_node_named_child(body, index);
+    if (std::string_view(ts_node_type(path_member)) != "property_signature") {
+      continue;
+    }
+    const auto raw_path = field_text(path_member, "name", context.source);
+    const TSNode name_node = ts_node_child_by_field_name(path_member, "name", 4);
+    if (ts_node_is_null(name_node) || !is_string_value(name_node)) {
+      continue;
+    }
+    const auto path = strip_string_quotes(raw_path);
+    const TSNode item = property_type(path_member);
+    if (ts_node_is_null(item) || std::string_view(ts_node_type(item)) != "object_type") {
+      continue;
+    }
+    const auto method_count = ts_node_named_child_count(item);
+    for (std::uint32_t m = 0; m < method_count; ++m) {
+      const TSNode method_member = ts_node_named_child(item, m);
+      if (std::string_view(ts_node_type(method_member)) != "property_signature") {
+        continue;
+      }
+      const auto verb = field_text(method_member, "name", context.source);
+      if (!is_http_verb(verb) || verb == "all") {
+        continue;
+      }
+      const TSNode type = property_type(method_member);
+      if (ts_node_is_null(type) || node_text(type, context.source) == "never") {
+        continue;  // `post?: never`: the method is not offered
+      }
+      std::string method(verb);
+      for (auto& ch : method) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+      }
+      const auto id = "endpoint:" + method + " " + canonical_route_path(path);
+      const auto type_text = node_text(type, context.source);
+      std::string operation;
+      if (type_text.starts_with("operations[\"")) {
+        const auto end = type_text.find("\"]", 12);
+        operation = end == std::string::npos ? std::string{} : type_text.substr(12, end - 12);
+      }
+      Properties properties{{"method", method}, {"path", path}, {"documented", "true"}, {"format", "openapi-typescript"}};
+      if (!operation.empty()) {
+        properties.emplace("operation", operation);
+      }
+      fragment.nodes.push_back(Node{
+          .id = id,
+          .label = method + " " + path,
+          .source_file = context.source_file,
+          .source_location = source_location(method_member),
+          .kind = "endpoint",
+          .confidence = Confidence::Extracted,
+          .properties = std::move(properties),
+      });
+      add_edge(file_id, id, "contains");
+      add_edge(owner_id, id, "defines");
+      if (has_schemas && !operation.empty() && !ts_node_is_null(operations_body)) {
+        std::vector<std::string> responds;
+        std::vector<std::string> accepts;
+        operation_schema_refs(property_type(member_named(operations_body, operation, context.source)), context.source,
+                              responds, accepts);
+        for (const auto& name : responds) {
+          add_edge(id, make_id(context.source_file + ":schema:" + name), "RESPONDS_WITH");
+        }
+        for (const auto& name : accepts) {
+          add_edge(id, make_id(context.source_file + ":schema:" + name), "ACCEPTS");
+        }
+      }
+    }
+  }
+}
+
+void openapi_typescript_components(const TSNode& node, const ExtractionContext& context, const std::string& owner_id,
+                                   Fragment& fragment) {
+  const TSNode schemas = property_type(member_named(ts_node_child_by_field_name(node, "body", 4), "schemas", context.source));
+  if (ts_node_is_null(schemas) || std::string_view(ts_node_type(schemas)) != "object_type") {
+    return;  // `schemas: never`: every shape is inlined
+  }
+  const std::string file_id = make_id(context.source_file);
+  std::unordered_set<std::string> names;
+  const auto count = ts_node_named_child_count(schemas);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode member = ts_node_named_child(schemas, index);
+    if (std::string_view(ts_node_type(member)) == "property_signature") {
+      names.insert(strip_string_quotes(field_text(member, "name", context.source)));
+    }
+  }
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode member = ts_node_named_child(schemas, index);
+    if (std::string_view(ts_node_type(member)) != "property_signature") {
+      continue;
+    }
+    const auto name = strip_string_quotes(field_text(member, "name", context.source));
+    const auto id = make_id(context.source_file + ":schema:" + name);
+    fragment.nodes.push_back(Node{
+        .id = id,
+        .label = name,
+        .source_file = context.source_file,
+        .source_location = source_location(member),
+        .kind = "schema",
+        .confidence = Confidence::Extracted,
+        .properties = {{"format", "openapi-typescript"}},
+    });
+    fragment.edges.push_back(Edge{.source = file_id, .target = id, .relation = "contains", .confidence = Confidence::Extracted});
+    fragment.edges.push_back(Edge{.source = owner_id, .target = id, .relation = "defines", .confidence = Confidence::Extracted});
+    const TSNode shape = property_type(member);
+    if (ts_node_is_null(shape) || std::string_view(ts_node_type(shape)) != "object_type") {
+      continue;
+    }
+    std::unordered_set<std::string> referenced;
+    const auto field_count = ts_node_named_child_count(shape);
+    for (std::uint32_t f = 0; f < field_count; ++f) {
+      const TSNode field = ts_node_named_child(shape, f);
+      if (std::string_view(ts_node_type(field)) != "property_signature") {
+        continue;
+      }
+      const auto field_name = strip_string_quotes(field_text(field, "name", context.source));
+      Properties properties;
+      const TSNode type = property_type(field);
+      if (!ts_node_is_null(type)) {
+        auto type_text = node_text(type, context.source);
+        if (const auto target = components_schema_name(type_text); !target.empty() && names.contains(target) && target != name) {
+          referenced.insert(target);
+        }
+        properties.emplace("type_text", std::move(type_text));
+      }
+      bool optional = false;
+      for (std::uint32_t j = 0; j < ts_node_child_count(field); ++j) {
+        optional = optional || std::string_view(ts_node_type(ts_node_child(field, j))) == "?";
+      }
+      properties.emplace("optional", optional ? "true" : "false");
+      add_field_node(context, id, name, field_name, source_location(field), std::move(properties), fragment);
+    }
+    for (const auto& target : referenced) {
+      fragment.edges.push_back(Edge{.source = id,
+                                    .target = make_id(context.source_file + ":schema:" + target),
+                                    .relation = "references",
+                                    .confidence = Confidence::Extracted});
+    }
+  }
+}
+
 void ts_member_handler(const TSNode& node, const ExtractionContext& context,
                        const std::string& owner_id, Fragment& fragment) {
   const auto owner_name = field_text(node, "name", context.source);
+  if (std::string_view(ts_node_type(node)) == "interface_declaration" && is_openapi_typescript(context.source)) {
+    if (owner_name == "paths") {
+      openapi_typescript_paths(node, context, owner_id, fragment);
+      return;
+    }
+    if (owner_name == "components") {
+      openapi_typescript_components(node, context, owner_id, fragment);
+      return;
+    }
+    if (owner_name == "operations" || owner_name == "webhooks") {
+      return;  // request/response shapes are read through the endpoints, not as fields
+    }
+  }
   auto body = ts_node_child_by_field_name(node, "body", 4);
   if (std::string_view(ts_node_type(node)) == "type_alias_declaration") {
     body = ts_node_child_by_field_name(node, "value", 5);

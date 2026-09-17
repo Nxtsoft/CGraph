@@ -56,8 +56,10 @@ Hosts should prefer the thin client command surface unless they are implementing
 
 The CLI additionally ships `cgraph seam gen|discover|fuse|query` for cross-service seam graphs:
 `gen` emits a standard node-link enrichment fragment from a host-authored seam spec, `discover`
-emits the same fragment from the `endpoint` nodes each graph already serves (`handled_by`) and
-consumes (`CONSUMES`) with no spec (endpoints join by their repo-free canonical id), `fuse`
+emits the same fragment from the `endpoint` nodes each graph already serves (`handled_by`),
+consumes (`CONSUMES`) and documents (OpenAPI, proto, GraphQL or openapi-typescript files,
+`documented: true`) with no spec (endpoints join by their repo-free canonical id) and reports
+contract drift between documents and code, `fuse`
 builds a fused multi-repo render, and a fused seam directory can be served resident by the
 daemon. Seam fragments follow the same fragment schema as semantic enrichment drops.
 
