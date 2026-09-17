@@ -1,0 +1,254 @@
+{
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "nodes": [
+    {
+      "id": "api",
+      "label": "api.py",
+      "file_type": "code",
+      "source_file": "api.py",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "api_checkout",
+      "label": "checkout()",
+      "file_type": "code",
+      "source_file": "api.py",
+      "source_location": "L4",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "pricing",
+      "label": "pricing.py",
+      "file_type": "code",
+      "source_file": "pricing.py",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "pricing_amount_due",
+      "label": "amount_due()",
+      "file_type": "code",
+      "source_file": "pricing.py",
+      "source_location": "L1",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "pricing_maintenance_update_probe",
+      "label": "maintenance_update_probe()",
+      "file_type": "code",
+      "source_file": "pricing.py",
+      "source_location": "L6",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "pricing_rationale_2",
+      "label": "Return the invoice total in integer cents.",
+      "file_type": "rationale",
+      "source_file": "pricing.py",
+      "source_location": "L2",
+      "_origin": "ast"
+    },
+    {
+      "id": "receipt",
+      "label": "receipt.py",
+      "file_type": "code",
+      "source_file": "receipt.py",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "receipt_render_receipt",
+      "label": "render_receipt()",
+      "file_type": "code",
+      "source_file": "receipt.py",
+      "source_location": "L4",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "workflow",
+      "label": "workflow.py",
+      "file_type": "code",
+      "source_file": "workflow.py",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "workflow_quote_invoice",
+      "label": "quote_invoice()",
+      "file_type": "code",
+      "source_file": "workflow.py",
+      "source_location": "L4",
+      "_callable": true,
+      "_origin": "ast"
+    }
+  ],
+  "links": [
+    {
+      "source": "api",
+      "target": "workflow",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "api.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "api",
+      "target": "api_checkout",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "api.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "pricing",
+      "target": "pricing_amount_due",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "pricing.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "pricing",
+      "target": "pricing_maintenance_update_probe",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "pricing.py",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "pricing_rationale_2",
+      "target": "pricing_amount_due",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "pricing.py",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "receipt",
+      "target": "pricing",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "receipt.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "receipt",
+      "target": "receipt_render_receipt",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "receipt.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "workflow",
+      "target": "pricing",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "workflow.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "workflow",
+      "target": "workflow_quote_invoice",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "workflow.py",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "api",
+      "target": "workflow_quote_invoice",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "api.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "receipt",
+      "target": "pricing_amount_due",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "receipt.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "workflow",
+      "target": "pricing_amount_due",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "workflow.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "api_checkout",
+      "target": "workflow_quote_invoice",
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "api.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "receipt_render_receipt",
+      "target": "pricing_amount_due",
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "receipt.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "workflow_quote_invoice",
+      "target": "pricing_amount_due",
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "workflow.py",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast"
+    }
+  ],
+  "directed": false
+}

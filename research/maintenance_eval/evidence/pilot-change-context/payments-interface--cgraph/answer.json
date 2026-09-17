@@ -1,0 +1,1 @@
+{"summary":"Updated pricing.amount_due to accept one invoice mapping. Adapted quote_invoice and render_receipt while preserving their three-argument APIs, existing arithmetic, and api.checkout.","relationships":[{"source":"workflow.quote_invoice","target":"pricing.amount_due"},{"source":"receipt.render_receipt","target":"pricing.amount_due"}]}

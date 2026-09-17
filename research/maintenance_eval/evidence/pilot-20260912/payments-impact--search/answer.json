@@ -1,0 +1,1 @@
+{"summary":"Found 3 call edges covering every direct and transitive dependent of pricing.amount_due.","relationships":[{"source":"receipt.render_receipt","target":"pricing.amount_due"},{"source":"workflow.quote_invoice","target":"pricing.amount_due"},{"source":"api.checkout","target":"workflow.quote_invoice"}]}

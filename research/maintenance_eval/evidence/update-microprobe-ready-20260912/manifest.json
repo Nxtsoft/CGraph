@@ -1,0 +1,35 @@
+{
+  "config": {
+    "cgraph": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph",
+    "cgraph_mcp": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-mcp",
+    "graphd": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/graphd",
+    "cgraph_client": "/Users/taylorgagne/.local/share/cgraph-eval/cgraph-bin-v0.3.0/cgraph-client",
+    "graphify": "/Users/taylorgagne/.local/share/cgraph-eval/bin/graphify",
+    "graphify_python": "/Users/taylorgagne/.local/share/cgraph-eval/uv-tools/graphifyy/bin/python",
+    "codex": "/Users/taylorgagne/.agents/.cache/shims/codex",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "timeout_seconds": 180,
+    "max_calls": 40,
+    "versions": {
+      "cgraph": "bin-v0.3.0",
+      "cgraph_source": "4a31f3ed2f0d51315e63e74e0a5593ac00db1ddb",
+      "cgraph_archive_sha256": "b344cf3549cc53677487911c45844daae347e17d6ab52b3e56f19c2db332ff3a",
+      "graphify": "0.9.61",
+      "graphify_source": "fe66389083369c3159aa391117185c8f58b4d07c"
+    },
+    "hidden_paths": [
+      "/Users/taylorgagne/tools/cgraph/.agents/planning",
+      "/Users/taylorgagne/tools/cgraph/research/maintenance_eval",
+      "/Users/taylorgagne/.agents/skills",
+      "/Users/taylorgagne/.agents/.codex-homes/0.153.1/.codex/skills"
+    ]
+  },
+  "source_sha256": "9a2d60794404ae49e7f2207e376ed5301291d0c4e100f25b21e3bfeb0fae2b1b",
+  "harness_sha256": "026ac31d48e60445fdd69eaae26e3c2a96ca8c6ece80930d352a81632f63b9d8",
+  "arms": [
+    "cgraph",
+    "graphify"
+  ],
+  "model_calls": 0
+}

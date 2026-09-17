@@ -1,0 +1,12 @@
+{
+  "codex_version": "codex-cli 0.154.0",
+  "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "node_version": "v24.6.0",
+  "baseline_source_commit": "9bd941d",
+  "graphify_code_only_correction_commit": "c1f4043",
+  "advisory_source_commit": "dc12908",
+  "model_id": "gpt-5.6-sol",
+  "model_revision_note": "Provider model alias selected explicitly; no immutable provider backend revision exposed.",
+  "raw_artifacts_note": "Raw execution paths retained; support script hashes map to committed source. Public original fixture source is committed rather than redundantly copied in every support directory."
+}

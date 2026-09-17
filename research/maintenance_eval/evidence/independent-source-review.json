@@ -1,0 +1,212 @@
+{
+  "reviewer": "independent graphify_product",
+  "canonical_reviews": [
+    {
+      "case": "payments-rename--search",
+      "status": "pass",
+      "evidence": [
+        "workspace/pricing.py:1 def net_due(subtotal_cents, shipping_cents, discount_percent):",
+        "workspace/pricing.py:3 return (subtotal_cents + shipping_cents) * (100 - discount_percent) // 100",
+        "workspace/receipt.py:1 from pricing import net_due",
+        "workspace/receipt.py:5 total = net_due(subtotal_cents, shipping_cents, discount_percent)",
+        "workspace/workflow.py:5 return {\"total_cents\": net_due(subtotal_cents, shipping_cents, discount_percent)}"
+      ],
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "payments-rename--cgraph",
+      "status": "pass",
+      "same_evidence_as": "payments-rename--search",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "payments-policy--search",
+      "status": "pass",
+      "evidence": [
+        "workspace/pricing.py:3 discount_cents = subtotal_cents * discount_percent // 100",
+        "workspace/pricing.py:4 return subtotal_cents - discount_cents + shipping_cents",
+        "workspace/receipt.py:5 total = amount_due(subtotal_cents, shipping_cents, discount_percent)",
+        "workspace/workflow.py:5 return {\"total_cents\": amount_due(subtotal_cents, shipping_cents, discount_percent)}"
+      ],
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "payments-policy--cgraph",
+      "status": "pass",
+      "same_evidence_as": "payments-policy--search",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "routing-import--search",
+      "status": "pass",
+      "evidence": [
+        "workspace/app.mjs:1 import { normalize } from './modern.mjs';",
+        "workspace/app.mjs:4 return { route: normalize(path) };",
+        "workspace/app.mjs:8 return paths.map(path => routeRequest(path));",
+        "workspace/cli.mjs:4 return JSON.stringify(routeRequest(path));"
+      ],
+      "additional_review": "canonical modern normalizer unchanged; import task preserves legacy; deletion task removes legacy file and references",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "routing-import--cgraph",
+      "status": "pass",
+      "evidence": [
+        "workspace/app.mjs:1 import { normalize } from './modern.mjs';",
+        "workspace/app.mjs:4 return { route: normalize(path) };",
+        "workspace/app.mjs:8 return paths.map(path => routeRequest(path));",
+        "workspace/cli.mjs:4 return JSON.stringify(routeRequest(path));"
+      ],
+      "additional_review": "canonical modern normalizer unchanged; import task preserves legacy; deletion task removes legacy file and references",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "routing-delete--search",
+      "status": "pass",
+      "evidence": [
+        "workspace/app.mjs:1 import { normalize } from './modern.mjs';",
+        "workspace/app.mjs:4 return { route: normalize(path) };",
+        "workspace/app.mjs:8 return paths.map(path => routeRequest(path));",
+        "workspace/cli.mjs:4 return JSON.stringify(routeRequest(path));"
+      ],
+      "additional_review": "canonical modern normalizer unchanged; import task preserves legacy; deletion task removes legacy file and references",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "routing-delete--cgraph",
+      "status": "pass",
+      "evidence": [
+        "workspace/app.mjs:1 import { normalize } from './modern.mjs';",
+        "workspace/app.mjs:4 return { route: normalize(path) };",
+        "workspace/app.mjs:8 return paths.map(path => routeRequest(path));",
+        "workspace/cli.mjs:4 return JSON.stringify(routeRequest(path));"
+      ],
+      "additional_review": "canonical modern normalizer unchanged; import task preserves legacy; deletion task removes legacy file and references",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "payments-interface--search",
+      "status": "pass",
+      "evidence": [
+        "workspace/pricing.py:1 def amount_due(invoice):",
+        "workspace/receipt.py:10 total = amount_due(invoice)",
+        "workspace/workflow.py:10 return {\"total_cents\": amount_due(invoice)}",
+        "workspace/api.py:5 return quote_invoice(subtotal_cents, shipping_cents, discount_percent)"
+      ],
+      "additional_review": "all three invoice keys used; original arithmetic and both public consumer signatures preserved",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "payments-interface--cgraph",
+      "status": "pass",
+      "evidence": [
+        "workspace/pricing.py:1 def amount_due(invoice):",
+        "workspace/receipt.py:10 total = amount_due(invoice)",
+        "workspace/workflow.py:10 return {\"total_cents\": amount_due(invoice)}",
+        "workspace/api.py:5 return quote_invoice(subtotal_cents, shipping_cents, discount_percent)"
+      ],
+      "additional_review": "all three invoice keys used; original arithmetic and both public consumer signatures preserved",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "case": "routing-reexport--search",
+      "status": "pass",
+      "evidence": [
+        "workspace/facade.mjs:1 export { normalize as normalizePath } from './modern.mjs';",
+        "workspace/app.mjs:1 import { normalizePath } from './facade.mjs';",
+        "workspace/app.mjs:4 return { route: normalizePath(path) };",
+        "workspace/cli.mjs:4 return JSON.stringify(routeRequest(path));"
+      ],
+      "additional_review": "legacy and modern preserved",
+      "run_root": "pilot-20260912"
+    },
+    {
+      "run_root": "pilot-20260912",
+      "case": "routing-reexport--cgraph",
+      "status": "pass",
+      "same_evidence_as": "routing-reexport--search"
+    },
+    {
+      "run_root": "pilot-graphify-code-only",
+      "case": "payments-rename--graphify",
+      "status": "pass",
+      "same_evidence_as": "payments-rename--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read the complete generated workspace; canonical delegation and unchanged public APIs confirmed."
+    },
+    {
+      "run_root": "pilot-graphify-code-only",
+      "case": "payments-policy--graphify",
+      "status": "pass",
+      "same_evidence_as": "payments-policy--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read the complete generated workspace; canonical delegation and unchanged public APIs confirmed."
+    },
+    {
+      "run_root": "pilot-graphify-code-only",
+      "case": "routing-import--graphify",
+      "status": "pass",
+      "same_evidence_as": "routing-import--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read the complete generated workspace; canonical delegation and unchanged public APIs confirmed."
+    },
+    {
+      "run_root": "pilot-graphify-code-only",
+      "case": "routing-delete--graphify",
+      "status": "pass",
+      "same_evidence_as": "routing-delete--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read the complete generated workspace; canonical delegation and unchanged public APIs confirmed."
+    },
+    {
+      "run_root": "pilot-graphify-code-only",
+      "case": "payments-interface--graphify",
+      "status": "pass",
+      "same_evidence_as": "payments-interface--cgraph",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read the complete generated workspace; canonical delegation and unchanged public APIs confirmed."
+    },
+    {
+      "run_root": "pilot-graphify-code-only",
+      "case": "routing-reexport--graphify",
+      "status": "pass",
+      "same_evidence_as": "routing-reexport--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read the complete generated workspace; canonical delegation and unchanged public APIs confirmed."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "payments-interface--cgraph",
+      "status": "pass",
+      "same_evidence_as": "payments-interface--cgraph",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "routing-import--cgraph",
+      "status": "pass",
+      "same_evidence_as": "routing-import--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "routing-delete--cgraph",
+      "status": "pass",
+      "same_evidence_as": "routing-delete--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
+    },
+    {
+      "run_root": "pilot-change-context",
+      "case": "routing-reexport--cgraph",
+      "status": "pass",
+      "same_evidence_as": "routing-reexport--search",
+      "evidence_source_run": "pilot-20260912",
+      "review_note": "Independently read complete edited workspace; canonical delegation and intended API changes verified. All root/path references are relative to this case."
+    }
+  ],
+  "limitations": "Source review verifies canonical delegation for these outputs; raw executable behavior grades remain separate.",
+  "canonical_review_count": 22
+}

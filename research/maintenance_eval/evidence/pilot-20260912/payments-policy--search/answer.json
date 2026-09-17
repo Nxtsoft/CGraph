@@ -1,0 +1,1 @@
+{"summary":"Updated pricing.amount_due to discount only the item subtotal, then add the full shipping charge. Both consumers remain preserved.","relationships":[{"source":"receipt.render_receipt","target":"pricing.amount_due"},{"source":"workflow.quote_invoice","target":"pricing.amount_due"}]}

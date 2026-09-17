@@ -1,0 +1,1 @@
+{"summary":"Found 2 direct callers of app.routeRequest.","relationships":[{"source":"app.routeBatch","target":"app.routeRequest"},{"source":"cli.main","target":"app.routeRequest"}]}

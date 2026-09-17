@@ -1,0 +1,226 @@
+[
+  {
+    "name": "workspace_list",
+    "description": "List all visible task files.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_read",
+    "description": "Read a task file with line numbers.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_search",
+    "description": "Case-insensitive literal search over task source and documentation.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_write",
+    "description": "Replace one task file with complete UTF-8 content.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_delete",
+    "description": "Delete one task file.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Search the knowledge graph using BFS or DFS. Returns relevant nodes and edges as text context.",
+    "inputSchema": {
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "Natural language question or keyword search"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "bfs",
+            "dfs"
+          ],
+          "default": "bfs",
+          "description": "bfs=broad context, dfs=trace a specific path"
+        },
+        "depth": {
+          "type": "integer",
+          "default": 3,
+          "description": "Traversal depth (1-6)"
+        },
+        "token_budget": {
+          "type": "integer",
+          "default": 2000,
+          "description": "Max output tokens"
+        },
+        "context_filter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional explicit edge-context filter, e.g. ['call', 'field']"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "type": "object"
+    },
+    "name": "query_graph"
+  },
+  {
+    "description": "Get full details for a specific node by label or ID.",
+    "inputSchema": {
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Node label or ID to look up"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "name": "get_node"
+  },
+  {
+    "description": "Get all direct neighbors of a node with edge details.",
+    "inputSchema": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "relation_filter": {
+          "type": "string",
+          "description": "Optional: filter by relation type"
+        },
+        "token_budget": {
+          "type": "integer",
+          "default": 2000,
+          "description": "Max output tokens"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "name": "get_neighbors"
+  },
+  {
+    "description": "Return summary statistics: node count, edge count, communities, confidence breakdown.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "graph_stats"
+  },
+  {
+    "description": "Find the shortest path between two concepts in the knowledge graph. Follows stored edge direction by default; set undirected=true to ignore it.",
+    "inputSchema": {
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Source concept label or keyword"
+        },
+        "target": {
+          "type": "string",
+          "description": "Target concept label or keyword"
+        },
+        "max_hops": {
+          "type": "integer",
+          "default": 8,
+          "description": "Maximum hops to consider"
+        },
+        "undirected": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ignore stored edge direction when searching"
+        }
+      },
+      "required": [
+        "source",
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "shortest_path"
+  }
+]

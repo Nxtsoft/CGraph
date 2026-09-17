@@ -1,0 +1,1 @@
+{"summary":"Switched app.mjs to the canonical modern normalizer. routeRequest, routeBatch, and cli.main now delegate through modern.normalize; legacy.mjs remains unchanged.","relationships":[{"source":"app.routeRequest","target":"modern.normalize"}]}

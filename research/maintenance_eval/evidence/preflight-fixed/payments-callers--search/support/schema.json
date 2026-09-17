@@ -1,0 +1,1 @@
+{"type": "object", "properties": {"summary": {"type": "string"}, "relationships": {"type": "array", "items": {"type": "object", "properties": {"source": {"type": "string"}, "target": {"type": "string"}}, "required": ["source", "target"], "additionalProperties": false}}}, "required": ["summary", "relationships"], "additionalProperties": false}

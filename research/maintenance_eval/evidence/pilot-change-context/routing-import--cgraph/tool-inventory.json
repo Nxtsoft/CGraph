@@ -1,0 +1,317 @@
+[
+  {
+    "name": "workspace_list",
+    "description": "List all visible task files.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_read",
+    "description": "Read a task file with line numbers.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_search",
+    "description": "Case-insensitive literal search over task source and documentation.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_write",
+    "description": "Replace one task file with complete UTF-8 content.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "workspace_delete",
+    "description": "Delete one task file.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Find symbols by name AND answer structural questions in one call -- it routes by intent and reports which route ran in a `route` field. Ask a structural question directly in plain words: \"who calls X\" / \"callers of X\", \"what does X call\" / \"callees of X\", \"references to X\" / \"uses of X\", \"implementations of X\" / \"subclasses of X\", \"who imports X\" -- and it returns the typed neighbors (no need to graph_query then graph_explain). A unique exact symbol name returns that node plus a callers/callees/references summary (route \"entity\"). Anything else is a case-insensitive name search ranked by importance (route \"search\"), with did-you-mean suggestions when nothing matches. Prefer this over grep to locate a definition; feed a returned id into graph_explain / graph_impact / graph_context for more depth.",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {
+        "expected_content_root": {
+          "description": "content root returned by graph_update; if supplied, the response comes only from the matching snapshot and errors if the daemon has published a different root",
+          "type": "string"
+        },
+        "file": {
+          "description": "only nodes whose source file path contains this substring",
+          "type": "string"
+        },
+        "kind": {
+          "description": "only nodes of this kind, e.g. function, class, file",
+          "type": "string"
+        },
+        "limit": {
+          "description": "max results (default 50)",
+          "type": "integer"
+        },
+        "query": {
+          "description": "substring of the symbol name or id to find",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_query"
+  },
+  {
+    "description": "Shortest connection between two symbols (how A relates to B through calls, imports, containment). Accepts node ids or exact symbol names.",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {
+        "expected_content_root": {
+          "description": "content root returned by graph_update; if supplied, the response comes only from the matching snapshot and errors if the daemon has published a different root",
+          "type": "string"
+        },
+        "source": {
+          "description": "node id or exact symbol name to start from",
+          "type": "string"
+        },
+        "target": {
+          "description": "node id or exact symbol name to reach",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_path"
+  },
+  {
+    "description": "One symbol in depth: its source snippet plus its neighbor edges (most important first). Accepts a node id or exact symbol name. Use after graph_query to understand how a symbol is used. Pass relation to ask one typed structural question instead of post-filtering a mixed neighbor dump: find callers (direction:in, relation:CALLS), find callees (direction:out, relation:CALLS), find references (relation:references), trace imports (relation:imports), inspect inheritance/implementation (relation:inherits).",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {
+        "direction": {
+          "description": "in = callers/importers only, out = callees/imports only (default both)",
+          "enum": [
+            "in",
+            "out",
+            "both"
+          ],
+          "type": "string"
+        },
+        "expected_content_root": {
+          "description": "content root returned by graph_update; if supplied, the response comes only from the matching snapshot and errors if the daemon has published a different root",
+          "type": "string"
+        },
+        "id": {
+          "description": "node id or exact symbol name",
+          "type": "string"
+        },
+        "limit": {
+          "description": "max neighbor edges returned (default 100)",
+          "type": "integer"
+        },
+        "relation": {
+          "description": "only edges of this relation (exact, case-sensitive), e.g. CALLS, references, imports, inherits, contains",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_explain"
+  },
+  {
+    "description": "Transitive blast radius of a symbol: dependents (callers/importers that break if it changes), dependencies (what it relies on), or both, bounded by max_depth. Use before modifying or deleting a symbol to see what is affected.",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {
+        "direction": {
+          "description": "default dependents",
+          "enum": [
+            "dependents",
+            "dependencies",
+            "both"
+          ],
+          "type": "string"
+        },
+        "expected_content_root": {
+          "description": "content root returned by graph_update; if supplied, the response comes only from the matching snapshot and errors if the daemon has published a different root",
+          "type": "string"
+        },
+        "id": {
+          "description": "node id or exact symbol name",
+          "type": "string"
+        },
+        "limit": {
+          "description": "max nodes returned (default 200)",
+          "type": "integer"
+        },
+        "max_depth": {
+          "description": "hops to traverse (default 3)",
+          "type": "integer"
+        },
+        "relation": {
+          "description": "only follow edges of this relation, e.g. CALLS, IMPORTS",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_impact"
+  },
+  {
+    "description": "Token-budgeted context bundle for a symbol: the focal node plus its most relevant neighbors with source snippets, packed to fit a token budget. The fastest way to load just enough code to edit or review a symbol. Two gather modes: adaptive (the default) keeps the 2-hop core but expands the third hop only along query-relevant nodes, reaching more of what you asked about at a fraction of the full 3-hop token cost -- pass a query/q describing the task for the relevance gate to work with. fixed pulls the plain k-hop neighborhood instead. The response reports which gather/packing mode ran, and for adaptive a reach summary (candidates, expanded_past_core, gated_at_core).",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {
+        "budget": {
+          "description": "token budget for the bundle (default 6000)",
+          "type": "integer"
+        },
+        "expected_content_root": {
+          "description": "content root returned by graph_update; if supplied, the response comes only from the matching snapshot and errors if the daemon has published a different root",
+          "type": "string"
+        },
+        "gather": {
+          "description": "adaptive = keep the 2-hop core but expand the 3rd hop only along query-relevant nodes (default; give it a query/q); fixed = plain k-hop neighborhood",
+          "enum": [
+            "fixed",
+            "adaptive"
+          ],
+          "type": "string"
+        },
+        "gather_theta": {
+          "description": "adaptive gate: min query-term overlap to expand past 2 hops (default 0.05)",
+          "type": "number"
+        },
+        "id": {
+          "description": "node id or exact symbol name to focus on",
+          "type": "string"
+        },
+        "max_depth": {
+          "description": "neighborhood radius in hops (default 3 adaptive/knapsack, 2 fixed+greedy)",
+          "type": "integer"
+        },
+        "query": {
+          "description": "free-text fallback when the id is unknown; the best match becomes the focus",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_context"
+  },
+  {
+    "description": "Blocking content-verified synchronization barrier: reads and hashes every detected code file, re-extracts any file whose content changed, and publishes a new snapshot. Returns freshness.content_root plus files_hashed and bytes_hashed verification counts. The root uniquely identifies the verified source snapshot. Pass it as expected_content_root to graph_query / graph_path / graph_explain / graph_impact / graph_context to pin those reads to the same verified snapshot; a mismatch fails closed without returning graph data. Use before any freshness-sensitive navigation or after editing source files. The daemon also watches the tree and folds edits in automatically within seconds, but only graph_update provides a cryptographically verified content_root.",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_update"
+  },
+  {
+    "description": "Daemon health: node/edge counts, build_state (\"building\" means the initial graph build is still running and query results may be empty), whether live file watching is active, and semantic enrichment progress.",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_status"
+  },
+  {
+    "description": "Validate an explicit unified diff against base and target source roots, build isolated snapshots, and return source-pinned advisory impact and globally budgeted context. Does not modify roots or the resident graph. Budget uses serialized UTF-8 bytes / 4, rounded up. Use after task edits; base, target, and actual diff are bound by the harness.",
+    "inputSchema": {
+      "additionalProperties": true,
+      "properties": {
+        "budget": {
+          "description": "complete response budget; default 6000",
+          "type": "integer"
+        },
+        "max_depth": {
+          "description": "impact/context hops; default 3",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "graph_change_context"
+  }
+]

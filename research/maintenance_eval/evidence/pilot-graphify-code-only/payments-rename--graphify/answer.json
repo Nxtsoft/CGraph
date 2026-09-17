@@ -1,0 +1,1 @@
+{"summary":"Renamed pricing.amount_due to pricing.net_due, updated all consumers, preserved the calculation unchanged, and verified the old name is absent.","relationships":[{"source":"receipt.render_receipt","target":"pricing.net_due"},{"source":"workflow.quote_invoice","target":"pricing.net_due"}]}
