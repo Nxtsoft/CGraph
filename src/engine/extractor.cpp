@@ -1,5 +1,7 @@
 #include "cgraph/extractor.hpp"
 
+#include "cgraph/fingerprint.hpp"
+
 #include "cgraph/normalize.hpp"
 #include "cgraph/parser_pool.hpp"
 
@@ -123,31 +125,31 @@ std::string add_symbol_node(
   }
 
   const auto location = source_location(node);
-  auto id = make_id(context.source_file + ":" + label);
-  // A label names a symbol, so two symbols in one file can legitimately share
-  // one: an overload set (`to_json` five times over), a constructor sharing its
-  // class's name, or `operator=` for both copy and move. Their ids would collide
-  // and merge_fragments would keep only the first, silently losing the rest --
-  // and a lost symbol is worse than an awkward one, because an agent asking
-  // where a function lives gets one of five answers with no hint the other four
-  // exist. Disambiguate with the declaration's start line, which is stable for a
-  // given file so the id stays deterministic. Only a colliding symbol pays; the
-  // common case keeps the plain `file:label` id.
-  const auto collides = [&](const std::string& candidate) {
-    return std::ranges::any_of(fragment.nodes, [&](const Node& existing) { return existing.id == candidate; });
-  };
-  if (collides(id)) {
-    // The line alone is not always enough: three overloads can share one line
-    // (`int f(int); int f(double); int f(char);`), and a single retry would
-    // recompute the same suffixed id for the third, which merge_fragments then
-    // discards -- reintroducing exactly the silent loss this guard exists to
-    // prevent. Add the column, then a counter, until the id is free.
-    const auto base = context.source_file + ":" + label + ":" + std::to_string(location.start_line);
-    id = make_id(base + ":" + std::to_string(location.start_column));
-    for (std::size_t nth = 2; collides(id); ++nth) {
-      id = make_id(base + ":" + std::to_string(location.start_column) + ":" + std::to_string(nth));
+  const auto seed = context.source_file + ":" + label;
+  // Two symbols in one file can legitimately share a label -- an overload set
+  // (`to_json` five times over), a constructor sharing its class's name,
+  // `operator=` for both copy and move -- and a member can normalize onto a
+  // symbol's id too (`First::size` and `first_size` are both `first_size`).
+  // A symbol outranks a field for the natural id: an agent asks `impact` and
+  // `explain` about a function by that id, so it must not move because a struct
+  // one line up has a member that normalizes the same way. Relocate the field
+  // instead, carrying its `defines` edge with it.
+  const auto held_by_field = std::ranges::find_if(fragment.nodes, [&](const Node& existing) {
+    return existing.id == make_id(seed) && existing.kind == "field";
+  });
+  if (held_by_field != fragment.nodes.end()) {
+    const auto displaced = held_by_field->id;
+    held_by_field->id = unique_node_id(
+        displaced + ":" + held_by_field->label,
+        held_by_field->source_location.value_or(SourceLocation{}),
+        fragment);
+    for (auto& edge : fragment.edges) {
+      if (edge.target == displaced) {
+        edge.target = held_by_field->id;
+      }
     }
   }
+  auto id = unique_node_id(seed, location, fragment);
   fragment.nodes.push_back(Node{
       .id = id,
       .label = std::move(label),
@@ -166,6 +168,7 @@ void add_raw_call(
     const std::string& caller_id,
     std::vector<RawCall>& raw_calls) {
   std::string label;
+  std::string qualifier;
   bool is_member_call = false;
   bool callee_resolver_ran = false;
   // A grammar that names the receiver in a field on the call node itself
@@ -211,6 +214,9 @@ void add_raw_call(
       if (config.resolve_callee_name) {
         label = config.resolve_callee_name(*child, context);
         callee_resolver_ran = true;
+        if (config.resolve_callee_scope) {
+          qualifier = config.resolve_callee_scope(*child, context);
+        }
       } else {
         label = node_text(*child, context.source);
       }
@@ -244,6 +250,7 @@ void add_raw_call(
       .source_location = source_location(node),
       .is_member_call = is_member_call || has_receiver_field,
       .receiver_label = std::move(receiver_label),
+      .qualifier = std::move(qualifier),
   });
 }
 
@@ -318,7 +325,8 @@ void walk_node(
   std::string child_scope = scope_id;
   std::string_view child_kind = scope_kind;
   std::string child_function_scope = function_scope_id;
-  if (contains_symbol(config.symbols.class_nodes, symbol)) {
+  if (contains_symbol(config.symbols.class_nodes, symbol) &&
+      (!config.class_requires_body || first_child_by_fields(node, config.body_fields).has_value())) {
     if (auto id = add_symbol_node(node, config, context, "class", fragment); !id.empty()) {
       // Mark contract declarations (Java's `interface_declaration`). Java reuses
       // `method_declaration` inside an interface, so the methods below are
@@ -333,6 +341,9 @@ void walk_node(
       if (config.relation_handler) {
         config.relation_handler(node, context, id, raw_relations);
       }
+      if (config.extract_members && config.member_handler) {
+        config.member_handler(node, context, id, fragment);
+      }
       child_scope = std::move(id);
       child_kind = "class";
     }
@@ -340,11 +351,14 @@ void walk_node(
   if (contains_symbol(config.symbols.function_nodes, symbol)) {
     // Named function declarations and methods are always graph nodes and call
     // scopes (at any nesting). An arrow is one only when it is a module-level
-    // `const Foo = () => {}`. Every other arrow — a handler defined inside a
-    // component, an inline `.map(x => f(x))` callback, a JSX `onClick={() => …}`
-    // — is a local: Graphify emits no node for it and seeds no call scope, so we
-    // neither create a node nor attribute its calls (the body is a boundary).
-    if (std::string_view(ts_node_type(node)) == "arrow_function" && !is_module_level_arrow(node)) {
+    // `const Foo = () => {}`, or a shape the language opts back in through
+    // `nested_function_scope` (an HTTP route's inline handler). Every other
+    // arrow — a handler defined inside a component, an inline `.map(x => f(x))`
+    // callback, a JSX `onClick={() => …}` — is a local: Graphify emits no node
+    // for it and seeds no call scope, so we neither create a node nor attribute
+    // its calls (the body is a boundary).
+    const bool nested_scope = config.nested_function_scope && config.nested_function_scope(node, context);
+    if (std::string_view(ts_node_type(node)) == "arrow_function" && !is_module_level_arrow(node) && !nested_scope) {
       child_function_scope.clear();
     } else {
       auto id = add_symbol_node(node, config, context, "function", fragment);
@@ -364,6 +378,12 @@ void walk_node(
         if (config.relation_handler) {
           config.relation_handler(node, context, id, raw_relations);
         }
+        // Fingerprint the body for `report clones`: the statements, not the
+        // signature, so two copies that differ only in name and parameter names
+        // compare equal. A grammar without a body field (a Python `def` is all
+        // body) fingerprints the whole definition.
+        const auto body = first_child_by_fields(node, config.body_fields);
+        fragment.fingerprints[id] = fingerprint_function(body.value_or(node), context.source);
         child_scope = id;
         child_kind = "function";
       }
@@ -380,6 +400,9 @@ void walk_node(
       if (config.relation_handler) {
         config.relation_handler(node, context, id, raw_relations);
       }
+      if (config.extract_members && config.member_handler) {
+        config.member_handler(node, context, id, fragment);
+      }
       child_scope = std::move(id);
       child_kind = "type";
     }
@@ -395,7 +418,7 @@ void walk_node(
     add_raw_call(node, config, context, child_function_scope, raw_calls);
   }
   if (config.extra_walk) {
-    config.extra_walk(node, context, child_function_scope, fragment, raw_calls);
+    config.extra_walk(node, context, child_function_scope, fragment, raw_calls, raw_relations);
   }
 
   const auto child_count = ts_node_child_count(node);

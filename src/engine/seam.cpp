@@ -1,6 +1,7 @@
 #include "cgraph/seam.hpp"
 
 #include <fstream>
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -30,6 +31,13 @@ struct SeamNode {
   std::uint32_t start_line = 0;
   std::uint32_t end_line = 0;
   bool has_span = false;
+  std::map<std::string, std::string> properties;  // string-valued properties (endpoint method/path/served)
+};
+
+struct SeamEdge {
+  std::string source;
+  std::string target;
+  std::string relation;
 };
 
 class SeamGraph {
@@ -63,9 +71,36 @@ class SeamGraph {
         sn.end_line = loc->value("end_line", 0U);
         sn.has_span = true;
       }
+      if (const auto props = node.find("properties"); props != node.end() && props->is_object()) {
+        for (const auto& [key, value] : props->items()) {
+          if (value.is_string()) {
+            sn.properties.emplace(key, value.get<std::string>());
+          }
+        }
+      }
       graph.nodes_.push_back(std::move(sn));
     }
+    // Discovery reads the contract edges a graph carries (`handled_by`,
+    // `CONSUMES`); anchor resolution never needed them.
+    for (const auto& link : data.value("links", nlohmann::json::array())) {
+      graph.edges_.push_back(SeamEdge{
+          .source = link.value("source", std::string{}),
+          .target = link.value("target", std::string{}),
+          .relation = link.value("relation", std::string{}),
+      });
+    }
     return graph;
+  }
+
+  [[nodiscard]] const std::vector<SeamNode>& nodes() const { return nodes_; }
+  [[nodiscard]] const std::vector<SeamEdge>& edges() const { return edges_; }
+  [[nodiscard]] const SeamNode* find(const std::string& id) const {
+    for (const auto& node : nodes_) {
+      if (node.id == id) {
+        return &node;
+      }
+    }
+    return nullptr;
   }
 
   // The smallest-span non-file node whose source_file ends with `file_suffix` and
@@ -99,6 +134,7 @@ class SeamGraph {
   }
 
   std::vector<SeamNode> nodes_;
+  std::vector<SeamEdge> edges_;
 };
 
 [[nodiscard]] std::string endpoint_id(const std::string& provider, const std::string& method,
@@ -441,6 +477,215 @@ SeamResult generate_seam(const nlohmann::json& spec,
     result.resolution_log.push_back("MIRRORED_BY  " + schema_name + "  ->  " + resolved->id);
   }
 
+  result.fragment.nodes = std::move(nodes);
+  result.fragment.edges = std::move(edges);
+  return result;
+}
+
+// Shadow code-ref for a node of `graph_name`, shared by generate_seam's anchors
+// and discover_seam's handlers and call sites.
+namespace {
+Node code_ref_shadow(const std::string& graph_name, const SeamNode& node) {
+  Node shadow;
+  shadow.id = node.id;
+  shadow.label = node.label;
+  shadow.kind = "code-ref";
+  shadow.source_file = node.source_file;
+  shadow.properties["service"] = graph_name;
+  shadow.properties["symbol_kind"] = node.kind;
+  shadow.properties["span"] = std::to_string(node.start_line) + "-" + std::to_string(node.end_line);
+  return shadow;
+}
+}  // namespace
+
+SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesystem::path>>& graphs) {
+  SeamResult result;
+  result.ok = true;
+  if (graphs.empty()) {
+    return (void)fail(result, "seam discover needs at least one --graph NAME=graph.json"), result;
+  }
+
+  std::vector<std::pair<std::string, SeamGraph>> loaded;
+  for (const auto& [name, path] : graphs) {
+    std::string error;
+    auto graph = SeamGraph::load(path, error);
+    if (!graph) {
+      return (void)fail(result, "graph '" + name + "': " + error), result;
+    }
+    loaded.emplace_back(name, std::move(*graph));
+  }
+
+  // Insertion-ordered dedup, as in generate_seam: services, then each graph's
+  // endpoints in graph order, then shadows, so regenerating is byte-stable.
+  std::vector<Node> nodes;
+  std::unordered_map<std::string, std::size_t> index;
+  std::vector<Edge> edges;
+  std::unordered_set<std::string> seen_edges;
+  auto add_node = [&](Node node) {
+    if (index.contains(node.id)) {
+      return;
+    }
+    index.emplace(node.id, nodes.size());
+    nodes.push_back(std::move(node));
+  };
+  auto add_edge = [&](std::string source, std::string target, std::string relation) {
+    if (seen_edges.insert(source + "\x1f" + target + "\x1f" + relation).second) {
+      edges.push_back({.source = std::move(source), .target = std::move(target), .relation = std::move(relation)});
+    }
+  };
+
+  for (const auto& [name, graph] : loaded) {
+    Node service;
+    service.id = service_id(name);
+    service.label = name;
+    service.kind = "service";
+    service.properties["role"] = "discovered";
+    service.properties["graph"] = name;
+    add_node(std::move(service));
+  }
+
+  std::unordered_map<std::string, std::unordered_set<std::string>> served_by;      // endpoint -> services
+  std::unordered_map<std::string, std::unordered_set<std::string>> consumed_by;    // endpoint -> services
+  std::unordered_map<std::string, std::unordered_set<std::string>> documented_by;  // endpoint -> services
+  for (const auto& [name, graph] : loaded) {
+    std::unordered_map<std::string, std::vector<const SeamEdge*>> handled;   // endpoint -> handled_by edges
+    std::unordered_map<std::string, std::vector<const SeamEdge*>> consumed;  // endpoint -> CONSUMES edges
+    for (const auto& edge : graph.edges()) {
+      if (edge.relation == "handled_by") {
+        handled[edge.source].push_back(&edge);
+      } else if (edge.relation == "CONSUMES") {
+        consumed[edge.target].push_back(&edge);
+      }
+    }
+    // The document node an endpoint was declared in, by source path.
+    std::unordered_map<std::string, const SeamNode*> file_by_path;
+    for (const auto& node : graph.nodes()) {
+      if (node.kind == "file") {
+        file_by_path.emplace(node.source_file, &node);
+      }
+    }
+    for (const auto& node : graph.nodes()) {
+      if (node.kind != "endpoint") {
+        continue;
+      }
+      const bool served = handled.contains(node.id);
+      const bool used = consumed.contains(node.id);
+      const bool documented = node.properties.contains("documented");
+      if (!served && !used && !documented) {
+        continue;
+      }
+      Node endpoint;
+      endpoint.id = node.id;
+      endpoint.label = node.label;
+      endpoint.kind = "endpoint";
+      for (const auto* key : {"method", "path"}) {
+        if (const auto value = node.properties.find(key); value != node.properties.end()) {
+          endpoint.properties[key] = value->second;
+        }
+      }
+      if (const auto existing = index.find(node.id); existing != index.end()) {
+        // A served or documented copy carries the provider's spelling; it wins
+        // over a consumer's canonical placeholder copy.
+        if ((served || documented) && nodes[existing->second].properties.contains("served")) {
+          nodes[existing->second].label = endpoint.label;
+          nodes[existing->second].properties.erase("served");
+          nodes[existing->second].properties["path"] = endpoint.properties["path"];
+        }
+      } else {
+        if (!served && !documented) {
+          endpoint.properties["served"] = "false";
+        }
+        add_node(std::move(endpoint));
+      }
+      if (documented) {
+        documented_by[node.id].insert(name);
+        if (const auto file = file_by_path.find(node.source_file); file != file_by_path.end()) {
+          add_node(code_ref_shadow(name, *file->second));
+          add_edge(node.id, file->second->id, "DOCUMENTED_IN");
+        }
+      }
+      if (served) {
+        served_by[node.id].insert(name);
+        add_edge(node.id, service_id(name), "SERVED_BY");
+        for (const auto* edge : handled[node.id]) {
+          if (const auto* handler = graph.find(edge->target)) {
+            add_node(code_ref_shadow(name, *handler));
+            add_edge(node.id, handler->id, "HANDLED_BY");
+          }
+        }
+      }
+      if (used) {
+        consumed_by[node.id].insert(name);
+        add_edge(service_id(name), node.id, "CONSUMES");
+        for (const auto* edge : consumed[node.id]) {
+          if (const auto* caller = graph.find(edge->source)) {
+            add_node(code_ref_shadow(name, *caller));
+            add_edge(node.id, caller->id, "CONSUMED_AT");
+          }
+        }
+      }
+    }
+  }
+
+  std::size_t matched = 0;
+  std::size_t consumer_only = 0;
+  std::size_t provider_only = 0;
+  std::size_t documented_only = 0;
+  std::size_t documented_not_served = 0;
+  std::size_t served_not_documented = 0;
+  for (const auto& node : nodes) {
+    if (node.kind != "endpoint") {
+      continue;
+    }
+    const bool served = served_by.contains(node.id);
+    const bool used = consumed_by.contains(node.id);
+    const bool documented = documented_by.contains(node.id);
+    if (served && used) {
+      ++matched;
+    } else if (used) {
+      ++consumer_only;
+    } else if (served) {
+      ++provider_only;
+    } else {
+      ++documented_only;
+    }
+    if (documented && !served) {
+      ++documented_not_served;
+    }
+    if (served && !documented) {
+      ++served_not_documented;
+    }
+  }
+  for (const auto& [name, graph] : loaded) {
+    std::size_t serves = 0;
+    std::size_t consumes = 0;
+    std::size_t documents = 0;
+    for (const auto& [endpoint, services] : served_by) {
+      serves += services.contains(name) ? 1 : 0;
+    }
+    for (const auto& [endpoint, services] : consumed_by) {
+      consumes += services.contains(name) ? 1 : 0;
+    }
+    for (const auto& [endpoint, services] : documented_by) {
+      documents += services.contains(name) ? 1 : 0;
+    }
+    result.resolution_log.push_back("service " + name + ": serves " + std::to_string(serves) + " endpoints, consumes " +
+                                    std::to_string(consumes) + ", documents " + std::to_string(documents));
+  }
+  result.resolution_log.push_back("matched " + std::to_string(matched) +
+                                  " endpoints (served by one service, consumed by another or itself); " +
+                                  std::to_string(consumer_only) + " consumed with no provider among these graphs; " +
+                                  std::to_string(provider_only) + " served with no consumer");
+  if (!documented_by.empty()) {
+    // Contract drift: what the documents say against what the code serves.
+    result.resolution_log.push_back("drift: " + std::to_string(documented_not_served) +
+                                    " documented but served by no service here, " +
+                                    std::to_string(served_not_documented) + " served but in no document; " +
+                                    std::to_string(documented_only) + " only documented (neither served nor consumed)");
+  }
+  if (matched == 0 && consumer_only == 0 && provider_only == 0 && documented_only == 0) {
+    result.resolution_log.push_back("no endpoint nodes: build the graphs with a cgraph that discovers contracts");
+  }
   result.fragment.nodes = std::move(nodes);
   result.fragment.edges = std::move(edges);
   return result;

@@ -79,11 +79,23 @@ struct Hyperedge {
   Properties properties;
 };
 
+// A function body reduced to what survives renaming: identifiers and literals
+// replaced by placeholders, then 5-token shingles hashed and winnowed (see
+// fingerprint.hpp). Runtime-only -- never part of a fragment file or graph.json
+// -- so Graphify parity holds; `report clones` compares these by Jaccard.
+struct FunctionFingerprint {
+  std::vector<std::uint64_t> shingles;  // sorted, unique winnowed shingle hashes
+  std::uint32_t tokens = 0;             // normalized tokens in the body
+};
+
 struct Fragment {
   std::vector<Node> nodes;
   std::vector<Edge> edges;
   std::vector<Hyperedge> hyperedges;
   std::vector<std::string> warnings;
+  // Keyed by function node id; travels with the fragment through the
+  // incremental index so a re-extracted file replaces its own entries.
+  std::unordered_map<std::string, FunctionFingerprint> fingerprints;
 };
 
 struct GraphSnapshot {
@@ -98,6 +110,10 @@ struct GraphSnapshot {
   // extraction. Exporters intentionally ignore this ledger so graph JSON and
   // deterministic topology remain unchanged.
   std::unordered_map<std::string, std::string> source_hashes;
+  // Runtime-only like source_hashes: the union of every merged fragment's
+  // function fingerprints, keyed by node id. An id that dedup later removed
+  // simply has no node; readers skip it.
+  std::unordered_map<std::string, FunctionFingerprint> fingerprints;
 };
 
 }  // namespace cgraph

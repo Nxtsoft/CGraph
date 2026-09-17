@@ -1,3 +1,5 @@
+#include "cgraph/change_context.hpp"
+#include "cgraph/client_runtime.hpp"
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
@@ -12,9 +14,11 @@
 #include "cgraph/operation_stats.hpp"
 #include "cgraph/pipeline.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 #include "cgraph/seam.hpp"
 #include "cgraph/semantic_orchestration.hpp"
 #include "cgraph/skills_install.hpp"
+#include "cgraph/workspace.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -41,14 +45,38 @@ void print_usage() {
   std::cout <<
       "usage:\n"
       "  cgraph [--root PATH] [--out PATH]                build the graph and write exports\n"
+      "  cgraph change-context --base-root ROOT --target-root ROOT --diff FILE [--budget N]\n"
+      "        [--max-depth N] [--expected-base-content-root SHA] [--expected-target-content-root SHA]\n"
+      "        source-pinned advisory change evidence; JSON output\n"
       "  cgraph enrich-plan   [--root PATH] [--out PATH] [--drop DIR]\n"
       "        emit a semantic chunk plan + manifest for hosts to enrich\n"
       "  cgraph enrich-ingest [--root PATH] [--out PATH] [--drop DIR]\n"
       "        merge host-dropped chunk_NN.json fragments and re-export\n"
       "  cgraph stats [--root PATH] [--since all|today|<ISO8601>|<N>h|<N>d]   (default: all)\n"
       "        roll up the durable op-stats ledger (counts + zero-hit rate) and show live daemon stats\n"
+      "  cgraph report modules [--root PATH] [--format json|mermaid|svg|markdown] [--scope PREFIX]\n"
+      "                        [--depth N] [--group-by auto|packages|depth] [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        module dependency diagram from the resident daemon (spawned if absent); a monorepo\n"
+      "        groups by its workspace packages unless --group-by depth\n"
+      "  cgraph report types [--root PATH] [--format json|markdown] [--scope PREFIX] [--threshold 0.80]\n"
+      "                      [--min-members 3] [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        identical shapes under different names, one name declared in several files,\n"
+      "        subset/overlapping shapes, and unreferenced types\n"
+      "  cgraph report clones [--root PATH] [--format json|markdown] [--scope PREFIX] [--threshold 0.80]\n"
+      "                       [--min-tokens 30] [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        function bodies at least threshold similar after renaming, grouped into clone classes\n"
+      "  cgraph report design [--root PATH] [--format json|mermaid|markdown] [--scope PREFIX] [--hops 3]\n"
+      "                       [--budget N] [--include-tests] [--daemon PATH]\n"
+      "        entry points (main, route handlers, pages, uncalled roots), the top call flow from\n"
+      "        each, and layers by call distance\n"
       "  cgraph seam gen --seam SPEC.json --graphs NAME=graph.json [--graphs ...] --out DROPDIR\n"
       "        resolve a cross-service seam spec against consumer graphs into a contract fragment\n"
+      "  cgraph workspace init [--root PATH] [--name NAME] [--repo NAME=PATH ...]\n"
+      "        write cgraph.workspace.json (repos discovered one level down when none are named)\n"
+      "  cgraph workspace status [--root PATH] [--daemon PATH]\n"
+      "        each repo's daemon, node/edge counts and workspace totals\n"
+      "  cgraph seam discover --graph NAME=graph.json [--graph ...] --out DROPDIR\n"
+      "        write a seam fragment from the endpoints each graph serves (handled_by) and consumes (CONSUMES); no spec\n"
       "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] --out DIR\n"
       "        merge a seam fragment + service graphs into a clustered graph.json + graph.html view\n"
       "  cgraph seam query --graph FUSED.json <query|path|explain|impact|context> [PARAMS_JSON]\n"
@@ -91,9 +119,36 @@ struct Args {
   return true;
 }
 
+int run_change_context(int argc, char** argv) {
+  try {
+    nlohmann::json params = nlohmann::json::object();
+    for (int i = 2; i < argc; ++i) {
+      const std::string arg = argv[i];
+      if (i + 1 >= argc) throw std::invalid_argument("missing value for " + arg);
+      const std::string value = argv[++i];
+      if (arg == "--base-root") params["base_root"] = value;
+      else if (arg == "--target-root") params["target_root"] = value;
+      else if (arg == "--diff") params["diff_path"] = value;
+      else if (arg == "--expected-base-content-root") params["expected_base_content_root"] = value;
+      else if (arg == "--expected-target-content-root") params["expected_target_content_root"] = value;
+      else if (arg == "--budget" || arg == "--max-depth") {
+        std::size_t consumed = 0;
+        const auto number = std::stoll(value, &consumed);
+        if (consumed != value.size()) throw std::invalid_argument("invalid numeric argument");
+        params[arg == "--budget" ? "budget" : "max_depth"] = number;
+      } else throw std::invalid_argument("unknown argument: " + arg);
+    }
+    std::cout << cgraph::change_context(params).dump() << '\n';
+    return 0;
+  } catch (const std::exception& error) {
+    std::cout << nlohmann::json{{"error", error.what()}}.dump() << '\n';
+    return 1;
+  }
+}
+
 int run_build(const Args& args) {
   const auto result = cgraph::run_one_shot(args.root);
-  cgraph::write_exports(result.graph, args.output);
+  cgraph::write_exports(result.graph, args.output, args.root);
 
   // Sidecar stats.json (durable, diffable) deliberately kept out of graph.json
   // so the Graphify node-link parity golden stays byte-identical.
@@ -123,7 +178,7 @@ int run_enrich_plan(const Args& args) {
 
 int run_enrich_ingest(const Args& args) {
   const auto ingest = cgraph::ingest_enrichment(args.root, args.drop);
-  cgraph::write_exports(ingest.graph, args.output);
+  cgraph::write_exports(ingest.graph, args.output, args.root);
   std::cerr << "enrichment: " << ingest.fragments_ingested << " fragment(s) merged, "
             << ingest.fragments_rejected << " rejected\n";
   std::cerr << "nodes: " << ingest.deterministic_nodes << " deterministic -> "
@@ -234,6 +289,100 @@ int run_stats(const Args& args) {
   return 0;
 }
 
+// cgraph report <view> [--root PATH] [--format F] [--scope PREFIX] [--depth N] [--budget N]
+//                      [--threshold X] [--min-members N] [--include-tests] [--daemon PATH]
+// A thin-client op like cgraph-client's: connects to the per-root graphd,
+// spawning it when absent. Prints the rendered diagram (mermaid/svg/markdown)
+// or the JSON payload to stdout; `omitted` counts go to stderr so a piped
+// diagram stays clean. The default format is the view's natural text form:
+// a mermaid diagram for modules, markdown for types, clones and design.
+int run_report(int argc, char** argv) {
+  const std::string view = argc >= 3 ? argv[2] : "";
+  if (view.empty() || view.starts_with("--")) {
+    std::cerr << "usage: cgraph report <modules|types|clones|design> [--root PATH] [--format json|mermaid|svg|markdown]\n"
+                 "                     [--scope PREFIX] [--depth N] [--hops N] [--threshold X] [--min-members N]\n"
+                 "                     [--min-tokens N] [--budget N] [--include-tests] [--daemon PATH]\n";
+    return 2;
+  }
+  cgraph::ClientRequest request{
+      .project_root = std::filesystem::current_path(),
+      .operation = "report",
+      .params = {{"view", view}, {"format", view == "modules" ? "mermaid" : "markdown"}},
+  };
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    const bool has_value = index + 1 < argc;
+    if ((arg == "--root" || arg == "-r") && has_value) {
+      request.project_root = argv[++index];
+    } else if (arg == "--format" && has_value) {
+      request.params["format"] = argv[++index];
+    } else if (arg == "--scope" && has_value) {
+      request.params["scope"] = argv[++index];
+    } else if (arg == "--group-by" && has_value) {
+      request.params["group_by"] = argv[++index];
+    } else if (arg == "--depth" && has_value) {
+      request.params["depth"] = std::stoi(argv[++index]);
+    } else if (arg == "--budget" && has_value) {
+      request.params["budget"] = std::stoll(argv[++index]);
+    } else if (arg == "--threshold" && has_value) {
+      request.params["threshold"] = std::stod(argv[++index]);
+    } else if (arg == "--min-members" && has_value) {
+      request.params["min_members"] = std::stoi(argv[++index]);
+    } else if (arg == "--min-tokens" && has_value) {
+      request.params["min_tokens"] = std::stoi(argv[++index]);
+    } else if (arg == "--hops" && has_value) {
+      request.params["hops"] = std::stoi(argv[++index]);
+    } else if (arg == "--include-tests") {
+      request.params["include_tests"] = true;
+    } else if (arg == "--daemon" && has_value) {
+      request.daemon_path = argv[++index];
+    } else {
+      std::cerr << "report: unknown argument: " << arg << '\n';
+      return 2;
+    }
+  }
+  const auto hooks = cgraph::default_client_runtime_hooks(request);
+  const auto result = cgraph::send_thin_client_request(request, hooks);
+  if (!result.response) {
+    std::cerr << "report: " << result.error << '\n';
+    return 1;
+  }
+  const auto& response = *result.response;
+  if (const auto hint = cgraph::report_upgrade_hint(response)) {
+    std::cerr << "report: " << *hint << '\n';
+    return 3;
+  }
+  if (!response.value("ok", false)) {
+    std::cerr << "report: " << response.value("error", std::string{"daemon request failed"}) << '\n';
+    return 1;
+  }
+  const auto& payload = response["result"];
+  if (payload.value("graph_state", std::string{}) == "building") {
+    std::cerr << "report: the graph is still building; the report below may be empty -- retry in a few seconds\n";
+  }
+  if (payload.contains("rendered")) {
+    std::cout << payload["rendered"].get<std::string>();
+  } else {
+    std::cout << payload.dump(2) << '\n';
+  }
+  if (payload.contains("hint")) {
+    std::cerr << "report: " << payload["hint"].get<std::string>() << '\n';
+  }
+  // Each view has its own totals (modules/edges; types/with_members/identical/
+  // duplicates/overlaps/unreferenced), so print whatever the daemon counted.
+  const auto counts = [](const nlohmann::json& object) {
+    std::string out;
+    for (auto it = object.begin(); it != object.end(); ++it) {
+      out += (out.empty() ? "" : ", ") + it.key() + " " + it.value().dump();
+    }
+    return out;
+  };
+  std::cerr << "report: " << counts(payload.value("totals", nlohmann::json::object())) << "; omitted "
+            << counts(payload.value("omitted", nlohmann::json::object())) << " (budget " << payload.value("budget", 0)
+            << ", ~" << payload.value("estimated_tokens", 0) << " tokens)\n";
+  return 0;
+}
+
 // cgraph seam gen --seam SPEC --graphs NAME=path [--graphs ...] --out DROPDIR
 int run_seam_gen(int argc, char** argv) {
   std::filesystem::path spec_path;
@@ -292,6 +441,143 @@ int run_seam_gen(int argc, char** argv) {
   std::ofstream(out_file) << cgraph::to_json(result.fragment).dump(2) << '\n';
   std::cerr << "seam gen: wrote " << out_file << " (" << result.fragment.nodes.size()
             << " nodes, " << result.fragment.edges.size() << " edges)\n";
+  return 0;
+}
+
+// cgraph workspace init [--root DIR] [--name NAME] [--repo NAME=PATH ...]
+int run_workspace_init(int argc, char** argv) {
+  std::filesystem::path root = std::filesystem::current_path();
+  std::string name;
+  std::vector<std::pair<std::string, std::filesystem::path>> declared;
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    const bool has_value = index + 1 < argc;
+    if ((arg == "--root" || arg == "-r") && has_value) {
+      root = argv[++index];
+    } else if (arg == "--name" && has_value) {
+      name = argv[++index];
+    } else if (arg == "--repo" && has_value) {
+      const std::string pair = argv[++index];
+      const auto equals = pair.find('=');
+      if (equals == std::string::npos) {
+        std::cerr << "workspace init: --repo expects NAME=path, got '" << pair << "'\n";
+        return 2;
+      }
+      declared.emplace_back(pair.substr(0, equals), pair.substr(equals + 1));
+    } else {
+      std::cerr << "workspace init: unexpected argument '" << arg << "'\n";
+      return 2;
+    }
+  }
+
+  cgraph::Workspace workspace;
+  std::error_code error;
+  workspace.root = std::filesystem::weakly_canonical(root, error);
+  if (error) {
+    workspace.root = root;
+  }
+  workspace.name = name.empty() ? workspace.root.filename().generic_string() : name;
+  if (declared.empty()) {
+    workspace.repos = cgraph::discover_workspace_repos(workspace.root);
+    if (workspace.repos.empty()) {
+      std::cerr << "workspace init: no git repositories directly under " << workspace.root
+                << "; name them with --repo NAME=PATH\n";
+      return 1;
+    }
+  } else {
+    for (auto& [repo_name, repo_root] : declared) {
+      auto resolved = repo_root.is_absolute() ? repo_root : workspace.root / repo_root;
+      resolved = std::filesystem::weakly_canonical(resolved, error);
+      if (error || !std::filesystem::is_directory(resolved, error)) {
+        std::cerr << "workspace init: repo '" << repo_name << "' is not a directory: " << repo_root << '\n';
+        return 1;
+      }
+      workspace.repos.push_back(cgraph::WorkspaceRepo{.name = repo_name, .root = std::move(resolved)});
+    }
+  }
+
+  const auto manifest = workspace.root / std::filesystem::path(std::string(cgraph::kWorkspaceFile));
+  std::ofstream(manifest) << cgraph::workspace_manifest_json(workspace).dump(2) << '\n';
+  std::cerr << "workspace init: wrote " << manifest << " (" << workspace.repos.size() << " repos)\n";
+  for (const auto& repo : workspace.repos) {
+    std::cerr << "  " << repo.name << "  " << repo.root.generic_string() << '\n';
+  }
+  return 0;
+}
+
+// cgraph workspace status [--root DIR] [--daemon PATH]
+int run_workspace_status(int argc, char** argv) {
+  cgraph::ClientRequest request{
+      .project_root = std::filesystem::current_path(),
+      .operation = "status",
+  };
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    const bool has_value = index + 1 < argc;
+    if ((arg == "--root" || arg == "-r") && has_value) {
+      request.project_root = argv[++index];
+    } else if (arg == "--daemon" && has_value) {
+      request.daemon_path = argv[++index];
+    } else {
+      std::cerr << "workspace status: unexpected argument '" << arg << "'\n";
+      return 2;
+    }
+  }
+  if (!cgraph::is_workspace_root(request.project_root)) {
+    std::cerr << "workspace status: no " << cgraph::kWorkspaceFile << " at " << request.project_root
+              << " (run `cgraph workspace init` there first)\n";
+    return 1;
+  }
+  const auto hooks = cgraph::default_client_runtime_hooks(request);
+  const auto result = cgraph::send_thin_client_request(request, hooks);
+  if (!result.response) {
+    std::cerr << "workspace status: " << result.error << '\n';
+    return 1;
+  }
+  std::cout << result.response->dump(2) << '\n';
+  return result.response->value("ok", false) ? 0 : 1;
+}
+
+// cgraph seam discover --graph NAME=path [--graph ...] --out DROPDIR
+int run_seam_discover(int argc, char** argv) {
+  std::filesystem::path out_dir;
+  std::vector<std::pair<std::string, std::filesystem::path>> graph_specs;
+  for (int index = 3; index < argc; ++index) {
+    const std::string arg = argv[index];
+    if (arg == "--out" && index + 1 < argc) {
+      out_dir = argv[++index];
+    } else if (arg == "--graph" && index + 1 < argc) {
+      const std::string pair = argv[++index];
+      const auto eq = pair.find('=');
+      if (eq == std::string::npos) {
+        std::cerr << "seam discover: --graph expects NAME=path, got '" << pair << "'\n";
+        return 2;
+      }
+      graph_specs.emplace_back(pair.substr(0, eq), pair.substr(eq + 1));
+    } else {
+      std::cerr << "seam discover: unexpected argument '" << arg << "'\n";
+      return 2;
+    }
+  }
+  if (graph_specs.empty() || out_dir.empty()) {
+    std::cerr << "seam discover: at least one --graph NAME=graph.json and --out are required\n";
+    return 2;
+  }
+  const auto result = cgraph::discover_seam(graph_specs);
+  if (!result.ok) {
+    for (const auto& error : result.errors) {
+      std::cerr << "seam discover: ERROR: " << error << '\n';
+    }
+    return 1;
+  }
+  for (const auto& line : result.resolution_log) {
+    std::cerr << "  " << line << '\n';
+  }
+  std::filesystem::create_directories(out_dir);
+  const auto out_file = out_dir / "chunk_00.json";
+  std::ofstream(out_file) << cgraph::to_json(result.fragment).dump(2) << '\n';
+  std::cerr << "seam discover: wrote " << out_file << " (" << result.fragment.nodes.size() << " nodes, "
+            << result.fragment.edges.size() << " edges)\n";
   return 0;
 }
 
@@ -779,6 +1065,7 @@ int run_drain_command(int argc, char** argv) {
 int main(int argc, char** argv) {
   if (argc > 1) {
     const std::string first = argv[1];
+    if (first == "change-context") return run_change_context(argc, argv);
     if (first == "--version") {
       const auto info = cgraph::build_info();
       std::cout << info.name << " " << info.version << " (" << info.revision << ")" << '\n';
@@ -801,10 +1088,16 @@ int main(int argc, char** argv) {
       }
       return run_stats(args);
     }
+    if (first == "report") {
+      return run_report(argc, argv);
+    }
     if (first == "seam") {
       const std::string sub = argc >= 3 ? argv[2] : "";
       if (sub == "gen") {
         return run_seam_gen(argc, argv);
+      }
+      if (sub == "discover") {
+        return run_seam_discover(argc, argv);
       }
       if (sub == "fuse") {
         return run_seam_fuse(argc, argv);
@@ -812,7 +1105,18 @@ int main(int argc, char** argv) {
       if (sub == "query") {
         return run_seam_query(argc, argv);
       }
-      std::cerr << "usage: cgraph seam <gen|fuse|query> ...\n";
+      std::cerr << "usage: cgraph seam <gen|discover|fuse|query> ...\n";
+      return 2;
+    }
+    if (first == "workspace") {
+      const std::string sub = argc >= 3 ? argv[2] : "";
+      if (sub == "init") {
+        return run_workspace_init(argc, argv);
+      }
+      if (sub == "status") {
+        return run_workspace_status(argc, argv);
+      }
+      std::cerr << "usage: cgraph workspace <init|status> ...\n";
       return 2;
     }
     if (first == "daemon") {

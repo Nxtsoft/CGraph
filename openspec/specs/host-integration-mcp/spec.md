@@ -75,3 +75,42 @@ The bundled CGraph skill SHALL instruct agents to synchronize before freshness-s
 - **WHEN** an agent must rely on CGraph as current with the worktree
 - **THEN** the skill routes it through `graph_update` followed by a root-pinned graph read
 
+### Requirement: graph_report exposes the types view
+
+The MCP `graph_report` tool SHALL describe `view: "types"` as the type-definition audit (identical, duplicates, overlaps, unreferenced), SHALL accept `threshold` (number) and `min_members` (integer), and SHALL forward them verbatim to the daemon `report` op. The bundled `cgraph` host skill and `docs/host-skill-contract.md` SHALL route questions about type bloat, duplicate or redundant interfaces and structs, and dead types to `graph_report` with `view: "types"`, and SHALL say that `unreferenced` reflects cross-file references only.
+
+#### Scenario: Types parameters are forwarded
+- **WHEN** a client calls `graph_report` with `view: "types"`, `threshold: 0.6` and `min_members: 1`
+- **THEN** the daemon `report` request carries those three values and the response echoes `threshold` 0.6 and `min_members` 1
+
+### Requirement: MCP exposes graph_report
+The MCP server SHALL list a `graph_report` tool whose `view` parameter is the enum `modules` | `design` | `clones` | `types`, with `format` (`json` | `mermaid` | `markdown` | `svg`), `scope`, `depth`, `include_tests`, `budget` and `expected_content_root`. Arguments SHALL be forwarded verbatim to the daemon `report` op. When the daemon answers `unknown op: report`, the tool error SHALL be the upgrade hint. The bundled `cgraph` host skill and `docs/host-skill-contract.md` SHALL route architecture and module-map questions to `graph_report`.
+
+#### Scenario: Tool is advertised and forwarded
+- **WHEN** a client calls `tools/list`
+- **THEN** `graph_report` appears with `view` as an enum of the four views
+- **AND** `tools/call graph_report {view: "modules", format: "mermaid"}` forwards `{op: "report", params: {view, format}}` to the daemon
+
+### Requirement: graph_report exposes the clones view
+
+The MCP `graph_report` tool SHALL describe `view: "clones"` as the duplicate-code report, SHALL accept `min_tokens` (integer) alongside `threshold`, and SHALL forward them verbatim to the daemon `report` op. The bundled `cgraph` host skill and `docs/host-skill-contract.md` SHALL route questions about copy-pasted code, near-duplicate functions and what to extract into a shared helper to `graph_report` with `view: "clones"`, and SHALL say that a `hint` in the response means a rescan is needed.
+
+#### Scenario: Clones parameters are forwarded
+- **WHEN** a client calls `graph_report` with `view: "clones"`, `threshold: 0.6` and `min_tokens: 10`
+- **THEN** the daemon `report` request carries those values and the response echoes `threshold` 0.6 and `min_tokens` 10
+
+### Requirement: graph_report exposes the design view
+
+The MCP `graph_report` tool SHALL describe `view: "design"` as the entry-point and call-flow report, SHALL accept `hops` (integer) and forward it verbatim to the daemon `report` op, and SHALL no longer describe any view as reserved. The bundled `cgraph` host skill and `docs/host-skill-contract.md` SHALL route questions about how a program starts, its main flows, where a request goes, or a program-design overview to `graph_report` with `view: "design"`.
+
+#### Scenario: Design parameters are forwarded
+- **WHEN** a client calls `graph_report` with `view: "design"`, `format: "mermaid"` and `hops: 2`
+- **THEN** the daemon `report` request carries those values and the response echoes `hops` 2 with a `flowchart TD` in `rendered`
+
+### Requirement: graph_report exposes module grouping
+The MCP `graph_report` tool SHALL describe a `group_by` parameter for the `modules` view, taking `auto`, `packages` or `depth`, and SHALL forward it verbatim to the daemon `report` op. The bundled `cgraph` host skill and `docs/host-skill-contract.md` SHALL say that a monorepo's module map is named by its workspace packages by default, and that the response's `group_by` and `manifest` say which question the diagram answered.
+
+#### Scenario: group_by is forwarded
+- **WHEN** a client calls `graph_report` with `view: "modules"` and `group_by: "depth"`
+- **THEN** the daemon `report` request carries `group_by` `depth` and the response echoes `group_by` `depth`
+

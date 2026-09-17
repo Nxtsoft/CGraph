@@ -78,6 +78,68 @@ int main() {
     return 1;
   }
 
+  // Large graphs open community-collapsed (report-modules): a super-node per
+  // community above the threshold, expanded by click/search/"Expand all".
+  if (html.find("COLLAPSE_THRESHOLD = 500") == std::string::npos ||
+      html.find("function rebuildSuperNodes(") == std::string::npos ||
+      html.find("function expandCommunity(") == std::string::npos ||
+      html.find("id=\"collapse-toggle\"") == std::string::npos) {
+    return 1;
+  }
+
+  // Collapsed edges aggregate per drawn thing, not per community. Two expanded
+  // members calling into the same disc must keep one arrow each, so an expanded
+  // endpoint contributes its own node id; the superseded `(a.community || a.id)`
+  // key was always the community pair and drew only one of them.
+  if (html.find("const key = drawnKey(source) + \"\\u0000\" + drawnKey(target);") == std::string::npos ||
+      html.find("function drawnKey(node) { return isCollapsed(node) ? COMMUNITY_ID_PREFIX + node.community : node.id; }") ==
+          std::string::npos ||
+      html.find("(a.community || a.id)") != std::string::npos) {
+    return 1;
+  }
+
+  // Hovering a super-node resolves to its community's members and everything
+  // they touch; without the prefix branch the lookup misses and every node dims.
+  if (html.find("if (id.startsWith(COMMUNITY_ID_PREFIX)) {") == std::string::npos) {
+    return 1;
+  }
+
+  // A precomputed layout's span is restated in write_layout's own terms, so a
+  // graph.json carrying raw igraph coordinates renders like a written one and
+  // ink per node does not follow the window. The constants come from the
+  // producer, so changing kPixelsPerSqrtNode moves both.
+  if (html.find("function normalizeLayoutSpan(") == std::string::npos ||
+      html.find("normalizeLayoutSpan();") == std::string::npos ||
+      html.find("const LAYOUT_MIN_SIDE = 720;") == std::string::npos ||
+      html.find("const LAYOUT_PIXELS_PER_SQRT_NODE = 30;") == std::string::npos ||
+      html.find("Math.max(LAYOUT_MIN_SIDE, LAYOUT_PIXELS_PER_SQRT_NODE * Math.sqrt(nodes.length)) / span")
+          == std::string::npos) {
+    return 1;
+  }
+
+  // Fit maps the whole span whatever it is, and the zoom bounds are relative to
+  // the fit rather than to an absolute zoom the layout scale has to live under.
+  if (html.find("fitScale = scale;") == std::string::npos ||
+      html.find("Math.max(fitScale * 0.25, Math.min(fitScale * 4, transform.scale * factor))") == std::string::npos ||
+      html.find("transform.scale >= fitScale * 1.6") == std::string::npos) {
+    return 1;
+  }
+
+  // Every label is screen-constant: divided by the current zoom, not fixed px
+  // inside the scaled transform, discs and ordinary nodes alike.
+  if (html.find("\"bold \" + (12 / transform.scale) + \"px") == std::string::npos ||
+      html.find("(11 / transform.scale) + \"px") == std::string::npos ||
+      html.find("node.y + r + 9 / transform.scale") == std::string::npos) {
+    return 1;
+  }
+
+  // A disc pushed off an overlapping neighbour carries its members, so
+  // expanding it reveals them where the disc sat.
+  if (html.find("const dx = disc.x - centroid[i].x;") == std::string::npos ||
+      html.find("member.x += dx;") == std::string::npos) {
+    return 1;
+  }
+
   // Legend is a dynamic per-community color key, not two hardcoded rows.
   if (html.find("buildLegend(") == std::string::npos ||
       html.find("id=\"legend\"") == std::string::npos) {
@@ -111,11 +173,6 @@ int main() {
 
   const auto cypher = cgraph::export_neo4j_cypher(graph);
   if (cypher.find("MERGE (n:Symbol") == std::string::npos || cypher.find("CALLS") == std::string::npos) {
-    return 1;
-  }
-
-  const auto call_flow = cgraph::export_call_flow_html(graph);
-  if (call_flow.find("a calls b") == std::string::npos) {
     return 1;
   }
 

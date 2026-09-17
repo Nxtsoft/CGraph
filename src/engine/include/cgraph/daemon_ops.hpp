@@ -2,6 +2,9 @@
 
 #include "cgraph/operation_stats.hpp"
 #include "cgraph/types.hpp"
+#include "cgraph/snapshot_source_reader.hpp"
+#include <span>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
@@ -74,6 +77,10 @@ struct DaemonState {
   // the running daemon to <project>/cgraph-out/memory). Empty disables the write
   // op (returns an error) so in-process callers without a project dir are safe.
   std::filesystem::path memory_dir;
+  // Canonical project root the daemon serves (set by the running daemon). The
+  // report op names modules relative to it; empty leaves file paths as they are,
+  // which in-process callers and tests use with already-relative paths.
+  std::filesystem::path project_root;
   // Session-memory observability: recency of the last remember/recall (ms-epoch
   // strings, empty when never called) and the number of checkpoints re-applied by
   // the most recent memory re-overlay. Surfaced in the status `memory` block.
@@ -113,6 +120,24 @@ class EnrichmentRunningScope {
  private:
   DaemonState& state_;
 };
+
+// Canonical directional multi-source traversal. Each reached node keeps a real
+// predecessor edge and the originating changed symbol; roots have depth zero.
+struct ImpactReach {
+  int depth = 0;
+  std::string via;
+  std::string predecessor;
+  std::string changed_id;
+  Edge edge;
+};
+[[nodiscard]] std::unordered_map<std::string, ImpactReach> trace_impact(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::string_view direction, std::string_view relation, int max_depth);
+// One union gather and one packing pass, never a per-seed budget multiplication.
+[[nodiscard]] nlohmann::json pack_seed_context(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::size_t budget, int max_depth, SnapshotSourceReader& reader);
+[[nodiscard]] std::size_t serialized_context_tokens(const nlohmann::json& value);
 
 [[nodiscard]] std::shared_ptr<const GraphSnapshot> read_graph_snapshot(const DaemonState& state);
 [[nodiscard]] nlohmann::json freshness_metadata(const GraphSnapshot& graph);

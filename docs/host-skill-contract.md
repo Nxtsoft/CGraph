@@ -18,15 +18,66 @@ Supported operations:
 - `shutdown`: Ask the per-root daemon to exit cleanly.
 - `remember`: Persist a session-memory checkpoint (title, tags, markdown body).
 - `recall`: List or filter persisted checkpoints.
+- `report`: Structural report sized to a token budget. `view: "modules"` groups files into
+  modules by directory depth, aggregates imports/calls between them, ranks layers by longest
+  path, lists cycles, and renders `json` | `mermaid` | `markdown` | `svg`. `view: "types"` audits
+  type definitions (`class`/`type` nodes, members = the labels of the `field` nodes they
+  `defines`): `identical` (groups of differently named types with exactly the same member set),
+  `duplicates` (one name declared in several files, with the lowest/highest member-set Jaccard
+  between the declarations), `overlaps` (pairs that nest with the smaller at least half of the
+  larger, or are at least `threshold` Jaccard-similar, default 0.80; only types with at least
+  `min_members` members, default 3, take part) and `unreferenced` (no non-structural edge into
+  the type from anything in the graph; same-file use is not an edge, so this is a lead, not a
+  verdict); it renders `json` | `markdown`, and a diagram format answers
+  `code: "report_format_unsupported"`. `view: "clones"` groups functions whose bodies are at
+  least `threshold` similar (default 0.80) after identifiers and literals are normalized
+  (rename-insensitive fingerprints computed at extraction, compared by Jaccard over winnowed
+  5-token shingles) into `classes` with members' file:line-line, lowest pairwise `similarity` and
+  shortest body `tokens`; bodies under `min_tokens` (default 30) are skipped; classes whose members
+  all lie under test roots are `test_classes` unless `include_tests`; it renders `json` |
+  `markdown`; a `hint` says when functions lack fingerprints (a graph fast-loaded from a persist
+  written before fingerprints existed) and that `update .` computes them. `view: "design"` lists
+  `entry_points` -- `main`, HTTP `route` handlers (inline `<x>.<verb>('/path', handler)` and
+  Next.js `app/**/route.ts` exports), framework `page` files (`app/**/page.tsx`, `layout.tsx`,
+  `pages/**`), and `root` functions with callees that nothing in the graph calls -- ranked by
+  `reach` (functions transitively called over `CALLS`/`dispatches_to`), each with its top call
+  `flow` to `hops` (default 3; four children per node by reach, the rest counted in `more`),
+  `layers` (functions per shortest call distance from an entry point, with the modules that hold
+  them) and the `unreached` count; it renders `json` | `mermaid` (`flowchart TD`) | `markdown`,
+  and `svg` answers `code: "report_format_unsupported"`. Whole rows are shed to fit `budget`;
+  `omitted` always reports how many. A daemon that predates the op answers `unknown op: report`;
+  hosts should surface that as "upgrade the daemon". Hosts also call `graph_report` when asked for
+  the architecture or a module map, for type bloat, duplicate interfaces/structs, or dead types,
+  for copy-pasted or duplicated logic, and for how the program is entered and flows. The `modules`
+  view names its modules after the repository's own workspace packages when the root declares a
+  workspace (npm/pnpm/Cargo/go.work), else by directory depth; the response's `group_by`,
+  `manifest` and `packages` say which, and the request's `group_by` (`auto`, `packages`, `depth`)
+  selects.
 
 Hosts should prefer the thin client command surface unless they are implementing an MCP or always-on bridge that already speaks local JSON frames.
 
 ## Cross-Service Seam Graphs
 
-The CLI additionally ships `cgraph seam gen|fuse|query` for cross-service seam graphs: `gen`
-emits a standard node-link enrichment fragment describing cross-service call seams, `fuse`
+The CLI additionally ships `cgraph seam gen|discover|fuse|query` for cross-service seam graphs:
+`gen` emits a standard node-link enrichment fragment from a host-authored seam spec, `discover`
+emits the same fragment from the `endpoint` nodes each graph already serves (`handled_by`),
+consumes (`CONSUMES`) and documents (OpenAPI, proto, GraphQL or openapi-typescript files,
+`documented: true`) with no spec (endpoints join by their repo-free canonical id) and reports
+contract drift between documents and code, `fuse`
 builds a fused multi-repo render, and a fused seam directory can be served resident by the
 daemon. Seam fragments follow the same fragment schema as semantic enrichment drops.
+
+## Workspaces
+
+A seam is an artifact; a workspace is live. When the root a host passes holds
+`cgraph.workspace.json` (written by `cgraph workspace init`, naming member repositories), the
+thin client, the CLI and the MCP server answer across those repositories with no new tool: each
+is asked exactly as a lone project would be, keeping its own daemon, watcher and incremental
+updates. `impact` and `path` cross between repositories at the `endpoint:` contract nodes they
+share, one hop per contract, and every returned node carries the `repo` it came from. A
+repository whose daemon cannot be reached is listed in `unreachable` rather than omitted.
+`report`, `context` and the session-memory ops are answered per project: at a workspace root they
+return `ok:false` with `code: "workspace_op_unsupported"` and the repository roots to use.
 
 ## Chunk Plan Dispatch
 

@@ -1108,3 +1108,216 @@ code query.
 - **WHEN** the lexical fallback ranks seeds
 - **THEN** the term's weight reflects its code-label document frequency only
 
+### Requirement: Node lookup resolves exact keys only and fails loud
+
+Every op that takes a node key (`explain` and `impact` via `id`; `path` via `source` and `target`; `context` via `id`) SHALL resolve it by exact id first. When the key is not an id, the engine SHALL try the exact label, then the label's leading symbol token compared case-insensitively; each of those tiers SHALL resolve only when exactly one node matches. When a tier matches several nodes, the key SHALL be reported as ambiguous: the response carries the op's not-found shape (`found: false`, `focus: null`, or `<endpoint>_found: false`) plus `ambiguous: true`, `candidate_count`, and the matching nodes in `suggestions`, ordered most central first, then by label, then by id, capped at the suggestion limit. An empty key SHALL match nothing. A `context` request whose `id` is ambiguous SHALL NOT fall through to its free-text `query`.
+
+A request for `explain` or `impact` with no `id`, for `path` with no `source` or no `target`, or for `context` with none of `id`, `q`, `query` -- absent, null, or empty string -- SHALL be refused before dispatch with the ordinary `{ok: false, error}` envelope naming the missing parameter.
+
+#### Scenario: An empty id is refused, not searched
+- **GIVEN** a graph containing a node labelled `(anonymous)`
+- **WHEN** `explain` is called with `{}` or `{"id": ""}`
+- **THEN** the response is `ok: false` with an error naming `id`, and no node is returned
+
+#### Scenario: A shared label is ambiguous
+- **GIVEN** two function nodes labelled `write_file` in different files
+- **WHEN** `explain` is called with `{"id": "write_file"}`
+- **THEN** the response is `found: false`, `ambiguous: true`, `candidate_count: 2`, and
+  `suggestions` lists both nodes, the more central first
+
+#### Scenario: A shared bare name is ambiguous
+- **GIVEN** nodes labelled `Unique(int)` and `unique`
+- **WHEN** `impact` is called with `{"id": "UNIQUE"}`
+- **THEN** the response is `found: false` and `ambiguous: true` with both as candidates
+
+#### Scenario: The canonical id always resolves
+- **GIVEN** the two `write_file` nodes above
+- **WHEN** `explain` is called with one of their ids
+- **THEN** that node is returned with `found: true`
+
+#### Scenario: A unique exact label or bare name still resolves
+- **WHEN** `explain` is called with a label exactly one node carries, or a bare symbol name
+  exactly one node's label starts with
+- **THEN** that node is returned and the response echoes its canonical id
+
+#### Scenario: An ambiguous path endpoint is flagged
+- **WHEN** `path` is called with an ambiguous `source` and a resolvable `target`
+- **THEN** the response carries `source_found: false`, `source_ambiguous: true`, and the
+  candidates in `source_suggestions`, and no `target_found`
+
+### Requirement: Report op serves a types view
+
+The `report` op with `view: "types"` SHALL audit type definitions. A type is a `class` or `type` node with a source file, outside test roots unless `include_tests`, and under `scope` when given; its file SHALL be reported root-relative; its members SHALL be the labels of the `field` nodes it `defines`, and its uses SHALL be the incoming edges whose relation is not `contains`, `defines`, `method` or `method_of` and whose source is not one of its own fields. Only types with at least `min_members` members (default 3) take part in shape comparison. The response SHALL carry four sections of whole rows: `identical` (groups of differently named types whose member sets are equal, each group with its `shape` and its `types`; widest shape first, then largest group), `duplicates` (a label declared in two or more files, each declaration with file, line and members, plus the lowest and highest pairwise member-set Jaccard among the declarations; highest `min_jaccard` first, then most declarations), `overlaps` (pairs of differently named types classified `subset` when one member set is contained in the other and the smaller is at least half the size of the larger, with the smaller type first, or `overlap` when the Jaccard is at least `threshold`, default 0.80; Jaccard descending, then shared descending), and `unreferenced` (types with no use, most members first). The response SHALL carry `totals {types, with_members, identical, duplicates, overlaps, unreferenced}` and `omitted` with the same four section keys. When the rendered report exceeds `budget`, rows SHALL be shed whole from the tail of the last populated section in the order unreferenced, overlaps, duplicates, identical, and `omitted` SHALL count them. The view SHALL render `json` and `markdown` (which lists at most eight declarations per duplicate row before "+N more files"); `mermaid` and `svg` SHALL be refused with `ok: false` and `code: "report_format_unsupported"`. A `threshold` outside [0, 1] or a `min_members` below 1 SHALL be refused as a parameter error.
+
+#### Scenario: A type name declared in two headers is a duplicate row
+- **GIVEN** `FileState {size, modified_at, kind, token}` in one file and `FileState {size, modified_at, drop}` in another
+- **WHEN** `report` is called with `view: "types"`
+- **THEN** `duplicates` holds one row labelled `FileState` with two declarations, each with its root-relative file and line, and `min_jaccard` and `max_jaccard` are 0.40
+
+#### Scenario: Equal member sets form one identical group
+- **GIVEN** `Point {x, y, z}` and `Vec3 {z, y, x}`
+- **THEN** `identical` holds one group with shape `x, y, z` and both types, and no `overlaps` row pairs them
+
+#### Scenario: A nested shape is a subset only when at least half
+- **GIVEN** `Base {id, name, createdAt}` with `Extended {id, name, createdAt, deletedAt}`, and `Tiny {id}` inside `Base` at `min_members` 1
+- **THEN** `overlaps` holds `Base`/`Extended` as `subset` with `Base` first and Jaccard 0.75, and no row pairs `Tiny` with `Base`
+
+#### Scenario: A near miss and a tiny pair are not rows at the defaults
+- **GIVEN** `Near {a, b, c, d, e}` with `Nearby {a, b, c, d, f}` (Jaccard 0.67) and `Tiny {id}` with `Tiny2 {id}`
+- **THEN** neither pair appears at `threshold` 0.80 and `min_members` 3
+- **AND** at `threshold` 0.6 the first pair appears as `overlap`, and at `min_members` 1 the second is an identical group
+
+#### Scenario: Structural edges do not make a type referenced
+- **GIVEN** a type whose only incoming edges are `contains` from its file and `references` from its own field
+- **THEN** it appears in `unreferenced`
+- **AND** a type that is referenced by a function, constructed through a `CALLS` edge, or inherited from does not
+
+#### Scenario: The budget sheds unreferenced rows first and keeps identical groups last
+- **WHEN** the budget is one token below the full report
+- **THEN** the report loses rows from the end of `unreferenced` only and `omitted.unreferenced` equals the number dropped
+- **AND** under a budget that fits only one row, that row is the first identical group
+
+#### Scenario: Diagram formats are refused
+- **WHEN** `report` is called with `view: "types"` and `format: "mermaid"` or `"svg"`
+- **THEN** the response is `ok: false` with `code: "report_format_unsupported"`
+
+### Requirement: Report op with a modules view
+The daemon SHALL serve a `report` op selected by `view` (`modules` | `design` | `clones` | `types`). Only `modules` SHALL be implemented by this change; the reserved views SHALL answer `ok: false` with `code: "report_view_not_implemented"` so a host can distinguish "not yet" from a malformed request. An unknown view or format, a `depth` below 1, or a negative `budget` SHALL be an error frame, and a mistyped parameter SHALL yield `invalid request parameter` like every other op. `report` SHALL be a root-pinnable read (`expected_content_root` applies) and SHALL be recorded in op-stats without changing the durable ledger schema.
+
+The modules view SHALL group every code node (enrichment and memory nodes excluded) by the first `depth` directory components of its source file relative to the daemon's project root (default depth 2, so `src/engine/dedup.cpp` belongs to `src/engine`; a root-level file belongs to `.`). It SHALL aggregate `imports`, `imports_from`, `re_exports` (counted as imports) and `CALLS` edges between distinct modules with counts, rank layers by the longest dependency path over the module DAG (layer 0 = nothing depends on it; a strongly connected component shares one layer), and list every cycle as the sorted members of a strongly connected component. Modules under a test root (`test`, `tests`, `testing`, `__tests__`, `spec`, `specs`, `e2e`, `testdata`, `fixtures`, `__mocks__`) SHALL be left out entirely -- neither as sources nor as targets, since an edge from production code into a test is a name-collision resolution artifact -- unless `include_tests` is true. `scope` (a root-relative prefix) SHALL restrict which modules report their outgoing edges; a module they depend on SHALL still appear as a target.
+
+#### Scenario: Files group into modules by depth
+- **GIVEN** files `a/x/f1.py`, `a/x/f2.py`, `a/y/g.py`, `b/h.py` with calls a/x -> a/y (2), one import a/x -> a/y, and b -> a/x (1 call, 1 import)
+- **WHEN** `report {view: "modules"}` runs at depth 2
+- **THEN** modules are `b` (layer 0), `a/x` (layer 1, 2 files), `a/y` (layer 2), with edges `a/x -> a/y` (2 calls, 1 import) and `b -> a/x` (1 call, 1 import), and `cycles` is empty
+
+#### Scenario: Test roots are excluded by default
+- **GIVEN** `tests/t.py` calls into `a/x` five times
+- **WHEN** the report runs without `include_tests`
+- **THEN** `tests` is not a module and no edge leaves or enters it
+- **AND** with `include_tests: true` the edge `tests -> a/x` (5 calls, 1 import) appears and `tests` sits in layer 0
+
+#### Scenario: A cycle is listed, not hidden
+- **GIVEN** `a/y` also calls `a/x`
+- **WHEN** the report runs
+- **THEN** `cycles` contains `["a/x", "a/y"]`, both edges carry `cycle: true`, and both modules share one layer
+
+#### Scenario: Scope reports dependencies of the selected modules
+- **WHEN** the report runs with `scope: "b"`
+- **THEN** `b -> a/x` is reported and `a/x` appears as a target, while `a/x -> a/y` is not reported
+
+#### Scenario: A reserved view is a typed error
+- **WHEN** `report {view: "design"}` runs
+- **THEN** the response is `ok: false` with `code: "report_view_not_implemented"`
+
+### Requirement: Report output is budgeted by whole rows
+The report SHALL render `json`, `mermaid` (`graph LR`, one subgraph per layer, module labels carrying file counts, edge labels carrying call and import counts, cycle edges dashed), `markdown` and `svg` (the daemon's own layered layout, no Graphviz). The rendered text SHALL be measured at about four characters per token against `budget` (default 6000; 0 disables the budget). When it overflows, the daemon SHALL drop whole dependency rows lightest first, and only when the bare module list still overflows drop whole modules lightest first (an edge leaves with either endpoint). A row SHALL never be truncated. The response SHALL always carry `totals` and `omitted` counts for modules and edges, plus `estimated_tokens` and `budget`.
+
+#### Scenario: Edges are shed before modules
+- **GIVEN** a 30-module chain whose edge weights strictly increase
+- **WHEN** the budget is below the full report but above the module list
+- **THEN** `omitted.edges > 0`, `omitted.modules == 0`, the kept edges are the heaviest, and the rendered text fits the budget
+
+#### Scenario: Modules are shed when the list itself overflows
+- **WHEN** the budget cannot hold the module list
+- **THEN** the lightest modules are dropped, `omitted.modules > 0`, every kept edge joins two kept modules, and the rendered text says what was omitted
+
+#### Scenario: Budget zero renders everything
+- **WHEN** `budget` is 0
+- **THEN** nothing is omitted
+
+### Requirement: An older daemon surfaces an upgrade hint
+A graphd built before the op answers `unknown op: report`. The CLI (`cgraph report`) and the MCP tool SHALL turn that reply into an "upgrade the daemon" message that names the shutdown command, never an empty report; the CLI exits 3 in that case.
+
+#### Scenario: Old daemon
+- **WHEN** the daemon replies `{ok: false, error: "unknown op: report"}`
+- **THEN** the client prints the upgrade hint instead of a diagram
+
+### Requirement: Report op serves a clones view
+
+The `report` op with `view: "clones"` SHALL group functions whose fingerprints are at least `threshold` (default 0.80) Jaccard-similar into clone classes. Candidates SHALL be `function` nodes with a source file under `scope` whose fingerprint has at least `min_tokens` (default 30) tokens. Candidate pairs SHALL be gathered through an inverted index on shingle hash, skipping any shingle shared by more than 512 candidates, and each pair's Jaccard SHALL be exact. Classes SHALL be the connected components of pairs at or above `threshold`; each class SHALL carry its members (root-relative file, start and end line, label, tokens; ordered by file then line), its lowest pairwise `similarity` and its shortest member's `tokens`. A class whose members all lie under test roots SHALL be listed in `test_classes` unless `include_tests`, in which case every class is in `classes`. Classes SHALL be ordered largest first, then most similar, then longest. The response SHALL carry `totals {functions, fingerprinted, eligible, classes, test_classes, members}` and `omitted {classes, test_classes}`, and SHALL carry a `hint` naming the rescan when any in-scope function has no fingerprint. When the rendered report exceeds `budget`, whole classes SHALL be shed, test classes first, then production classes, smallest last-ranked first, and `omitted` SHALL count them. The view SHALL render `json` and `markdown`; `mermaid` and `svg` SHALL be refused with `ok: false` and `code: "report_format_unsupported"`.
+
+#### Scenario: Identical copies form one class
+- **GIVEN** two production functions with identical fingerprints of 60 tokens and a third sharing 8 of 12 shingles with them
+- **WHEN** `report` is called with `view: "clones"`
+- **THEN** `classes` holds one class of the two copies with `similarity` 1.0 and `tokens` 60, and the third is not a member
+- **AND** at `threshold` 0.6 the third joins and the class `similarity` is 0.67
+
+#### Scenario: The token floor excludes boilerplate
+- **GIVEN** a 12-token function whose fingerprint equals the copies'
+- **THEN** it is not a member at `min_tokens` 30 and is a member at `min_tokens` 10
+
+#### Scenario: Test fixtures are their own bucket
+- **GIVEN** two identical functions under `tests/`
+- **THEN** they form one entry in `test_classes`, and with `include_tests` the same class appears in `classes`
+
+#### Scenario: Missing fingerprints are reported, not hidden
+- **GIVEN** a function node with no fingerprint
+- **THEN** `totals.fingerprinted` is below `totals.functions` and the response carries a `hint` naming `update .`
+
+#### Scenario: The budget sheds test classes first
+- **WHEN** the budget is one token below the full report
+- **THEN** the test class is omitted and the production class is kept
+
+### Requirement: Fingerprints persist beside the graph
+
+`persist_graph_snapshot` SHALL write the snapshot's fingerprints to `fingerprints.json` next to `graph.json`, and `load_graph_snapshot` SHALL read them back when the file is present and well-formed. A missing or unreadable sidecar SHALL load an empty fingerprint map and SHALL NOT fail the load. The index version key SHALL NOT change for this artifact.
+
+#### Scenario: Fingerprints survive a restart
+- **WHEN** a snapshot with fingerprints is persisted and loaded
+- **THEN** the loaded snapshot carries the same fingerprints
+
+#### Scenario: An older persist loads without fingerprints
+- **GIVEN** a persisted `graph.json` with no `fingerprints.json`
+- **THEN** the graph loads, its fingerprint map is empty, and `report clones` answers with the hint
+
+### Requirement: Report op serves a design view
+
+The `report` op with `view: "design"` SHALL list the program's entry points and the top call flow from each. Candidates SHALL be `function` nodes with a source file under `scope`, outside test roots unless `include_tests`. An entry point SHALL be classified, most specific first, as `main` (label `main`, `Main` or `__main__`), `route` (a label of the form `<receiver>.<verb> /path` or `<verb> /path` with an HTTP verb, or a function named for an HTTP verb in an `app/**/route.*` file), `page` (a function with no callers in an `app/**/{page,layout,template,loading,error,not-found}.*` file or under `pages/` outside `api/`), or `root` (any other function with at least one callee over `CALLS` or `dispatches_to` and no caller). Entry points SHALL be ranked by `reach` (distinct functions transitively reachable over those relations) descending, then fan-out descending, then label. Each entry SHALL carry a `flow`: a tree to `hops` (default 3, minimum 1) whose children are ordered by reach and capped at four per node with the remainder in `more`, each function appearing at most once per flow. The response SHALL carry `layers` (for each shortest call distance from any entry point, the function count and up to three module names holding most of them), `unreached_samples` (up to five labels of functions no entry reaches, most called first), `totals {functions, entry_points, by_kind, reached, unreached}` and `omitted {entry_points}`. When the rendered report exceeds `budget`, whole entry points SHALL be shed from the tail of the ranking and `omitted` SHALL count them. The view SHALL render `json`, `markdown` and `mermaid` (a `flowchart TD` in which a callee shared by several flows is one node); `svg` SHALL be refused with `ok: false` and `code: "report_format_unsupported"`. A `hops` below 1 SHALL be refused as a parameter error.
+
+#### Scenario: Entry points of four kinds ranked by reach
+- **GIVEN** `main` calling seven functions with a chain three deep, a `app.get /health` handler, a component in `app/dashboard/page.tsx`, and an uncalled `exported` with one callee
+- **WHEN** `report` is called with `view: "design"`
+- **THEN** `entry_points` lists `main` (`main`, reach 10), the page component (`page`), the handler (`route`) and `exported` (`root`), in that order
+
+#### Scenario: Called, leaf and cyclic functions are not entry points
+- **GIVEN** a function with no callees, two functions that call each other, and a function called by `main`
+- **THEN** none of them is an entry point and the cycle members count as unreached
+
+#### Scenario: A flow is bounded by hops and branch
+- **GIVEN** `main` with seven callees
+- **THEN** its `flow` draws the four callees with the largest reach, reports `more: 3`, and follows the deepest chain three hops; with `hops: 1` the children have no children while `reach` is unchanged
+
+#### Scenario: Layers are shortest call distances
+- **GIVEN** a function reachable at distance 2 from one entry and 3 from another
+- **THEN** it is counted once, at depth 2
+
+#### Scenario: The budget sheds the last entry point
+- **WHEN** the budget is one token below the full report
+- **THEN** the lowest-ranked entry point is omitted and `omitted.entry_points` is 1 while `layers` are kept
+
+### Requirement: The modules view groups by workspace package when the project declares one
+The `report` op's `modules` view SHALL read the project root's workspace manifest and use the packages it declares as module names. The manifests SHALL be a `package.json` with a `workspaces` array or a `workspaces.packages` array, a `pnpm-workspace.yaml` with a `packages:` list (block or inline), a `Cargo.toml` with `[workspace]` `members` and `exclude` arrays that may span lines, and a `go.work` with `use` directives bare or in a `use ( … )` block; the first that names members SHALL be used. Member globs SHALL support a literal segment, `*` for exactly one segment, `**` for any number, and a leading `!` to exclude, expanded against directories under the root, skipping the directories the project scanners skip and bounded in depth and count. A matched directory SHALL be a package only when it declares its own `package.json`, `Cargo.toml` or `go.mod`, taking its name from that manifest's `name` (Cargo `[package] name`, go.mod `module`) or, when absent, the directory name; a package nested inside another SHALL own its own files. A file under no package SHALL keep its directory-depth module, so no file is dropped. The response SHALL carry `group_by` (`packages` or `depth`), the `manifest` that supplied the packages and the `packages` count, and the rendered caption SHALL name the manifest and package count in place of the depth. The request SHALL accept `group_by`: `auto` (default: packages when declared, else depth), `packages`, or `depth`, and SHALL reject any other value with an error naming the three.
+
+#### Scenario: An npm workspace names the modules
+- **GIVEN** a root `package.json` with `"workspaces": ["apps/*", "packages/*"]`, `apps/web/package.json` named `@acme/web`, `packages/ui/package.json` named `ui-kit`, and a file under `tools/`
+- **WHEN** `report` runs with `view: "modules"`
+- **THEN** `group_by` is `packages`, `manifest` is `package.json`, `packages` is 2, the modules include `@acme/web` and `ui-kit`, a call between their files is an edge between those modules, and the `tools` file's module is `tools`
+
+#### Scenario: Each manifest format is read
+- **GIVEN** a pnpm workspace listing `apps/*`, `libs/**` and `!libs/private`; a Cargo workspace whose `members` span lines with an `exclude`; and a `go.work` with a bare `use` and a `use ( … )` block
+- **THEN** each yields its declared packages, named by their own manifests, with the excluded ones left out and `manifest` naming the file that declared them
+
+#### Scenario: A glob hit that declares nothing is not a package
+- **GIVEN** `packages/*` matching a directory with no `package.json`
+- **THEN** it is not a package, and its files keep their directory-depth module
+
+#### Scenario: A project without a workspace is unchanged
+- **GIVEN** a root whose `package.json` has no `workspaces`, or a malformed manifest, or globs matching nothing
+- **THEN** `group_by` is `depth`, `packages` is 0, and module names are the directory components as before
+
+#### Scenario: group_by overrides
+- **WHEN** `group_by` is `depth` on a repository that declares a workspace
+- **THEN** the modules are directory components and `packages` is 0
+- **AND** an unknown `group_by` is an error naming `auto|packages|depth`
+

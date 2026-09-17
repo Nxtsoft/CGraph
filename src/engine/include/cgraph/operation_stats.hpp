@@ -61,14 +61,31 @@ struct CallResolution {
   // which overload a call means needs types we do not have. Counted once per
   // call, not per edge.
   std::size_t resolved_overload_first = 0;
+  // A qualified call that bound without its qualifier ever being checked: the
+  // qualifier's root names a scope the project itself declares, yet no
+  // candidate recorded a scope or an owning class to check it against, so the
+  // call resolved as an unqualified one would. Every edge this admits is a
+  // guess the qualifier could not confirm, so it is counted separately --
+  // without it, an edge bound on no evidence is indistinguishable from one the
+  // scope proved. Counted once per call, a subset of the resolved fields.
+  std::size_t resolved_qualifier_unchecked = 0;
   std::size_t dropped_unknown = 0;    // nothing callable bears the name
   std::size_t dropped_ambiguous = 0;  // candidates span more than one file
   std::size_t dropped_self = 0;       // resolved to the caller itself
+  // A qualified callee (`std::find`) whose name resolved, but to a declaration
+  // outside the named scope: the qualifier is evidence the call meant something
+  // else, so the edge is refused rather than fabricated.
+  std::size_t dropped_scope_mismatch = 0;
+  // A member call with an unknown receiver whose bare name every standard
+  // library defines (`.size()`, `.find()`): the method-only project-wide tier
+  // refuses it, because a unique project method of that name is not evidence.
+  std::size_t dropped_library_member = 0;
 
   [[nodiscard]] bool balances() const {
     return resolved_same_file + resolved_project_unique + resolved_member_method + dropped_unknown +
-               dropped_ambiguous + dropped_self ==
-           total;  // resolved_overload_first is a subset of same_file + project_unique
+               dropped_ambiguous + dropped_self + dropped_scope_mismatch + dropped_library_member ==
+           total;  // resolved_overload_first and resolved_qualifier_unchecked are
+                   // subsets of same_file + project_unique + member_method
   }
 
   [[nodiscard]] double resolved_rate() const {
@@ -81,6 +98,23 @@ struct CallResolution {
 
 // Per-phase timings and counters for one deterministic (re)build. Populated by
 // run_one_shot and the daemon rescan.
+// Contract discovery (resolve_contracts): route registrations and router mounts
+// found at extraction, and the endpoint nodes minted from them. An unresolved
+// route leaves no node, so like calls it has to be counted or it cannot be
+// known.
+struct ContractResolution {
+  std::size_t routes = 0;              // route registrations seen
+  std::size_t routes_unresolved = 0;   // handler missing, or its router chain unknown to the file
+  std::size_t mounts = 0;              // `.use(child)` / `.route(path, child)` mounts and aliases seen
+  std::size_t mounts_unresolved = 0;   // child identifier no import or declaration explains
+  std::size_t endpoints = 0;           // endpoint nodes minted from routes this repo serves
+  std::size_t calls = 0;               // client calls (fetch / api.GET / a wrapper) seen
+  std::size_t calls_unresolved = 0;    // URL in a local variable, absolute external URL, or caller no node names
+  std::size_t consumes = 0;            // CONSUMES edges added
+  std::size_t endpoints_external = 0;  // endpoint nodes minted for consumed routes this repo does not serve
+  std::size_t endpoints_documented = 0;  // endpoint nodes a contract document (OpenAPI, proto, GraphQL) declares
+};
+
 struct BuildStats {
   double extract_ms = 0.0;
   double merge_ms = 0.0;
@@ -94,6 +128,7 @@ struct BuildStats {
   std::size_t nodes = 0;
   std::size_t edges = 0;
   CallResolution calls;
+  ContractResolution contracts;
   // Detected files no registered extractor handles, per language name. Empty
   // when coverage is total; nonzero means part of the tree is invisible to the
   // graph (fail-loud, so a coverage hole never hides in a per-file warning).
@@ -105,9 +140,10 @@ struct BuildStats {
 };
 
 // The daemon request types, in dispatch order. Count is the array sentinel.
-// Remember/Recall (session memory) are appended before Count so the durable
-// ledger's kSubstantiveOps (Query..Context) and its schema stay unchanged.
-enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Count };
+// Remember/Recall (session memory) and Report (structural reports) are appended
+// before Count so the durable ledger's kSubstantiveOps (Query..Context) and its
+// schema stay unchanged.
+enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Report, Count };
 
 inline constexpr std::size_t kDaemonOpCount = static_cast<std::size_t>(DaemonOp::Count);
 

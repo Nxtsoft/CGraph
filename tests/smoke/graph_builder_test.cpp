@@ -3,6 +3,9 @@
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
+#include <vector>
+#include <utility>
+#include <cstdio>
 
 namespace {
 
@@ -336,19 +339,441 @@ int test_resolve_relations() {
   return 0;
 }
 
+// C/C++ `#include` is textual, so a reference resolves through the whole
+// include chain: app.cpp -> engine.hpp -> types.hpp reaches `Node`. The walk is
+// nearest-unique: a declaration in a nearer header shadows a farther one, two
+// declarations at the same distance are ambiguous and refuse the edge, a header
+// cycle terminates, the depth is bounded, and a TypeScript file still resolves
+// through its direct imports only.
+int test_resolve_relations_through_includes() {
+  const auto app = cgraph::make_id("/p/app.cpp");
+  const auto engine_hpp = cgraph::make_id("/p/engine.hpp");
+  const auto types_hpp = cgraph::make_id("/p/types.hpp");
+  const auto other_hpp = cgraph::make_id("/p/other.hpp");
+  const auto far_hpp = cgraph::make_id("/p/far.hpp");
+  const auto cyc_a = cgraph::make_id("/p/cyc_a.hpp");
+  const auto cyc_b = cgraph::make_id("/p/cyc_b.hpp");
+  const auto fn = cgraph::make_id("/p/app.cpp:run");
+  const auto node_type = cgraph::make_id("/p/types.hpp:Node");
+  const auto near_config = cgraph::make_id("/p/engine.hpp:Config");
+  const auto far_config = cgraph::make_id("/p/types.hpp:Config");
+  const auto twin_one = cgraph::make_id("/p/types.hpp:Twin");
+  const auto twin_two = cgraph::make_id("/p/other.hpp:Twin");
+  const auto deep_type = cgraph::make_id("/p/far.hpp:Deep");
+  const auto cyc_type = cgraph::make_id("/p/cyc_b.hpp:Cyc");
+
+  cgraph::GraphSnapshot graph;
+  for (const auto& [id, path] : std::vector<std::pair<std::string, std::string>>{
+           {app, "/p/app.cpp"}, {engine_hpp, "/p/engine.hpp"}, {types_hpp, "/p/types.hpp"}, {other_hpp, "/p/other.hpp"},
+           {far_hpp, "/p/far.hpp"}, {cyc_a, "/p/cyc_a.hpp"}, {cyc_b, "/p/cyc_b.hpp"}}) {
+    graph.nodes.push_back({.id = id, .label = path.substr(3), .source_file = path, .kind = "file"});
+  }
+  graph.nodes.push_back({.id = fn, .label = "run", .source_file = "/p/app.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = node_type, .label = "Node", .source_file = "/p/types.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = near_config, .label = "Config", .source_file = "/p/engine.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = far_config, .label = "Config", .source_file = "/p/types.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = twin_one, .label = "Twin", .source_file = "/p/types.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = twin_two, .label = "Twin", .source_file = "/p/other.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = deep_type, .label = "Deep", .source_file = "/p/far.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = cyc_type, .label = "Cyc", .source_file = "/p/cyc_b.hpp", .kind = "class"});
+  // app.cpp -> engine.hpp -> {types.hpp, other.hpp}; types.hpp -> far.hpp (depth 3);
+  // app.cpp -> cyc_a.hpp <-> cyc_b.hpp.
+  graph.edges.push_back({.source = app, .target = engine_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = engine_hpp, .target = types_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = engine_hpp, .target = other_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = types_hpp, .target = far_hpp, .relation = "imports"});
+  graph.edges.push_back({.source = app, .target = cyc_a, .relation = "imports"});
+  graph.edges.push_back({.source = cyc_a, .target = cyc_b, .relation = "imports"});
+  graph.edges.push_back({.source = cyc_b, .target = cyc_a, .relation = "imports"});
+
+  const cgraph::RawRelation relations[] = {
+      {.source_id = fn, .target_label = "Node", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Config", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Twin", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Deep", .relation = "references", .context = "return_type", .source_file = "/p/app.cpp"},
+      {.source_id = fn, .target_label = "Cyc", .relation = "references", .context = "parameter_type", .source_file = "/p/app.cpp"},
+  };
+  cgraph::resolve_raw_relations(graph, relations);
+
+  if (!has_edge(graph, fn, node_type, "references")) {
+    return 1;  // two hops: app.cpp -> engine.hpp -> types.hpp
+  }
+  if (!has_edge(graph, fn, near_config, "references") || has_edge(graph, fn, far_config, "references")) {
+    return 1;  // the nearer Config (engine.hpp, depth 1) shadows the farther one (types.hpp, depth 2)
+  }
+  if (has_edge(graph, fn, twin_one, "references") || has_edge(graph, fn, twin_two, "references")) {
+    return 1;  // two Twins at depth 2 are ambiguous: no edge to either
+  }
+  if (!has_edge(graph, fn, deep_type, "references")) {
+    return 1;  // depth 3 is within the bound
+  }
+  if (!has_edge(graph, fn, cyc_type, "references")) {
+    return 1;  // a header cycle terminates and still resolves what it reaches
+  }
+
+  // TypeScript: a transitive import does not re-export, so the same shape stays
+  // direct-only and `Node` two hops away does not resolve.
+  const auto ts_app = cgraph::make_id("/p/app.ts");
+  const auto ts_mid = cgraph::make_id("/p/mid.ts");
+  const auto ts_types = cgraph::make_id("/p/types.ts");
+  const auto ts_fn = cgraph::make_id("/p/app.ts:run");
+  const auto ts_node = cgraph::make_id("/p/types.ts:Node");
+  cgraph::GraphSnapshot ts;
+  ts.nodes.push_back({.id = ts_app, .label = "app.ts", .source_file = "/p/app.ts", .kind = "file"});
+  ts.nodes.push_back({.id = ts_mid, .label = "mid.ts", .source_file = "/p/mid.ts", .kind = "file"});
+  ts.nodes.push_back({.id = ts_types, .label = "types.ts", .source_file = "/p/types.ts", .kind = "file"});
+  ts.nodes.push_back({.id = ts_fn, .label = "run", .source_file = "/p/app.ts", .kind = "function"});
+  ts.nodes.push_back({.id = ts_node, .label = "Node", .source_file = "/p/types.ts", .kind = "class"});
+  ts.edges.push_back({.source = ts_app, .target = ts_mid, .relation = "imports"});
+  ts.edges.push_back({.source = ts_mid, .target = ts_types, .relation = "imports"});
+  const cgraph::RawRelation ts_relations[] = {
+      {.source_id = ts_fn, .target_label = "Node", .relation = "references", .context = "parameter_type", .source_file = "/p/app.ts"},
+  };
+  cgraph::resolve_raw_relations(ts, ts_relations);
+  if (has_edge(ts, ts_fn, ts_node, "references")) {
+    return 1;  // not for TypeScript
+  }
+  return 0;
+}
+
 }  // namespace
 
+// A qualified callee names its scope, and that scope must agree with the
+// resolved declaration. `std::find` resolves by leaf name to the project's only
+// `find`, but nothing in the project is declared in `std`, so the edge is
+// refused. `proj::helper` binds because `helper` carries scope "proj", and
+// `proj::Stats::size_of` binds because `size_of` is a method of class `Stats`.
+int test_qualified_scope() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto find_fn = cgraph::make_id("/p/find.cpp:find");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto stats = cgraph::make_id("/p/stats.hpp:Stats");
+  const auto size_of = cgraph::make_id("/p/stats.hpp:Stats::size_of");
+  const auto local_exists = cgraph::make_id("/p/use.cpp:exists");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = find_fn, .label = "find", .source_file = "/p/find.cpp", .kind = "function",
+                         .properties = {{"scope", "proj"}}});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  // The class carries its own namespace, so `proj::Stats::size_of` checks `proj`
+  // against the class and `Stats` against the method's owner.
+  graph.nodes.push_back({.id = stats, .label = "Stats", .source_file = "/p/stats.hpp", .kind = "class",
+                         .properties = {{"scope", "proj"}}});
+  graph.nodes.push_back({.id = size_of, .label = "size_of", .source_file = "/p/stats.hpp", .kind = "function",
+                         .properties = {{"method", "true"}, {"scope", "proj"}}});
+  graph.nodes.push_back({.id = local_exists, .label = "exists", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.edges.push_back({.source = stats, .target = size_of, .relation = "method"});
+
+  const cgraph::RawCall calls[] = {
+      // std::find: leaf name matches the unique project `find`, scope does not.
+      {.caller_id = caller, .callee_label = "find", .source_file = "/p/use.cpp", .qualifier = "std"},
+      // proj::detail::helper: the innermost qualifier matches the declared scope.
+      {.caller_id = caller, .callee_label = "helper", .source_file = "/p/use.cpp", .qualifier = "proj::detail"},
+      // proj::Stats::size_of: a class-qualified static call binds to the class's method.
+      {.caller_id = caller, .callee_label = "size_of", .source_file = "/p/use.cpp", .qualifier = "proj::Stats"},
+      // std::filesystem::exists: a same-file `exists` must not capture it either.
+      {.caller_id = caller, .callee_label = "exists", .source_file = "/p/use.cpp", .qualifier = "std::filesystem"},
+      // Unqualified `find` keeps the ordinary unique-name rule.
+      {.caller_id = caller, .callee_label = "find", .source_file = "/p/use.cpp"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, helper, "CALLS")) {
+    return 1;
+  }
+  if (!has_edge(graph, caller, size_of, "CALLS")) {
+    return 1;
+  }
+  if (has_edge(graph, caller, local_exists, "CALLS")) {
+    return 1;
+  }
+  // The unqualified call produced the one edge to `find`; the std-qualified one did not add a second.
+  if (!has_edge(graph, caller, find_fn, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.dropped_scope_mismatch != 2 || !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// The scope gate reasons in segments, not text: a qualifier must be a suffix of
+// the declaration's scope (so `other::detail::helper` does not reach
+// `proj::detail::helper`), an anonymous namespace is transparent to a qualified
+// call from the same translation unit, and an overload set is gated as a whole
+// -- only the members in the named scope get an edge, whichever was declared
+// first, and a set with no survivor is not counted as resolved.
+int test_qualified_scope_segments() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto hidden = cgraph::make_id("/p/hidden.cpp:hidden");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto dup_alpha = cgraph::make_id("/p/dup.cpp:dup");
+  const auto dup_file = cgraph::make_id("/p/dup.cpp:dup:2");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = hidden, .label = "hidden", .source_file = "/p/hidden.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::(anonymous)"}}});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  // File-scope declaration FIRST, so the overload head is the wrong one.
+  graph.nodes.push_back({.id = dup_file, .label = "dup", .source_file = "/p/dup.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = dup_alpha, .label = "dup", .source_file = "/p/dup.cpp", .kind = "function",
+                         .properties = {{"scope", "alpha"}}});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "hidden", .source_file = "/p/use.cpp", .qualifier = "proj"},
+      {.caller_id = caller, .callee_label = "helper", .source_file = "/p/use.cpp", .qualifier = "other::detail"},
+      {.caller_id = caller, .callee_label = "dup", .source_file = "/p/use.cpp", .qualifier = "alpha"},
+      {.caller_id = caller, .callee_label = "dup", .source_file = "/p/use.cpp", .qualifier = "beta"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, hidden, "CALLS")) {
+    return 1;  // anonymous namespace is transparent
+  }
+  if (has_edge(graph, caller, helper, "CALLS")) {
+    return 1;  // a different root does not match on the innermost segment alone
+  }
+  if (!has_edge(graph, caller, dup_alpha, "CALLS") || has_edge(graph, caller, dup_file, "CALLS")) {
+    return 1;  // the overload set is gated as a whole, regardless of declaration order
+  }
+  // `beta::dup` matched neither member: refused, and not counted as an overload hit.
+  if (outcomes.dropped_scope_mismatch != 2 || outcomes.resolved_overload_first != 1 || !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// The qualifier's root is the first thing checked, and the project's own
+// declared scopes are what it is checked against. This project records no scope
+// anywhere, so `proj` is a root it does not own: `proj::Cache::reload()` names a
+// scope no declaration here can be in and is refused exactly as `std::` is,
+// with no allowlist of library namespaces anywhere in the resolver.
+int test_qualifier_root_unknown_to_project() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto reload = cgraph::make_id("/p/cache.cpp:reload");
+  const auto remove_fn = cgraph::make_id("/p/paths.cpp:remove");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = reload, .label = "reload", .source_file = "/p/cache.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = remove_fn, .label = "remove", .source_file = "/p/paths.cpp", .kind = "function"});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "reload", .source_file = "/p/use.cpp", .qualifier = "proj::Cache"},
+      {.caller_id = caller, .callee_label = "remove", .source_file = "/p/use.cpp", .qualifier = "std::filesystem"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (has_edge(graph, caller, reload, "CALLS") || has_edge(graph, caller, remove_fn, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.dropped_scope_mismatch != 2 || outcomes.resolved_qualifier_unchecked != 0 ||
+      !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// Under a root the project DOES own, the gate refuses only a contradiction. The
+// project declares `proj::detail`, so `proj` is its own namespace: a call into
+// it binds a candidate that records no scope of its own (an out-of-line
+// definition the extractor did not stamp), counted as
+// `resolved_qualifier_unchecked` because the qualifier proved nothing. A root
+// the project does not own refuses the same candidate shape outright.
+int test_qualifier_root_is_project_namespace() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto reload = cgraph::make_id("/p/cache.cpp:reload");
+  const auto format_fn = cgraph::make_id("/p/text.cpp:format");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  graph.nodes.push_back({.id = reload, .label = "reload", .source_file = "/p/cache.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = format_fn, .label = "format", .source_file = "/p/text.cpp", .kind = "function"});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "reload", .source_file = "/p/use.cpp", .qualifier = "proj::Cache"},
+      {.caller_id = caller, .callee_label = "format", .source_file = "/p/use.cpp", .qualifier = "fmt"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, reload, "CALLS")) {
+    return 1;
+  }
+  if (has_edge(graph, caller, format_fn, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.resolved_qualifier_unchecked != 1 || outcomes.dropped_scope_mismatch != 1 ||
+      !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// The shape the review measured: a project whose file-scope helpers share their
+// names with library functions (`find`, `remove`, `size`, `format`, `trim`),
+// called through library namespaces the project declares nowhere. Every one of
+// these bound to the project function while the contradiction test was an
+// allowlist holding `std` alone. The project's own `proj::detail::helper()`
+// still resolves, so the rule refuses library roots without refusing the
+// project.
+int test_library_qualified_calls() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto helper = cgraph::make_id("/p/helper.cpp:helper");
+  const auto find_fn = cgraph::make_id("/p/text.cpp:find");
+  const auto remove_fn = cgraph::make_id("/p/text.cpp:remove");
+  const auto size_fn = cgraph::make_id("/p/text.cpp:size");
+  const auto format_fn = cgraph::make_id("/p/text.cpp:format");
+  const auto trim_fn = cgraph::make_id("/p/text.cpp:trim");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = helper, .label = "helper", .source_file = "/p/helper.cpp", .kind = "function",
+                         .properties = {{"scope", "proj::detail"}}});
+  for (const auto& [id, label] : {std::pair{find_fn, "find"}, std::pair{remove_fn, "remove"},
+                                  std::pair{size_fn, "size"}, std::pair{format_fn, "format"},
+                                  std::pair{trim_fn, "trim"}}) {
+    graph.nodes.push_back({.id = id, .label = label, .source_file = "/p/text.cpp", .kind = "function"});
+  }
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "format", .source_file = "/p/use.cpp", .qualifier = "fmt"},
+      {.caller_id = caller, .callee_label = "trim", .source_file = "/p/use.cpp", .qualifier = "boost::algorithm"},
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .qualifier = "absl::strings_internal"},
+      {.caller_id = caller, .callee_label = "find", .source_file = "/p/use.cpp", .qualifier = "QString"},
+      {.caller_id = caller, .callee_label = "remove", .source_file = "/p/use.cpp", .qualifier = "std::filesystem"},
+      {.caller_id = caller, .callee_label = "helper", .source_file = "/p/use.cpp", .qualifier = "proj::detail"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  for (const auto& target : {find_fn, remove_fn, size_fn, format_fn, trim_fn}) {
+    if (has_edge(graph, caller, target, "CALLS")) {
+      return 1;
+    }
+  }
+  if (!has_edge(graph, caller, helper, "CALLS")) {
+    return 1;
+  }
+  if (outcomes.dropped_scope_mismatch != 5 || outcomes.resolved_qualifier_unchecked != 0 ||
+      !outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
+// A member call with an unknown receiver binds project-wide only to a unique
+// METHOD (tier 2b) -- but not when the bare name is one every standard library
+// defines. `v.size()` must not reach the project's only method named `size`,
+// while `r.Match()` (issue #44) still does. The same-file tier is untouched.
+int test_library_member_names() {
+  const auto caller = cgraph::make_id("/p/use.cpp:use");
+  const auto stats = cgraph::make_id("/p/stats.hpp:Stats");
+  const auto size = cgraph::make_id("/p/stats.hpp:Stats::size");
+  const auto regex = cgraph::make_id("/p/regex.go:Regex");
+  const auto match = cgraph::make_id("/p/regex.go:Regex::Match");
+  const auto local_owner = cgraph::make_id("/p/use.cpp:Local");
+  const auto local_size = cgraph::make_id("/p/use.cpp:Local::size");
+
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  graph.nodes.push_back({.id = stats, .label = "Stats", .source_file = "/p/stats.hpp", .kind = "class"});
+  graph.nodes.push_back({.id = size, .label = "size", .source_file = "/p/stats.hpp", .kind = "function"});
+  graph.nodes.push_back({.id = regex, .label = "Regex", .source_file = "/p/regex.go", .kind = "class"});
+  graph.nodes.push_back({.id = match, .label = "Match", .source_file = "/p/regex.go", .kind = "function"});
+  graph.edges.push_back({.source = stats, .target = size, .relation = "method"});
+  graph.edges.push_back({.source = regex, .target = match, .relation = "method"});
+
+  const cgraph::RawCall calls[] = {
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .is_member_call = true},
+      {.caller_id = caller, .callee_label = "Match", .source_file = "/p/use.cpp", .is_member_call = true},
+      // A receiver that names the class is evidence: `Stats::size()` still binds.
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .is_member_call = true,
+       .receiver_label = "Stats"},
+  };
+  cgraph::CallResolution outcomes;
+  cgraph::resolve_raw_calls(graph, calls, &outcomes);
+
+  if (!has_edge(graph, caller, match, "CALLS")) {
+    return 1;
+  }
+  // The receiver-named call produced the one edge to `size`; the bare one was refused.
+  if (!has_edge(graph, caller, size, "CALLS") || outcomes.dropped_library_member != 1) {
+    return 1;
+  }
+  if (!outcomes.balances()) {
+    return 1;
+  }
+
+  // Same file: the sibling tier resolves `size` to the local method as before.
+  cgraph::GraphSnapshot local;
+  local.nodes.push_back({.id = caller, .label = "use", .source_file = "/p/use.cpp", .kind = "function"});
+  local.nodes.push_back({.id = local_owner, .label = "Local", .source_file = "/p/use.cpp", .kind = "class"});
+  local.nodes.push_back({.id = local_size, .label = "size", .source_file = "/p/use.cpp", .kind = "function"});
+  local.edges.push_back({.source = local_owner, .target = local_size, .relation = "method"});
+  const cgraph::RawCall local_calls[] = {
+      {.caller_id = caller, .callee_label = "size", .source_file = "/p/use.cpp", .is_member_call = true},
+  };
+  cgraph::resolve_raw_calls(local, local_calls);
+  if (!has_edge(local, caller, local_size, "CALLS")) {
+    return 1;
+  }
+  return 0;
+}
+
 int main() {
+  if (test_qualified_scope() != 0) {
+    std::fprintf(stderr, "FAIL test_qualified_scope\n");
+    return 1;
+  }
+  if (test_library_member_names() != 0) {
+    std::fprintf(stderr, "FAIL test_library_member_names\n");
+    return 1;
+  }
+  if (test_qualifier_root_unknown_to_project() != 0) {
+    std::fprintf(stderr, "FAIL test_qualifier_root_unknown_to_project\n");
+    return 1;
+  }
+  if (test_qualifier_root_is_project_namespace() != 0) {
+    std::fprintf(stderr, "FAIL test_qualifier_root_is_project_namespace\n");
+    return 1;
+  }
+  if (test_library_qualified_calls() != 0) {
+    std::fprintf(stderr, "FAIL test_library_qualified_calls\n");
+    return 1;
+  }
+  if (test_qualified_scope_segments() != 0) {
+    std::fprintf(stderr, "FAIL test_qualified_scope_segments\n");
+    return 1;
+  }
   if (test_resolve_rust_imports() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_rust_imports\n");
     return 1;
   }
   if (test_resolve_imports() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_imports\n");
     return 1;
   }
   if (test_call_scoping() != 0) {
+    std::fprintf(stderr, "FAIL test_call_scoping\n");
     return 1;
   }
   if (test_resolve_relations() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_relations\n");
+    return 1;
+  }
+  if (test_resolve_relations_through_includes() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_relations_through_includes\n");
     return 1;
   }
 

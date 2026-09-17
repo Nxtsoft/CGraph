@@ -162,6 +162,34 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
   }
 }
 
+void python_member_handler(const TSNode& node, const ExtractionContext& context,
+                           const std::string& owner_id, Fragment& fragment) {
+  const auto name_node = ts_node_child_by_field_name(node, "name", 4);
+  const auto body = ts_node_child_by_field_name(node, "body", 4);
+  if (ts_node_is_null(name_node) || ts_node_is_null(body)) return;
+  const auto owner_name = node_text(name_node, context.source);
+  for (std::uint32_t i = 0; i < ts_node_named_child_count(body); ++i) {
+    auto member = ts_node_named_child(body, i);
+    while (!ts_node_is_null(member) && std::string_view(ts_node_type(member)) == "assignment") {
+      const auto annotation = ts_node_child_by_field_name(member, "type", 4);
+      Properties properties;
+      if (!ts_node_is_null(annotation)) properties.emplace("type_text", node_text(annotation, context.source));
+      const std::function<void(TSNode)> emit_target = [&](const TSNode target) {
+        if (ts_node_is_null(target)) return;
+        const std::string_view kind = ts_node_type(target);
+        if (kind == "identifier") {
+          add_field_node(context, owner_id, owner_name, node_text(target, context.source),
+                         source_location(member), properties, fragment);
+        } else if (kind == "pattern_list" || kind == "tuple_pattern" || kind == "list_pattern" || kind == "list_splat_pattern") {
+          for (std::uint32_t j = 0; j < ts_node_named_child_count(target); ++j) emit_target(ts_node_named_child(target, j));
+        }
+      };
+      emit_target(ts_node_child_by_field_name(member, "left", 4));
+      member = ts_node_child_by_field_name(member, "right", 5);
+    }
+  }
+}
+
 }  // namespace
 
 LanguageConfig python_language_config() {
@@ -182,6 +210,8 @@ LanguageConfig python_language_config() {
       .call_member_node_types = {"attribute"},
       .call_member_field = "attribute",
       .import_handler = python_import_handler,
+      .extract_members = true,
+      .member_handler = python_member_handler,
   };
 }
 

@@ -1,0 +1,17 @@
+--- a/service.ts
++++ b/service.ts
+@@ -1,11 +1,11 @@
+ export interface Service {
+-  run(): number;
++  run(value: number): number;
+ }
+ 
+ export class Worker implements Service {
+-  run(): number { return 1; }
++  run(value: number): number { return value; }
+ }
+ 
+ export function consume(s: Service): number {
+-  return s.run();
++  return s.run(2);
+ }

@@ -536,6 +536,54 @@ cgraph_enable_sanitizers(cgraph_dedup_test)
 
 add_test(NAME cgraph_dedup_test COMMAND cgraph_dedup_test)
 
+add_executable(cgraph_package_manifests_test
+  package_manifests_test.cpp)
+
+target_link_libraries(cgraph_package_manifests_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_package_manifests_test)
+cgraph_enable_sanitizers(cgraph_package_manifests_test)
+
+add_test(NAME cgraph_package_manifests_test COMMAND cgraph_package_manifests_test)
+
+add_executable(cgraph_workspace_test
+  workspace_test.cpp)
+
+target_link_libraries(cgraph_workspace_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_workspace_test)
+cgraph_enable_sanitizers(cgraph_workspace_test)
+
+add_test(NAME cgraph_workspace_test COMMAND cgraph_workspace_test)
+
+add_executable(cgraph_contract_schemas_test
+  contract_schemas_test.cpp)
+
+target_link_libraries(cgraph_contract_schemas_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_contract_schemas_test)
+cgraph_enable_sanitizers(cgraph_contract_schemas_test)
+
+add_test(NAME cgraph_contract_schemas_test COMMAND cgraph_contract_schemas_test)
+
+add_executable(cgraph_contracts_test
+  contracts_test.cpp)
+
+target_link_libraries(cgraph_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_contracts_test)
+cgraph_enable_sanitizers(cgraph_contracts_test)
+
+add_test(NAME cgraph_contracts_test COMMAND cgraph_contracts_test)
+
 add_executable(cgraph_analysis_test
   analysis_test.cpp)
 
@@ -912,3 +960,35 @@ cgraph_set_warnings(cgraph_retrieval_quality_test)
 cgraph_enable_sanitizers(cgraph_retrieval_quality_test)
 
 add_test(NAME cgraph_retrieval_quality_test COMMAND cgraph_retrieval_quality_test)
+
+add_executable(cgraph_change_context_test change_context_test.cpp)
+target_link_libraries(cgraph_change_context_test PRIVATE cgraph::engine cgraph::mcp)
+target_compile_definitions(cgraph_change_context_test PRIVATE
+  CGRAPH_CHANGE_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/change_context"
+  CGRAPH_CHANGE_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/testdata/change_context")
+cgraph_set_warnings(cgraph_change_context_test)
+cgraph_enable_sanitizers(cgraph_change_context_test)
+add_test(NAME cgraph_change_context_test COMMAND cgraph_change_context_test)
+add_executable(cgraph_fingerprint_test
+  fingerprint_test.cpp)
+
+target_link_libraries(cgraph_fingerprint_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_fingerprint_test)
+cgraph_enable_sanitizers(cgraph_fingerprint_test)
+
+add_test(NAME cgraph_fingerprint_test COMMAND cgraph_fingerprint_test)
+
+add_executable(cgraph_report_test
+  report_test.cpp)
+
+target_link_libraries(cgraph_report_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_report_test)
+cgraph_enable_sanitizers(cgraph_report_test)
+
+add_test(NAME cgraph_report_test COMMAND cgraph_report_test)

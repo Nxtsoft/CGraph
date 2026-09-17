@@ -6,6 +6,8 @@ TBD - created by archiving change improve-graph-html-view. Update Purpose after 
 ### Requirement: Interactive HTML view reveals community structure
 The interactive `graph.html` export SHALL position nodes so that computed community assignments are visible as spatially distinct regions, rather than using community only for color while leaving the layout a uniform frame-filling cloud. The layout SHALL remain deterministic for a given graph (no use of `Math.random`).
 
+The engine-side layout (`write_layout`) SHALL emit coordinates rescaled to a canvas-sized square that grows with the square root of the node count, so the viewer's first paint spreads the graph across the canvas instead of collapsing igraph's unit-scale output into one blob. Above 500 nodes the viewer SHALL open community-collapsed: each community drawn once as a sized super-node with aggregated edges, expanded by clicking it, by a search match, or by the expand-all control.
+
 #### Scenario: Communities render as separated regions
 - **WHEN** the pipeline exports `graph.html` for a graph with multiple detected communities and the view settles
 - **THEN** nodes of the same community are drawn closer to one another than to nodes of other communities, so distinct communities read as separate regions
@@ -17,6 +19,10 @@ The interactive `graph.html` export SHALL position nodes so that computed commun
 #### Scenario: Layout is deterministic
 - **WHEN** `graph.html` is generated twice for the same graph
 - **THEN** the generated layout logic uses only seeded placement (no `Math.random`), so the same graph produces the same layout each load
+
+#### Scenario: Large graphs first paint readable
+- **WHEN** `graph.html` opens on a graph of more than 500 nodes
+- **THEN** the first paint shows one node per community with edges between communities, labelled and readable without zooming, and clicking a community reveals its members at their precomputed positions
 
 ### Requirement: Interactive HTML view bounds on-screen labels
 The interactive `graph.html` export SHALL limit always-on node labels to a bounded set (the highest-degree nodes) and SHALL reveal additional labels progressively on hover, selection, active highlight, search match, and zoom-in, so an overview of a large graph is not an unreadable wall of overlapping text.
@@ -56,74 +62,27 @@ The interactive `graph.html` export SHALL render in both a light and a dark them
 - **THEN** the page and the graph canvas switch between light and dark, with node, edge, and label colors updating to remain legible
 
 ### Requirement: Detection excludes dependency and virtual-environment trees
-Project file detection SHALL skip dependency, build, tooling, virtual-environment,
-agent-tooling-config, and linked git-worktree directory trees rather than index their contents as
-project source. A directory SHALL be excluded when its name is in the skip list — which includes the
-Python ecosystem (`.venv`, `venv`, `site-packages`, `__pycache__`, `.tox`, `.nox`, `.pytest_cache`,
-`.mypy_cache`, `.ruff_cache`, `.hypothesis`, `.eggs`) and the agent-CLI / spec-tool config
-directories (`.claude`, `.codex`, `.gemini`, `.cursor`, `.factory`, `.opencode`, `.windsurf`,
-`.aider`, `.specify`) — OR when it contains a `pyvenv.cfg` virtual-environment marker — OR when it is
-a git-worktree checkout tree. A worktree checkout SHALL be detected by either of two structural
-markers: (a) a `.git` entry that is a regular file (the live worktree `gitdir:` marker) rather than a
-directory, or (b) a directory named `worktrees` whose parent directory name begins with a dot (the
-`<.tool>/worktrees/` convention used by agent tools, which also covers stale checkouts whose `.git`
-has been pruned). The project root's own `.git` is a directory and SHALL NOT trigger this exclusion,
-and a `worktrees` directory under a non-dotted parent (a legitimate source module) SHALL NOT be
-excluded. The daemon file watcher SHALL apply the identical exclusion, so a file created under a
-skipped tree never produces an incremental update. The same exclusion governs the enrichment chunk
-planner, so neither agent-tooling docs nor worktree-duplicated docs are planned for semantic
-enrichment. Files that remain in scope are extracted unchanged (parity is held).
+Project file detection SHALL skip dependency, build, tooling, test-runner-output, virtual-environment, agent-tooling-config, and linked git-worktree directory trees rather than index their contents as project source. A directory SHALL be excluded when its name is in the skip list — which includes the Python ecosystem (`.venv`, `venv`, `site-packages`, `__pycache__`, `.tox`, `.nox`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.hypothesis`, `.eggs`), the agent-CLI / spec-tool config directories (`.claude`, `.codex`, `.gemini`, `.cursor`, `.factory`, `.opencode`, `.windsurf`, `.aider`, `.specify`), and the test-runner output directories (`playwright-report`, `test-results`, `blob-report`) — OR when it contains a `pyvenv.cfg` virtual-environment marker — OR when it is a git-worktree checkout tree. A worktree checkout SHALL be detected by either of two structural markers: (a) a `.git` entry that is a regular file (the live worktree `gitdir:` marker) rather than a directory, or (b) a directory named `worktrees` whose parent directory name begins with a dot (the `<.tool>/worktrees/` convention used by agent tools, which also covers stale checkouts whose `.git` has been pruned). The project root's own `.git` is a directory and SHALL NOT trigger this exclusion, and a `worktrees` directory under a non-dotted parent (a legitimate source module) SHALL NOT be excluded. The daemon file watcher SHALL apply the identical exclusion, so a file created under a skipped tree never produces an incremental update. The same exclusion governs the enrichment chunk planner, so neither agent-tooling docs nor worktree-duplicated docs are planned for semantic enrichment. Files that remain in scope are extracted unchanged (parity is held).
 
 #### Scenario: Virtualenv contents are not indexed
-- **WHEN** a project root contains a virtualenv (e.g. `research/.venv/lib/pythonX/site-packages/…`)
-  and the graph is built
-- **THEN** no node has a `source_file` under that `.venv` or any `site-packages` directory, and the
-  graph contains only the project's own source
+- **WHEN** a project root contains a virtualenv (e.g. `research/.venv/lib/pythonX/site-packages/…`) and the graph is built
+- **THEN** no node has a `source_file` under that `.venv` or any `site-packages` directory, and the graph contains only the project's own source
 
 #### Scenario: Oddly-named virtualenv is detected by marker
 - **WHEN** a directory not in the name skip list (e.g. `qa-env/`) contains a `pyvenv.cfg` file
 - **THEN** the directory and its contents are skipped during detection
 
 #### Scenario: Agent-tooling config directories are not indexed or enriched
-- **WHEN** a project root contains agent-CLI or spec-tool config trees (e.g. `.claude/commands/`,
-  `.factory/skills/`, `.specify/templates/`)
-- **THEN** detection skips them and the enrichment planner does not plan their documents, so they
-  contribute neither code nodes nor doc nodes
+- **WHEN** a project root contains agent-CLI or spec-tool config trees (e.g. `.claude/commands/`, `.factory/skills/`, `.specify/templates/`)
+- **THEN** detection skips them and the enrichment planner does not plan their documents, so they contribute neither code nodes nor doc nodes
+
+#### Scenario: Test-runner output is not indexed
+- **WHEN** a project root contains Playwright output (`playwright-report/trace/*.js`, `test-results/`, `blob-report/`), whether or not `.gitignore` names it
+- **THEN** no node has a `source_file` under those directories, and `report design` and `report clones` see only the project's own functions
 
 #### Scenario: Live and stale git-worktree trees are not indexed
-- **WHEN** a project root contains agentic git worktrees under the `<.tool>/worktrees/<id>/`
-  convention (e.g. `.anvil/worktrees/<uuid>/…`, `.agents/worktrees/<slug>/…`) — some live (`.git` is
-  a regular file) and some stale (the `.git` pointer already pruned, only the duplicated source tree
-  remaining) — and the graph is built
-- **THEN** no node has a `source_file` under any worktree checkout tree (live or stale), and the
-  graph contains only the project's own (single-copy) source
-
-#### Scenario: Project root is never skipped as a worktree
-- **WHEN** detection enters the project root, whose `.git` is a directory (a normal repository)
-- **THEN** the root is walked normally and its source files are indexed; the `.git` marker only
-  matches a regular file, and the convention marker only matches a `worktrees` dir under a dotted
-  parent
-
-#### Scenario: A legitimate source module named `worktrees` is not skipped
-- **WHEN** a project has a real source directory literally named `worktrees` under a non-dotted
-  parent (e.g. `packages/core/src/worktrees/`) with no worktree `.git` marker
-- **THEN** it is walked normally and its source files are indexed
-
-#### Scenario: Lookalike directory is not over-skipped
-- **WHEN** a real source directory has a name that merely contains a skipped token, or matches a
-  skipped name without its leading dot (e.g. `my_env_utils/`, `environment/`, `factory/`), and has
-  neither a `pyvenv.cfg` nor a `.git` worktree-marker file
-- **THEN** it is walked normally and its source files are indexed
-
-#### Scenario: Watcher and detector agree
-- **WHEN** the daemon is running and a recognized source file is created under a skipped tree
-- **THEN** the watcher emits no event and the resident graph is unchanged, matching what a cold
-  detection pass would have produced
-
-#### Scenario: Pathologically deep generated dependency cannot crash the build
-- **WHEN** a repo contains a machine-generated dependency file deep in a skipped tree (e.g. a
-  NumPy header under `site-packages`) that previously triggered an extraction stack overflow
-- **THEN** detection never walks it, so it cannot contribute nodes or destabilize the build
+- **WHEN** a project root contains agentic git worktrees under the `<.tool>/worktrees/<id>/` convention, whether live (`.git` file present) or stale (`.git` pruned)
+- **THEN** detection skips them, so the graph is not duplicated by checkout copies
 
 ### Requirement: SQL files are indexed as file-level nodes
 Project file detection SHALL recognize the `.sql` extension as a known language
@@ -611,44 +570,45 @@ Resolution SHALL NOT be performed by reducing the callee's text at a scope separ
 
 A callee that names explicitly global scope (a qualified identifier with no scope, `::stat(...)`) SHALL resolve to nothing: it names a platform symbol, not a project one. Resolution order SHALL remain a symbol declared in the caller's own file, then a project-wide symbol whose name is unique. The exactly-one-candidate rule SHALL continue to govern the project-wide tier. A member call SHALL remain scoped to the caller's own file, because the receiver type is unknown. Confidence grading is unchanged: `EXTRACTED` when the caller's file imports the resolved symbol or its module, `INFERRED` when it is only a name match.
 
+When the project-wide tier finds several candidates and they are not a single-file overload set, the candidate set SHALL first be narrowed to those the caller's file imports **by name** — the target of an `imports` or `re_exports` edge — and the ordinary rule re-applied to the survivors. Exactly one survivor SHALL resolve, graded `EXTRACTED`, because the import names the declaration outright. Several survivors sharing one file SHALL resolve as an overload set. Any other outcome SHALL remain `dropped_ambiguous`. A module-level `imports_from` edge SHALL NOT narrow the set: it names a file, not a declaration, and the call it would justify is spelled as a member access this tier never sees.
+
 #### Scenario: A cross-file call to a parameterized function resolves
 - **GIVEN** `graph_builder.cpp` declares `merge_fragments`
 - **AND** `pipeline.cpp` contains the call site `merge_fragments(fragments)`
 - **THEN** a `CALLS` edge exists from the enclosing symbol in `pipeline.cpp` to the `merge_fragments` node
 
-#### Scenario: A qualified call resolves
-- **WHEN** `cli/main.cpp` contains `cgraph::run_one_shot(args.root)`
-- **THEN** a `CALLS` edge exists to the `run_one_shot` node
+#### Scenario: An import names which of two same-named declarations a call meant
+- **GIVEN** `storage.py` and `cache.py` each declare `write_text`
+- **AND** `report.py` has an `imports` edge to `storage.py`'s `write_text`
+- **WHEN** a call to `write_text` in `report.py` is resolved
+- **THEN** a `CALLS` edge to `storage.py`'s `write_text` is emitted with `EXTRACTED` confidence
+- **AND** no `CALLS` edge to `cache.py`'s `write_text` is emitted
+- **AND** `dropped_ambiguous` is not incremented
 
-#### Scenario: A C++ member call resolves within its own file
-- **GIVEN** a struct declares a method `is_live`
-- **AND** another function in the same file calls `handle->is_live()`
-- **THEN** a `CALLS` edge exists to that method node
-- **AND** the call is never matched project-wide
-
-#### Scenario: A template argument is never mistaken for the callee
-- **GIVEN** calls `wrapper<zoo::Beast>(1)` and `ns::made<zoo::Beast>(2)`
-- **THEN** no `CALLS` edge to `Beast` is emitted
-- **AND** edges to `wrapper` and `made` are emitted
-
-#### Scenario: An explicitly global callee resolves to nothing
-- **WHEN** a function calls `::stat_local_probe(p)` and a local symbol of that name exists
-- **THEN** no `CALLS` edge to the local symbol is emitted
-
-#### Scenario: A same-file overload set resolves to its first declaration
-- **GIVEN** two declarations in one file share the name `add`
-- **WHEN** a call to `add` in that file is resolved
-- **THEN** a `CALLS` edge to the first declaration is emitted with `INFERRED` confidence
-- **AND** `resolved_overload_first` is incremented
-
-#### Scenario: A project-wide ambiguous name resolves to nothing and is counted
-- **GIVEN** two files each declare `write_text` and neither is the caller's file
-- **WHEN** a call to `write_text` is resolved
+#### Scenario: Without an import the same call stays ambiguous
+- **GIVEN** `storage.py` and `cache.py` each declare `write_text`
+- **AND** `audit.py` imports neither
+- **WHEN** a call to `write_text` in `audit.py` is resolved
 - **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
 
-#### Scenario: Overloads sharing one line remain distinct nodes
-- **GIVEN** three declarations of `triple` on a single line
-- **THEN** the graph holds three distinct `triple` nodes
+#### Scenario: Importing both declarations of a name picks neither
+- **GIVEN** a file has `imports` edges to two declarations that share a name and live in different files
+- **WHEN** a call to that name is resolved
+- **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
+
+#### Scenario: An imported overload set edges to every member
+- **GIVEN** two declarations of `add` in `Sum.java` and an unrelated `add` in `Other.java`
+- **AND** the caller's file imports both `Sum.java` declarations
+- **WHEN** a call to `add` is resolved
+- **THEN** a `CALLS` edge is emitted to each `Sum.java` declaration
+- **AND** `resolved_overload_first` is incremented
+- **AND** no `CALLS` edge to `Other.java`'s `add` is emitted
+
+#### Scenario: A module import alone does not break a tie
+- **GIVEN** two files declare `write_text`
+- **AND** the caller's file has only an `imports_from` edge to one of those files
+- **WHEN** a bare call to `write_text` is resolved
+- **THEN** no `CALLS` edge is emitted and `dropped_ambiguous` is incremented
 
 ### Requirement: A call target must be callable
 Project-wide call resolution SHALL only consider candidates whose kind can be invoked, and that set SHALL be the same one the per-file table admits: `function`, `class`, `type`, and `variable`. `class` is eligible because `Foo()` is a constructor call in Python and JavaScript, and `type`/`variable` because a module-level binding can hold a callable. A `field` node SHALL NOT be the target of a `CALLS` edge.
@@ -685,12 +645,12 @@ Ids are per-file, so a namespace-as-class minted one node per file all bearing t
 - **AND** no member is left without an incoming containment edge
 
 ### Requirement: Call resolution is measurable from a committed artifact
-`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `dropped_unknown`, `dropped_ambiguous`, and `dropped_self`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`. `resolved_overload_first` SHALL also be reported as a subset of `resolved_same_file`.
+`BuildStats` SHALL report, per build, `raw_calls_total` and a partition of it: `resolved_same_file`, `resolved_project_unique`, `resolved_member_method`, `dropped_unknown`, `dropped_ambiguous`, `dropped_self`, `dropped_scope_mismatch`, and `dropped_library_member`. The partition SHALL sum to `raw_calls_total`, and every field SHALL be serialized to `stats.json`. `resolved_overload_first` and `resolved_qualifier_unchecked` SHALL also be reported, each a subset of the resolved fields.
 
 #### Scenario: The resolution rate is readable without instrumenting a build
 - **WHEN** `cgraph --root PATH --out DIR` completes
 - **THEN** `DIR/stats.json` contains every field
-- **AND** the five partition fields sum to `raw_calls_total`
+- **AND** the eight partition fields sum to `raw_calls_total`
 
 ### Requirement: An enrichment node's identity includes the file it came from
 A node of an enrichment kind -- `document` and `media`, matched case-insensitively because `kind` is unvalidated host input -- SHALL NOT be merged by label similarity with ANY node unless both nodes share the SAME non-empty `source_file`. A document's identity is scoped by the file it was written from: a differing file keeps them apart, a shared non-empty file may still merge (a genuine re-extraction), and a MISSING file is no proof of shared identity and also keeps them apart. This holds against any counterpart, enrichment or code symbol alike; unlike a `file` node (excluded from dedup entirely), a document still participates in dedup within its own file.
@@ -773,4 +733,217 @@ and no dangling edge in the graph.
 - **GIVEN** a file containing `use crate::foo::bar::*;`
 - **WHEN** the one-shot pipeline runs
 - **THEN** the graph contains an `imports` edge from the importing file to `foo/bar`'s module file
+
+### Requirement: An HTTP route's inline handler is a function node and a call scope
+
+In JavaScript and TypeScript, the last function-valued argument of a call whose callee is `<receiver>.<verb>` with `<verb>` one of `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, and whose first argument is a string or template literal, SHALL be extracted as a `function` node whose source location is the handler's own extent, contained by the enclosing scope, and SHALL be the caller of every call in its body. Its label SHALL be `<root>.<verb> <path>`, where `<path>` is the literal's text without quotes and `<root>` is the identifier at the base of the callee's fluent chain, or, when the chain is rooted in a constructor or other non-identifier, the name of the variable the chain is assigned to; when neither exists the label is `<verb> <path>`. Its id SHALL be `make_id(source_file + ":" + label)`, subject to the existing id-collision guard. Function-valued arguments before the handler SHALL remain anonymous. Every other nested anonymous function SHALL remain a boundary as before, and a module-level const holding such a chain SHALL still be extracted as a `variable` node.
+
+#### Scenario: An Elysia chain yields one handler per route
+- **GIVEN** `const notebookRoutes = new Elysia({prefix: '/notebooks'}).use(auth).get('/', async ({dbUser}) => { return listNotebooks(dbUser); }, {detail}).post('/:id/notes', async (c) => { return createNote(c); });`
+- **THEN** function nodes `notebookRoutes.get /` and `notebookRoutes.post /:id/notes` exist, each
+  spanning its arrow, and raw calls `listNotebooks` and `createNote` name them as callers
+- **AND** the `variable` node `notebookRoutes` is still emitted
+
+#### Scenario: A chain on an identifier is rooted at that identifier
+- **GIVEN** `app.get('/health', (req, res) => res.send(ping()));`
+- **THEN** a function node `app.get /health` exists and is the caller of `ping`
+
+#### Scenario: Middleware before the handler stays anonymous
+- **GIVEN** `app.post(`/users`, authenticate, (req, res) => { save(req.body); });`
+- **THEN** exactly one function node, `app.post /users`, is emitted and it is the caller of `save`
+
+#### Scenario: Non-route callbacks stay boundaries
+- **GIVEN** `app.use('/static', (req, res, next) => next());`, `router.route('/x').get((req, res) => res.end());`, `list.map(x => transform(x));`, `describe('suite', () => { run(); });`
+- **THEN** no function node is emitted for any of those arrows and their calls are dropped
+
+### Requirement: One-shot builds write the module diagram
+`write_exports` SHALL take the project root and write `modules.mmd` (Mermaid) and `modules.svg` next to `graph.json`, built from the whole project with no budget and test roots excluded, so a human can open the architecture map without a running daemon.
+
+#### Scenario: Exports include the module diagram
+- **WHEN** `cgraph --root PATH --out DIR` completes
+- **THEN** `DIR/modules.mmd` and `DIR/modules.svg` exist alongside `graph.json`
+
+### Requirement: Type definitions expose declared members
+
+When member extraction is enabled for a language, the extractor SHALL emit a field node for each supported directly declared member and a defines edge from its named owning class/type. Field IDs SHALL use `make_id(source_file + ":" + TypeName + "::" + member)` and source locations SHALL refer to the declaration. Declared type text SHALL be preserved when available. Optional and readonly grammar flags SHALL be string properties where applicable.
+
+#### Scenario: Identical shapes have independent member lists
+- **WHEN** two TypeScript interfaces, Go structs or Rust structs have different names and identical member declarations
+- **THEN** both owners have complete identical member-label sets with distinct owner-qualified field IDs.
+
+#### Scenario: Nested fields remain nested
+- **WHEN** a TypeScript field has an inline object type or a class contains a nested class
+- **THEN** nested declarations are not flattened into the outer owner's member list.
+
+#### Scenario: Language-specific member shapes
+- **WHEN** a Go declaration names multiple fields, a Rust tuple struct has positional fields, or Java declares multiple variables or record components
+- **THEN** each declaration yields all its members with their declared type text.
+
+#### Scenario: Python methods have local variables
+- **WHEN** a class has class-body assignments and method-local assignments
+- **THEN** only class-body declarations become members; local variables do not.
+
+#### Scenario: A field never takes a symbol's id
+- **WHEN** a member and a function or type in the same file normalize to one id (`First::size` and `first_size`, `Config::path` and `config_path`)
+- **THEN** the function or type keeps the unsuffixed id and the field is relocated, both nodes exist, and the owner's `defines` edge points at the field.
+
+#### Scenario: Two same-named owners keep separate members
+- **WHEN** one file declares two owners with the same name and the same member name (TypeScript declaration merging, `#[cfg]` twins)
+- **THEN** each owner has its own field node and its own `defines` edge, not one shared field.
+
+#### Scenario: Fields are members, not context candidates
+- **WHEN** `graph_context` is asked about a type with many members
+- **THEN** the members do not enter the candidate pool and do not displace the type's callers and callees; asking about a member directly still resolves it as the focal node.
+
+#### Scenario: Members never overwrite a declaration's own node
+- **WHEN** a declaration inside a type body is already a function or type node (a TypeScript `method_signature`, a Rust trait `function_signature_item`, a Rust `type_item`)
+- **THEN** no field node is emitted for it, and its `interface_method` tag and dispatch edges survive.
+
+#### Scenario: Extraction remains opt-in
+- **WHEN** member extraction is disabled
+- **THEN** the new handler emits no nodes or edges and existing graph.json output remains byte-identical.
+
+### Requirement: C/C++ forward declarations are not definitions
+
+A named class, struct, union or enum specifier without a body SHALL NOT emit a class node. A later body-bearing definition SHALL emit the normal class node and members.
+
+#### Scenario: FileCacheEntry forward declaration
+- **WHEN** a source tree contains a forward declaration and one body-bearing FileCacheEntry definition
+- **THEN** the graph contains exactly one FileCacheEntry class node.
+
+### Requirement: Kotlin source files are extracted through the configured tree-sitter path
+The system SHALL detect `.kt` / `.kts` files as Kotlin and extract, via the grammar-driven
+configured extractor, class and object nodes, function nodes, and call edges — with the same
+Graphify-compatible fragment shape as other configured languages — despite the `tree-sitter-kotlin`
+grammar exposing no named fields on its declarations or `call_expression`. A name SHALL be resolved
+positionally (a class/object by its `type_identifier` child, a function by its `simple_identifier`
+child). A callee SHALL be reduced to its bare leaf name (a `recv.member()` navigation call to the
+member name, a `Name()` call to the identifier) and kept eligible for project-wide resolution.
+
+#### Scenario: Kotlin classes, objects, and functions become nodes
+- **GIVEN** a `.kt` file declaring a `class`, an `object`, an `interface`, and named functions
+- **WHEN** the one-shot pipeline runs
+- **THEN** the class, object, and interface are `class` nodes, the functions are `function` nodes, and each type `contains`/owns its members
+
+#### Scenario: Kotlin calls become edges
+- **GIVEN** a function that calls a local function `helper()` and a navigation call `Registry.lookup()`
+- **WHEN** extraction runs
+- **THEN** a `CALLS` edge is produced for `helper`, and the navigation call is reduced to the bare name `lookup` and resolved by name (not left as the whole call's text)
+
+#### Scenario: A previously empty Kotlin graph now carries symbols and edges
+- **GIVEN** a Kotlin project that extracted zero nodes and zero edges before this change
+- **WHEN** the one-shot pipeline runs
+- **THEN** its classes, functions, and call edges appear in `graph.json`
+
+### Requirement: Java constructor calls resolve to the constructed class
+The system SHALL extract a Java `new Foo()` / `new Foo<T>()` / `new pkg.Foo()`
+(`object_creation_expression`) as a call whose callee is the bare simple class name, so it resolves
+project-wide to that class node — reconnecting a test to the classes it constructs (and, through the
+class's `method`/`contains` edges, to their members). A `method_invocation` callee SHALL continue to
+resolve by its `name` field, unchanged.
+
+#### Scenario: A plain constructor call resolves to its class
+- **GIVEN** a method that calls `new Widget()`
+- **WHEN** extraction runs
+- **THEN** the callee is `Widget`, and it resolves to the `Widget` class node
+
+#### Scenario: Generic and qualified constructors reduce to the simple name
+- **GIVEN** calls `new ArrayList<String>()` and `new java.util.HashMap<String, Integer>()`
+- **WHEN** extraction runs
+- **THEN** the callees are reduced to `ArrayList` and `HashMap` (not `ArrayList<String>` or `java.util.HashMap`)
+
+#### Scenario: Method calls are unaffected
+- **GIVEN** a plain method call `helper()`
+- **WHEN** extraction runs
+- **THEN** it still resolves by its `name` field exactly as before
+
+### Requirement: Every function node carries a rename-insensitive fingerprint
+
+For every `function` node the extractor creates, the pipeline SHALL compute a fingerprint of the function's body subtree (the language config's body field; the whole definition when there is none): the normalized token stream in which every identifier is `ID`, every string, number or character literal is `LIT`, comments are dropped, and keywords, operators and punctuation keep their text; every run of five consecutive tokens hashed with 64-bit FNV-1a; and the winnowed selection of those hashes (window four, minimum per window, rightmost on a tie) as a sorted unique set, together with the token count. The fingerprint SHALL be stored in `Fragment::fingerprints` keyed by node id, SHALL travel with the fragment through the incremental index, SHALL be unioned into `GraphSnapshot::fingerprints` by both merge paths, and SHALL NOT appear in any fragment file, `graph.json` or other export. The computation SHALL be deterministic.
+
+#### Scenario: Renamed copies fingerprint identically
+- **GIVEN** two functions whose bodies differ only in identifier names, string literals and numeric literals
+- **THEN** their fingerprints have equal shingle sets and equal token counts, and their similarity is 1.0
+
+#### Scenario: An edited copy keeps a partial fingerprint
+- **GIVEN** a copy with two statements inserted
+- **THEN** its similarity to the original is below 1.0 and above 0.5
+
+#### Scenario: Exports are unchanged
+- **WHEN** a one-shot build writes `graph.json`
+- **THEN** the output is byte-identical to a build without fingerprints
+
+### Requirement: One-shot builds write the design report instead of call-flow.html
+
+`write_exports` SHALL write `design.mmd` (the design view's `flowchart TD`) and `design.md` (its markdown) for the whole project with no budget, and SHALL NOT write `call-flow.html`. `graph.json` and every other export SHALL be unchanged.
+
+#### Scenario: Export set after a one-shot build
+- **WHEN** `cgraph --root PATH --out DIR` completes
+- **THEN** `DIR/design.mmd` and `DIR/design.md` exist and `DIR/call-flow.html` does not
+
+### Requirement: The precomputed layout uses one algorithm at every graph size
+
+`write_layout` SHALL compute node coordinates with a single force-directed algorithm (Fruchterman-Reingold with igraph's grid approximation) regardless of the node count, and SHALL NOT select a different layout algorithm above any size threshold. The result SHALL be rescaled to the canvas-sized square described by the interactive-view requirement, so a graph of any size receives finite coordinates spanning that side.
+
+#### Scenario: A graph past two thousand nodes lays out like a small one
+- **GIVEN** a connected graph of 2,500 nodes
+- **WHEN** `detect_communities` runs
+- **THEN** every node carries finite `x`/`y` properties, the wider axis spans `max(720, 30 * sqrt(2500))` pixels, and the pass completes in the same order of time as a 2,000-node graph
+
+### Requirement: C-family relation targets resolve through transitive includes
+
+When resolving a `references`, `inherits` or `implements` relation whose source file is C or C++, and the target is not an explicitly imported name, the engine SHALL search the declarations of every project file reachable from the source file through `imports`/`re_exports` edges between file nodes, breadth-first, to a depth of eight. The target SHALL resolve to the single declaration bearing its name at the nearest distance where any declaration bears it; when two declarations bear the name at that distance, or one file declares it twice, the relation SHALL be refused and no edge emitted; a declaration at a nearer distance SHALL shadow declarations farther away; a cycle among headers SHALL terminate. Relations from files in other languages SHALL continue to resolve through direct imports only.
+
+#### Scenario: A type two includes away resolves
+- **GIVEN** `app.cpp` includes `engine.hpp`, which includes `types.hpp`, which declares `Node`
+- **WHEN** a function in `app.cpp` references `Node`
+- **THEN** a `references` edge to `types.hpp`'s `Node` is emitted
+
+#### Scenario: The nearer declaration shadows the farther one
+- **GIVEN** `Config` declared in both `engine.hpp` (one include away) and `types.hpp` (two away)
+- **THEN** the edge goes to `engine.hpp`'s `Config` only
+
+#### Scenario: Two declarations at one distance are ambiguous
+- **GIVEN** `Twin` declared in `types.hpp` and `other.hpp`, both two includes away
+- **THEN** no `references` edge is emitted
+
+#### Scenario: TypeScript stays direct-only
+- **GIVEN** `app.ts` imports `mid.ts`, which imports `types.ts` declaring `Node`, and no import of `Node` in `app.ts`
+- **THEN** a reference to `Node` from `app.ts` does not resolve
+
+### Requirement: Template arguments of qualified C++ types are references
+
+When the C/C++ extractor collects the types referenced by a function signature or a data member, a namespace-qualified template type (`std::vector<T>`, `std::span<const T>`, `std::optional<T>`, `ns::Outer<T>`) SHALL be walked like an unqualified one: its base name SHALL be emitted as a reference candidate and each template argument SHALL be collected as a reference with `context: "generic_arg"`, recursively, so that a project type named only inside a qualified template's argument list receives a `references` edge when it resolves.
+
+#### Scenario: A project type used only as a template argument is referenced
+- **GIVEN** `struct Payload` in an included header and `std::optional<Payload> f(std::vector<Payload>& all, std::span<const Payload> view)`
+- **WHEN** the file is extracted and relations are resolved
+- **THEN** `f` has a `references` edge to `Payload` carrying `context: "generic_arg"`
+
+#### Scenario: A qualified template data member is referenced
+- **GIVEN** `struct Bag { std::vector<Payload> items; }`
+- **THEN** `Bag` has a `references` edge to `Payload` with `context: "generic_arg"`
+
+### Requirement: Endpoint resolution runs in every build path and is tallied
+`resolve_contracts` SHALL run after `resolve_raw_relations` in both `run_one_shot` and the incremental `rebuild_graph`, so an edit to a chain's prefix, mounts or client calls re-paths its endpoints on the next update; `resolve_raw_relations` SHALL ignore `route`, `file_route`, `mounts`, `aliases`, `http_call`, `http_wrapper` and `url_const` facts; `stats.json` SHALL carry `route_resolution` with `routes`, `routes_unresolved`, `mounts`, `mounts_unresolved`, `endpoints`, `calls`, `calls_unresolved`, `consumes`, `endpoints_external` and `endpoints_documented`; `endpoint` and `schema` nodes SHALL never enter fuzzy dedup, so sibling routes and sibling schemas with near-identical labels stay distinct; and `report types` SHALL treat `schema` nodes as type owners alongside `class` and `type`.
+
+#### Scenario: Sibling endpoints and schemas survive dedup
+- **GIVEN** endpoints `GET /api/v1/notebooks/:id/notes`, `GET /api/v1/notebooks/:id/votes` and `GET /api/v1/notebooks/:id/note`, and schemas `NotebookResponse`, `NotebooksResponse` and `NotebookResponses`, in one community and one file
+- **WHEN** `semantic_dedup` runs
+- **THEN** all six nodes remain
+
+#### Scenario: A schema and its mirror in the types view
+- **GIVEN** schema `Notebook` in `openapi.json` with fields id/title/owner and type `Notebook` in `types.ts` with the same fields, plus schema `NoteDto` and type `Note` with identical member sets
+- **THEN** the types report counts four types, lists `Notebook` as one duplicate row at Jaccard 1.0, and groups `NoteDto` and `Note` as an identical shape
+
+#### Scenario: The tally is reported
+- **WHEN** a one-shot build writes `stats.json`
+- **THEN** it contains `route_resolution` with the ten counts, all zero for a repository without routers, HTTP client calls or contract documents
+
+### Requirement: Contract documents are detected
+`detect_language` SHALL classify `.proto` as `Protobuf`, `.graphql`, `.gql` and `.graphqls` as `GraphQL`, and a `.json` file whose name contains `openapi` or `swagger` (case-insensitive) as `OpenApi`; every other `.json` and every `.yaml` / `.yml` SHALL stay `Unknown`; and the three languages SHALL have registered non-grammar extractors so they never appear in `unextracted`.
+
+#### Scenario: Detection by name and extension
+- **WHEN** `openapi.json`, `docs/Swagger.v2.JSON`, `petstore.openapi.json`, `openapi.yaml`, `package.json`, `api/notes.proto`, `schema.graphql`, `schema.gql` and `schema.graphqls` are detected
+- **THEN** the first three are `OpenApi`, `openapi.yaml` and `package.json` are `Unknown`, the proto is `Protobuf` and the last three are `GraphQL`
 

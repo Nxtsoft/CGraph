@@ -43,6 +43,18 @@ int main() {
   }
   // .sql is a recognized language (file-level), so it is detected as code rather
   // than left Unknown (which would make it an enrichment-only document).
+  // Contract documents: OpenAPI by name (JSON only), proto and GraphQL by extension.
+  if (cgraph::detect_language("openapi.json") != DetectedLanguage::OpenApi ||
+      cgraph::detect_language("docs/Swagger.v2.JSON") != DetectedLanguage::OpenApi ||
+      cgraph::detect_language("petstore.openapi.json") != DetectedLanguage::OpenApi ||
+      cgraph::detect_language("openapi.yaml") != DetectedLanguage::Unknown ||
+      cgraph::detect_language("package.json") != DetectedLanguage::Unknown ||
+      cgraph::detect_language("api/notes.proto") != DetectedLanguage::Protobuf ||
+      cgraph::detect_language("schema.graphql") != DetectedLanguage::GraphQL ||
+      cgraph::detect_language("schema.gql") != DetectedLanguage::GraphQL ||
+      cgraph::detect_language("schema.graphqls") != DetectedLanguage::GraphQL) {
+    return 1;
+  }
   if (cgraph::detect_language("migration.sql") != DetectedLanguage::Sql) {
     return 1;
   }
