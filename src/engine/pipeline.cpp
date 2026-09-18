@@ -1,5 +1,7 @@
 #include "cgraph/pipeline.hpp"
 
+#include "cgraph/path_classification.hpp"
+
 #include "cgraph/file_cache.hpp"
 
 #include "cgraph/analysis.hpp"
@@ -119,6 +121,11 @@ void write_exports(const GraphSnapshot& graph, const std::filesystem::path& outp
                    const std::filesystem::path& project_root) {
   std::filesystem::create_directories(output_dir);
   write_text(output_dir / "graph.json", to_node_link_json(graph).dump(2));
+  // A tenth sidecar, deliberately NOT part of graph.json: consumers need to
+  // tell "deliberately ignored" from "failed to extract", and graph.json is a
+  // Graphify parity surface that must stay byte-identical.
+  write_text(output_dir / "paths.json",
+             path_classification_json(classify_project_paths(project_root, graph)).dump(2));
   write_text(output_dir / "graph.html", export_graph_html(graph));
   write_text(output_dir / "graph.svg", export_graph_svg(graph));
   write_text(output_dir / "obsidian.md", export_obsidian_markdown(graph));
