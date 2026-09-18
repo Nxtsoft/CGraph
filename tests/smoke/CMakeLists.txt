@@ -992,3 +992,9 @@ cgraph_set_warnings(cgraph_report_test)
 cgraph_enable_sanitizers(cgraph_report_test)
 
 add_test(NAME cgraph_report_test COMMAND cgraph_report_test)
+
+add_executable(cgraph_path_classification_test path_classification_test.cpp)
+target_link_libraries(cgraph_path_classification_test PRIVATE cgraph::engine nlohmann_json::nlohmann_json)
+cgraph_set_warnings(cgraph_path_classification_test)
+cgraph_enable_sanitizers(cgraph_path_classification_test)
+add_test(NAME cgraph_path_classification_test COMMAND cgraph_path_classification_test)
