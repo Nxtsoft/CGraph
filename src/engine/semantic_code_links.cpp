@@ -8,9 +8,6 @@
 namespace cgraph {
 namespace {
 
-// Names shared by more than this many nodes are too ambiguous to be a useful
-// candidate (e.g. an overloaded `value`), so they are skipped entirely.
-constexpr std::size_t kMaxNodesPerName = 8;
 constexpr std::size_t kMinNameLength = 2;
 
 // Node kinds whose capitalized single-word names are deliberate type references
@@ -102,8 +99,7 @@ std::vector<CandidateLink> compute_candidate_links(
       continue;
     }
     const auto found = index.by_name.find(token);
-    if (found == index.by_name.end() || found->second.nodes.empty() ||
-        found->second.nodes.size() > kMaxNodesPerName) {
+    if (found == index.by_name.end() || found->second.nodes.empty()) {
       continue;
     }
     // Shape filter: keep compound identifiers and capitalized type names; drop
