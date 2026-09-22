@@ -10,6 +10,11 @@ namespace {
 
 constexpr std::size_t kMinNameLength = 2;
 
+// How many nodes one mentioned name may contribute to a document's candidate
+// links. Bounds the fan-out of a name shared by many nodes without discarding
+// the mention altogether; see the emission loop for why.
+constexpr std::size_t kMaxLinksPerName = 3;
+
 // Node kinds whose capitalized single-word names are deliberate type references
 // (so `Fragment`, `GraphSnapshot`, `Node` survive the shape filter even without
 // an internal case change).
@@ -124,11 +129,22 @@ std::vector<CandidateLink> compute_candidate_links(
 
   std::vector<CandidateLink> links;
   for (const auto& item : ranked) {
+    // Cap what one name contributes. A mention of a name carried by N nodes is
+    // evidence for at most one of them, so emitting all N spends the document's
+    // budget on N-1 links that are wrong by construction -- `write_file` names
+    // 37 nodes in this repo's own graph. Emitting a few has the same chance of
+    // including the right node as emitting all of them, and leaves room for the
+    // rarer (more specific) names ranked behind it.
+    std::size_t from_this_name = 0;
     for (const auto& node : item.entry->nodes) {
       if (links.size() >= max_links) {
         return links;
       }
+      if (from_this_name >= kMaxLinksPerName) {
+        break;
+      }
       links.push_back(node);
+      ++from_this_name;
     }
   }
   return links;
