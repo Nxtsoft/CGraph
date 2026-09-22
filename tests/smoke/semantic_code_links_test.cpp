@@ -99,19 +99,29 @@ int main() {
     }
   }
 
-  // 8. A compound name shared by 9 nodes -- more than the old kMaxNodesPerName
-  //    cliff of 8 -- still produces candidates. Measured against this repo's own
-  //    markdown (397 docs, 15,311 doc/token pairs labelled by whether the author
-  //    wrote the token in backticks), dropping the cliff moved precision 0.873 ->
-  //    0.878 and recall 0.354 -> 0.371: it cost recall and bought no precision,
-  //    because the names it blocked were mostly genuine references. `source_file`
-  //    is the clearest case -- compound, unambiguous in prose, and discarded for
-  //    all 61 of its mentions purely because 9 nodes carry the name.
+  // 8. A compound name shared by 9 nodes -- over the old node-count cliff of 8 --
+  //    still produces candidates, but contributes at most kMaxLinksPerName of
+  //    them. The mention is evidence for one of the nine, so emitting all nine
+  //    would spend the budget on eight links that are wrong by construction.
   {
     const auto links = compute_candidate_links(
         "Each node records the source_file it came from.", index, /*max_links=*/16);
     if (!has_id(links, "n:sf0")) {
       return 8;
+    }
+    if (links.size() != 3) {
+      return 8;  // fan-out must stay capped even with budget to spare
+    }
+  }
+
+  // 9. Rarity-first ordering survives the cap: a name carried by one node is
+  //    emitted ahead of a name carried by nine, so a crowded name cannot crowd
+  //    out a specific one. This is the property that makes 8 safe.
+  {
+    const auto links = compute_candidate_links(
+        "Compare run_one_shot against the source_file it recorded.", index, /*max_links=*/2);
+    if (!has_id(links, "n:run_one_shot")) {
+      return 9;
     }
   }
 
