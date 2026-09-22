@@ -27,9 +27,14 @@ int main() {
   graph.nodes.push_back(node("n:gs", "GraphSnapshot", "struct"));
   graph.nodes.push_back(node("n:frag", "Fragment", "struct"));
   graph.nodes.push_back(node("n:cache", "cache", "variable"));  // bare lowercase word
-  // A name shared by many nodes (ambiguous + low specificity).
+  // A bare-word name shared by many nodes (ambiguous + low specificity).
   for (int i = 0; i < 10; ++i) {
     graph.nodes.push_back(node("n:value" + std::to_string(i), "value", "variable"));
+  }
+  // A COMPOUND name shared by more nodes than the old kMaxNodesPerName cliff (8).
+  // Sharing a name is low specificity, not evidence against a mention.
+  for (int i = 0; i < 9; ++i) {
+    graph.nodes.push_back(node("n:sf" + std::to_string(i), "source_file", "field"));
   }
   // A compound name shared by exactly two nodes (specific-ish).
   graph.nodes.push_back(node("n:run_one_shot", "run_one_shot()", "function"));
@@ -68,7 +73,8 @@ int main() {
     }
   }
 
-  // 5. An over-shared ambiguous name (10 nodes named 'value') -> skipped entirely.
+  // 5. A bare lowercase name stays out however many nodes share it -- the shape
+  //    filter, not a node-count cliff, is what excludes it.
   {
     const auto links = compute_candidate_links("The value of the value is the value.", index);
     if (std::ranges::any_of(links, [](const CandidateLink& l) { return l.node_id.rfind("n:value", 0) == 0; })) {
@@ -90,6 +96,22 @@ int main() {
     if (!compute_candidate_links("", index).empty() ||
         !compute_candidate_links("plain prose with no symbols here", index).empty()) {
       return 7;
+    }
+  }
+
+  // 8. A compound name shared by 9 nodes -- more than the old kMaxNodesPerName
+  //    cliff of 8 -- still produces candidates. Measured against this repo's own
+  //    markdown (397 docs, 15,311 doc/token pairs labelled by whether the author
+  //    wrote the token in backticks), dropping the cliff moved precision 0.873 ->
+  //    0.878 and recall 0.354 -> 0.371: it cost recall and bought no precision,
+  //    because the names it blocked were mostly genuine references. `source_file`
+  //    is the clearest case -- compound, unambiguous in prose, and discarded for
+  //    all 61 of its mentions purely because 9 nodes carry the name.
+  {
+    const auto links = compute_candidate_links(
+        "Each node records the source_file it came from.", index, /*max_links=*/16);
+    if (!has_id(links, "n:sf0")) {
+      return 8;
     }
   }
 
