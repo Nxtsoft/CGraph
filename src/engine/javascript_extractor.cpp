@@ -488,7 +488,12 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
   if (has_source) {
     const auto spec = strip_string_quotes(node_text(source, context.source));
     if (!spec.empty()) {
+      // import_path is resolved against the absolute source file because
+      // resolve_imports looks it up by the file nodes' absolute source paths;
+      // the stub's id is resolved against the project-relative path so, like
+      // every other id, it never carries the checkout's location.
       const auto resolved = resolve_module_spec(context.source_file, spec);
+      const auto resolved_key = resolve_module_spec(context.relative_path, spec);
       // The stub id is namespaced so it can never equal a real node's id. A
       // specifier that spells the source extension ("./chunkBy.ts", legal under
       // allowImportingTsExtensions) resolves to the imported file's exact path,
@@ -497,7 +502,7 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
       // "X.ts", so the stub claimed the id first, merge_fragment discarded the
       // real file node as a duplicate, and resolve_imports — finding no file
       // node for the path — deleted the stub and every edge with it (issue #39).
-      const auto module_id = make_id("import-module:" + resolved);
+      const auto module_id = make_id("import-module:" + resolved_key);
       fragment.nodes.push_back(Node{
           .id = module_id,
           .label = spec,
@@ -522,8 +527,8 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
   // file -> each named/default/namespace symbol. Keyed by module+name so the
   // same symbol imported by many files collapses onto one hub node.
   const auto module_key = has_source
-      ? resolve_module_spec(context.source_file, strip_string_quotes(node_text(source, context.source)))
-      : context.source_file;
+      ? resolve_module_spec(context.relative_path, strip_string_quotes(node_text(source, context.source)))
+      : context.relative_path;
   std::vector<std::pair<std::string, std::string>> names;
   collect_specifier_names(node, context.source, names);
   for (auto& [name, alias] : names) {

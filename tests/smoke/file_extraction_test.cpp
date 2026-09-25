@@ -129,6 +129,10 @@ int main() {
     write_file(project_root / "main.py", "from pkg.service import Service\n\ndef main():\n    return Service().run()\n");
     write_file(project_root / "pkg" / "service.py", "class Service:\n    def run(self):\n        return helper()\n\ndef helper():\n    return 1\n");
     write_file(project_root / "pkg" / "util.ts", "export function util() { return 1; }\n");
+    // Relative imports resolve against the importing file's directory; their
+    // transient stub ids must derive from the project-relative directory too.
+    write_file(project_root / "pkg" / "app.py", "from .service import Service\nfrom .. import main\n\ndef app():\n    return Service()\n");
+    write_file(project_root / "pkg" / "index.ts", "import { util } from \"./util\";\nexport function run() { return util(); }\n");
     write_file(project_root / "données" / "résumé.py", "def résumé():\n    return 1\n");
     const auto detected = cgraph::detect_project_files(project_root);
     std::vector<std::string> ids;
@@ -167,6 +171,15 @@ int main() {
       !has_id(cgraph::make_id("données/résumé.py:résumé"))) {
     cleanup();
     return 5;
+  }
+  // Relative-import stubs: `from .service import Service` in pkg/app.py resolves
+  // to pkg/service; `import "./util"` in pkg/index.ts resolves to pkg/util.
+  if (!has_id(cgraph::make_id("import-module:pkg/service")) ||
+      !has_id(cgraph::make_id("import-symbol:pkg/service:Service")) ||
+      !has_id(cgraph::make_id("import-module:pkg/util")) ||
+      !has_id(cgraph::make_id("import-symbol:pkg/util:util"))) {
+    cleanup();
+    return 6;
   }
   cleanup();
   return 0;
