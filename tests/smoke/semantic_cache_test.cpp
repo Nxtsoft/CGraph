@@ -378,6 +378,40 @@ int main() {
            "reconcile: last_error mentions missing node");
   }
 
+  // Reconciliation: a record written under the previous id scheme (ids derived
+  // from the absolute source path) names a node that no longer exists. The same
+  // symbol is present under its repo-relative id, but the record must be
+  // invalidated with the old id named, never re-pointed at the new node.
+  {
+    cgraph::SemanticCache cache;
+    cgraph::SemanticCacheRecord rec;
+    rec.source_path = doc_a;
+    rec.content_hash = hash_a;
+    rec.fragment_path = fragment;
+    rec.fragment_hash = frag_hash;
+    rec.state = cgraph::SemanticCacheState::Valid;
+    rec.dependencies.push_back(cgraph::SemanticDependency{
+        .node_id = "home_taylor_proj_src_service_ts_service",
+        .source_path = "src/service.ts",
+        .source_sha256 = "svc",
+    });
+    cache.upsert(rec);
+
+    cgraph::GraphSnapshot graph;
+    graph.nodes.push_back(cgraph::Node{
+        .id = "src_service_ts_service", .label = "Service", .source_file = "src/service.ts", .kind = "class"});
+    graph.source_hashes["src/service.ts"] = "svc";
+
+    const auto result = cgraph::reconcile_semantic_cache(cache, graph);
+    expect(ok, result.records_invalidated == 1, "old-scheme id: record invalidated");
+    const auto rec_after = cache.find_for_source(doc_a);
+    expect(ok, rec_after->state == cgraph::SemanticCacheState::Stale, "old-scheme id: record marked stale");
+    expect(ok, rec_after->last_error == "dependency node missing: home_taylor_proj_src_service_ts_service",
+           "old-scheme id: last_error names the old id");
+    expect(ok, rec_after->dependencies[0].node_id == "home_taylor_proj_src_service_ts_service",
+           "old-scheme id: dependency was not silently re-pointed at the new node");
+  }
+
   // Reconciliation: missing fragment file invalidates record
   {
     cgraph::SemanticCache cache;

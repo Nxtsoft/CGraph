@@ -139,6 +139,13 @@ struct ImpactReach {
     std::size_t budget, int max_depth, SnapshotSourceReader& reader);
 [[nodiscard]] std::size_t serialized_context_tokens(const nlohmann::json& value);
 
+// Re-resolves a memory checkpoint fragment's `concerns` edges against the graph
+// it is about to be overlaid on. An edge whose target id no longer exists is
+// re-bound through the `touch` key it was written with (a node id or exact
+// symbol name); one that cannot be re-bound is dropped, never left dangling.
+// Returns the number of edges dropped.
+std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragment);
+
 [[nodiscard]] std::shared_ptr<const GraphSnapshot> read_graph_snapshot(const DaemonState& state);
 [[nodiscard]] nlohmann::json freshness_metadata(const GraphSnapshot& graph);
 void publish_graph_snapshot(DaemonState& state, GraphSnapshot graph);

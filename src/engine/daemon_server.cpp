@@ -529,6 +529,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         }
       }
       mutate_graph_snapshot(target, [&](GraphSnapshot& graph) {
+        rebind_memory_concerns(graph, validation.fragment);
         merge_fragment(graph, validation.fragment);
         for (const auto& [path, hash] : overlay_hashes) {
           graph.source_hashes[path] = hash;
