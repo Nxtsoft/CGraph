@@ -181,6 +181,28 @@ int main() {
     catch (const cgraph::SourceSnapshotMismatch&) { rejected_stale = true; }
     require(rejected_stale, "changed source passed pinned verification");
 
+    // symbols_only: every symbol change survives at a budget that sheds every
+    // impact otherwise, and no impact or context evidence is produced at all.
+    {
+      auto starved = parameters("deletion", 2000);
+      const auto shed = cgraph::change_context(starved);
+      require(shed["omitted"]["impacts"].get<int>() > 0, "budget 2000 must shed impacts for the contrast to hold");
+      starved["symbols_only"] = true;
+      const auto symbols = cgraph::change_context(starved);
+      require(symbols["symbols_only"] == true, "symbols_only not echoed");
+      require(symbols["impacts"].empty() && symbols["context"].empty(), "symbols_only produced impacts or context");
+      require(symbols["omitted"]["impacts"] == 0 && symbols["omitted"]["context"] == 0 && symbols["truncated"] == false,
+              "symbols_only must not report shedding");
+      require(symbols["changes"] == deletion["changes"], "symbols_only changed the symbol_changes classification");
+      require(symbols["tokens_used"] == cgraph::serialized_context_tokens(symbols), "symbols_only token count not fixed point");
+      auto symbols_only_mcp = Json{{"jsonrpc", "2.0"}, {"id", 7}, {"method", "tools/call"},
+                                   {"params", {{"name", "graph_change_context"}, {"arguments", starved}}}};
+      const auto via_mcp = cgraph::handle_mcp_request(symbols_only_mcp, {});
+      const auto mcp_body = Json::parse(via_mcp["result"]["content"][0]["text"].get<std::string>());
+      require(mcp_body["symbols_only"] == true && mcp_body["changes"] == deletion["changes"],
+              "MCP symbols_only differs from the engine");
+    }
+
     // MCP executes the same real engine path without any daemon forwarder.
     auto request = Json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
                         {"params", {{"name", "graph_change_context"}, {"arguments", parameters("deletion")}}}};
