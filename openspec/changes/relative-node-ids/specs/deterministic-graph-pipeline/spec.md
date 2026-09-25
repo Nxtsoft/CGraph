@@ -21,13 +21,15 @@ normalization itself, which remains governed by `ID normalization parity`.
 - **THEN** every output still matches the Graphify reference exactly
 
 ### Requirement: Retrieval budget is not spent on the project's location
-Context entry cost SHALL NOT include any portion of a path above the project root, so that
-retrieval quality at a fixed token budget does not vary with how deeply the project is checked
-out.
+No node identifier in a context entry SHALL include any portion of a path above the project
+root, so that the identifier part of every entry's cost is the same however deeply the project
+is checked out. (A brief's `source_file` remains the absolute path the daemon reads from; it is
+not an identifier and is not covered by this requirement.)
 
-#### Scenario: Recall does not move with checkout depth
-- **WHEN** the packing-parity gate runs against the same graph from two roots of different length
-- **THEN** the measured recall is identical at every budget
+#### Scenario: Identifier cost does not move with checkout depth
+- **WHEN** the same tree is built from two roots of different length
+- **THEN** every node identifier, and therefore every identifier's serialized cost, is
+  byte-identical between the two builds
 
 ### Requirement: Identifier-keyed persisted state is invalidated, never mis-resolved
 The system SHALL treat identifier-keyed persisted state written under a previous identifier

@@ -93,7 +93,10 @@ Each chunk contains bounded file inputs with:
   deterministically against the code graph. These are suggestions only — ids and labels as
   evidence, never a relation — so a host can emit `doc -> <code-node-id>` edges connecting prose to
   code without first discovering the ids itself. The array is empty for media inputs and when no
-  code graph is available to match against; ignoring it leaves a fragment valid.
+  code graph is available to match against; ignoring it leaves a fragment valid. Code-node ids
+  derive from the source path relative to the project root, so an id a host records is valid in
+  every checkout of the same tree; ids recorded by binaries older than `bin-v0.5.0` embedded the
+  absolute path and no longer resolve.
 
 Hosts dispatch each chunk to their own agent or model workflow. A completed chunk writes exactly one fragment file named `chunk_NN.json` into the configured semantic drop directory, where `NN` is the chunk index. Cached content is skipped when a valid cache record exists for the same content hash and fragment path.
 
