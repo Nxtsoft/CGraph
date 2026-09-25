@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace cgraph {
 
@@ -145,6 +146,13 @@ struct ImpactReach {
 // symbol name); one that cannot be re-bound is dropped, never left dangling.
 // Returns the number of edges dropped.
 std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragment);
+
+// Overlays memory checkpoint fragments in any order: every fragment's nodes are
+// merged first, then every `concerns` edge is re-bound (rebind_memory_concerns)
+// against a graph that already holds all the checkpoints and merged. A checkpoint
+// that concerns an earlier checkpoint therefore keeps its edge whatever order the
+// sidecars were read in. Returns the number of edges dropped.
+std::size_t overlay_memory_fragments(GraphSnapshot& graph, std::vector<Fragment> fragments);
 
 [[nodiscard]] std::shared_ptr<const GraphSnapshot> read_graph_snapshot(const DaemonState& state);
 [[nodiscard]] nlohmann::json freshness_metadata(const GraphSnapshot& graph);

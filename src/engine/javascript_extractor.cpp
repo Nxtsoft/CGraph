@@ -1308,7 +1308,7 @@ void collect_heritage_names(const TSNode& clause, std::string_view source, std::
 // references (from member parameter/return/field type annotations) facts. The
 // node id is the class or interface node; method references are sourced from the
 // method node id, built with the same scheme the generic walk uses
-// (`make_id(source_file + ":" + method_name)`) so they land on a real node.
+// (`make_id(relative_path + ":" + method_name)`) so they land on a real node.
 // HTTP contract facts for resolve_contracts (contracts.hpp). An inline route
 // handler records the chain it is registered on and the route as written; an
 // exported `GET`/`POST`/... at the top of a Next.js `app/**/route.ts` records

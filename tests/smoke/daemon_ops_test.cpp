@@ -1283,6 +1283,45 @@ int main() {
       }
     }
 
+    // A checkpoint may concern an earlier checkpoint (touches resolve against the
+    // live graph, which already holds it). Re-overlaying the sidecars must keep
+    // that edge whatever order the directory enumerates them in: here the later
+    // checkpoint (B, concerns A) is overlaid BEFORE A exists in the graph.
+    {
+      cgraph::GraphSnapshot rebuilt;
+      rebuilt.nodes.push_back(cgraph::Node{.id = "fn:log", .label = "log_event", .kind = "function"});
+      cgraph::Fragment a;
+      a.nodes.push_back(cgraph::Node{.id = "memory:checkpoint:1", .label = "first", .kind = "checkpoint"});
+      a.edges.push_back(cgraph::Edge{.source = "memory:checkpoint:1", .target = "fn:log", .relation = "concerns",
+                                     .properties = {{"touch", "log_event"}}});
+      cgraph::Fragment b;
+      b.nodes.push_back(cgraph::Node{.id = "memory:checkpoint:2", .label = "second", .kind = "checkpoint"});
+      b.edges.push_back(cgraph::Edge{.source = "memory:checkpoint:2", .target = "memory:checkpoint:1",
+                                     .relation = "concerns", .properties = {{"touch", "memory:checkpoint:1"}}});
+      b.edges.push_back(cgraph::Edge{.source = "memory:checkpoint:2", .target = "home_me_proj_src_gone_py_gone",
+                                     .relation = "concerns", .properties = {{"touch", "gone_symbol"}}});
+      std::vector<cgraph::Fragment> out_of_order;
+      out_of_order.push_back(std::move(b));
+      out_of_order.push_back(std::move(a));
+      const auto dropped = cgraph::overlay_memory_fragments(rebuilt, std::move(out_of_order));
+      bool b_concerns_a = false;
+      for (const auto& edge : rebuilt.edges) {
+        if (edge.source == "memory:checkpoint:2" && edge.target == "memory:checkpoint:1" && edge.relation == "concerns") {
+          b_concerns_a = true;
+        }
+        bool target_exists = false;
+        for (const auto& node : rebuilt.nodes) {
+          target_exists = target_exists || node.id == edge.target;
+        }
+        if (!target_exists) {
+          return 125;  // a dangling concerns edge survived the overlay
+        }
+      }
+      if (dropped != 1 || !b_concerns_a || rebuilt.nodes.size() != 3 || rebuilt.edges.size() != 2) {
+        return 124;  // the cross-checkpoint edge was dropped by enumeration order
+      }
+    }
+
     // An oversized body is rejected with no node added.
     const auto count_before = cgraph::read_graph_snapshot(s)->nodes.size();
     const auto oversize = cgraph::handle_daemon_request(

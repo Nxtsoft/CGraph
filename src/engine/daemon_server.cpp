@@ -498,13 +498,17 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // sidecars are the durable source of truth, re-merged here after every rebuild so
   // checkpoints survive restarts, incremental edits, and full rescans. merge_fragment
   // is first-occurrence-wins, so re-applying an already-present checkpoint is a no-op.
+  // All sidecars are read first and overlaid in one pass (overlay_memory_fragments),
+  // so a checkpoint that concerns an earlier checkpoint keeps its edge whatever
+  // order the directory enumerates them in.
   const auto ingest_all_memory = [&](DaemonState& target) {
     std::error_code ec;
-    std::size_t applied = 0;
     if (!std::filesystem::exists(memory_dir, ec)) {
       target.last_memory_overlay_count = 0;
       return;
     }
+    std::vector<Fragment> fragments;
+    std::unordered_map<std::string, std::string> overlay_hashes;
     for (const auto& entry : std::filesystem::directory_iterator(memory_dir, ec)) {
       if (ec) {
         break;
@@ -516,7 +520,6 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       if (!validation.valid) {
         continue;
       }
-      std::unordered_map<std::string, std::string> overlay_hashes;
       overlay_hashes[entry.path().lexically_normal().generic_string()] = validation.source_sha256;
       for (const auto& node : validation.fragment.nodes) {
         if (node.source_file.empty()) {
@@ -528,15 +531,15 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
           overlay_hashes[source_path.lexically_normal().generic_string()] = sha256_file_hex(source_path);
         }
       }
-      mutate_graph_snapshot(target, [&](GraphSnapshot& graph) {
-        rebind_memory_concerns(graph, validation.fragment);
-        merge_fragment(graph, validation.fragment);
-        for (const auto& [path, hash] : overlay_hashes) {
-          graph.source_hashes[path] = hash;
-        }
-      });
-      ++applied;
+      fragments.push_back(std::move(validation.fragment));
     }
+    const auto applied = fragments.size();
+    mutate_graph_snapshot(target, [&](GraphSnapshot& graph) {
+      overlay_memory_fragments(graph, std::move(fragments));
+      for (const auto& [path, hash] : overlay_hashes) {
+        graph.source_hashes[path] = hash;
+      }
+    });
     target.last_memory_overlay_count = applied;  // observability: size of the last re-overlay pass
   };
 
