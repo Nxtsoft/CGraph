@@ -24,14 +24,15 @@ Committed fixture pair backing two smoke gates:
    twice; assert the two `graph.json` outputs are byte-identical:
    `cgraph --root <repo> --out <tmpA>` / `--out <tmpB>`.
 2. Rewrite each node's `source_file` to be repository-relative (strip the generation
-   root prefix). Node ids keep their generation-root derivation — they are opaque and
-   only cross-referenced against `queries.jsonl`.
+   root prefix). Node ids are already repository-relative (openspec change
+   `relative-node-ids`): they derive from the path relative to the root, so they need
+   no rewriting and are identical whichever checkout generated them.
 3. `python3 scripts/bootstrap_eval.py --root <repo> --graph <tmpA>/graph.json --out <dir>`
    (config from the committed `.research-eval.toml`; no grading edits).
 4. Copy the pair here.
 
 Regenerating changes both gates' measured baselines: re-measure and re-pin the baseline
 constants in `pack_context_parity_test.cpp` and `retrieval_quality_test.cpp` in the same
-change, record the new node/link and row counts here, and record the root length the
-pins were measured at (entry costs include the absolute source path). Current pins:
-root length 58, at 0cb8237.
+change and record the new node/link and row counts here. Current pins: at 0cb8237, ids
+rewritten to repository-relative form (the generation prefix stripped from every id in
+both files, a pure rename) by `relative-node-ids`.
