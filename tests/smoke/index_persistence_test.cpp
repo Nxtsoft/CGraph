@@ -42,7 +42,7 @@ int main() {
   // rebuild or re-sign, forcing a cold rebuild on the next query. The trailing
   // segment must therefore stay a short literal (bumped by hand on parity-surface
   // changes) and never a 64-char hex digest. Update this literal when you bump it.
-  if (key != "cgraph-index-v1:logic-4") {
+  if (key != "cgraph-index-v1:logic-5") {
     fs::remove_all(root);
     return 1;
   }
@@ -149,6 +149,21 @@ int main() {
   if (cgraph::read_index_manifest(root / "missing-root.json").has_value()) {
     fs::remove_all(root);
     return 1;
+  }
+
+  // An index persisted under the previous id scheme (logic-4: ids derived from
+  // absolute source paths) reads back intact but must never pass the version
+  // check the fast-load path applies -- its graph.json ids do not exist anymore.
+  auto old_scheme = manifest;
+  old_scheme.version_key = "cgraph-index-v1:logic-4";
+  if (!cgraph::write_index_manifest(old_scheme, root / "old-scheme.json")) {
+    fs::remove_all(root);
+    return 1;
+  }
+  const auto old_loaded = cgraph::read_index_manifest(root / "old-scheme.json");
+  if (!old_loaded || old_loaded->version_key == cgraph::index_version_key()) {
+    fs::remove_all(root);
+    return 1;  // only the version key can reject it, so it must differ from the running one
   }
 
   // A missing or corrupt manifest is "no usable cache", not a crash.

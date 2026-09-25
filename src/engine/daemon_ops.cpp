@@ -1867,7 +1867,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
   // entry yields no edge (and is reported), never a dangling target.
   const auto graph = read_graph_snapshot(state);
   const auto by_id = index_nodes(*graph);
-  std::vector<std::string> resolved;
+  std::vector<std::pair<std::string, std::string>> resolved;  // (node id, the touch key it came from)
   auto unresolved = nlohmann::json::array();
   for (const auto& touch : params.value("touches", nlohmann::json::array())) {
     if (!touch.is_string()) {
@@ -1875,7 +1875,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
     }
     const auto key = touch.get<std::string>();
     if (const auto* node = resolve_node(*graph, by_id, key); node != nullptr) {
-      resolved.push_back(node->id);
+      resolved.emplace_back(node->id, key);
     } else {
       unresolved.push_back(key);
     }
@@ -1945,9 +1945,11 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
 
   Fragment fragment;
   fragment.nodes.push_back(node);
-  for (const auto& target : resolved) {
-    fragment.edges.push_back(
-        Edge{.source = id, .target = target, .relation = "concerns", .confidence = Confidence::Inferred});
+  for (const auto& [target, touch] : resolved) {
+    // The touch key travels with the edge so a later overlay can re-resolve the
+    // target after the graph's ids change (rebind_memory_concerns).
+    fragment.edges.push_back(Edge{.source = id, .target = target, .relation = "concerns",
+                                  .confidence = Confidence::Inferred, .properties = {{"touch", touch}}});
   }
 
   // Durable sidecar: the fragment beside the body is the source of truth for this
@@ -2066,6 +2068,26 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
 }
 
 }  // namespace
+
+std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragment) {
+  const auto by_id = index_nodes(graph);
+  std::size_t dropped = 0;
+  std::erase_if(fragment.edges, [&](Edge& edge) {
+    if (edge.relation != "concerns" || by_id.contains(edge.target)) {
+      return false;
+    }
+    const auto touch = edge.properties.find("touch");
+    if (touch != edge.properties.end()) {
+      if (const auto* node = resolve_node(graph, by_id, touch->second); node != nullptr) {
+        edge.target = node->id;
+        return false;
+      }
+    }
+    ++dropped;
+    return true;
+  });
+  return dropped;
+}
 
 nlohmann::json freshness_metadata(const GraphSnapshot& graph) {
   return {

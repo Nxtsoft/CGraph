@@ -1237,7 +1237,8 @@ int main() {
       }
       for (const auto& edge : snap->edges) {
         if (edge.relation == "concerns" && edge.target == "fn:charge") {
-          concerns_resolved = true;
+          // The touch key the agent gave travels with the edge for re-resolution.
+          concerns_resolved = edge.properties.contains("touch") && edge.properties.at("touch") == "charge_card";
         }
         if (edge.relation == "concerns" && edge.target == "nope_missing") {
           concerns_unresolved = true;
@@ -1245,6 +1246,40 @@ int main() {
       }
       if (!has_checkpoint || !concerns_resolved || concerns_unresolved) {
         return 94;
+      }
+    }
+
+    // A sidecar written before the graph's ids changed (here: ids derived from
+    // absolute paths) is re-overlaid onto a graph where its targets no longer
+    // exist. Each concerns edge re-resolves through its touch key; one that
+    // cannot is dropped rather than left dangling; a still-valid target is kept.
+    {
+      cgraph::GraphSnapshot rebuilt;
+      rebuilt.nodes.push_back(cgraph::Node{.id = "src_billing_py_charge_card", .label = "charge_card",
+                                           .source_file = "src/billing.py", .kind = "function"});
+      rebuilt.nodes.push_back(cgraph::Node{.id = "fn:log", .label = "log_event", .kind = "function"});
+      cgraph::Fragment sidecar;
+      sidecar.nodes.push_back(cgraph::Node{.id = "memory:checkpoint:1", .label = "old", .kind = "checkpoint"});
+      sidecar.edges.push_back(cgraph::Edge{.source = "memory:checkpoint:1", .target = "home_me_proj_src_billing_py_charge_card",
+                                           .relation = "concerns", .properties = {{"touch", "charge_card"}}});
+      sidecar.edges.push_back(cgraph::Edge{.source = "memory:checkpoint:1", .target = "home_me_proj_src_gone_py_gone",
+                                           .relation = "concerns", .properties = {{"touch", "gone_symbol"}}});
+      sidecar.edges.push_back(cgraph::Edge{.source = "memory:checkpoint:1", .target = "fn:log", .relation = "concerns",
+                                           .properties = {{"touch", "log_event"}}});
+      const auto dropped = cgraph::rebind_memory_concerns(rebuilt, sidecar);
+      if (dropped != 1 || sidecar.edges.size() != 2 || sidecar.edges[0].target != "src_billing_py_charge_card" ||
+          sidecar.edges[1].target != "fn:log") {
+        return 122;
+      }
+      cgraph::merge_fragment(rebuilt, sidecar);
+      for (const auto& edge : rebuilt.edges) {
+        bool target_exists = false;
+        for (const auto& node : rebuilt.nodes) {
+          target_exists = target_exists || node.id == edge.target;
+        }
+        if (!target_exists) {
+          return 123;  // a dangling concerns edge survived the overlay
+        }
       }
     }
 
