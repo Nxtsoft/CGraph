@@ -183,14 +183,17 @@ int main() {
   // for confetti, an 8.6-point gap the sparser old fixture could not see).
   // Baselines are transcriptions of the gate's own output on the new pair. 6000
   // is the shipped default budget. The gate stays non-regression per packer plus
-  // the symmetric packing-parity band. Environment note: entry costs include the
-  // absolute source path, so recall moves with checkout depth; these pins were
-  // measured at root length 58 (a deep worktree), shorter real-world roots only
-  // add margin to the floors.
-  const std::vector<Target> targets = {{2000, 0.407062, 0.398159, true},
-                                       {4000, 0.493927, 0.481693, true},
-                                       {6000, 0.530070, 0.519019, true},
-                                       {8000, 0.547631, 0.537489, false}};
+  // the symmetric packing-parity band.
+  // Re-pinned for openspec/changes/relative-node-ids: the fixture's ids lost their
+  // 65-char generation-root prefix (183,941 -> 81,241 id characters), so an
+  // entry's id no longer depends on where the project is checked out. On the same
+  // graph and engine, greedy/knapsack moved 0.393163/0.395117 -> 0.414961/0.400274
+  // (2000), 0.487613/0.465961 -> 0.496701/0.470459 (4000), 0.510741/0.516380 ->
+  // 0.519012/0.514780 (6000), 0.547510/0.534375 -> 0.549584/0.538557 (8000).
+  const std::vector<Target> targets = {{2000, 0.414961, 0.400274, true},
+                                       {4000, 0.496701, 0.470459, true},
+                                       {6000, 0.519012, 0.514780, true},
+                                       {8000, 0.549584, 0.538557, false}};
   constexpr double kTol = 0.03;
 
   std::cout << "pack_context knapsack parity  (N=" << rows.size() << " symbol rows, k=3)\n";

@@ -135,9 +135,14 @@ int main() {
   // 0.2175/0.3403/0.3864/0.4245 (the idf-ranking pins on this same fixture) to
   // the values below. Baselines are transcriptions of the gate's own output on
   // the committed pair (regenerated at 0cb8237: 1580 nodes / 3178 links, 75
-  // symbol rows), measured at root length 58.
+  // symbol rows).
+  // Re-pinned for openspec/changes/relative-node-ids: the fixture's ids lost
+  // their 65-char generation-root prefix, so an entry's id no longer depends on
+  // where the project is checked out. On the same graph and engine, recall moved
+  // 0.241528 -> 0.257310 (2000), 0.358842 -> 0.353199 (4000), 0.390547 ->
+  // 0.398673 (6000), 0.435563 -> 0.440166 (8000).
   const std::vector<Target> targets = {
-      {2000, 0.2487}, {4000, 0.3629}, {6000, 0.3925}, {8000, 0.4425}};
+      {2000, 0.2573}, {4000, 0.3532}, {6000, 0.3987}, {8000, 0.4402}};
   constexpr double kTol = 0.03;
 
   std::cout << "end-to-end retrieval gate  (N=" << rows.size() << " symbol rows, q-only, engine defaults)\n";
