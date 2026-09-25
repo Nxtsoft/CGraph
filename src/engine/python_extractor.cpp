@@ -65,8 +65,13 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
   const std::string_view statement_type = ts_node_type(node);
   const std::string file_id = make_id(context.relative_path);
 
-  const auto add_module_stub = [&](const std::string& resolved, const std::string& label) -> std::string {
-    const auto module_id = make_id("import-module:" + resolved);
+  // `spec` is resolved twice: against the absolute source file for import_path
+  // (resolve_imports looks it up by the file nodes' absolute source paths) and
+  // against the project-relative path for the stub's id, which like every other
+  // id must not carry the checkout's location.
+  const auto add_module_stub = [&](const std::string& spec, const std::string& label) -> std::string {
+    const auto resolved = resolve_python_module_spec(context.source_file, spec);
+    const auto module_id = make_id("import-module:" + resolve_python_module_spec(context.relative_path, spec));
     fragment.nodes.push_back(Node{
         .id = module_id,
         .label = label,
@@ -97,7 +102,7 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
       }
       const auto spec = node_text(child, context.source);
       if (!spec.empty()) {
-        add_module_stub(resolve_python_module_spec(context.source_file, spec), spec);
+        add_module_stub(spec, spec);
       }
     }
     return;
@@ -114,8 +119,9 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
   if (spec.empty()) {
     return;
   }
+  add_module_stub(spec, spec);
   const auto resolved = resolve_python_module_spec(context.source_file, spec);
-  add_module_stub(resolved, spec);
+  const auto resolved_key = resolve_python_module_spec(context.relative_path, spec);
 
   // `from m import a, b as c` — the imported names are the `name`-field children
   // after module_name (dotted_name or aliased_import). A wildcard import has none.
@@ -144,7 +150,7 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
     if (name.empty()) {
       continue;
     }
-    const auto symbol_id = make_id("import-symbol:" + resolved + ":" + name);
+    const auto symbol_id = make_id("import-symbol:" + resolved_key + ":" + name);
     fragment.nodes.push_back(Node{
         .id = symbol_id,
         .label = name,
