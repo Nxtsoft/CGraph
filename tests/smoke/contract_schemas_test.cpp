@@ -59,7 +59,7 @@ void dump(const cgraph::Fragment& fragment) {
 }
 
 int test_openapi_json() {
-  const auto result = cgraph::extract_openapi_document({.source_file = "/svc/api/openapi.json", .source = R"json({
+  const auto result = cgraph::extract_openapi_document({.source_file = "/svc/api/openapi.json", .relative_path = "/svc/api/openapi.json", .source = R"json({
   "openapi": "3.1.0",
   "info": { "title": "Notes", "version": "1.0.0" },
   "paths": {
@@ -139,7 +139,7 @@ int test_openapi_json() {
     return fail("openapi: RESPONDS_WITH / ACCEPTS / references / inherits / contains edges");
   }
   // Not a document: a warning and no nodes.
-  const auto other = cgraph::extract_openapi_document({.source_file = "/svc/openapi-notes.json", .source = R"({"name": "x"})"});
+  const auto other = cgraph::extract_openapi_document({.source_file = "/svc/openapi-notes.json", .relative_path = "/svc/openapi-notes.json", .source = R"({"name": "x"})"});
   if (other.fragment.warnings.size() != 1 || !other.fragment.nodes.empty()) {
     return fail("openapi: a JSON file without the openapi key is refused with a warning");
   }
@@ -147,7 +147,7 @@ int test_openapi_json() {
 }
 
 int test_protobuf() {
-  const auto result = cgraph::extract_protobuf({.source_file = "/svc/proto/notes.proto", .source = R"proto(
+  const auto result = cgraph::extract_protobuf({.source_file = "/svc/proto/notes.proto", .relative_path = "/svc/proto/notes.proto", .source = R"proto(
 syntax = "proto3";
 package notes.v1;
 import "google/protobuf/timestamp.proto";
@@ -231,7 +231,7 @@ service Notebooks {
 }
 
 int test_graphql_sdl() {
-  const auto result = cgraph::extract_graphql_sdl({.source_file = "/svc/schema.graphql", .source = R"gql(
+  const auto result = cgraph::extract_graphql_sdl({.source_file = "/svc/schema.graphql", .relative_path = "/svc/schema.graphql", .source = R"gql(
 # Notes API
 """
 A notebook.

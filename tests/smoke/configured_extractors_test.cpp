@@ -46,7 +46,7 @@ bool check_csharp_extraction() {
 
   const auto result = cgraph::extract_configured_language(
       cgraph::DetectedLanguage::CSharp,
-      cgraph::ExtractionContext{.source_file = "Demo/Service.cs", .source = source});
+      cgraph::ExtractionContext{.source_file = "Demo/Service.cs", .relative_path = "Demo/Service.cs", .source = source});
   if (!result.has_value()) {
     return fail("csharp extraction returned no result");
   }
@@ -105,7 +105,7 @@ bool check_go_extraction() {
 
   const auto result = cgraph::extract_configured_language(
       cgraph::DetectedLanguage::Go,
-      cgraph::ExtractionContext{.source_file = "app/service.go", .source = source});
+      cgraph::ExtractionContext{.source_file = "app/service.go", .relative_path = "app/service.go", .source = source});
   if (!result.has_value()) {
     return fail("go extraction returned no result");
   }
@@ -179,7 +179,7 @@ bool check_rust_extraction() {
 
   const auto result = cgraph::extract_configured_language(
       cgraph::DetectedLanguage::Rust,
-      cgraph::ExtractionContext{.source_file = "src/service.rs", .source = source});
+      cgraph::ExtractionContext{.source_file = "src/service.rs", .relative_path = "src/service.rs", .source = source});
   if (!result.has_value()) {
     return fail("rust extraction returned no result");
   }
@@ -316,7 +316,7 @@ bool check_rust_use_imports() {
 
   const auto result = cgraph::extract_configured_language(
       cgraph::DetectedLanguage::Rust,
-      cgraph::ExtractionContext{.source_file = "src/main.rs", .source = source});
+      cgraph::ExtractionContext{.source_file = "src/main.rs", .relative_path = "src/main.rs", .source = source});
   if (!result.has_value()) {
     return fail("rust extraction returned no result");
   }
@@ -429,7 +429,7 @@ bool check_java_extraction() {
 
   const auto result = cgraph::extract_configured_language(
       cgraph::DetectedLanguage::Java,
-      cgraph::ExtractionContext{.source_file = "p/Widget.java", .source = source});
+      cgraph::ExtractionContext{.source_file = "p/Widget.java", .relative_path = "p/Widget.java", .source = source});
   if (!result.has_value()) {
     return fail("java extraction returned no result");
   }
@@ -492,7 +492,7 @@ bool check_kotlin_extraction() {
 
   const auto result = cgraph::extract_configured_language(
       cgraph::DetectedLanguage::Kotlin,
-      cgraph::ExtractionContext{.source_file = "com/example/Service.kt", .source = source});
+      cgraph::ExtractionContext{.source_file = "com/example/Service.kt", .relative_path = "com/example/Service.kt", .source = source});
   if (!result.has_value()) {
     return fail("kotlin extraction returned no result");
   }
@@ -537,7 +537,7 @@ int main() {
       {cgraph::DetectedLanguage::Rust, "struct First { Size: i32, Count: i32, Name: String } struct Second { Size: i32, Count: i32, Name: String }"},
       {cgraph::DetectedLanguage::Java, "class First { int Size, Count; String Name; } record Second(int Size, int Count, String Name) {}"},
   }) {
-    const auto result = cgraph::extract_configured_language(test.language, {.source_file = "members", .source = test.source});
+    const auto result = cgraph::extract_configured_language(test.language, {.source_file = "members", .relative_path = "members", .source = test.source});
     if (!result) return 1;
     for (const std::string owner : {"First", "Second"}) {
       std::set<std::string> labels;
@@ -562,6 +562,7 @@ int main() {
     const auto result = cgraph::extract_configured_language(
         cgraph::DetectedLanguage::Rust,
         {.source_file = "c.rs",
+         .relative_path = "c.rs",
          .source = "pub struct Config { pub path: String }\npub fn config_path() -> u8 { 0 }\n"});
     if (!result) return 1;
     const cgraph::Node* function = nullptr;

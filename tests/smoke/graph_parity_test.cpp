@@ -63,7 +63,7 @@ function build() {
   std::vector<cgraph::Fragment> fragments;
   std::vector<cgraph::RawCall> raw_calls;
   for (const auto& file : detected) {
-    auto result = cgraph::extract_detected_file(file);
+    auto result = cgraph::extract_detected_file(file, std::filesystem::weakly_canonical(root));
     fragments.push_back(std::move(result.fragment));
     raw_calls.insert(raw_calls.end(), result.raw_calls.begin(), result.raw_calls.end());
   }

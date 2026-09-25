@@ -65,15 +65,15 @@ class LineIndex {
 class Emitter {
  public:
   Emitter(const ExtractionContext& context, Fragment& fragment)
-      : context_(context), fragment_(fragment), lines_(context.source), file_id_(make_id(context.source_file)) {
-    const std::filesystem::path source_path(context.source_file);
+      : context_(context), fragment_(fragment), lines_(context.source), file_id_(make_id(context.relative_path)) {
+    const std::filesystem::path source_path(context.relative_path);
     std::string file_label = source_path.filename().string();
     if (source_path.has_parent_path() && source_path.parent_path().has_filename()) {
       file_label = source_path.parent_path().filename().string() + "/" + file_label;
     }
     fragment_.nodes.push_back(Node{
         .id = file_id_,
-        .label = file_label.empty() ? context.source_file : std::move(file_label),
+        .label = file_label.empty() ? context.relative_path : std::move(file_label),
         .source_file = context.source_file,
         .source_location = SourceLocation{.start_line = 1, .end_line = 1},
         .kind = "file",
@@ -87,7 +87,7 @@ class Emitter {
 
   // A declared symbol of the document: `schema`, or the `type` a proto service is.
   std::string symbol(const std::string& label, std::string_view kind, std::size_t offset, Properties properties) {
-    auto id = make_id(context_.source_file + ":" + std::string(kind) + ":" + label);
+    auto id = make_id(context_.relative_path + ":" + std::string(kind) + ":" + label);
     if (node_ids_.insert(id).second) {
       fragment_.nodes.push_back(Node{
           .id = id,

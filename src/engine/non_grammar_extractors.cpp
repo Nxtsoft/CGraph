@@ -72,7 +72,7 @@ void add_node(
   }
 
   fragment.nodes.push_back(Node{
-      .id = make_id(context.source_file + ":" + kind + ":" + label),
+      .id = make_id(context.relative_path + ":" + kind + ":" + label),
       .label = std::move(label),
       .source_file = context.source_file,
       .source_location = line_location(context.source, offset),
@@ -188,16 +188,16 @@ ExtractionResult extract_sql(const ExtractionContext& context) {
   auto& fragment = result.fragment;
   const auto& source_file = context.source_file;
   const auto& source = context.source;
-  const auto slash = source_file.find_last_of("/\\");
+  const auto slash = context.relative_path.find_last_of("/\\");
   const std::string filename =
-      slash == std::string::npos ? source_file : source_file.substr(slash + 1);
+      slash == std::string::npos ? context.relative_path : context.relative_path.substr(slash + 1);
   if (filename.empty()) {
     return result;
   }
 
   // File-level node: the .sql file as a discoverable/enrichable/anchorable entity.
   fragment.nodes.push_back(Node{
-      .id = make_id(source_file + ":sql_file:" + filename),
+      .id = make_id(context.relative_path + ":sql_file:" + filename),
       .label = filename,
       .source_file = source_file,
       .kind = "sql_file",

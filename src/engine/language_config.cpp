@@ -82,7 +82,7 @@ std::string add_field_node(
     return {};
   }
   auto id = unique_node_id(
-      context.source_file + ":" + std::string(owner_name) + "::" + label, location, fragment);
+      context.relative_path + ":" + std::string(owner_name) + "::" + label, location, fragment);
   fragment.nodes.push_back(Node{
       .id = id,
       .label = std::move(label),

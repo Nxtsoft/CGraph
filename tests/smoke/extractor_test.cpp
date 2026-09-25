@@ -73,7 +73,7 @@ namespace {
   for (const auto& test : cases) {
     const auto result = cgraph::extract_with_config(
         tree_sitter_cpp(), config,
-        cgraph::ExtractionContext{.source_file = "decl.cpp", .source = std::string(test.source)});
+        cgraph::ExtractionContext{.source_file = "decl.cpp", .relative_path = "decl.cpp", .source = std::string(test.source)});
     const auto found = class_nodes(result.fragment, test.label);
     if (found.size() != test.expected) {
       std::cerr << test.name << ": expected " << test.expected << " `" << test.label
@@ -97,7 +97,7 @@ namespace {
 struct Pair { int first; int second; };
 int use(void) { return 0; }
 )c";
-  const auto context = cgraph::ExtractionContext{.source_file = "pair.c", .source = source};
+  const auto context = cgraph::ExtractionContext{.source_file = "pair.c", .relative_path = "pair.c", .source = source};
 
   auto without = cgraph::LanguageConfig{
       .name = "c",
@@ -198,7 +198,7 @@ int main(void) { return helper(); }
   const auto result = cgraph::extract_with_config(
       tree_sitter_c(),
       config,
-      cgraph::ExtractionContext{.source_file = "main.c", .source = source});
+      cgraph::ExtractionContext{.source_file = "main.c", .relative_path = "main.c", .source = source});
 
   // One file node plus the two functions it contains.
   if (result.fragment.nodes.size() != 3) {

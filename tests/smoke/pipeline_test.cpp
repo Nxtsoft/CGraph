@@ -2,8 +2,11 @@
 #include "cgraph/pipeline.hpp"
 #include "cgraph/file_cache.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -105,5 +108,43 @@ int main() {
 
   std::filesystem::remove_all(root);
   std::filesystem::remove_all(out);
-  return ok ? 0 : 1;
+  if (!ok) {
+    return 1;
+  }
+
+  // The whole pipeline, not just extraction, is location-independent: the same
+  // tree built from a shallow and a deep root yields identical node ids and
+  // identical edges, so two checkouts of one commit can be joined by id.
+  const auto shallow = std::filesystem::temp_directory_path() / "cgraph_pipeline_shallow";
+  const auto deep = std::filesystem::temp_directory_path() / "cgraph_pipeline_deep" / "a" / "much" / "deeper" / "checkout";
+  const auto build_shape = [&](const std::filesystem::path& project_root) {
+    std::filesystem::remove_all(project_root);
+    write_file(project_root / "main.py", kPythonSource);
+    write_file(project_root / "svc" / "service.go", kGoSource);
+    write_file(project_root / "svc" / "index.ts", "import { helper } from \"./helper\";\nexport function run() { return helper(); }\n");
+    write_file(project_root / "svc" / "helper.ts", "export function helper() { return 1; }\n");
+    const auto built = cgraph::run_one_shot(project_root);
+    std::vector<std::string> shape;
+    for (const auto& node : built.graph.nodes) {
+      shape.push_back("node " + node.id + " " + node.kind + " " + node.label);
+    }
+    for (const auto& edge : built.graph.edges) {
+      shape.push_back("edge " + edge.source + " -" + edge.relation + "-> " + edge.target);
+    }
+    std::sort(shape.begin(), shape.end());
+    return shape;
+  };
+  const auto shallow_shape = build_shape(shallow);
+  const auto deep_shape = build_shape(deep);
+  std::filesystem::remove_all(shallow);
+  std::filesystem::remove_all(std::filesystem::temp_directory_path() / "cgraph_pipeline_deep");
+  if (shallow_shape.size() < 6 || shallow_shape != deep_shape) {
+    return 9;
+  }
+  for (const auto& line : shallow_shape) {
+    if (line.find("cgraph_pipeline") != std::string::npos || line.find("much_deeper_checkout") != std::string::npos) {
+      return 10;  // a segment above the project root leaked into an id or label
+    }
+  }
+  return 0;
 }

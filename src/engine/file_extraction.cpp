@@ -50,17 +50,28 @@ constexpr std::uintmax_t kMaxExtractionFileBytes = 8 * 1024 * 1024;
   return contents;
 }
 
+[[nodiscard]] std::string relative_to_root(const std::filesystem::path& path,
+                                           const std::filesystem::path& project_root) {
+  const auto relative = path.lexically_normal().lexically_relative(project_root.lexically_normal());
+  if (relative.empty() || relative.begin()->string() == "..") {
+    throw std::runtime_error("file is outside the project root " + project_root.generic_string());
+  }
+  return relative.generic_string();
+}
+
 }  // namespace
 
-ExtractionResult extract_detected_file(const DetectedFile& file) {
+ExtractionResult extract_detected_file(const DetectedFile& file, const std::filesystem::path& project_root) {
   ExtractionResult empty;
   try {
+    const auto relative_path = relative_to_root(file.path, project_root);
     const auto source = read_file(file.path);
     empty.source_sha256 = sha256_hex(source);
     auto result = extract_configured_language(
         file.language,
         ExtractionContext{
             .source_file = file.path.generic_string(),
+            .relative_path = relative_path,
             .source = source,
         });
     if (result.has_value()) {
@@ -79,7 +90,8 @@ ExtractionResult extract_detected_file(const DetectedFile& file) {
   return empty;
 }
 
-std::vector<ExtractionResult> extract_files(std::span<const DetectedFile> files) {
+std::vector<ExtractionResult> extract_files(std::span<const DetectedFile> files,
+                                            const std::filesystem::path& project_root) {
   std::vector<ExtractionResult> results(files.size());
   if (files.empty()) {
     return results;
@@ -94,7 +106,7 @@ std::vector<ExtractionResult> extract_files(std::span<const DetectedFile> files)
 
   if (worker_count <= 1) {
     for (std::size_t i = 0; i < files.size(); ++i) {
-      results[i] = extract_detected_file(files[i]);
+      results[i] = extract_detected_file(files[i], project_root);
     }
     return results;
   }
@@ -103,7 +115,7 @@ std::vector<ExtractionResult> extract_files(std::span<const DetectedFile> files)
   const auto worker = [&] {
     for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed); i < files.size();
          i = next.fetch_add(1, std::memory_order_relaxed)) {
-      results[i] = extract_detected_file(files[i]);
+      results[i] = extract_detected_file(files[i], project_root);
     }
   };
 

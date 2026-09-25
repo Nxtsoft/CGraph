@@ -175,6 +175,15 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   for (const auto& node : graph.nodes) {
     by_id.emplace(node.id, &node);
   }
+  const auto file_ids = file_node_ids(graph);
+  // The file node containing a handler, so a minted endpoint can hang off it.
+  const auto file_of = [&](const Node& handler) -> std::optional<std::string> {
+    const auto file_id = file_ids.find(handler.source_file);
+    if (file_id == file_ids.end()) {
+      return std::nullopt;
+    }
+    return file_id->second;
+  };
   std::unordered_set<std::string> seen_edges;
   seen_edges.reserve(graph.edges.size());
   for (const auto& edge : graph.edges) {
@@ -382,8 +391,8 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       const auto id = "endpoint:" + method + " " + canonical_route_path(path);
       if (mint(id, method + " " + path, method, path, handler->second)) {
         ++tally.endpoints;
-        if (const auto file_id = make_id(handler->second->source_file); by_id.contains(file_id)) {
-          add_edge(file_id, id, "contains", "", {});
+        if (const auto file_id = file_of(*handler->second)) {
+          add_edge(*file_id, id, "contains", "", {});
         }
       } else if (const auto slot = minted.find(id); slot != minted.end()) {
         // A consumer minted it first, or a second handler serves the same route:
@@ -394,8 +403,8 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
           endpoint.properties["path"] = path;
           endpoint.source_file = handler->second->source_file;
           endpoint.source_location = handler->second->source_location;
-          if (const auto file_id = make_id(handler->second->source_file); by_id.contains(file_id)) {
-            add_edge(file_id, id, "contains", "", {});
+          if (const auto file_id = file_of(*handler->second)) {
+            add_edge(*file_id, id, "contains", "", {});
           }
         }
       }

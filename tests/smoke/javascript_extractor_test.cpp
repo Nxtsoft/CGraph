@@ -26,7 +26,7 @@ namespace {
 }  // namespace
 
 int main() {
-  const auto members = cgraph::extract_typescript({.source_file = "members.ts", .source = R"ts(
+  const auto members = cgraph::extract_typescript({.source_file = "members.ts", .relative_path = "members.ts", .source = R"ts(
 interface First { readonly id: string; value?: number; nested: { hidden: boolean }; }
 interface Second { readonly id: string; value?: number; nested: { hidden: boolean }; }
 type Alias = { readonly id: string; value?: number };
@@ -52,7 +52,7 @@ enum Choice { One, Two = "two" }
   // TypeScript declaration merging: two owners with one name in one file. Each
   // owner's members must be its own nodes, not one shared node that both owners
   // point a `defines` edge at.
-  const auto merged = cgraph::extract_typescript({.source_file = "c.ts", .source = R"ts(
+  const auto merged = cgraph::extract_typescript({.source_file = "c.ts", .relative_path = "c.ts", .source = R"ts(
 interface Window { locale: string; }
 interface Window { locale: string; theme: string; }
 )ts"});
@@ -78,7 +78,7 @@ interface Window { locale: string; theme: string; }
 
   // `constructor(public readonly x: number)` declares a member; a parameter
   // with no accessibility modifier declares nothing.
-  const auto parameters = cgraph::extract_typescript({.source_file = "p.ts", .source = R"ts(
+  const auto parameters = cgraph::extract_typescript({.source_file = "p.ts", .relative_path = "p.ts", .source = R"ts(
 class Point {
   constructor(public readonly x: number, private y?: string, plain: boolean = true) {}
 }
@@ -112,7 +112,7 @@ function helper() {
 )js";
 
   const auto js_result = cgraph::extract_javascript(
-      cgraph::ExtractionContext{.source_file = "worker.js", .source = js_source});
+      cgraph::ExtractionContext{.source_file = "worker.js", .relative_path = "worker.js", .source = js_source});
 
   if (js_result.fragment.nodes.size() < 3) {
     return 1;
@@ -145,7 +145,7 @@ function build(config: Config) {
 )ts";
 
   const auto ts_result = cgraph::extract_typescript(
-      cgraph::ExtractionContext{.source_file = "service.ts", .source = ts_source});
+      cgraph::ExtractionContext{.source_file = "service.ts", .relative_path = "service.ts", .source = ts_source});
 
   if (ts_result.fragment.nodes.size() < 3) {
     return 1;
@@ -181,7 +181,7 @@ export type Handler = (e: Event) => void;
 export enum Color { Red, Green }
 )ts";
   const auto types_result = cgraph::extract_typescript(
-      cgraph::ExtractionContext{.source_file = "types.ts", .source = types_source});
+      cgraph::ExtractionContext{.source_file = "types.ts", .relative_path = "types.ts", .source = types_source});
   std::size_t type_nodes = 0;
   bool saw_user = false;
   bool saw_handler = false;
@@ -215,7 +215,7 @@ function Component() {
 }
 )ts";
   const auto store_result = cgraph::extract_typescript(
-      cgraph::ExtractionContext{.source_file = "store.ts", .source = store_source});
+      cgraph::ExtractionContext{.source_file = "store.ts", .relative_path = "store.ts", .source = store_source});
   bool saw_use_store = false;
   bool saw_config = false;
   bool saw_local = false;
@@ -248,7 +248,7 @@ interface Handler extends Listener {
 }
 )ts";
   const auto rel_result = cgraph::extract_typescript(
-      cgraph::ExtractionContext{.source_file = "service.ts", .source = rel_source});
+      cgraph::ExtractionContext{.source_file = "service.ts", .relative_path = "service.ts", .source = rel_source});
   const auto has_relation = [&](std::string_view relation, std::string_view target) {
     for (const auto& r : rel_result.raw_relations) {
       if (r.relation == relation && r.target_label == target) {
@@ -276,7 +276,7 @@ interface Handler extends Listener {
   // function node and a call scope, so a source anchor lands on the handler and
   // the calls inside it are attributed instead of dropped at the arrow boundary.
   {
-    const auto routes = cgraph::extract_typescript({.source_file = "notebooks/index.ts", .source = R"ts(
+    const auto routes = cgraph::extract_typescript({.source_file = "notebooks/index.ts", .relative_path = "notebooks/index.ts", .source = R"ts(
 import { Elysia } from 'elysia';
 const notebookRoutes = new Elysia({ prefix: '/notebooks' })
   .use(authWithDbUser)
@@ -342,7 +342,7 @@ describe('suite', () => { run(); });
   // prefix; `.use(x)` / `.use('/p', x)` / `.route('/p', x)` record mounts. The
   // TS2589-dodging casts turing-api wraps its chains in are read through.
   {
-    const auto facts = cgraph::extract_typescript({.source_file = "src/app.ts", .source = R"ts(
+    const auto facts = cgraph::extract_typescript({.source_file = "src/app.ts", .relative_path = "src/app.ts", .source = R"ts(
 import { Elysia } from 'elysia';
 import { user } from './modules/user';
 import { docsModule } from './modules/docs';
@@ -412,7 +412,7 @@ router.route('/x').get((req, res) => res.end());
   // chain with the path beneath it; a parameter of an ordinary function is
   // unresolvable and leaves the chain empty; a cast alias records `aliases`.
   {
-    const auto shapes = cgraph::extract_typescript({.source_file = "src/shapes.ts", .source = R"ts(
+    const auto shapes = cgraph::extract_typescript({.source_file = "src/shapes.ts", .relative_path = "src/shapes.ts", .source = R"ts(
 import { config as configModule, deck } from './modules';
 export const api = new Elysia({ prefix: '/api' })
   .use(configModule)
@@ -463,7 +463,7 @@ export const deckModule: Elysia = deck as unknown as Elysia;
   // method when literal, and the path with `{}` for interpolated segments; a
   // URL in a variable records an empty path; a handler argument is a route.
   {
-    const auto calls = cgraph::extract_typescript({.source_file = "lib/api.ts", .source = R"ts(
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/api.ts", .relative_path = "lib/api.ts", .source = R"ts(
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 const base = `${API_URL}/api/v1`;
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -516,7 +516,7 @@ export async function publish(projectId: string) {
   // endpoints (`never` methods skipped, no `field` per path), component schemas
   // become `schema` nodes with fields, and operations link responses and bodies.
   {
-    const auto spec = cgraph::extract_typescript({.source_file = "lib/generated/api-types.d.ts", .source = R"ts(
+    const auto spec = cgraph::extract_typescript({.source_file = "lib/generated/api-types.d.ts", .relative_path = "lib/generated/api-types.d.ts", .source = R"ts(
 export interface paths {
     "/api/v1/notebooks": {
         parameters: { query?: never; header?: never; path?: never; cookie?: never; };
@@ -610,7 +610,7 @@ export interface operations {
   // Next.js route file: the exported verb functions record a file-derived path
   // and no chain; a helper in the same file records nothing.
   {
-    const auto next = cgraph::extract_typescript({.source_file = "/w/app/api/items/[id]/route.ts", .source = R"ts(
+    const auto next = cgraph::extract_typescript({.source_file = "/w/app/api/items/[id]/route.ts", .relative_path = "/w/app/api/items/[id]/route.ts", .source = R"ts(
 export async function GET(req: Request) { return ok(); }
 export const PATCH = async () => { return ok(); };
 function helper() { return 1; }
@@ -629,7 +629,7 @@ function helper() { return 1; }
   // Express-style middleware: only the last function argument is the handler;
   // middleware before it stays anonymous. A template-literal path is a path.
   {
-    const auto express = cgraph::extract_javascript({.source_file = "server.js", .source = R"js(
+    const auto express = cgraph::extract_javascript({.source_file = "server.js", .relative_path = "server.js", .source = R"js(
 app.post(`/users`, authenticate, (req, res) => { save(req.body); });
 )js"});
     std::size_t handlers = 0;

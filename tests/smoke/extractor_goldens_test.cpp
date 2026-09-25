@@ -24,6 +24,7 @@ bool check(
       language,
       cgraph::ExtractionContext{
           .source_file = std::string(file),
+          .relative_path = std::string(file),
           .source = source,
       });
   if (!result.has_value()) {
@@ -85,6 +86,7 @@ int main() {
         cgraph::DetectedLanguage::Cpp,
         cgraph::ExtractionContext{
             .source_file = "scoped.cpp",
+            .relative_path = "scoped.cpp",
             .source = "namespace proj { namespace detail { int helper() { return 1; } } }\nint top() { return 0; }\n",
         });
     bool scoped = false;

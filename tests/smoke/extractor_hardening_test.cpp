@@ -34,7 +34,7 @@ int main() {
   const auto malformed_result = cgraph::extract_detected_file(cgraph::DetectedFile{
       .path = malformed,
       .language = cgraph::DetectedLanguage::McpConfig,
-  });
+  }, root);
   if (!malformed_result.fragment.nodes.empty() || !contains_warning(malformed_result, "failed to parse MCP config JSON")) {
     std::filesystem::remove_all(root);
     return 1;
@@ -49,7 +49,7 @@ int main() {
   const auto invalid_utf8_result = cgraph::extract_detected_file(cgraph::DetectedFile{
       .path = invalid_utf8_path,
       .language = cgraph::DetectedLanguage::Python,
-  });
+  }, root);
   if (invalid_utf8_result.fragment.nodes.empty() || !invalid_utf8_result.fragment.warnings.empty()) {
     std::filesystem::remove_all(root);
     return 1;
@@ -75,7 +75,7 @@ int main() {
   const auto deep_result = cgraph::extract_detected_file(cgraph::DetectedFile{
       .path = deep_path,
       .language = cgraph::DetectedLanguage::JavaScript,
-  });
+  }, root);
   if (deep_result.fragment.nodes.empty() || !contains_warning(deep_result, "ast-depth-cap")) {
     std::filesystem::remove_all(root);
     return 1;
@@ -87,7 +87,7 @@ int main() {
   const auto oversized_result = cgraph::extract_detected_file(cgraph::DetectedFile{
       .path = oversized_path,
       .language = cgraph::DetectedLanguage::Python,
-  });
+  }, root);
   if (!oversized_result.fragment.nodes.empty() || !contains_warning(oversized_result, "file too large")) {
     std::filesystem::remove_all(root);
     return 1;
