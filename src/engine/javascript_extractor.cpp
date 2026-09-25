@@ -481,7 +481,7 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
     return;
   }
 
-  const std::string file_id = make_id(context.source_file);
+  const std::string file_id = make_id(context.relative_path);
   const std::string module_relation = is_export ? "re_exports" : "imports_from";
   const std::string symbol_relation = is_export ? "re_exports" : "imports";
 
@@ -689,7 +689,7 @@ void route_mount_handler(const TSNode& node, const ExtractionContext& context, s
     prefix = join_route_path(chain.prefix, prefix);  // a mount inside a `.group('/p', …)` callback
   }
   out.push_back(RawRelation{
-      .source_id = make_id(context.source_file + ":" + chain.root),
+      .source_id = make_id(context.relative_path + ":" + chain.root),
       .target_label = node_text(target, context.source),
       .relation = "mounts",
       .context = std::move(prefix),
@@ -705,7 +705,7 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
   if (!is_module_level_declaration(node)) {
     return;
   }
-  const std::string file_id = make_id(context.source_file);
+  const std::string file_id = make_id(context.relative_path);
   const auto child_count = ts_node_child_count(node);
   for (std::uint32_t index = 0; index < child_count; ++index) {
     const TSNode declarator = ts_node_child(node, index);
@@ -725,7 +725,7 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
     if (name.empty()) {
       continue;
     }
-    auto id = make_id(context.source_file + ":" + name);
+    auto id = make_id(context.relative_path + ":" + name);
     fragment.nodes.push_back(Node{
         .id = id,
         .label = std::move(name),
@@ -1004,10 +1004,10 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
     }
     const TSNode declaration = ts_node_parent(ancestor);
     if (!ts_node_is_null(declaration) && is_module_level_declaration(declaration)) {
-      return make_id(context.source_file + ":" + field_text(ancestor, "name", context.source));
+      return make_id(context.relative_path + ":" + field_text(ancestor, "name", context.source));
     }
   }
-  return make_id(context.source_file);
+  return make_id(context.relative_path);
 }
 
 // The `method: 'POST'` of an options object literal, uppercased; empty when the
@@ -1185,7 +1185,7 @@ void url_const_handler(const TSNode& node, const ExtractionContext& context, std
       continue;  // `const TITLE = 'Hello'`: a string, not a URL
     }
     out.push_back(RawRelation{
-        .source_id = make_id(context.source_file),
+        .source_id = make_id(context.relative_path),
         .target_label = field_text(declarator, "name", context.source),
         .relation = "url_const",
         .context = std::move(path),
@@ -1440,7 +1440,7 @@ void ts_relation_handler(const TSNode& node, const ExtractionContext& context, c
       if (ts_node_is_null(name_node)) {
         continue;
       }
-      const auto method_id = make_id(context.source_file + ":" + node_text(name_node, context.source));
+      const auto method_id = make_id(context.relative_path + ":" + node_text(name_node, context.source));
       if (const auto params = ts_node_child_by_field_name(member, "parameters", 10); !ts_node_is_null(params)) {
         const auto param_count = ts_node_child_count(params);
         for (std::uint32_t param = 0; param < param_count; ++param) {
@@ -1631,7 +1631,7 @@ void openapi_typescript_paths(const TSNode& node, const ExtractionContext& conte
   if (ts_node_is_null(body)) {
     return;
   }
-  const std::string file_id = make_id(context.source_file);
+  const std::string file_id = make_id(context.relative_path);
   // Schema references resolve only when the file declares component schemas.
   const TSNode components = interface_named(node, "components", context.source);
   const TSNode schemas_type =
@@ -1710,10 +1710,10 @@ void openapi_typescript_paths(const TSNode& node, const ExtractionContext& conte
         operation_schema_refs(property_type(member_named(operations_body, operation, context.source)), context.source,
                               responds, accepts);
         for (const auto& name : responds) {
-          add_edge(id, make_id(context.source_file + ":schema:" + name), "RESPONDS_WITH");
+          add_edge(id, make_id(context.relative_path + ":schema:" + name), "RESPONDS_WITH");
         }
         for (const auto& name : accepts) {
-          add_edge(id, make_id(context.source_file + ":schema:" + name), "ACCEPTS");
+          add_edge(id, make_id(context.relative_path + ":schema:" + name), "ACCEPTS");
         }
       }
     }
@@ -1726,7 +1726,7 @@ void openapi_typescript_components(const TSNode& node, const ExtractionContext& 
   if (ts_node_is_null(schemas) || std::string_view(ts_node_type(schemas)) != "object_type") {
     return;  // `schemas: never`: every shape is inlined
   }
-  const std::string file_id = make_id(context.source_file);
+  const std::string file_id = make_id(context.relative_path);
   std::unordered_set<std::string> names;
   const auto count = ts_node_named_child_count(schemas);
   for (std::uint32_t index = 0; index < count; ++index) {
@@ -1741,7 +1741,7 @@ void openapi_typescript_components(const TSNode& node, const ExtractionContext& 
       continue;
     }
     const auto name = strip_string_quotes(field_text(member, "name", context.source));
-    const auto id = make_id(context.source_file + ":schema:" + name);
+    const auto id = make_id(context.relative_path + ":schema:" + name);
     fragment.nodes.push_back(Node{
         .id = id,
         .label = name,
@@ -1783,7 +1783,7 @@ void openapi_typescript_components(const TSNode& node, const ExtractionContext& 
     }
     for (const auto& target : referenced) {
       fragment.edges.push_back(Edge{.source = id,
-                                    .target = make_id(context.source_file + ":schema:" + target),
+                                    .target = make_id(context.relative_path + ":schema:" + target),
                                     .relation = "references",
                                     .confidence = Confidence::Extracted});
     }

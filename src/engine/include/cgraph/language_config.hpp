@@ -60,7 +60,13 @@ struct RawRelation {
 };
 
 struct ExtractionContext {
+  // Where the bytes were read from; every emitted node's `source_file`, and the
+  // key its hash is recorded under.
   std::string source_file;
+  // The same file relative to the project root. Every node id derives from this,
+  // never from `source_file`, so the same tree extracted from two absolute roots
+  // yields byte-identical ids and no id carries the machine's directory layout.
+  std::string relative_path;
   std::string_view source;
 };
 

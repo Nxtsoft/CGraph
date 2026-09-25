@@ -63,7 +63,7 @@ extern "C" const TSLanguage* tree_sitter_python();
 // import relations at all (issue #45).
 void python_import_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment) {
   const std::string_view statement_type = ts_node_type(node);
-  const std::string file_id = make_id(context.source_file);
+  const std::string file_id = make_id(context.relative_path);
 
   const auto add_module_stub = [&](const std::string& resolved, const std::string& label) -> std::string {
     const auto module_id = make_id("import-module:" + resolved);

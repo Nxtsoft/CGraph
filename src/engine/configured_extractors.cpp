@@ -512,7 +512,7 @@ void go_import_handler(const TSNode& node, const ExtractionContext& context, Fra
       .properties = {{"import_path", spec}},
   });
   fragment.edges.push_back(Edge{
-      .source = make_id(context.source_file),
+      .source = make_id(context.relative_path),
       .target = module_id,
       .relation = "imports",
       .confidence = Confidence::Extracted,
@@ -588,7 +588,7 @@ void go_extra_walk(const TSNode& node, const ExtractionContext& context,
   if (interface_name.empty()) {
     return;
   }
-  const auto interface_id = make_id(context.source_file + ":" + interface_name);
+  const auto interface_id = make_id(context.relative_path + ":" + interface_name);
 
   const auto child_count = ts_node_named_child_count(type_field);
   for (std::uint32_t index = 0; index < child_count; ++index) {
@@ -607,7 +607,7 @@ void go_extra_walk(const TSNode& node, const ExtractionContext& context,
     const auto start = ts_node_start_point(elem);
     const auto end = ts_node_end_point(elem);
     fragment.nodes.push_back(Node{
-        .id = make_id("iface-method:" + context.source_file + ":" + interface_name + ":" + method_name),
+        .id = make_id("iface-method:" + context.relative_path + ":" + interface_name + ":" + method_name),
         .label = method_name,
         .source_file = context.source_file,
         .source_location = SourceLocation{.start_line = start.row + 1,
@@ -786,7 +786,7 @@ void rust_emit_use_stub(
     fragment.nodes.push_back(std::move(stub));
   }
   fragment.edges.push_back(Edge{
-      .source = make_id(context.source_file),
+      .source = make_id(context.relative_path),
       .target = stub_id,
       .relation = is_reexport ? "re_exports" : "imports",
       .confidence = Confidence::Extracted,
@@ -1067,7 +1067,7 @@ void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
   if (ts_node_is_null(body)) {
     return;
   }
-  const auto trait_id = make_id(context.source_file + ":" + trait_name);
+  const auto trait_id = make_id(context.relative_path + ":" + trait_name);
   const auto child_count = ts_node_named_child_count(body);
   for (std::uint32_t index = 0; index < child_count; ++index) {
     const auto elem = ts_node_named_child(body, index);
@@ -1086,7 +1086,7 @@ void rust_extra_walk(const TSNode& node, const ExtractionContext& context,
     const auto start = ts_node_start_point(elem);
     const auto end = ts_node_end_point(elem);
     fragment.nodes.push_back(Node{
-        .id = make_id("trait-method:" + context.source_file + ":" + trait_name + ":" + method_name),
+        .id = make_id("trait-method:" + context.relative_path + ":" + trait_name + ":" + method_name),
         .label = method_name,
         .source_file = context.source_file,
         .source_location = SourceLocation{.start_line = start.row + 1,

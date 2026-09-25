@@ -30,8 +30,8 @@ Built build(const std::vector<std::pair<std::string, std::string>>& files) {
   std::vector<cgraph::RawRelation> relations;
   for (const auto& [path, source] : files) {
     const auto result = path.ends_with(".js")
-                            ? cgraph::extract_javascript({.source_file = path, .source = source})
-                            : cgraph::extract_typescript({.source_file = path, .source = source});
+                            ? cgraph::extract_javascript({.source_file = path, .relative_path = path, .source = source})
+                            : cgraph::extract_typescript({.source_file = path, .relative_path = path, .source = source});
     fragments.push_back(result.fragment);
     relations.insert(relations.end(), result.raw_relations.begin(), result.raw_relations.end());
   }

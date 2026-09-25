@@ -495,7 +495,7 @@ void cpp_import_handler(const TSNode& node, const ExtractionContext& context, Fr
       .properties = {{"import_path", import_path}},
   });
   fragment.edges.push_back(Edge{
-      .source = make_id(context.source_file),
+      .source = make_id(context.relative_path),
       .target = module_id,
       .relation = "imports",
       .confidence = Confidence::Extracted,
@@ -630,7 +630,7 @@ void cpp_field_walk(const TSNode& node, const ExtractionContext& context, const 
   if (ts_node_is_null(body)) {
     return;
   }
-  const auto class_id = make_id(context.source_file + ":" + class_name);
+  const auto class_id = make_id(context.relative_path + ":" + class_name);
 
   const auto member_count = ts_node_child_count(body);
   for (std::uint32_t index = 0; index < member_count; ++index) {

@@ -238,7 +238,7 @@ IncrementalUpdateResult full_stat_index_rescan(
   double extract_ms = 0.0;
   {
     ScopedTimer timer(&extract_ms);
-    auto extractions = extract_files(to_extract);
+    auto extractions = extract_files(to_extract, index.project_root);
     for (std::size_t i = 0; i < to_extract.size(); ++i) {
       auto& extraction = extractions[i];
       result.warnings.insert(result.warnings.end(), extraction.fragment.warnings.begin(), extraction.fragment.warnings.end());
@@ -369,7 +369,8 @@ IncrementalUpdateResult apply_incremental_code_updates(
       continue;
     }
 
-    auto extraction = extract_detected_file(DetectedFile{.path = event.path, .language = language});
+    auto extraction =
+        extract_detected_file(DetectedFile{.path = event.path, .language = language}, index.project_root);
     result.warnings.insert(result.warnings.end(), extraction.fragment.warnings.begin(), extraction.fragment.warnings.end());
     if (!index.files.contains(key)) {
       note_unextracted_change(state, event.path, /*added=*/true);

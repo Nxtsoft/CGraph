@@ -3,6 +3,7 @@
 int main() {
   const auto msbuild = cgraph::extract_msbuild(cgraph::ExtractionContext{
       .source_file = "app.csproj",
+      .relative_path = "app.csproj",
       .source = R"xml(<Project><Target Name="Build"/><PackageReference Include="Newtonsoft.Json"/></Project>)xml",
   });
   if (msbuild.fragment.nodes.size() < 3) {
@@ -11,6 +12,7 @@ int main() {
 
   const auto delphi = cgraph::extract_delphi_form(cgraph::ExtractionContext{
       .source_file = "Form1.dfm",
+      .relative_path = "Form1.dfm",
       .source = "object Form1: TForm1\nend\nprocedure TForm1.Save();",
   });
   if (delphi.fragment.nodes.size() < 2) {
@@ -19,6 +21,7 @@ int main() {
 
   const auto apex = cgraph::extract_apex(cgraph::ExtractionContext{
       .source_file = "AccountTrigger.trigger",
+      .relative_path = "AccountTrigger.trigger",
       .source = "trigger AccountTrigger on Account (before insert) {}\npublic class Worker { public void run() {} }",
   });
   if (apex.fragment.nodes.size() < 2) {
@@ -27,6 +30,7 @@ int main() {
 
   const auto mcp = cgraph::extract_mcp_config(cgraph::ExtractionContext{
       .source_file = "mcp.json",
+      .relative_path = "mcp.json",
       .source = R"json({"mcpServers":{"filesystem":{"command":"npx"}}})json",
   });
   if (mcp.fragment.nodes.size() != 2 || !mcp.fragment.warnings.empty()) {
@@ -35,6 +39,7 @@ int main() {
 
   const auto bad_mcp = cgraph::extract_mcp_config(cgraph::ExtractionContext{
       .source_file = "mcp.json",
+      .relative_path = "mcp.json",
       .source = "{",
   });
   if (bad_mcp.fragment.warnings.empty()) {
@@ -54,6 +59,7 @@ int main() {
   };
   const auto sql = cgraph::extract_sql(cgraph::ExtractionContext{
       .source_file = "prisma/migrations/20201214_baseline/migration.sql",
+      .relative_path = "prisma/migrations/20201214_baseline/migration.sql",
       .source = "CREATE TYPE \"Role\" AS ENUM ('USER','ADMIN');\n"
                 "CREATE TABLE \"Brand\" (id TEXT);\n"
                 "CREATE TABLE \"Project\" (id TEXT);\n"
@@ -76,6 +82,7 @@ int main() {
   // id (path-independent), so the graph builder collapses them to one node.
   const auto sql2 = cgraph::extract_sql(cgraph::ExtractionContext{
       .source_file = "prisma/migrations/20210101_other/migration.sql",
+      .relative_path = "prisma/migrations/20210101_other/migration.sql",
       .source = "CREATE TABLE \"Brand\" (id TEXT);",
   });
   const auto* brand2 = find(sql2.fragment, "sql_table", "Brand");
@@ -89,6 +96,7 @@ int main() {
   // must still match the unqualified table node ids.
   const auto sql3 = cgraph::extract_sql(cgraph::ExtractionContext{
       .source_file = "prisma/migrations/20210202_qualified/migration.sql",
+      .relative_path = "prisma/migrations/20210202_qualified/migration.sql",
       .source = "CREATE TABLE \"Brand\" (id TEXT);\n"
                 "CREATE TABLE \"Project\" (id TEXT);\n"
                 "ALTER TABLE \"public\".\"Brand\" ADD CONSTRAINT \"fk\" "
@@ -112,6 +120,7 @@ int main() {
   // name resolves; without it the reference dangles to a non-existent node.
   const auto sql4 = cgraph::extract_sql(cgraph::ExtractionContext{
       .source_file = "prisma/migrations/20210303_rename/migration.sql",
+      .relative_path = "prisma/migrations/20210303_rename/migration.sql",
       .source = "CREATE TABLE \"Objective\" (id TEXT);\n"
                 "ALTER TABLE \"Objective\" RENAME TO \"CategoryObjective\";\n"
                 "CREATE TABLE \"Tag\" (id TEXT);\n"
@@ -137,6 +146,7 @@ int main() {
   // extracted just like the quoted form (Postgres folds unquoted names to lower).
   const auto sql5 = cgraph::extract_sql(cgraph::ExtractionContext{
       .source_file = "db/migrations/0050_unquoted.sql",
+      .relative_path = "db/migrations/0050_unquoted.sql",
       .source = "CREATE TYPE status AS ENUM ('on','off');\n"
                 "CREATE TABLE IF NOT EXISTS skills (id UUID);\n"
                 "CREATE TABLE IF NOT EXISTS organizations (id UUID);\n"
@@ -163,6 +173,7 @@ int main() {
   // versa); both resolve to the single existing node id, no dangling endpoint.
   const auto sql6 = cgraph::extract_sql(cgraph::ExtractionContext{
       .source_file = "db/migrations/0051_mixed.sql",
+      .relative_path = "db/migrations/0051_mixed.sql",
       .source = "CREATE TABLE accounts (id UUID);\n"          // unquoted def
                 "CREATE TABLE \"sessions\" (id UUID);\n"      // quoted def
                 "ALTER TABLE sessions ADD FOREIGN KEY (acct) REFERENCES \"accounts\"(id);\n"
@@ -192,6 +203,7 @@ int main() {
   // SQL-extractor concern.)
   const auto sql7 = cgraph::extract_sql(cgraph::ExtractionContext{
       .source_file = "db/migrations/0052_case.sql",
+      .relative_path = "db/migrations/0052_case.sql",
       .source = "CREATE TABLE users (id UUID);\n"
                 "CREATE TABLE refs (id UUID);\n"
                 "ALTER TABLE refs ADD FOREIGN KEY (u) REFERENCES \"Users\"(id);",

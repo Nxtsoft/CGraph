@@ -3,7 +3,7 @@
 #include <set>
 
 int main() {
-  const auto members = cgraph::extract_python({.source_file = "members.py", .source = R"py(
+  const auto members = cgraph::extract_python({.source_file = "members.py", .relative_path = "members.py", .source = R"py(
 from dataclasses import dataclass
 @dataclass
 class First:
@@ -33,7 +33,7 @@ class Second:
   // (normalize.cpp), and merge_fragments keeps only the first node with an id.
   // The function must keep the plain id an agent queries it by, and the field
   // must still exist and be the target of its owner's `defines` edge.
-  const auto collision = cgraph::extract_python({.source_file = "c.py", .source = R"py(
+  const auto collision = cgraph::extract_python({.source_file = "c.py", .relative_path = "c.py", .source = R"py(
 def first_size():
     return 1
 class First:
@@ -66,7 +66,7 @@ class Worker:
 )py";
 
   const auto result = cgraph::extract_python(
-      cgraph::ExtractionContext{.source_file = "worker.py", .source = source});
+      cgraph::ExtractionContext{.source_file = "worker.py", .relative_path = "worker.py", .source = source});
 
   if (result.fragment.nodes.size() < 4) {
     return 1;

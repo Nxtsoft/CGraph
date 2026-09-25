@@ -23,8 +23,14 @@ struct RelationScopes {
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> local_by_file;     // keyed by source path
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>> imported_by_file;  // keyed by file node id
   std::unordered_map<std::string, std::string> label_by_id;
+  std::unordered_map<std::string, std::string> file_id_by_source;  // source path -> file node id
 };
 [[nodiscard]] RelationScopes build_relation_scopes(const GraphSnapshot& graph);
+
+// Every `file` node's id keyed by its source path. Node ids derive from the
+// project-relative path, so a source path cannot be normalized back into its
+// file id; the file node is the only link between the two.
+[[nodiscard]] std::unordered_map<std::string, std::string> file_node_ids(const GraphSnapshot& graph);
 
 // The node id `name_key` (a make_id'd label) denotes in `source_file`: the
 // file's import of that name first, then -- when allowed -- its own declaration.

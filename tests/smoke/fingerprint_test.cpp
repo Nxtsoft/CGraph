@@ -33,7 +33,7 @@ const cgraph::FunctionFingerprint* fingerprint_of(const cgraph::ExtractionResult
 int main() {
   // The three write_file copies from tests/smoke, as TypeScript: identifiers,
   // string literals and numbers differ, the token stream does not.
-  const auto ts = cgraph::extract_typescript({.source_file = "a.ts", .source = R"ts(
+  const auto ts = cgraph::extract_typescript({.source_file = "a.ts", .relative_path = "a.ts", .source = R"ts(
 function writeFile(path: string, contents: string) {
   const dir = dirname(path);
   mkdir(dir, { recursive: true });
@@ -107,7 +107,7 @@ function tiny() { return 1; }
   }
 
   // Determinism: the same source fingerprints identically across runs and files.
-  const auto again = cgraph::extract_typescript({.source_file = "b.ts", .source = R"ts(
+  const auto again = cgraph::extract_typescript({.source_file = "b.ts", .relative_path = "b.ts", .source = R"ts(
 function writeFile(path: string, contents: string) {
   const dir = dirname(path);
   mkdir(dir, { recursive: true });
@@ -125,7 +125,7 @@ function writeFile(path: string, contents: string) {
   // Comments never count; a Python body (no separate body field beyond `block`)
   // normalizes the same way, and the same algorithm with a different grammar
   // still equates renamed copies.
-  const auto py = cgraph::extract_python({.source_file = "m.py", .source = R"py(
+  const auto py = cgraph::extract_python({.source_file = "m.py", .relative_path = "m.py", .source = R"py(
 def write_file(path, contents):
     # a comment that must not matter
     directory = dirname(path)

@@ -125,7 +125,7 @@ std::string add_symbol_node(
   }
 
   const auto location = source_location(node);
-  const auto seed = context.source_file + ":" + label;
+  const auto seed = context.relative_path + ":" + label;
   // Two symbols in one file can legitimately share a label -- an overload set
   // (`to_json` five times over), a constructor sharing its class's name,
   // `operator=` for both copy and move -- and a member can normalize onto a
@@ -467,15 +467,15 @@ ExtractionResult extract_with_config(
   // `contains` edges, matching Graphify's file-rooted structure. Labelled with
   // the path tail (parent dir + filename) so distinct files that share a
   // basename are not collapsed by semantic dedup.
-  const std::filesystem::path source_path(ctx.source_file);
+  const std::filesystem::path source_path(ctx.relative_path);
   std::string file_label = source_path.filename().string();
   if (source_path.has_parent_path() && source_path.parent_path().has_filename()) {
     file_label = source_path.parent_path().filename().string() + "/" + file_label;
   }
-  const auto file_id = make_id(ctx.source_file);
+  const auto file_id = make_id(ctx.relative_path);
   result.fragment.nodes.push_back(Node{
       .id = file_id,
-      .label = file_label.empty() ? ctx.source_file : std::move(file_label),
+      .label = file_label.empty() ? ctx.relative_path : std::move(file_label),
       .source_file = ctx.source_file,
       .source_location = SourceLocation{.start_line = 1, .end_line = 1},
       .kind = "file",

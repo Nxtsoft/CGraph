@@ -26,6 +26,16 @@ std::string node_key(const Node& node) {
   return make_id(node.source_file + ":" + node.kind + ":" + node.label);
 }
 
+std::unordered_map<std::string, std::string> file_node_ids(const GraphSnapshot& graph) {
+  std::unordered_map<std::string, std::string> ids;
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "file" && !node.source_file.empty()) {
+      ids.emplace(node.source_file, node.id);
+    }
+  }
+  return ids;
+}
+
 namespace {
 
 constexpr std::string_view kCallRelation = "CALLS";
@@ -238,6 +248,20 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     files_by_path.emplace_back((path.parent_path() / path.stem()).generic_string(), node.id);
   }
 
+  // What each file declares, by label: "<source path>\n<label>" -> node id, empty
+  // when the file declares that label more than once. An import of a name binds
+  // to the declaration only when it is unique.
+  std::unordered_map<std::string, std::string> declared_by_file_label;
+  for (const auto& node : graph.nodes) {
+    if (node.kind != "function" && node.kind != "class" && node.kind != "type" && node.kind != "variable") {
+      continue;
+    }
+    const auto [slot, inserted] = declared_by_file_label.emplace(node.source_file + "\n" + node.label, node.id);
+    if (!inserted && slot->second != node.id) {
+      slot->second.clear();
+    }
+  }
+
   // Resolve a header-style include spec ("cgraph/types.hpp") to the project file
   // whose path ends with it — how an include directory resolves a header without
   // the consumer knowing the include roots. Returns a match only when exactly one
@@ -442,8 +466,12 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     if (resolved_as_module) {
       remap[node.id] = *file_id;
     } else {
-      const auto real = make_id(source_of_file[*file_id] + ":" + node.label);
-      remap[node.id] = node_ids.contains(real) ? real : *file_id;
+      // The symbol the import names, when the resolved file declares exactly one
+      // by that label; a file that declares it twice (an overload set) or not at
+      // all keeps the import on the file itself.
+      const auto declared = declared_by_file_label.find(source_of_file[*file_id] + "\n" + node.label);
+      const bool unique = declared != declared_by_file_label.end() && !declared->second.empty();
+      remap[node.id] = unique ? declared->second : *file_id;
     }
     removed.insert(node.id);
   }
@@ -636,11 +664,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
   // dependency walks — a change inside them could never reach their callers
   // (issue #52).
   std::unordered_map<std::string, std::vector<std::string>> overload_declarations;
-  // Cache make_id(source_file) per distinct source path. The confidence grading
-  // below re-normalizes caller/callee file paths per raw call (hundreds of
-  // thousands of calls over a few thousand distinct files); memoizing keeps the
-  // result byte-identical while collapsing the redundant utf8proc work.
-  std::unordered_map<std::string, std::string> file_id_by_source;
+  // The confidence grading below looks caller/callee files up by source path per
+  // raw call; the file node is the only thing that knows a path's id.
+  const auto file_id_by_source = file_node_ids(graph);
   for (const auto& node : graph.nodes) {
     node_ids.insert(node.id);
     source_file_by_id.emplace(node.id, node.source_file);
@@ -656,7 +682,6 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     if (node.source_file.empty()) {
       continue;
     }
-    file_id_by_source.try_emplace(node.source_file, std::string{});
     if (node.kind != "function" && node.kind != "class" && node.kind != "type" && node.kind != "variable") {
       continue;
     }
@@ -670,15 +695,11 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       slot->second.clear();  // ambiguous within the file
     }
   }
-  // Resolve make_id(source_file) through the cache, computing lazily on first use.
+  // The file node id for a source path; empty when the path has no file node.
+  static const std::string no_file_id;
   const auto file_id_for = [&](const std::string& source_file) -> const std::string& {
-    auto it = file_id_by_source.find(source_file);
-    if (it == file_id_by_source.end()) {
-      it = file_id_by_source.emplace(source_file, make_id(source_file)).first;
-    } else if (it->second.empty() && !source_file.empty()) {
-      it->second = make_id(source_file);
-    }
-    return it->second;
+    const auto it = file_id_by_source.find(source_file);
+    return it == file_id_by_source.end() ? no_file_id : it->second;
   };
 
   // Memoize make_id(callee_label): the same callee name recurs across many calls
@@ -1159,6 +1180,7 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
 RelationScopes build_relation_scopes(const GraphSnapshot& graph) {
   RelationScopes scopes;
   scopes.label_by_id.reserve(graph.nodes.size());
+  scopes.file_id_by_source = file_node_ids(graph);
 
   // Per-file declared symbols (label -> id, empty when ambiguous), the same
   // index used for same-file call resolution. Heritage relations may resolve a
@@ -1199,9 +1221,11 @@ RelationScopes build_relation_scopes(const GraphSnapshot& graph) {
 
 std::string resolve_scoped_name(const RelationScopes& scopes, const std::string& source_file,
                                 const std::string& name_key, bool allow_same_file) {
-  if (const auto file = scopes.imported_by_file.find(make_id(source_file)); file != scopes.imported_by_file.end()) {
-    if (const auto slot = file->second.find(name_key); slot != file->second.end()) {
-      return slot->second;
+  if (const auto file_id = scopes.file_id_by_source.find(source_file); file_id != scopes.file_id_by_source.end()) {
+    if (const auto file = scopes.imported_by_file.find(file_id->second); file != scopes.imported_by_file.end()) {
+      if (const auto slot = file->second.find(name_key); slot != file->second.end()) {
+        return slot->second;
+      }
     }
   }
   if (allow_same_file) {
@@ -1236,10 +1260,7 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
     }
   }
   std::unordered_map<std::string, std::vector<std::string>> included_files_by_file;
-  std::unordered_map<std::string, std::string> file_id_by_source;
-  for (const auto& [id, source] : file_source_by_id) {
-    file_id_by_source.emplace(source, id);
-  }
+  const auto file_id_by_source = file_node_ids(graph);
   for (const auto& edge : graph.edges) {
     if (edge.relation != "imports" && edge.relation != "re_exports") {
       continue;
@@ -1305,11 +1326,10 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
     seen_edges.insert(edge_key(edge));
   }
 
-  // Memoize make_id of the recurring per-relation strings (target type names and
-  // source paths both repeat heavily across relations). Each memo returns the
-  // exact value the inline make_id call produced, so resolution is unchanged.
+  // Memoize make_id of the recurring target type names (they repeat heavily
+  // across relations). Each memo returns the exact value the inline make_id call
+  // produced, so resolution is unchanged.
   std::unordered_map<std::string, std::string> target_key_cache;
-  std::unordered_map<std::string, std::string> source_file_id_cache;
   const auto memo = [](std::unordered_map<std::string, std::string>& cache,
                        const std::string& s) -> const std::string& {
     auto it = cache.find(s);
@@ -1318,6 +1338,7 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
     }
     return it->second;
   };
+  static const std::string no_file_id;
 
   for (const auto& relation : raw_relations) {
     if (relation.relation == "route" || relation.relation == "file_route" || relation.relation == "mounts" ||
@@ -1329,10 +1350,10 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
       continue;
     }
     const auto& key = memo(target_key_cache, relation.target_label);
-    // make_id(relation.source_file) was computed twice per relation below; the
-    // file-id lookups (imported_by_file / included_files_by_file) are both keyed
-    // by it, so normalize the source path once and reuse the result.
-    const auto& source_file_id = memo(source_file_id_cache, relation.source_file);
+    // The file-id lookups below (imported_by_file / included_files_by_file) are
+    // keyed by the source file's node id.
+    const auto file_slot = file_id_by_source.find(relation.source_file);
+    const auto& source_file_id = file_slot == file_id_by_source.end() ? no_file_id : file_slot->second;
 
     std::string target_id;
     // 1. The type the source file imports (the canonical resolution path).

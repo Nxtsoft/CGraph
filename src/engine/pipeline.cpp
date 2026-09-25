@@ -53,8 +53,9 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
   {
     ScopedTimer timer(&result.stats.extract_ms);
     // Extract concurrently; the results come back in detection order, so merging
-    // them below is identical to the serial path (parity preserved).
-    auto extractions = extract_files(files);
+    // them below is identical to the serial path (parity preserved). Detected
+    // paths are canonical, so the root they are made relative to must be too.
+    auto extractions = extract_files(files, std::filesystem::weakly_canonical(root));
     for (std::size_t i = 0; i < extractions.size(); ++i) {
       auto& extraction = extractions[i];
       result.warnings.insert(result.warnings.end(), extraction.fragment.warnings.begin(), extraction.fragment.warnings.end());
