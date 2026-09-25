@@ -81,7 +81,10 @@ A single scan turns a source tree into an interactive, explorable graph — comm
 
 ## Output formats
 
-- `graph.json` — directed node-link JSON with graph metadata, nodes, and links
+- `graph.json` — directed node-link JSON with graph metadata, nodes, and links. Node ids derive
+  from each file's path relative to the project root, so the same commit built from two
+  checkouts yields the same ids and two graphs can be joined by id; `source_file` stays the
+  path the graph was read from
 - `graph.html` — browser-readable interactive graph view
 - `graph.svg` — static graph visualization
 - `obsidian.md` — markdown export for Obsidian-style navigation
