@@ -2089,6 +2089,24 @@ std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragmen
   return dropped;
 }
 
+std::size_t overlay_memory_fragments(GraphSnapshot& graph, std::vector<Fragment> fragments) {
+  for (auto& fragment : fragments) {
+    Fragment nodes_only;
+    nodes_only.nodes = std::move(fragment.nodes);
+    nodes_only.fingerprints = std::move(fragment.fingerprints);
+    merge_fragment(graph, nodes_only);
+  }
+  std::size_t dropped = 0;
+  for (auto& fragment : fragments) {
+    Fragment edges_only;
+    edges_only.edges = std::move(fragment.edges);
+    edges_only.hyperedges = std::move(fragment.hyperedges);
+    dropped += rebind_memory_concerns(graph, edges_only);
+    merge_fragment(graph, edges_only);
+  }
+  return dropped;
+}
+
 nlohmann::json freshness_metadata(const GraphSnapshot& graph) {
   return {
       {"verified", is_valid_content_root(graph.content_root)},
