@@ -356,6 +356,10 @@ Json change_context(const Json& parameters) {
   if (!fs::is_directory(base_root) || !fs::is_directory(target_root)) reject("roots must be directories");
   const auto budget_signed = parameters.value("budget", 6000LL);
   const auto max_depth = parameters.value("max_depth", 3);
+  // symbols_only answers "which symbols did this diff change" and nothing else:
+  // no impacts, no context, and no budget shedding, so every symbol change is
+  // returned however large the diff.
+  const bool symbols_only = parameters.value("symbols_only", false);
   if (budget_signed < 128 || budget_signed > 1000000) reject("budget must be between 128 and 1000000");
   if (max_depth < 0 || max_depth > 20) reject("max_depth must be between 0 and 20");
   const auto budget = static_cast<std::size_t>(budget_signed);
@@ -377,7 +381,7 @@ Json change_context(const Json& parameters) {
           {"limitations", {"Unresolved calls are aggregate counts, not per-change diagnostics.",
                            "Impact is advisory and bounded by depth; dynamic dependencies may be absent.",
                            "Only supplied diff sections are assessed; other root differences are not inferred."}}}},
-      {"budget", budget}, {"budget_basis", "serialized_utf8_bytes_div_4_ceil"},
+      {"budget", budget}, {"budget_basis", "serialized_utf8_bytes_div_4_ceil"}, {"symbols_only", symbols_only},
       {"tokens_used", 0}, {"omitted", {{"context", 0}, {"impacts", 0}}}, {"truncated", false}};
   std::vector<std::string> base_seeds, target_seeds;
   std::map<std::string, std::string> diff_hashes;
@@ -441,6 +445,25 @@ Json change_context(const Json& parameters) {
   result["uncertainty"]["unassessed_source_paths"] = outside;
   result["uncertainty"]["unassessed_source_count"] = outside.size();
   result["uncertainty"]["all_detected_differences_supplied"] = outside.empty();
+
+  const auto count_tokens = [&] {
+    for (int i = 0; i < 3; ++i) result["tokens_used"] = serialized_context_tokens(result);
+    return result["tokens_used"].get<std::size_t>();
+  };
+  // Reopen sources after selection; a cached old buffer must not conceal edits
+  // made while this operation was building its other snapshot or packing.
+  const auto verify_sources = [&] {
+    verify_snapshot(base, base_root);
+    verify_snapshot(target, target_root);
+    const std::unordered_map<std::string, std::string> diff_ledger(diff_hashes.begin(), diff_hashes.end());
+    SnapshotSourceReader diff_verifier(diff_ledger, true);
+    for (const auto& [path, _] : diff_hashes) (void)diff_verifier.read_verified_source(path);
+  };
+  if (symbols_only) {
+    count_tokens();
+    verify_sources();
+    return result;
+  }
 
   GraphSnapshot combined;
   std::vector<std::string> combined_seeds;
@@ -508,10 +531,6 @@ Json change_context(const Json& parameters) {
   add_side(target, target_root, "target", target_seeds);
   // Keep the mandatory diff mapping and uncertainty intact. Shed the deepest
   // impact witnesses first; context gets one shared remaining allowance.
-  const auto count_tokens = [&] {
-    for (int i = 0; i < 3; ++i) result["tokens_used"] = serialized_context_tokens(result);
-    return result["tokens_used"].get<std::size_t>();
-  };
   const auto remove_impact = [&] {
     auto& rows = result["impacts"];
     auto deepest = std::max_element(rows.begin(), rows.end(), [](const Json& a, const Json& b) {
@@ -546,13 +565,7 @@ Json change_context(const Json& parameters) {
     result["truncated"] = true;
   }
   if (count_tokens() > budget) reject("budget cannot hold mandatory change and snapshot evidence");
-  // Reopen sources after selection; a cached old buffer must not conceal edits
-  // made while this operation was building its other snapshot or packing.
-  verify_snapshot(base, base_root);
-  verify_snapshot(target, target_root);
-  const std::unordered_map<std::string, std::string> diff_ledger(diff_hashes.begin(), diff_hashes.end());
-  SnapshotSourceReader diff_verifier(diff_ledger, true);
-  for (const auto& [path, _] : diff_hashes) (void)diff_verifier.read_verified_source(path);
+  verify_sources();
   return result;
 }
 

@@ -47,7 +47,10 @@ void print_usage() {
       "  cgraph [--root PATH] [--out PATH]                build the graph and write exports\n"
       "  cgraph change-context --base-root ROOT --target-root ROOT --diff FILE [--budget N]\n"
       "        [--max-depth N] [--expected-base-content-root SHA] [--expected-target-content-root SHA]\n"
-      "        source-pinned advisory change evidence; JSON output\n"
+      "        [--symbols-only]\n"
+      "        source-pinned advisory change evidence; JSON output. --symbols-only returns every\n"
+      "        changes[].symbol_changes entry and skips impacts and context, so the budget never\n"
+      "        sheds a symbol change\n"
       "  cgraph enrich-plan   [--root PATH] [--out PATH] [--drop DIR]\n"
       "        emit a semantic chunk plan + manifest for hosts to enrich\n"
       "  cgraph enrich-ingest [--root PATH] [--out PATH] [--drop DIR]\n"
@@ -124,6 +127,10 @@ int run_change_context(int argc, char** argv) {
     nlohmann::json params = nlohmann::json::object();
     for (int i = 2; i < argc; ++i) {
       const std::string arg = argv[i];
+      if (arg == "--symbols-only") {
+        params["symbols_only"] = true;
+        continue;
+      }
       if (i + 1 >= argc) throw std::invalid_argument("missing value for " + arg);
       const std::string value = argv[++i];
       if (arg == "--base-root") params["base_root"] = value;

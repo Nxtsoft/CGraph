@@ -151,12 +151,15 @@ namespace {
       tool_schema("graph_change_context",
           "Validate an explicit unified diff against base and target source roots, build isolated "
           "snapshots, and return source-pinned advisory impact and globally budgeted context. "
-          "Does not modify roots or the resident graph. Budget uses serialized UTF-8 bytes / 4, rounded up.",
+          "Does not modify roots or the resident graph. Budget uses serialized UTF-8 bytes / 4, rounded up. "
+          "symbols_only returns every changes[].symbol_changes entry and skips impacts and context, "
+          "so the budget never sheds a symbol change.",
           {{"base_root", string_param("existing immutable base source directory")},
            {"target_root", string_param("target source directory")},
            {"diff_path", string_param("unified diff file")},
-           {"budget", integer_param("complete response budget; default 6000")},
+           {"budget", integer_param("complete response budget; default 6000; not applied when symbols_only")},
            {"max_depth", integer_param("impact/context hops; default 3")},
+           {"symbols_only", {{"type", "boolean"}, {"description", "only classify changed symbols; no impacts or context (default false)"}}},
            {"expected_base_content_root", string_param("optional expected base source hash")},
            {"expected_target_content_root", string_param("optional expected target source hash")}},
           {"base_root", "target_root", "diff_path"}),
