@@ -173,14 +173,19 @@ namespace {
           {{"title", string_param("short title for the checkpoint")},
            {"body", string_param("distilled markdown summary: what was done and what is next")},
            {"touches", {{"type", "array"}, {"items", {{"type", "string"}}},
-                        {"description", "node ids or exact symbol names the checkpoint concerns"}}},
+                        {"description", "node ids or exact symbol names the checkpoint concerns; each is "
+                                        "anchored to its current code so recall can tell if it changed"}}},
            {"tags", {{"type", "array"}, {"items", {{"type", "string"}}},
                      {"description", "optional labels for filtering on recall"}}}}),
       tool_schema(
           "graph_recall",
           "Restore task state after /clear: returns recent checkpoints newest-first, each with its "
-          "summary and briefs of the code it touched. Then use graph_context on a linked node to "
-          "reload bounded code context. The fastest way to resume a long session.",
+          "summary and briefs of the code it touched. Each touched symbol carries a validity: "
+          "\"valid\" (its code is unchanged since the checkpoint), \"changed\" (edited since -- "
+          "re-read it before trusting the summary), or \"unanchored\" (cannot be checked); symbols "
+          "deleted since are listed under \"gone\". The checkpoint's own validity is \"stale\" when "
+          "anything changed or is gone. Then use graph_context on a linked node to reload bounded "
+          "code context. The fastest way to resume a long session.",
           {{"query", string_param("optional filter over checkpoint titles/tags")},
            {"limit", integer_param("max checkpoints returned (default 10)")}}),
       tool_schema(
