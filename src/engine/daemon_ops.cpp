@@ -20,8 +20,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <queue>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -141,6 +143,19 @@ constexpr std::size_t kMaxKnapsackCapacity = 50000;
     SnapshotSourceReader& source_reader,
     const Node& node) {
   return source_reader.read_snippet(node, kMaxSnippetLines, kMaxSnippetChars);
+}
+
+// sha256 of the node's own source span, uncapped. The anchor a checkpoint's
+// touch is validated against: unlike SnapshotSourceSnippet::source_sha256 (the
+// whole file), an edit elsewhere in the file leaves it unchanged, and a span
+// that only shifted lines hashes the same. Empty when the span cannot be read.
+[[nodiscard]] std::string span_sha256(SnapshotSourceReader& source_reader, const Node& node) {
+  const auto span = source_reader.read_snippet(
+      node, std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max());
+  if (span.source_sha256.empty() || span.truncated) {
+    return {};
+  }
+  return sha256_hex(span.text);
 }
 
 void add_source_location(nlohmann::json& brief, const Node& node) {
@@ -1867,7 +1882,13 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
   // entry yields no edge (and is reported), never a dangling target.
   const auto graph = read_graph_snapshot(state);
   const auto by_id = index_nodes(*graph);
-  std::vector<std::pair<std::string, std::string>> resolved;  // (node id, the touch key it came from)
+  SnapshotSourceReader source_reader(graph->source_hashes, false);
+  struct ResolvedTouch {
+    std::string target;  // node id
+    std::string touch;   // the key it came from
+    std::string anchor;  // span_sha256 at write time; empty when the span is unreadable
+  };
+  std::vector<ResolvedTouch> resolved;
   auto unresolved = nlohmann::json::array();
   for (const auto& touch : params.value("touches", nlohmann::json::array())) {
     if (!touch.is_string()) {
@@ -1875,7 +1896,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
     }
     const auto key = touch.get<std::string>();
     if (const auto* node = resolve_node(*graph, by_id, key); node != nullptr) {
-      resolved.emplace_back(node->id, key);
+      resolved.push_back({node->id, key, span_sha256(source_reader, *node)});
     } else {
       unresolved.push_back(key);
     }
@@ -1945,11 +1966,18 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
 
   Fragment fragment;
   fragment.nodes.push_back(node);
-  for (const auto& [target, touch] : resolved) {
+  std::size_t anchored = 0;
+  for (const auto& [target, touch, anchor] : resolved) {
     // The touch key travels with the edge so a later overlay can re-resolve the
-    // target after the graph's ids change (rebind_memory_concerns).
-    fragment.edges.push_back(Edge{.source = id, .target = target, .relation = "concerns",
-                                  .confidence = Confidence::Inferred, .properties = {{"touch", touch}}});
+    // target after the graph's ids change (rebind_memory_concerns). The anchor is
+    // what recall compares the live span against (touch_validity).
+    Edge edge{.source = id, .target = target, .relation = "concerns",
+              .confidence = Confidence::Inferred, .properties = {{"touch", touch}}};
+    if (!anchor.empty()) {
+      edge.properties["anchor_sha256"] = anchor;
+      ++anchored;
+    }
+    fragment.edges.push_back(std::move(edge));
   }
 
   // Durable sidecar: the fragment beside the body is the source of truth for this
@@ -1980,9 +2008,39 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
       {"source_file", node.source_file},
       {"created_at", ts},
       {"concerns", resolved.size()},
+      {"anchored", anchored},
       {"unresolved", std::move(unresolved)},
       {"written", true},
   });
+}
+
+// Checkpoint-node property listing the touch keys the last memory overlay could
+// not re-bind, newline-separated. Rewritten on every overlay (overlay_memory_fragments),
+// never persisted: the sidecar keeps the edges, the graph decides what is gone.
+constexpr const char* kGoneTouchesProperty = "gone_touches";
+
+[[nodiscard]] std::vector<std::string> split_gone_touches(std::string_view joined) {
+  std::vector<std::string> touches;
+  std::size_t start = 0;
+  while (start < joined.size()) {
+    const auto end = std::min(joined.find('\n', start), joined.size());
+    if (end > start) {
+      touches.emplace_back(joined.substr(start, end - start));
+    }
+    start = end + 1;
+  }
+  return touches;
+}
+
+// valid: the touched symbol's span still hashes to the anchor written with it.
+// changed: it does not (or can no longer be read). unanchored: the edge carries
+// no anchor (written before anchoring, or the span was unreadable at write time).
+[[nodiscard]] std::string touch_validity(const Edge& edge, const Node& target, SnapshotSourceReader& source_reader) {
+  const auto anchor = edge.properties.find("anchor_sha256");
+  if (anchor == edge.properties.end()) {
+    return "unanchored";
+  }
+  return span_sha256(source_reader, target) == anchor->second ? "valid" : "changed";
 }
 
 [[nodiscard]] nlohmann::json recall_checkpoints(
@@ -2038,10 +2096,10 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
     checkpoints.resize(limit);
   }
 
-  std::unordered_map<std::string, std::vector<std::string>> concerns;
+  std::unordered_map<std::string, std::vector<const Edge*>> concerns;
   for (const auto& edge : graph.edges) {
     if (edge.relation == "concerns" && is_memory_node_id(edge.source)) {
-      concerns[edge.source].push_back(edge.target);
+      concerns[edge.source].push_back(&edge);
     }
   }
 
@@ -2053,15 +2111,44 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
     if (const auto tags = checkpoint->properties.find("tags"); tags != checkpoint->properties.end()) {
       entry["tags"] = tags->second;
     }
-    auto links = nlohmann::json::array();
-    if (const auto it = concerns.find(checkpoint->id); it != concerns.end()) {
-      for (const auto& target : it->second) {
-        if (const auto node = by_id.find(target); node != by_id.end()) {
-          links.push_back(node_brief(*node->second));
-        }
+    // Touches the last overlay could not re-bind (rebind_memory_concerns), plus any
+    // edge whose target has since vanished from the live graph.
+    std::set<std::string> gone;
+    if (const auto it = checkpoint->properties.find(kGoneTouchesProperty); it != checkpoint->properties.end()) {
+      for (auto touch : split_gone_touches(it->second)) {
+        gone.insert(std::move(touch));
       }
     }
+    auto links = nlohmann::json::array();
+    bool any_changed = false;
+    bool any_unanchored = false;
+    if (const auto it = concerns.find(checkpoint->id); it != concerns.end()) {
+      for (const auto* edge : it->second) {
+        const auto node = by_id.find(edge->target);
+        if (node == by_id.end()) {
+          const auto touch = edge->properties.find("touch");
+          gone.insert(touch == edge->properties.end() ? edge->target : touch->second);
+          continue;
+        }
+        auto brief = node_brief(*node->second);
+        const auto validity = touch_validity(*edge, *node->second, source_reader);
+        any_changed = any_changed || validity == "changed";
+        any_unanchored = any_unanchored || validity == "unanchored";
+        brief["validity"] = validity;
+        links.push_back(std::move(brief));
+      }
+    }
+    // stale: something the checkpoint was about has changed or is gone.
+    // unverified: nothing is known to be stale, but not every touch can be proven.
+    std::string validity = "valid";
+    if (any_changed || !gone.empty()) {
+      validity = "stale";
+    } else if (any_unanchored || links.empty()) {
+      validity = "unverified";
+    }
+    entry["validity"] = validity;
     entry["concerns"] = std::move(links);
+    entry["gone"] = gone;
     items.push_back(std::move(entry));
   }
   return {{"checkpoints", std::move(items)}, {"total", total}, {"returned", items.size()}};
@@ -2069,7 +2156,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
 
 }  // namespace
 
-std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragment) {
+std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragment, std::vector<Edge>* dropped_edges) {
   const auto by_id = index_nodes(graph);
   std::size_t dropped = 0;
   std::erase_if(fragment.edges, [&](Edge& edge) {
@@ -2084,25 +2171,59 @@ std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragmen
       }
     }
     ++dropped;
+    if (dropped_edges != nullptr) {
+      dropped_edges->push_back(edge);
+    }
     return true;
   });
   return dropped;
 }
 
 std::size_t overlay_memory_fragments(GraphSnapshot& graph, std::vector<Fragment> fragments) {
+  std::unordered_set<std::string> checkpoint_ids;
   for (auto& fragment : fragments) {
+    for (const auto& node : fragment.nodes) {
+      checkpoint_ids.insert(node.id);
+    }
     Fragment nodes_only;
     nodes_only.nodes = std::move(fragment.nodes);
     nodes_only.fingerprints = std::move(fragment.fingerprints);
     merge_fragment(graph, nodes_only);
   }
   std::size_t dropped = 0;
+  std::vector<Edge> dropped_edges;
   for (auto& fragment : fragments) {
     Fragment edges_only;
     edges_only.edges = std::move(fragment.edges);
     edges_only.hyperedges = std::move(fragment.hyperedges);
-    dropped += rebind_memory_concerns(graph, edges_only);
+    dropped += rebind_memory_concerns(graph, edges_only, &dropped_edges);
     merge_fragment(graph, edges_only);
+  }
+  // Record every touch that could not be re-bound on its checkpoint, so recall
+  // reports it as gone instead of the link silently disappearing. Recomputed on
+  // each overlay, which keeps repeated overlays idempotent.
+  std::unordered_map<std::string, std::set<std::string>> gone_by_checkpoint;
+  for (const auto& edge : dropped_edges) {
+    const auto touch = edge.properties.find("touch");
+    gone_by_checkpoint[edge.source].insert(touch == edge.properties.end() ? edge.target : touch->second);
+  }
+  for (auto& node : graph.nodes) {
+    if (!checkpoint_ids.contains(node.id)) {
+      continue;
+    }
+    const auto gone = gone_by_checkpoint.find(node.id);
+    if (gone == gone_by_checkpoint.end()) {
+      node.properties.erase(kGoneTouchesProperty);
+      continue;
+    }
+    std::string joined;
+    for (const auto& touch : gone->second) {
+      if (!joined.empty()) {
+        joined += '\n';
+      }
+      joined += touch;
+    }
+    node.properties[kGoneTouchesProperty] = joined;
   }
   return dropped;
 }

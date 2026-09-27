@@ -14,7 +14,7 @@ analysis and code retrieval — it never changes query/context/impact rankings.
   distilled markdown summary; `touches` lists code symbols (ids or names) the work concerns.
   The body is written under `cgraph-out/memory/` and the checkpoint node points at it.
 - `graph_recall {query?, limit?}` — return recent checkpoints newest-first, each with its body
-  summary and briefs of the code it touched.
+  summary and briefs of the code it touched, and whether that code has changed since (below).
 
 ## Workflow
 
@@ -47,3 +47,25 @@ sidecar files under `cgraph-out/memory/` are the durable source of truth, and th
 re-overlays every checkpoint sidecar onto the graph after each rebuild (see
 `daemon_server.cpp`, the memory re-ingest hook). Merging is first-occurrence-wins, so
 re-applying an already-present checkpoint is a no-op.
+
+## Validity: does the checkpoint still hold?
+
+A checkpoint is a claim about code at the moment it was written, and code moves on. When
+`remember` resolves a touch it stores `anchor_sha256` on the `concerns` edge: the sha256 of that
+symbol's own source span (its lines, not the whole file). `recall` re-hashes the live span and
+grades every link:
+
+| link `validity` | meaning |
+|---|---|
+| `valid` | the span hashes to the anchor; code that only shifted lines still counts |
+| `changed` | the span differs from the anchor, or can no longer be read |
+| `unanchored` | there is no anchor (written before anchoring existed, or the symbol had no readable span) |
+
+A touch whose symbol no longer exists is listed under the checkpoint's `gone`. The memory overlay
+records these on the checkpoint node (`gone_touches`) when it cannot re-bind the edge after a
+rebuild, instead of the link silently disappearing. The checkpoint's own `validity` is `stale` when
+any link is `changed` or anything is `gone`, `unverified` when nothing is known to be stale but some
+link cannot be proven (or there are no links), and `valid` otherwise.
+
+Validity is information for the agent only. It never filters or reorders recall, and memory stays
+inert to code ranking.

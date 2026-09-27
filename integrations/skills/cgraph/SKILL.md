@@ -199,6 +199,12 @@ to carry the task thread across a context reset instead of losing it.
   with its body and briefs of the code it touched. After a `/clear`, recall first
   (~KB payload) to restore the thread, then `graph_context` on a linked symbol to
   reload just-enough source.
+- Every touched symbol is anchored to its code when the checkpoint is written, so
+  recall says whether the summary still holds: each link carries `validity`
+  `valid`, `changed` or `unanchored`, deleted symbols are listed under `gone`, and
+  the checkpoint itself is `valid`, `stale` or `unverified`. Treat a `stale`
+  checkpoint as a lead, not a fact: re-read the `changed` symbols before acting on
+  what the body says about them.
 
 The discipline is **distill → checkpoint → clear → recall**. Checkpoints are
 inert to code analysis (they never shift query/impact/context rankings) and
