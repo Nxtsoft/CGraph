@@ -61,7 +61,7 @@ and grades every link:
 |---|---|
 | `valid` | the span hashes to the anchor; code that only shifted lines still counts |
 | `changed` | the span differs from the anchor, can no longer be read, or its file was edited after the last extraction |
-| `unanchored` | there is no anchor (written before anchoring existed, the symbol had no readable span, or its file had not been re-extracted yet) |
+| `unanchored` | there is no anchor (written before anchoring existed, the symbol had no readable span, its file had not been re-extracted yet, or it is not an indexed code file, such as an enriched doc) |
 
 A touch whose symbol no longer exists is listed under the checkpoint's `gone`. The memory overlay
 records these on the checkpoint node (`gone_touches`) when it cannot re-bind the edge after a
