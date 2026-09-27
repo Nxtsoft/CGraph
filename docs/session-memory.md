@@ -52,14 +52,16 @@ re-applying an already-present checkpoint is a no-op.
 
 A checkpoint is a claim about code at the moment it was written, and code moves on. When
 `remember` resolves a touch it stores `anchor_sha256` on the `concerns` edge: the sha256 of that
-symbol's own source span (its lines, not the whole file). `recall` re-hashes the live span and
-grades every link:
+symbol's own source span (its lines, not the whole file). Spans are cut at the graph's line
+numbers, so a symbol whose file was edited after the last extraction is not anchored (the watcher
+re-extracts within a couple of seconds; `graph_update` forces it). `recall` re-hashes the live span
+and grades every link:
 
 | link `validity` | meaning |
 |---|---|
 | `valid` | the span hashes to the anchor; code that only shifted lines still counts |
-| `changed` | the span differs from the anchor, or can no longer be read |
-| `unanchored` | there is no anchor (written before anchoring existed, or the symbol had no readable span) |
+| `changed` | the span differs from the anchor, can no longer be read, or its file was edited after the last extraction |
+| `unanchored` | there is no anchor (written before anchoring existed, the symbol had no readable span, or its file had not been re-extracted yet) |
 
 A touch whose symbol no longer exists is listed under the checkpoint's `gone`. The memory overlay
 records these on the checkpoint node (`gone_touches`) when it cannot re-bind the edge after a

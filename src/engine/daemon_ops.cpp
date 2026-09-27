@@ -5,6 +5,7 @@
 #include "cgraph/file_cache.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/graph_builder.hpp"
+#include "cgraph/incremental_update.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/report.hpp"
 #include "cgraph/semantic_connectivity.hpp"
@@ -148,11 +149,21 @@ constexpr std::size_t kMaxKnapsackCapacity = 50000;
 // sha256 of the node's own source span, uncapped. The anchor a checkpoint's
 // touch is validated against: unlike SnapshotSourceSnippet::source_sha256 (the
 // whole file), an edit elsewhere in the file leaves it unchanged, and a span
-// that only shifted lines hashes the same. Empty when the span cannot be read.
-[[nodiscard]] std::string span_sha256(SnapshotSourceReader& source_reader, const Node& node) {
+// that only shifted lines hashes the same. The span is cut at the snapshot's
+// line numbers, so it is only meaningful while the file on disk is the one the
+// snapshot extracted; empty when it is not (the watcher has not caught up with
+// an edit yet) or the span cannot be read.
+[[nodiscard]] std::string span_sha256(
+    SnapshotSourceReader& source_reader,
+    const GraphSnapshot& graph,
+    const Node& node) {
   const auto span = source_reader.read_snippet(
       node, std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max());
-  if (span.source_sha256.empty() || span.truncated) {
+  if (span.source_sha256.empty()) {
+    return {};
+  }
+  const auto extracted = graph.source_hashes.find(incremental_file_key(node.source_file));
+  if (extracted == graph.source_hashes.end() || extracted->second != span.source_sha256) {
     return {};
   }
   return sha256_hex(span.text);
@@ -1886,7 +1897,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
   struct ResolvedTouch {
     std::string target;  // node id
     std::string touch;   // the key it came from
-    std::string anchor;  // span_sha256 at write time; empty when the span is unreadable
+    std::string anchor;  // span_sha256 at write time; empty when unreadable or not yet re-extracted
   };
   std::vector<ResolvedTouch> resolved;
   auto unresolved = nlohmann::json::array();
@@ -1896,7 +1907,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
     }
     const auto key = touch.get<std::string>();
     if (const auto* node = resolve_node(*graph, by_id, key); node != nullptr) {
-      resolved.push_back({node->id, key, span_sha256(source_reader, *node)});
+      resolved.push_back({node->id, key, span_sha256(source_reader, *graph, *node)});
     } else {
       unresolved.push_back(key);
     }
@@ -2033,14 +2044,20 @@ constexpr const char* kGoneTouchesProperty = "gone_touches";
 }
 
 // valid: the touched symbol's span still hashes to the anchor written with it.
-// changed: it does not (or can no longer be read). unanchored: the edge carries
-// no anchor (written before anchoring, or the span was unreadable at write time).
-[[nodiscard]] std::string touch_validity(const Edge& edge, const Node& target, SnapshotSourceReader& source_reader) {
+// changed: it does not, can no longer be read, or its file was edited after the
+// snapshot extracted it (re-read before trusting it; the watcher catches up).
+// unanchored: the edge carries no anchor (written before anchoring, or the span
+// was unreadable or not yet re-extracted at write time).
+[[nodiscard]] std::string touch_validity(
+    const Edge& edge,
+    const Node& target,
+    const GraphSnapshot& graph,
+    SnapshotSourceReader& source_reader) {
   const auto anchor = edge.properties.find("anchor_sha256");
   if (anchor == edge.properties.end()) {
     return "unanchored";
   }
-  return span_sha256(source_reader, target) == anchor->second ? "valid" : "changed";
+  return span_sha256(source_reader, graph, target) == anchor->second ? "valid" : "changed";
 }
 
 [[nodiscard]] nlohmann::json recall_checkpoints(
@@ -2131,7 +2148,7 @@ constexpr const char* kGoneTouchesProperty = "gone_touches";
           continue;
         }
         auto brief = node_brief(*node->second);
-        const auto validity = touch_validity(*edge, *node->second, source_reader);
+        const auto validity = touch_validity(*edge, *node->second, graph, source_reader);
         any_changed = any_changed || validity == "changed";
         any_unanchored = any_unanchored || validity == "unanchored";
         brief["validity"] = validity;

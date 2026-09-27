@@ -204,7 +204,8 @@ to carry the task thread across a context reset instead of losing it.
   `valid`, `changed` or `unanchored`, deleted symbols are listed under `gone`, and
   the checkpoint itself is `valid`, `stale` or `unverified`. Treat a `stale`
   checkpoint as a lead, not a fact: re-read the `changed` symbols before acting on
-  what the body says about them.
+  what the body says about them. A touch in a file you edited seconds ago may come
+  back unanchored; run `graph_update` before `graph_remember` to anchor it.
 
 The discipline is **distill → checkpoint → clear → recall**. Checkpoints are
 inert to code analysis (they never shift query/impact/context rankings) and

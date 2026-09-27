@@ -1498,8 +1498,9 @@ int main() {
     }
     overlay();
     const auto rec2 = cgraph::handle_daemon_request(s, cgraph::make_request("recall", {}))["result"];
-    if (rec2.value("total", 0) != 1 || rec2["checkpoints"][0]["concerns"].size() != 0) {
-      return 106;
+    if (rec2.value("total", 0) != 1 || rec2["checkpoints"][0]["concerns"].size() != 0 ||
+        rec2["checkpoints"][0]["gone"] != nlohmann::json::array({"charge_card"})) {
+      return 106;  // the dangling link is skipped and its touch reported as gone
     }
 
     fs::remove_all(memdir);
@@ -1514,7 +1515,15 @@ int main() {
     fs::remove_all(root);
     fs::create_directories(root);
     const auto billing_py = root / "billing.py";
-    const auto write_src = [&](const std::string& text) { std::ofstream(billing_py, std::ios::binary) << text; };
+    std::string on_disk;
+    const auto write_src = [&](const std::string& text) {
+      std::ofstream(billing_py, std::ios::binary) << text;
+      on_disk = text;
+    };
+    // The watcher re-extracting the edited file: the snapshot's hash catches up.
+    const auto extracted = [&](cgraph::GraphSnapshot& g) {
+      g.source_hashes[billing_py.lexically_normal().generic_string()] = cgraph::sha256_hex(on_disk);
+    };
     const auto fn = [&](const std::string& label, std::uint32_t start) {
       return cgraph::Node{.id = "fn:" + label, .label = label, .source_file = billing_py.generic_string(),
                           .source_location = cgraph::SourceLocation{.start_line = start, .end_line = start + 1},
@@ -1526,6 +1535,7 @@ int main() {
       cgraph::GraphSnapshot g;
       g.build_state = cgraph::BuildState::DeterministicReady;
       g.nodes = std::move(nodes);
+      extracted(g);
       return g;
     };
 
@@ -1576,9 +1586,19 @@ int main() {
       }
     }
 
-    // Editing refund's body changes refund but NOT charge, although both live in
-    // the same file: the anchor is the symbol's span, not the whole file.
+    // Until the snapshot re-extracts an edited file its line numbers may point
+    // at the wrong code, so every link into that file reads changed.
     write_src("def charge():\n    return 1\n\ndef refund():\n    return 3\n");
+    {
+      const auto b = checkpoint(recall(), "B");
+      if (touch_state(b, "charge") != "changed" || touch_state(b, "refund") != "changed") {
+        return 220;
+      }
+    }
+
+    // Once re-extracted, editing refund's body changes refund but NOT charge,
+    // although both live in the same file: the anchor is the span, not the file.
+    cgraph::mutate_graph_snapshot(s, extracted);
     {
       const auto b = checkpoint(recall(), "B");
       if (touch_state(b, "charge") != "valid" || touch_state(b, "refund") != "changed" ||
@@ -1587,9 +1607,17 @@ int main() {
       }
     }
 
-    // charge shifts down two lines with identical text: moved code is still valid.
+    // charge shifts down two lines with identical text. A checkpoint written
+    // before the snapshot catches up would cut the new file at the old line
+    // numbers, so it is not anchored rather than anchored to the wrong code.
     write_src("# header\n\ndef charge():\n    return 1\n\ndef refund():\n    return 3\n");
+    const auto rem_c = cgraph::handle_daemon_request(
+        s, cgraph::make_request("remember", {{"title", "C"}, {"body", "c"}, {"touches", {"refund"}}}));
+    if (rem_c["result"].value("concerns", 0) != 1 || rem_c["result"].value("anchored", 1) != 0) {
+      return 221;
+    }
     cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) {
+      extracted(g);
       for (auto& node : g.nodes) {
         if (node.id == "fn:charge") {
           node.source_location = cgraph::SourceLocation{.start_line = 3, .end_line = 4};
@@ -1598,7 +1626,9 @@ int main() {
         }
       }
     });
-    if (touch_state(checkpoint(recall(), "B"), "charge") != "valid") {
+    // Re-extracted: moved code is still valid, and C's touch stays unanchored.
+    if (touch_state(checkpoint(recall(), "B"), "charge") != "valid" ||
+        touch_state(checkpoint(recall(), "C"), "refund") != "unanchored") {
       return 215;
     }
 
@@ -1640,8 +1670,20 @@ int main() {
       return 217;
     }
 
-    // refund comes back with its original text: the gone record is cleared on the
-    // next overlay and the original anchor proves it valid again.
+    // refund reappears in the SAME graph (no republish): the next overlay must
+    // remove the gone record it wrote, not just leave it behind.
+    write_src("# header\n\ndef charge():\n    return 1\n\ndef refund():\n    return 2\n");
+    cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) {
+      g.nodes.push_back(fn("refund", 6));
+      extracted(g);
+      (void)cgraph::overlay_memory_fragments(g, sidecars());
+    });
+    if (!checkpoint(recall(), "B")["gone"].empty()) {
+      return 222;
+    }
+
+    // refund comes back with its original text after a full rebuild: the gone
+    // record is cleared and the original anchor proves it valid again.
     write_src("# header\n\ndef charge():\n    return 1\n\ndef refund():\n    return 2\n");
     cgraph::publish_graph_snapshot(s, graph_of({fn("charge", 3), fn("refund", 6), module}));
     cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) { (void)cgraph::overlay_memory_fragments(g, sidecars()); });
