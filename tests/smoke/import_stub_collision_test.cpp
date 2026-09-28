@@ -86,7 +86,9 @@ int main() {
   write_file(dup_root / "lib" / "util.ts", "export function util(): number {\n  return 2;\n}\n");
   write_file(dup_root / "index.ts", "import { util } from './util';\n\nexport const value = util();\n");
   const auto dup = cgraph::run_one_shot(dup_root);
-  const auto root_util = (dup_root / "util.ts").lexically_normal().generic_string();
+  // Detected paths are canonical (on macOS /var -> /private/var), so compare
+  // against the canonical root, not the raw temp path.
+  const auto root_util = (std::filesystem::weakly_canonical(dup_root) / "util.ts").lexically_normal().generic_string();
   std::string root_util_file;
   std::string root_util_fn;
   std::string index_file;
