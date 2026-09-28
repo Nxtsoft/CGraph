@@ -1,5 +1,7 @@
 # Preview what a proposed change would break, and keep the answer as obligations
 
+> **Status: not built. This is a recorded negative result, archived with `--skip-specs`.** The Phase 0 gate failed on 2026-09-28. Over 15 merged PRs and 147 later-needed code files, the first commit's `change_context` impact set caught later-needed files at a per-PR rate of 0.220. That beat same-directory picks (0.072; gain +0.147, CI95 +0.028 to +0.304) but tied git co-change (0.227; −0.008, CI95 −0.106 to +0.091). See `tasks.md` and PR #121. None of the requirements below exist in the engine or in the main specs. A second design review (PR #121) found three blocking issues (X1–X3) that are still open. Any future re-scope, such as a co-change rank on `change_context` impact rows or the obligation ledger alone, should start a new change from this record, not revive it.
+
 ## Why
 
 Today an agent learns what its edit broke only after writing it, from a failing build or a reviewer. CGraph can already answer "what depends on this" (`impact`, `path`), and `change_context` already turns a unified diff into symbol changes and their dependents. It works only on a change that already exists on disk, though: it needs a materialized `target_root` and runs a full `run_one_shot` build of both roots (`src/engine/change_context.cpp:371-372`).
