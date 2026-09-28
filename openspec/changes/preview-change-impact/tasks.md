@@ -7,8 +7,18 @@ cmake --preset default && cmake --build build/default
 
 ## 0. Gate (no engine code)
 
-- [ ] 0.1 Replay merged PRs with at least 2 commits (`refs/pull/N/head`) through `change_context`, using the protocol fixed in `design.md` "Gates", and record the result in `research/area3-preview/results.md`. Command: `python3 research/area3-preview/replay.py --repo . --out research/area3-preview/results.json`.
-- [ ] 0.2 Record the decision here. Proceed only if the preview beats both baselines with a CI95 excluding zero over at least 15 PRs; otherwise close this change with the measurement attached.
+- [x] 0.1 Replay merged PRs with at least 2 commits (`refs/pull/N/head`) through `change_context`, using the protocol fixed in `design.md` "Gates", and record the result in `research/area3-preview/results.md`. Command: `python3 research/area3-preview/replay.py --repo . --out research/area3-preview/results.json`.
+- [x] 0.2 Record the decision here. Proceed only if the preview beats both baselines with a CI95 excluding zero over at least 15 PRs; otherwise close this change with the measurement attached.
+
+**Decision (2026-09-28): gate failed; do not build the preview op.** The Phase 0 replay (`~/.agents/artifacts/2026-09-25/cgraph-context-engine-research/briefs/area3-preview/results.md`) covered 15 PRs with 147 later-needed code files, at depth 3. The first commit's impact set caught 14 of them. Average catch rate per PR, with the gain over each baseline and its CI95:
+
+| arm | catch rate | preview's gain | CI95 |
+|---|---|---|---|
+| preview | 0.220 | | |
+| same-directory | 0.072 | +0.147 | [+0.028, +0.304] |
+| git co-change | 0.227 | −0.008 | [−0.106, +0.091] |
+
+The preview beats same-directory but ties co-change, and the two methods largely find the same files (9 in common at depth 3). The gate required beating both baselines, so implementation tasks 1–5 are not started. Caveats: only 7 PRs had a non-empty impact set, one PR (#113) supplies half the hits, and later commits mix real obligations with review churn.
 
 ## 1. Shared pieces (no behaviour change)
 
