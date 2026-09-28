@@ -435,6 +435,17 @@ struct RouteRegistration {
   return spec;
 }
 
+// The stub id input for a specifier: a relative specifier is resolved against
+// the project-relative directory in the relative namespace
+// (relative_import_stub), so it neither carries the checkout's location nor
+// normalizes onto a bare package's id; a bare specifier keeps "import-<kind>:".
+[[nodiscard]] std::string module_stub(std::string_view kind, const std::string& relative_path, const std::string& spec) {
+  if (!spec.empty() && spec.front() == '.') {
+    return relative_import_stub(kind, std::filesystem::path(relative_path).parent_path() / spec);
+  }
+  return "import-" + std::string(kind) + ":" + spec;
+}
+
 // Pushes the imported/exported symbol names found under an import_clause /
 // export_clause / namespace_(im|ex)port subtree, each with the local alias an
 // `as` clause gives it (empty when there is none). The stub is keyed by the
@@ -488,6 +499,10 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
   if (has_source) {
     const auto spec = strip_string_quotes(node_text(source, context.source));
     if (!spec.empty()) {
+      // import_path is resolved against the absolute source file because
+      // resolve_imports looks it up by the file nodes' absolute source paths;
+      // the stub's id is resolved against the project-relative path so, like
+      // every other id, it never carries the checkout's location.
       const auto resolved = resolve_module_spec(context.source_file, spec);
       // The stub id is namespaced so it can never equal a real node's id. A
       // specifier that spells the source extension ("./chunkBy.ts", legal under
@@ -497,7 +512,7 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
       // "X.ts", so the stub claimed the id first, merge_fragment discarded the
       // real file node as a duplicate, and resolve_imports — finding no file
       // node for the path — deleted the stub and every edge with it (issue #39).
-      const auto module_id = make_id("import-module:" + resolved);
+      const auto module_id = make_id(module_stub("module", context.relative_path, spec));
       fragment.nodes.push_back(Node{
           .id = module_id,
           .label = spec,
@@ -520,10 +535,15 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
   }
 
   // file -> each named/default/namespace symbol. Keyed by module+name so the
-  // same symbol imported by many files collapses onto one hub node.
-  const auto module_key = has_source
-      ? resolve_module_spec(context.source_file, strip_string_quotes(node_text(source, context.source)))
-      : context.source_file;
+  // same symbol imported by many files collapses onto one hub node. As for the
+  // module stub, the id key is project-relative while import_path stays
+  // absolute: resolve_imports looks files up by their absolute source paths,
+  // and a relative import_path would fall through to suffix matching, which
+  // drops the import whenever two files share a basename.
+  const auto spec = has_source ? strip_string_quotes(node_text(source, context.source)) : std::string{};
+  const auto symbol_stub = has_source ? module_stub("symbol", context.relative_path, spec)
+                                      : relative_import_stub("symbol", context.relative_path);
+  const auto module_path = has_source ? resolve_module_spec(context.source_file, spec) : context.source_file;
   std::vector<std::pair<std::string, std::string>> names;
   collect_specifier_names(node, context.source, names);
   for (auto& [name, alias] : names) {
@@ -531,7 +551,7 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
     // extension-spelled specifier, make_id(module_key + ":" + name) is exactly
     // the id add_symbol_node gives the real declared symbol, and the squatting
     // stub deletes the real function from the graph (issue #39/#40).
-    const auto symbol_id = make_id("import-symbol:" + module_key + ":" + name);
+    const auto symbol_id = make_id(symbol_stub + ":" + name);
     fragment.nodes.push_back(Node{
         .id = symbol_id,
         .label = name,
@@ -540,7 +560,7 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
         .confidence = Confidence::Extracted,
         // Module + name let a post-merge pass relink this stub onto the real
         // declared symbol in the imported file when that file is in the graph.
-        .properties = {{"import_path", module_key}},
+        .properties = {{"import_path", module_path}},
     });
     if (!alias.empty() && alias != name) {
       // `import { config as configModule }`: the file's own code says
