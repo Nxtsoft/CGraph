@@ -144,14 +144,18 @@ struct ImpactReach {
 // it is about to be overlaid on. An edge whose target id no longer exists is
 // re-bound through the `touch` key it was written with (a node id or exact
 // symbol name); one that cannot be re-bound is dropped, never left dangling.
-// Returns the number of edges dropped.
-std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragment);
+// Returns the number of edges dropped; each dropped edge is also appended to
+// `dropped_edges` when given.
+std::size_t rebind_memory_concerns(const GraphSnapshot& graph, Fragment& fragment,
+                                   std::vector<Edge>* dropped_edges = nullptr);
 
 // Overlays memory checkpoint fragments in any order: every fragment's nodes are
 // merged first, then every `concerns` edge is re-bound (rebind_memory_concerns)
 // against a graph that already holds all the checkpoints and merged. A checkpoint
 // that concerns an earlier checkpoint therefore keeps its edge whatever order the
-// sidecars were read in. Returns the number of edges dropped.
+// sidecars were read in. A touch that cannot be re-bound is recorded on its
+// checkpoint node (`gone_touches`) so recall reports it as gone. Returns the
+// number of edges dropped.
 std::size_t overlay_memory_fragments(GraphSnapshot& graph, std::vector<Fragment> fragments);
 
 [[nodiscard]] std::shared_ptr<const GraphSnapshot> read_graph_snapshot(const DaemonState& state);

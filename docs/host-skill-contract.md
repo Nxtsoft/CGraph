@@ -96,7 +96,7 @@ Each chunk contains bounded file inputs with:
   code graph is available to match against; ignoring it leaves a fragment valid. Code-node ids
   derive from the source path relative to the project root, so an id a host records is valid in
   every checkout of the same tree. Ids recorded before this change (openspec change
-  `relative-node-ids`; the first release carrying it is the one after `bin-v0.4.0`) embedded the
+  `relative-node-ids`, first released in `bin-v0.5.0`) embedded the
   absolute path and no longer resolve.
 
 Hosts dispatch each chunk to their own agent or model workflow. A completed chunk writes exactly one fragment file named `chunk_NN.json` into the configured semantic drop directory, where `NN` is the chunk index. Cached content is skipped when a valid cache record exists for the same content hash and fragment path.

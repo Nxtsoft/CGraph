@@ -1498,11 +1498,203 @@ int main() {
     }
     overlay();
     const auto rec2 = cgraph::handle_daemon_request(s, cgraph::make_request("recall", {}))["result"];
-    if (rec2.value("total", 0) != 1 || rec2["checkpoints"][0]["concerns"].size() != 0) {
-      return 106;
+    if (rec2.value("total", 0) != 1 || rec2["checkpoints"][0]["concerns"].size() != 0 ||
+        rec2["checkpoints"][0]["gone"] != nlohmann::json::array({"charge_card"})) {
+      return 106;  // the dangling link is skipped and its touch reported as gone
     }
 
     fs::remove_all(memdir);
+  }
+
+  // --- validity-conditioned memory: each touch is anchored to its own source
+  //     span at remember time; recall grades it valid / changed / unanchored,
+  //     reports touches the overlay could not re-bind as gone, and rolls both
+  //     up into a per-checkpoint validity ---
+  {
+    const auto root = fs::temp_directory_path() / "cgraph-memory-validity-test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const auto billing_py = root / "billing.py";
+    std::string on_disk;
+    const auto write_src = [&](const std::string& text) {
+      std::ofstream(billing_py, std::ios::binary) << text;
+      on_disk = text;
+    };
+    // The watcher re-extracting the edited file: the snapshot's hash catches up.
+    const auto extracted = [&](cgraph::GraphSnapshot& g) {
+      g.source_hashes[billing_py.lexically_normal().generic_string()] = cgraph::sha256_hex(on_disk);
+    };
+    const auto fn = [&](const std::string& label, std::uint32_t start) {
+      return cgraph::Node{.id = "fn:" + label, .label = label, .source_file = billing_py.generic_string(),
+                          .source_location = cgraph::SourceLocation{.start_line = start, .end_line = start + 1},
+                          .kind = "function"};
+    };
+    // A module node with no location has no readable span, so it cannot be anchored.
+    const cgraph::Node module{.id = "mod:billing", .label = "billing", .kind = "module"};
+    const auto graph_of = [&](std::vector<cgraph::Node> nodes) {
+      cgraph::GraphSnapshot g;
+      g.build_state = cgraph::BuildState::DeterministicReady;
+      g.nodes = std::move(nodes);
+      extracted(g);
+      return g;
+    };
+
+    cgraph::DaemonState s;
+    s.memory_dir = root / "memory";
+    write_src("def charge():\n    return 1\n\ndef refund():\n    return 2\n");
+    cgraph::publish_graph_snapshot(s, graph_of({fn("charge", 1), fn("refund", 4), module}));
+
+    const auto rem_a = cgraph::handle_daemon_request(
+        s, cgraph::make_request("remember", {{"title", "A"}, {"body", "a"}, {"touches", {"charge", "refund", "billing"}}}));
+    const auto rem_b = cgraph::handle_daemon_request(
+        s, cgraph::make_request("remember", {{"title", "B"}, {"body", "b"}, {"touches", {"charge", "refund"}}}));
+    if (rem_a["result"].value("concerns", 0) != 3 || rem_a["result"].value("anchored", 0) != 2 ||
+        rem_b["result"].value("anchored", 0) != 2) {
+      return 212;  // both located functions are anchored, the location-less module is not
+    }
+
+    const auto recall = [&]() {
+      return cgraph::handle_daemon_request(s, cgraph::make_request("recall", {}))["result"];
+    };
+    const auto checkpoint = [](const nlohmann::json& rec, const std::string& label) {
+      for (const auto& cp : rec["checkpoints"]) {
+        if (cp.value("label", std::string{}) == label) {
+          return cp;
+        }
+      }
+      return nlohmann::json::object();
+    };
+    const auto touch_state = [](const nlohmann::json& cp, const std::string& label) {
+      for (const auto& link : cp["concerns"]) {
+        if (link.value("label", std::string{}) == label) {
+          return link.value("validity", std::string{});
+        }
+      }
+      return std::string{"absent"};
+    };
+
+    // Freshly written: every anchored touch is valid. A is unverified because
+    // one touch cannot be proven either way; B is fully valid.
+    {
+      const auto rec = recall();
+      const auto a = checkpoint(rec, "A");
+      const auto b = checkpoint(rec, "B");
+      if (touch_state(a, "charge") != "valid" || touch_state(a, "refund") != "valid" ||
+          touch_state(a, "billing") != "unanchored" || a.value("validity", std::string{}) != "unverified" ||
+          b.value("validity", std::string{}) != "valid" || !b["gone"].empty()) {
+        return 213;
+      }
+    }
+
+    // Until the snapshot re-extracts an edited file its line numbers may point
+    // at the wrong code, so every link into that file reads changed.
+    write_src("def charge():\n    return 1\n\ndef refund():\n    return 3\n");
+    {
+      const auto b = checkpoint(recall(), "B");
+      if (touch_state(b, "charge") != "changed" || touch_state(b, "refund") != "changed") {
+        return 220;
+      }
+    }
+
+    // Once re-extracted, editing refund's body changes refund but NOT charge,
+    // although both live in the same file: the anchor is the span, not the file.
+    cgraph::mutate_graph_snapshot(s, extracted);
+    {
+      const auto b = checkpoint(recall(), "B");
+      if (touch_state(b, "charge") != "valid" || touch_state(b, "refund") != "changed" ||
+          b.value("validity", std::string{}) != "stale") {
+        return 214;
+      }
+    }
+
+    // charge shifts down two lines with identical text. A checkpoint written
+    // before the snapshot catches up would cut the new file at the old line
+    // numbers, so it is not anchored rather than anchored to the wrong code.
+    write_src("# header\n\ndef charge():\n    return 1\n\ndef refund():\n    return 3\n");
+    const auto rem_c = cgraph::handle_daemon_request(
+        s, cgraph::make_request("remember", {{"title", "C"}, {"body", "c"}, {"touches", {"refund"}}}));
+    if (rem_c["result"].value("concerns", 0) != 1 || rem_c["result"].value("anchored", 1) != 0) {
+      return 221;
+    }
+    cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) {
+      extracted(g);
+      for (auto& node : g.nodes) {
+        if (node.id == "fn:charge") {
+          node.source_location = cgraph::SourceLocation{.start_line = 3, .end_line = 4};
+        } else if (node.id == "fn:refund") {
+          node.source_location = cgraph::SourceLocation{.start_line = 6, .end_line = 7};
+        }
+      }
+    });
+    // Re-extracted: moved code is still valid, and C's touch stays unanchored.
+    if (touch_state(checkpoint(recall(), "B"), "charge") != "valid" ||
+        touch_state(checkpoint(recall(), "C"), "refund") != "unanchored") {
+      return 215;
+    }
+
+    // Re-overlay from the sidecars (as ingest_all_memory does after a rebuild).
+    const auto sidecars = [&]() {
+      std::vector<cgraph::Fragment> fragments;
+      for (const auto& rem : {rem_a, rem_b}) {
+        const auto sidecar_path = fs::path(rem["result"].value("source_file", std::string{})).replace_extension(".json");
+        fragments.push_back(cgraph::validate_semantic_fragment_file(sidecar_path).fragment);
+      }
+      return fragments;
+    };
+
+    // refund is deleted and the graph rebuilt: the overlay cannot re-bind the
+    // touch, and recall reports it as gone instead of silently dropping it.
+    write_src("# header\n\ndef charge():\n    return 1\n");
+    cgraph::publish_graph_snapshot(s, graph_of({fn("charge", 3), module}));
+    std::size_t dropped = 0;
+    cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) { dropped = cgraph::overlay_memory_fragments(g, sidecars()); });
+    if (dropped != 2) {
+      return 219;  // refund's edge from A and from B
+    }
+    const auto counts = [&]() {
+      const auto snap = cgraph::read_graph_snapshot(s);
+      return std::make_pair(snap->nodes.size(), snap->edges.size());
+    };
+    const auto after_first = counts();
+    {
+      const auto b = checkpoint(recall(), "B");
+      if (b.value("validity", std::string{}) != "stale" || b["gone"] != nlohmann::json::array({"refund"}) ||
+          b["concerns"].size() != 1 || touch_state(b, "charge") != "valid") {
+        return 216;
+      }
+    }
+
+    // A second overlay changes nothing: same counts, same gone set.
+    cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) { (void)cgraph::overlay_memory_fragments(g, sidecars()); });
+    if (counts() != after_first || checkpoint(recall(), "B")["gone"] != nlohmann::json::array({"refund"})) {
+      return 217;
+    }
+
+    // refund reappears in the SAME graph (no republish): the next overlay must
+    // remove the gone record it wrote, not just leave it behind.
+    write_src("# header\n\ndef charge():\n    return 1\n\ndef refund():\n    return 2\n");
+    cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) {
+      g.nodes.push_back(fn("refund", 6));
+      extracted(g);
+      (void)cgraph::overlay_memory_fragments(g, sidecars());
+    });
+    if (!checkpoint(recall(), "B")["gone"].empty()) {
+      return 222;
+    }
+
+    // refund comes back with its original text after a full rebuild: the gone
+    // record is cleared and the original anchor proves it valid again.
+    write_src("# header\n\ndef charge():\n    return 1\n\ndef refund():\n    return 2\n");
+    cgraph::publish_graph_snapshot(s, graph_of({fn("charge", 3), fn("refund", 6), module}));
+    cgraph::mutate_graph_snapshot(s, [&](cgraph::GraphSnapshot& g) { (void)cgraph::overlay_memory_fragments(g, sidecars()); });
+    {
+      const auto b = checkpoint(recall(), "B");
+      if (b.value("validity", std::string{}) != "valid" || !b["gone"].empty() || touch_state(b, "refund") != "valid") {
+        return 218;
+      }
+    }
+
+    fs::remove_all(root);
   }
 
   // --- session-memory observability: status reports the memory inventory, and
