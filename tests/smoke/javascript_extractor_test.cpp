@@ -642,5 +642,30 @@ app.post(`/users`, authenticate, (req, res) => { save(req.body); });
         express.raw_calls.front().caller_id != cgraph::make_id("server.js:app.post /users")) return 1;
   }
 
+  // A relative import's stubs: the id is project-relative and in the relative
+  // namespace, while import_path stays absolute, because resolve_imports looks
+  // files up by their absolute source path. A bare "util" package keeps its own
+  // id: make_id erases "./", so only the namespace can keep the two apart.
+  {
+    const auto imported = cgraph::extract_javascript({.source_file = "/abs/proj/index.ts", .relative_path = "index.ts", .source = R"js(
+import { util } from "./util";
+import { util as pkg } from "util";
+)js"});
+    const auto relative_symbol = cgraph::make_id("import-relative-symbol:util:util");
+    const auto relative_module = cgraph::make_id("import-relative-module:util");
+    const auto bare_symbol_id = cgraph::make_id("import-symbol:util:util");
+    if (relative_symbol == bare_symbol_id) return 1;
+    std::string relative_symbol_path;
+    std::string relative_module_path;
+    bool bare_symbol = false;
+    for (const auto& node : imported.fragment.nodes) {
+      const auto path = node.properties.contains("import_path") ? node.properties.at("import_path") : std::string{};
+      if (node.id == relative_symbol) relative_symbol_path = path;
+      if (node.id == relative_module) relative_module_path = path;
+      if (node.id == bare_symbol_id) bare_symbol = path == "util";
+    }
+    if (relative_symbol_path != "/abs/proj/util" || relative_module_path != "/abs/proj/util" || !bare_symbol) return 1;
+  }
+
   return 0;
 }

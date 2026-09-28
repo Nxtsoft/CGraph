@@ -119,4 +119,22 @@ std::string make_id(std::string_view input) {
   return map_utf8(cleaned, casefold_options);
 }
 
+std::string relative_import_stub(std::string_view kind, const std::filesystem::path& joined) {
+  std::size_t up = 0;
+  std::string rest;
+  for (const auto& part : joined.lexically_normal()) {
+    const auto segment = part.generic_string();
+    if (segment == ".." && rest.empty()) {
+      ++up;
+    } else if (!segment.empty() && segment != ".") {
+      rest += rest.empty() ? segment : "/" + segment;
+    }
+  }
+  std::string stub = up == 0 ? "import-relative-" : "import-relative-up-" + std::to_string(up) + "-";
+  stub += kind;
+  stub += ":";
+  stub += rest;
+  return stub;
+}
+
 }  // namespace cgraph

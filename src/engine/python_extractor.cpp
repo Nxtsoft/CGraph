@@ -54,6 +54,33 @@ extern "C" const TSLanguage* tree_sitter_python();
   return rest.empty() ? base.generic_string() : (base / rest).lexically_normal().generic_string();
 }
 
+// The stub id input for a dotted module spec: an absolute module keeps
+// "import-<kind>:"; a relative one is resolved against the project-relative
+// directory, walking up with ".." segments (not parent_path, which stops at the
+// root), in the relative namespace (relative_import_stub). So a root-level
+// `from .config import X` never shares an id with an absolute
+// `from config import X`, and an import that climbs above the root stays
+// distinct from one that stops at it.
+[[nodiscard]] std::string python_module_stub(std::string_view kind, const std::string& relative_path, const std::string& spec) {
+  std::size_t dots = 0;
+  while (dots < spec.size() && spec[dots] == '.') {
+    ++dots;
+  }
+  std::string rest = spec.substr(dots);
+  std::ranges::replace(rest, '.', '/');
+  if (dots == 0) {
+    return "import-" + std::string(kind) + ":" + rest;
+  }
+  std::filesystem::path joined = std::filesystem::path(relative_path).parent_path();
+  for (std::size_t up = 1; up < dots; ++up) {
+    joined /= "..";
+  }
+  if (!rest.empty()) {
+    joined /= rest;
+  }
+  return relative_import_stub(kind, joined);
+}
+
 // Emits the same stub shape the JS handler does — a `module` stub with an
 // `import_path` for resolve_imports to collapse onto the real file node, plus
 // an `import` stub per imported name so `from x import Thing` can bind to the
@@ -71,7 +98,7 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
   // id must not carry the checkout's location.
   const auto add_module_stub = [&](const std::string& spec, const std::string& label) -> std::string {
     const auto resolved = resolve_python_module_spec(context.source_file, spec);
-    const auto module_id = make_id("import-module:" + resolve_python_module_spec(context.relative_path, spec));
+    const auto module_id = make_id(python_module_stub("module", context.relative_path, spec));
     fragment.nodes.push_back(Node{
         .id = module_id,
         .label = label,
@@ -121,7 +148,7 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
   }
   add_module_stub(spec, spec);
   const auto resolved = resolve_python_module_spec(context.source_file, spec);
-  const auto resolved_key = resolve_python_module_spec(context.relative_path, spec);
+  const auto symbol_stub = python_module_stub("symbol", context.relative_path, spec);
 
   // `from m import a, b as c` — the imported names are the `name`-field children
   // after module_name (dotted_name or aliased_import). A wildcard import has none.
@@ -150,7 +177,7 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
     if (name.empty()) {
       continue;
     }
-    const auto symbol_id = make_id("import-symbol:" + resolved_key + ":" + name);
+    const auto symbol_id = make_id(symbol_stub + ":" + name);
     fragment.nodes.push_back(Node{
         .id = symbol_id,
         .label = name,

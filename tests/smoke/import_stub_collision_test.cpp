@@ -74,5 +74,42 @@ int main() {
   if (!edge("imports", "chunkby_ts_chunkby")) {
     return 5;
   }
+
+  // A root-level relative import must bind to the file it names even when
+  // another file shares its basename. resolve_imports finds the file by its
+  // absolute path; an import_path made project-relative ("util") would fall
+  // through to suffix matching, tie between util.ts and lib/util.ts, and drop
+  // the import and the imports edge with it.
+  const auto dup_root = std::filesystem::temp_directory_path() / "cgraph_import_basename_test";
+  std::filesystem::remove_all(dup_root);
+  write_file(dup_root / "util.ts", "export function util(): number {\n  return 1;\n}\n");
+  write_file(dup_root / "lib" / "util.ts", "export function util(): number {\n  return 2;\n}\n");
+  write_file(dup_root / "index.ts", "import { util } from './util';\n\nexport const value = util();\n");
+  const auto dup = cgraph::run_one_shot(dup_root);
+  const auto root_util = (dup_root / "util.ts").lexically_normal().generic_string();
+  std::string root_util_file;
+  std::string root_util_fn;
+  std::string index_file;
+  for (const auto& node : dup.graph.nodes) {
+    const auto file = std::filesystem::path(node.source_file).lexically_normal().generic_string();
+    if (file == root_util && node.kind == "file") root_util_file = node.id;
+    if (file == root_util && node.kind == "function" && node.label == "util") root_util_fn = node.id;
+    if (node.kind == "file" && std::string_view(node.label).ends_with("index.ts")) index_file = node.id;
+  }
+  const auto dup_edge = [&](std::string_view relation, const std::string& target) {
+    return std::ranges::any_of(dup.graph.edges, [&](const auto& e) {
+      return e.relation == relation && e.source == index_file && e.target == target;
+    });
+  };
+  std::filesystem::remove_all(dup_root);
+  if (root_util_file.empty() || root_util_fn.empty() || index_file.empty()) {
+    return 6;
+  }
+  if (!dup_edge("imports_from", root_util_file)) {
+    return 7;
+  }
+  if (!dup_edge("imports", root_util_fn)) {
+    return 8;
+  }
   return 0;
 }

@@ -85,5 +85,26 @@ class Worker:
     return 1;
   }
 
+  // A root-level relative import and an absolute import of the same name get
+  // different stub ids (relative vs absolute namespace); import_path stays
+  // absolute for the relative one.
+  {
+    const auto imported = cgraph::extract_python({.source_file = "/abs/proj/app.py", .relative_path = "app.py", .source = R"py(
+from .config import Local
+from config import Remote
+)py"});
+    const auto relative_id = cgraph::make_id("import-relative-symbol:config:Local");
+    const auto absolute_id = cgraph::make_id("import-symbol:config:Remote");
+    std::string relative_path_prop;
+    bool absolute_module = false;
+    for (const auto& node : imported.fragment.nodes) {
+      const auto path = node.properties.contains("import_path") ? node.properties.at("import_path") : std::string{};
+      if (node.id == relative_id) relative_path_prop = path;
+      if (node.id == absolute_id) absolute_module = path == "config";
+    }
+    if (relative_path_prop != "/abs/proj/config" || !absolute_module) return 1;
+    if (cgraph::make_id("import-relative-module:config") == cgraph::make_id("import-module:config")) return 1;
+  }
+
   return 0;
 }
