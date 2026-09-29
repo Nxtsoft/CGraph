@@ -797,6 +797,14 @@ int check_typescript_export_star() {
   write_ts(root / "src/meth/b.ts", "export function run() { return 2; }\n");
   write_ts(root / "src/use_meth.ts", "import { run } from './meth';\nexport const h = run;\n");
 
+  // Rust is untouched by the JS/TS search: an item import that lands on a file
+  // with an unrelated `pub use` resolves exactly as it does without one.
+  write_ts(root / "rs/src/lib.rs", "mod m;\nmod other;\nmod user;\n");
+  write_ts(root / "rs/src/other.rs", "pub struct X;\n");
+  write_ts(root / "rs/src/m.rs",
+           "pub use crate::other::X;\npub struct S;\nimpl S {\n    pub fn build() {}\n}\npub fn build() {}\n");
+  write_ts(root / "rs/src/user.rs", "use crate::m::build;\npub fn go() { build(); }\n");
+  write_ts(root / "rs/Cargo.toml", "[package]\nname = \"rs\"\nversion = \"0.1.0\"\n");
   const auto result = cgraph::run_one_shot(root);
   const auto& graph = result.graph;
   const auto canonical_root = std::filesystem::weakly_canonical(root);
@@ -841,6 +849,7 @@ int check_typescript_export_star() {
                          !imports(file_id("src/use_mid.ts"), deep) &&
                          imports(file_id("src/use_mid.ts"), file_id("src/shadow/mid.ts"));
   const bool ok_method = imports(file_id("src/use_meth.ts"), id_of("src/meth/b.ts", "run", "function"));
+  const bool ok_rust = imports(file_id("rs/src/user.rs"), file_id("rs/src/m.rs"));
   std::filesystem::remove_all(root);
   if (!ok_star) { std::cerr << "export * chain: service -> competitors missing (" << competitors << ")\n"; return 1; }
   if (!ok_alias) { std::cerr << "aliased named re-export: service -> widgets missing (" << widgets << ")\n"; return 1; }
@@ -850,6 +859,7 @@ int check_typescript_export_star() {
   if (!ok_chain) { std::cerr << "a two-hop alias chain must reach the declaration under its source name\n"; return 1; }
   if (!ok_shadow) { std::cerr << "a file's own overload set shadows a deeper star target, reached directly or through a barrel\n"; return 1; }
   if (!ok_method) { std::cerr << "a class method must not stop a star search for a top-level function\n"; return 1; }
+  if (!ok_rust) { std::cerr << "a Rust item import resolves as before, whatever the target file re-exports\n"; return 1; }
   return 0;
 }
 

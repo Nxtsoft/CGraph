@@ -636,7 +636,13 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
         // TypeScript: the unique declaration if there is one, else the file (an
         // overload set). A named re-export shadows the file's star targets. A
         // name found nowhere keeps the import on the barrel, as before.
-        if (file_ids.contains(current) && (star_targets.contains(current) || reexported_by_file.contains(current))) {
+        // JS/TS only: Rust follows its `pub use` chain in the hop loop above and
+        // keeps its first-resolution rules unchanged, whatever else the target
+        // file re-exports.
+        const auto layout = node.properties.find("module_layout");
+        const bool rust_stub = layout != node.properties.end() && layout->second == "rust";
+        if (!rust_stub && file_ids.contains(current) &&
+            (star_targets.contains(current) || reexported_by_file.contains(current))) {
           struct Step {
             std::string file;
             std::string label;
