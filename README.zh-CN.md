@@ -235,7 +235,7 @@ fuzzer 预设需要带 libFuzzer 运行时的 Clang 工具链；若 Apple 命令
 
 `graph_context` 有两种聚合模式。默认（`gather: "fixed"`）打包整个 k 跳邻域。带上任务查询时，`gather: "adaptive"` 保留完整的 2 跳核心，仅沿与查询相关的节点扩展第三跳——在检索评测中，它以 **+13%** 的候选 token 换来 grade-2 召回率 **+0.057**，而完整 3 跳需要多付 **+96%**（需提供 `query`/`q`）。
 
-服务器按 `--root`、`CLAUDE_PROJECT_DIR`、当前工作目录的顺序解析项目根，并自动定位 `graphd`（显式 `--daemon` 优先，其次 `CGRAPH_DAEMON_PATH`，再次与 `cgraph-mcp` 相邻的 `graphd`）。首次调用触发一次性构建（数秒）；期间结果带 `"graph_state": "building"`，因此空结果绝不会被误当作“无匹配”。后续查询为 warm（~10 毫秒）。下方示例中，请将 `/home/you` 替换为你的绝对主目录。
+服务器按 `--root`、`CLAUDE_PROJECT_DIR`、当前工作目录的顺序解析项目根，并自动定位 `graphd`（显式 `--daemon` 优先，其次 `CGRAPH_DAEMON_PATH`，再次与 `cgraph-mcp` 相邻的 `graphd`）。首次调用触发一次性构建（数秒）。图查询最多等待 30 秒让构建完成；若结果仍带 `"graph_state": "building"`，说明构建尚未完成、结果不完整，因此空结果绝不会被误当作“无匹配”。后续查询为 warm（~10 毫秒）。下方示例中，请将 `/home/you` 替换为你的绝对主目录。
 
 ### Claude Code
 
