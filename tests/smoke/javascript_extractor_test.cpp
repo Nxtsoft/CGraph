@@ -512,6 +512,48 @@ export async function publish(projectId: string) {
     }
   }
 
+  // A typed awaited request is still a request: tree-sitter-typescript parses
+  // `await axios.post<T>(url)` as `(await axios.post)<T>(url)`. And a call or member
+  // at the front of a URL may hold a path this file cannot see, so the call is
+  // left unresolved instead of minting a truncated route (`/oracles`).
+  {
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/extra.ts", .relative_path = "lib/extra.ts", .source = R"ts(
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8080';
+const base = (projectId: string) => `${BACKEND_URL}/api/v1/projects/${projectId}`;
+export async function typedAwait() {
+  let r;
+  r = await axios.post<{ ok: boolean }>(`${BACKEND_URL}/api/v1/assigned-generic`, {});
+  const s = await axios.post<LoginResponse>(`${BACKEND_URL}/api/v1/login`, {});
+  return [r, s];
+}
+export async function viaHelper(projectId: string) {
+  return fetch(`${base(projectId)}/oracles`, { method: 'POST' });
+}
+export async function viaMember() {
+  return fetch(`${config.baseUrl}/items`);
+}
+)ts"});
+    std::set<std::string> facts;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation == "http_call" || relation.relation == "http_wrapper" || relation.relation == "url_const") {
+        facts.insert(relation.relation + "|" + relation.source_id + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto fn = [](std::string_view name) { return cgraph::make_id(std::string("lib/extra.ts:") + std::string(name)); };
+    const auto file = cgraph::make_id("lib/extra.ts");
+    const std::set<std::string> expected{
+        "url_const|" + file + "|BACKEND_URL|",
+        "http_call|" + fn("typedAwait") + "|axios.post| /api/v1/assigned-generic",
+        "http_call|" + fn("typedAwait") + "|axios.post| /api/v1/login",
+        "http_call|" + fn("viaHelper") + "|fetch|POST ",
+        "http_call|" + fn("viaMember") + "|fetch| ",
+    };
+    if (facts != expected) {
+      for (const auto& fact : facts) std::cerr << "typed/opaque consumer fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
   // openapi-typescript output (CGR-13 slice 3): `paths` members become documented
   // endpoints (`never` methods skipped, no `field` per path), component schemas
   // become `schema` nodes with fields, and operations link responses and bodies.

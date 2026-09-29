@@ -887,7 +887,6 @@ struct UrlTemplate {
   bool tail = false;
   bool resolvable = true;
   bool in_query = false;
-  bool dropped_host = false;
 
   void literal(std::string_view text) {
     if (in_query) {
@@ -912,7 +911,13 @@ struct UrlTemplate {
       return;
     }
     if (path.empty()) {
-      dropped_host = dropped_host || opaque;  // the host: `${API_URL}/api/v1/...`
+      // Only an in-file host (`process.env`, or a constant built from it) is a bare
+      // host. A call (`${base(id)}/oracles`), a member (`${this.baseUrl}/x`) or a
+      // local may hold a path this file cannot see: dropping it as the host would
+      // mint a truncated route (`/oracles`) that matches the wrong provider.
+      if (opaque) {
+        resolvable = false;
+      }
       return;
     }
     if (path.back() == '/') {
@@ -931,13 +936,6 @@ struct UrlTemplate {
     }
     if (!path.empty() && path.back() == '/') {
       path += "{}";
-      return;
-    }
-    if (path.empty() && dropped_host) {
-      // `${API_BASE}${path}` with a base this file does not define: the base may
-      // hold a path (`/api/v1`) we cannot see, so the prefix is unknowable. An
-      // in-file `process.env` host before the tail is fine: the prefix is empty.
-      resolvable = false;
       return;
     }
     tail = true;
@@ -1128,7 +1126,14 @@ void http_call_handler(const TSNode& node, const ExtractionContext& context, con
   if (std::string_view(ts_node_type(node)) != "call_expression") {
     return;
   }
-  const TSNode callee = unwrap_expression(ts_node_child_by_field_name(node, "function", 8));
+  TSNode callee = unwrap_expression(ts_node_child_by_field_name(node, "function", 8));
+  // tree-sitter-typescript parses `await axios.post<T>(url)` as `(await axios.post)<T>(url)`:
+  // with type arguments the await wraps the callee, not the call. Read through it,
+  // or every typed awaited request (`await axios.post<LoginResponse>(...)`) is lost.
+  if (!ts_node_is_null(callee) && std::string_view(ts_node_type(callee)) == "await_expression" &&
+      !ts_node_is_null(ts_node_child_by_field_name(node, "type_arguments", 14))) {
+    callee = unwrap_expression(ts_node_named_child(callee, 0));
+  }
   if (ts_node_is_null(callee)) {
     return;
   }
