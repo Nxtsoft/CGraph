@@ -190,10 +190,9 @@ The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/pu
 'POST' })`, an openapi-fetch `api.GET('/api/v1/projects/{id}', …)`, an `axios.post(…)`, and a call
 through a path wrapper (`apiFetch(path)` whose own `fetch(\`${base}${path}\`)` appends its first
 parameter to a module constant) each give the calling function (or the module-level object the
-arrow initialises) a `CONSUMES` edge to `endpoint:<METHOD> <canonical path>`. A host
-interpolation built from `process.env` in the same file is dropped (a call, member or local at
-the front of a URL may hold a path, so that call is left unresolved), a whole-segment
-interpolation is `{}`, the method comes from the call's
+arrow initialises) a `CONSUMES` edge to `endpoint:<METHOD> <canonical path>`. The host
+interpolation is dropped (except a call such as `${base(id)}/x`, a URL builder that may hold part
+of the path, which leaves the request unresolved), a whole-segment interpolation is `{}`, the method comes from the call's
 literal `method` option, the wrapper's own, or the client verb, else GET. When this repository
 does not serve the route the node is minted with `served: false` and no source; when it does
 (a Next.js route file fetched from the same app) the one node has both a handler and its callers.

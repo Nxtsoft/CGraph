@@ -513,9 +513,10 @@ export async function publish(projectId: string) {
   }
 
   // A typed awaited request is still a request: tree-sitter-typescript parses
-  // `await axios.post<T>(url)` as `(await axios.post)<T>(url)`. And a call or member
-  // at the front of a URL may hold a path this file cannot see, so the call is
-  // left unresolved instead of minting a truncated route (`/oracles`).
+  // `await axios.post<T>(url)` as `(await axios.post)<T>(url)`. A call at the
+  // front of a URL is a builder that may hold a path this file cannot see, so the
+  // call is left unresolved instead of minting a truncated route (`/oracles`);
+  // a member there (`${config.baseUrl}`) is still read as the host.
   {
     const auto calls = cgraph::extract_typescript({.source_file = "lib/extra.ts", .relative_path = "lib/extra.ts", .source = R"ts(
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8080';
@@ -546,7 +547,7 @@ export async function viaMember() {
         "http_call|" + fn("typedAwait") + "|axios.post| /api/v1/assigned-generic",
         "http_call|" + fn("typedAwait") + "|axios.post| /api/v1/login",
         "http_call|" + fn("viaHelper") + "|fetch|POST ",
-        "http_call|" + fn("viaMember") + "|fetch| ",
+        "http_call|" + fn("viaMember") + "|fetch| /items",
     };
     if (facts != expected) {
       for (const auto& fact : facts) std::cerr << "typed/opaque consumer fact: " << fact << '\n';

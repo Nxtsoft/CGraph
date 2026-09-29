@@ -887,6 +887,7 @@ struct UrlTemplate {
   bool tail = false;
   bool resolvable = true;
   bool in_query = false;
+  bool dropped_host = false;
 
   void literal(std::string_view text) {
     if (in_query) {
@@ -911,13 +912,7 @@ struct UrlTemplate {
       return;
     }
     if (path.empty()) {
-      // Only an in-file host (`process.env`, or a constant built from it) is a bare
-      // host. A call (`${base(id)}/oracles`), a member (`${this.baseUrl}/x`) or a
-      // local may hold a path this file cannot see: dropping it as the host would
-      // mint a truncated route (`/oracles`) that matches the wrong provider.
-      if (opaque) {
-        resolvable = false;
-      }
+      dropped_host = dropped_host || opaque;  // the host: `${API_URL}/api/v1/...`
       return;
     }
     if (path.back() == '/') {
@@ -925,6 +920,21 @@ struct UrlTemplate {
       return;
     }
     resolvable = false;  // `/v1-${x}`: a partial segment no router template matches
+  }
+  // A call interpolated into the URL (`${base(projectId)}/oracles`). A local or
+  // member in front is almost always the host (`${apiUrl}/api/v1/...`,
+  // `${this.baseUrl}/api/...`), but a call there is a URL builder whose result
+  // may end in a path this file cannot see; dropping it as the host would mint a
+  // truncated route that matches the wrong provider or none. Leave it unresolved.
+  void built_by_call() {
+    if (in_query) {
+      return;
+    }
+    if (path.empty()) {
+      resolvable = false;
+      return;
+    }
+    unknown(true);
   }
   // The enclosing function's first parameter interpolated into the URL. After a
   // slash it fills a segment like any other value (`/projects/${projectId}/publish`
@@ -936,6 +946,13 @@ struct UrlTemplate {
     }
     if (!path.empty() && path.back() == '/') {
       path += "{}";
+      return;
+    }
+    if (path.empty() && dropped_host) {
+      // `${API_BASE}${path}` with a base this file does not define: the base may
+      // hold a path (`/api/v1`) we cannot see, so the prefix is unknowable. An
+      // in-file `process.env` host before the tail is fine: the prefix is empty.
+      resolvable = false;
       return;
     }
     tail = true;
@@ -1049,6 +1066,10 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
   }
   if (type == "member_expression" && node_text(expression, context.source).starts_with("process.env.")) {
     url.unknown(false);
+    return;
+  }
+  if (type == "call_expression") {
+    url.built_by_call();
     return;
   }
   url.unknown(true);
