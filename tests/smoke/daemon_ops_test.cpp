@@ -620,6 +620,29 @@ int main() {
     if (!fmt_app.contains("app.ts") || fmt_app.contains("endpoint:GET /health")) {
       return 1;
     }
+    // A function imported by name from another file makes the importer a
+    // dependent, and the app mounting the importer too, but serves no routes:
+    // the routes it affects are reached through calls into their handlers.
+    add("lib.ts", "file");
+    add("util", "function");
+    edge("lib.ts", "util", "contains");
+    edge("handler.ts", "util", "imports");
+    const std::vector<std::string> util{"util"};
+    const auto from_util = cgraph::trace_impact(seam, util, "dependents", "", 8);
+    if (!from_util.contains("handler.ts") || !from_util.contains("app.ts")) {
+      return 1;
+    }
+    for (const char* route : {"endpoint:GET /t", "endpoint:GET /t2", "endpoint:GET /health"}) {
+      if (from_util.contains(route)) {
+        return 1;
+      }
+    }
+    // A changed endpoint reaches its file, but not the file's other routes.
+    const std::vector<std::string> route_t{"endpoint:GET /t"};
+    const auto from_route = cgraph::trace_impact(seam, route_t, "dependents", "", 8);
+    if (!from_route.contains("handler.ts") || from_route.contains("endpoint:GET /t2")) {
+      return 1;
+    }
     // A changed file seed serves its endpoints directly.
     const std::vector<std::string> handler_file{"handler.ts"};
     const auto from_file = cgraph::trace_impact(seam, handler_file, "dependents", "", 1);
@@ -628,10 +651,20 @@ int main() {
     }
     // The file serves its endpoints once anything else reaches it, even after the
     // function climb already expanded it, whichever seed comes first.
+    // Its witness is the path that caused it: the endpoint, then each step back,
+    // leads to the table, not through the function's climb to its file.
     for (const auto& seeds : {std::vector<std::string>{"helper", "sql_table:t"},
                               std::vector<std::string>{"sql_table:t", "helper"}}) {
       const auto both = cgraph::trace_impact(seam, seeds, "dependents", "", 8);
-      if (!both.contains("endpoint:GET /t") || both.at("endpoint:GET /t").depth != 3) {
+      if (!both.contains("endpoint:GET /t") || both.at("endpoint:GET /t").depth != 3 ||
+          both.at("endpoint:GET /t").changed_id != "sql_table:t") {
+        return 1;
+      }
+      std::vector<std::string> chain;
+      for (std::string cursor = "endpoint:GET /t"; !cursor.empty(); cursor = both.at(cursor).predecessor) {
+        chain.push_back(cursor);
+      }
+      if (chain != std::vector<std::string>{"endpoint:GET /t", "handler.ts", "model", "sql_table:t"}) {
         return 1;
       }
     }

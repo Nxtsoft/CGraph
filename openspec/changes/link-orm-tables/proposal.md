@@ -9,7 +9,7 @@ The area 7 measurement (`~/.agents/artifacts/2026-09-25/cgraph-context-engine-re
 ## What Changes
 
 - The JavaScript/TypeScript extractor records a `maps_table` fact for each module-level `pgTable` / `mysqlTable` / `sqliteTable` declaration with a string-literal name. `resolve_contracts` turns it into a `maps_table` edge from the model variable to the migration's `sql_table` node, when one exists.
-- `trace_impact`, which serves `impact` and change-context's dependents, treats an endpoint as a dependent of the file that contains it, when the file is reached by a strong path: a seed, an import, or a climb from a module-level value such as a model. A climb from a function or an endpoint to its own file makes the rest of that path weak, and weakly reached files are reported without their routes, so impact from an ordinary function in a route file is unchanged. It reports a `service` node it reaches but does not walk through it, unless the service is the seed.
+- `trace_impact`, which serves `impact` and change-context's dependents, treats an endpoint as a dependent of the file that contains it, when the file is reached by a strong path from a seed through values, types and files (a table, its model, the files importing it). A step out of a function, class or endpoint makes the rest of the path weak, and weakly reached files are reported without their routes, so impact from an ordinary function, imported or not, is unchanged. The nodes on the strong path to a served endpoint report that path, so change-context's witness names the real cause. It reports a `service` node it reaches but does not walk through it, unless the service is the seed.
 
 ## Measured on turing-api
 

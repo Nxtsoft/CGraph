@@ -180,9 +180,10 @@ pgTable('competitors', …)`, likewise `mysqlTable` and `sqliteTable`) gets a `m
 table of that name. A dependents walk that reaches a file through an import, or from a
 module-level value it declares, also reaches the endpoints the file serves, so `graph_impact` on
 `sql_table_competitors` goes table, model, the services importing it, their route files, and the
-routes. Climbing from a function to its own file does not, and neither does anything reached only
-through that climb (such as the app file that mounts the route file): the function reaches the
-routes it affects through the calls into their handlers, not every route nearby. A seam `service` node is listed when reached but not walked
+routes. A path through a function, class or endpoint does not serve routes, whether it climbs to
+the function's own file or follows an import of the function (and on to the app file that mounts
+the route file): a changed function reaches the routes it affects through the calls into their
+handlers, not every route nearby. A seam `service` node is listed when reached but not walked
 through, so one consumer edge into it does not pull in every endpoint of that service.
 
 The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/publish\`, { method:

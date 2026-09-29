@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Impact reaches a file's endpoints and does not walk through service hubs
-A `dependents` walk (the `impact` op, and change-context's transitive dependents) SHALL treat an `endpoint` node as a dependent of the file that `contains` it, reached `via` `contains`, when the file is reached by a strong path. A seed starts a strong path. A path turns weak where it climbs `contains` from anything other than a module-level `variable` the file declares (a function or an endpoint reaching its own file), and every step after a weak one is weak. A weakly reached file SHALL still be reported, but SHALL NOT serve its endpoints: a changed function reaches the endpoints it affects through resolved calls into their handlers. A node reached weakly SHALL be expanded again when a strong path reaches it, so the result does not depend on seed order, and each node SHALL be reported once, at its shallowest depth. Other things a file contains SHALL NOT become its dependents. A `service` node reached during any walk SHALL be reported but not expanded, so that one edge into a seam's service hub does not reach every endpoint and consumer of that service. A `service` node given as the seed SHALL still be expanded.
+A `dependents` walk (the `impact` op, and change-context's transitive dependents) SHALL treat an `endpoint` node as a dependent of the file that `contains` it, reached `via` `contains`, when the file is reached by a strong path. A seed starts a strong path. A path turns weak at any step out of a `function`, `class` or `endpoint` node, and every step after a weak one is weak: a changed function or class reaches the endpoints it affects through resolved calls into their handlers. A weakly reached node SHALL still be reported, but a weakly reached file SHALL NOT serve its endpoints. A node reached weakly SHALL be expanded again when a strong path reaches it, so the result does not depend on seed order. Each node SHALL be reported once, at its shallowest depth, except that every node on the strong path to a served endpoint SHALL report that path (depth, `via`, predecessor and changed seed), so the endpoint's witness names its real cause. Other things a file contains SHALL NOT become its dependents. A `service` node reached during any walk SHALL be reported but not expanded, so that one edge into a seam's service hub does not reach every endpoint and consumer of that service. A `service` node given as the seed SHALL still be expanded.
 
 #### Scenario: From a table to the endpoint that uses it
 - **GIVEN** `model -maps_table-> sql_table:t`, `handler.ts -imports-> model` and `handler.ts -contains-> endpoint:GET /t`
@@ -18,9 +18,14 @@ A `dependents` walk (the `impact` op, and change-context's transitive dependents
 - **WHEN** `impact` runs from `fmt`
 - **THEN** `app.ts` is reported and `endpoint:GET /health` is not
 
-#### Scenario: Seed order does not change which endpoints are served
+#### Scenario: Seed order does not change which endpoints are served, or why
 - **GIVEN** the graphs above, with seeds `helper` (a function in `handler.ts`) and `sql_table:t`, in either order
-- **THEN** `endpoint:GET /t` is reached at depth 3
+- **THEN** `endpoint:GET /t` is reached at depth 3 with changed seed `sql_table:t`, and its predecessors run `handler.ts`, `model`, `sql_table:t`
+
+#### Scenario: An imported function serves no routes
+- **GIVEN** `util` declared in `lib.ts` and `handler.ts -imports-> util`
+- **WHEN** `impact` runs from `util`
+- **THEN** `handler.ts` and `app.ts` are reported and none of their endpoints are
 
 #### Scenario: A service hub is not a bridge
 - **GIVEN** `endpoint:GET /t` and `endpoint:GET /other` both `SERVED_BY` `service:api`
