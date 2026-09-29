@@ -30,6 +30,8 @@ constexpr std::string_view kAliasRelation = "aliases";
 constexpr std::string_view kHttpCallRelation = "http_call";
 constexpr std::string_view kHttpWrapperRelation = "http_wrapper";
 constexpr std::string_view kUrlConstRelation = "url_const";
+constexpr std::string_view kMapsTableRelation = "maps_table";
+constexpr std::string_view kSqlTableKind = "sql_table";
 constexpr std::string_view kHandledBy = "handled_by";
 constexpr std::string_view kConsumes = "CONSUMES";
 constexpr std::string_view kRoutePrefix = "route_prefix";
@@ -508,6 +510,20 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
     if (add_edge(relation.source_id, id, kConsumes, "", {})) {
       ++tally.consumes;
+    }
+  }
+
+  // 7. ORM tables: a model declaration (`pgTable('competitors', ...)`) maps the
+  //    SQL table a migration creates, so impact from the table reaches the model
+  //    and, through its importers, the handlers. A name no migration creates
+  //    (the schema lives outside the repo) links nothing.
+  for (const auto& relation : raw_relations) {
+    if (relation.relation != kMapsTableRelation || !by_id.contains(relation.source_id)) {
+      continue;
+    }
+    const auto table = by_id.find(make_id("sql_table:" + relation.target_label));
+    if (table != by_id.end() && table->second->kind == kSqlTableKind) {
+      add_edge(relation.source_id, table->first, kMapsTableRelation, "", {});
     }
   }
 

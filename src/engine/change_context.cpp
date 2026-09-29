@@ -496,14 +496,11 @@ Json change_context(const Json& parameters) {
       item.update({{"snapshot", side}, {"depth", reach.depth}, {"via", reach.via},
                    {"changed_id", reach.changed_id}});
       auto witness = Json::array();
-      auto cursor = id;
-      while (reached.at(cursor).depth > 0) {
-        const auto& step = reached.at(cursor);
-        if (!by_id.contains(step.edge.source) || !by_id.contains(step.edge.target)) break;
-        witness.push_back({{"snapshot", side}, {"source", brief(step.edge.source)},
-            {"target", brief(step.edge.target)}, {"relation", step.edge.relation},
-            {"confidence", confidence_to_string(step.edge.confidence)}});
-        cursor = step.predecessor;
+      for (const auto& step : reach.witness) {
+        if (!by_id.contains(step.source) || !by_id.contains(step.target)) break;
+        witness.push_back({{"snapshot", side}, {"source", brief(step.source)},
+            {"target", brief(step.target)}, {"relation", step.relation},
+            {"confidence", confidence_to_string(step.confidence)}});
       }
       item["witness"] = std::move(witness);
       result["impacts"].push_back(std::move(item));

@@ -69,7 +69,8 @@ grep/read calls that burn context.
   or lower `gather_theta` to tighten or loosen the relevance threshold.
 - `graph_impact` with `dependents` is the safety check before changing a
   signature or deleting a symbol: it lists everything that would be affected,
-  by depth.
+  by depth. Seeded at a migration table (`sql_table_<name>`) it reaches the
+  ORM model, the code using it, and the endpoints served from those files.
 - `graph_report` answers architecture questions before any symbol-level call:
   `format:"mermaid"` returns a `graph LR` diagram in `rendered` (paste it as-is
   in a reply), `format:"json"` returns `modules` / `edges` / `layers` / `cycles`.

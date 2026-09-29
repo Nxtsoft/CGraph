@@ -16,6 +16,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 int main() {
   namespace fs = std::filesystem;
@@ -519,6 +520,193 @@ int main() {
       state, cgraph::make_request("impact", {{"id", "AlphaLeef"}}));
   if (impact_miss["result"].value("found", true) || impact_miss["result"]["suggestions"].empty()) {
     return 1;
+  }
+
+  // Data seam: table <-maps_table- model <-imports- handler file -contains-> its
+  // endpoint. A dependents walk from the table reaches the endpoint through the
+  // handler file. A seam `service` hub is reported but not walked through: the
+  // endpoint is SERVED_BY service:api, and walking back out of the hub would
+  // reach the unrelated endpoint too.
+  {
+    cgraph::GraphSnapshot seam;
+    const auto add = [&](std::string id, std::string kind) {
+      seam.nodes.push_back(cgraph::Node{.id = id, .label = id, .kind = std::move(kind)});
+    };
+    add("sql_table:t", "sql_table");
+    add("model", "variable");
+    add("handler.ts", "file");
+    add("endpoint:GET /t", "endpoint");
+    add("endpoint:GET /other", "endpoint");
+    add("other.ts", "file");
+    add("service:api", "service");
+    add("helper", "function");
+    add("schema.ts", "file");
+    add("barrel.ts", "file");
+    add("unrelated.ts", "file");
+    const auto edge = [&](std::string from, std::string to, std::string relation) {
+      seam.edges.push_back(cgraph::Edge{.source = std::move(from), .target = std::move(to), .relation = std::move(relation)});
+    };
+    edge("model", "sql_table:t", "maps_table");
+    edge("handler.ts", "model", "imports");
+    edge("handler.ts", "endpoint:GET /t", "contains");
+    edge("handler.ts", "helper", "contains");
+    edge("other.ts", "endpoint:GET /other", "contains");
+    edge("endpoint:GET /t", "service:api", "SERVED_BY");
+    edge("endpoint:GET /other", "service:api", "SERVED_BY");
+    edge("service:api", "endpoint:GET /t", "CONSUMES");
+    // The model's own file is re-exported by a barrel another file imports.
+    edge("schema.ts", "model", "contains");
+    edge("barrel.ts", "schema.ts", "re_exports");
+    edge("unrelated.ts", "barrel.ts", "imports_from");
+    const std::vector<std::string> table{"sql_table:t"};
+    const auto reached = cgraph::trace_impact(seam, table, "dependents", "", 8);
+    const auto at = [&](const std::string& id) { return reached.contains(id) ? reached.at(id).depth : -1; };
+    // Every reported node's witness is its own path: `depth` edges, each joining
+    // the node before it to the next, ending at the seed named by changed_id.
+    const auto consistent = [](const std::unordered_map<std::string, cgraph::ImpactReach>& walk) {
+      for (const auto& [id, reach] : walk) {
+        if (reach.witness.size() != static_cast<std::size_t>(reach.depth)) return false;
+        std::string cursor = id;
+        for (const auto& step : reach.witness) {
+          if (step.source != cursor && step.target != cursor) return false;
+          cursor = step.source == cursor ? step.target : step.source;
+        }
+        if (cursor != reach.changed_id) return false;
+      }
+      return true;
+    };
+    if (!consistent(reached)) {
+      return 1;
+    }
+    if (at("model") != 1 || at("handler.ts") != 2 || at("endpoint:GET /t") != 3 ||
+        reached.at("endpoint:GET /t").via != "contains") {
+      return 1;  // the handler file does not lead on to the endpoint it serves
+    }
+    if (reached.contains("helper")) {
+      return 1;  // only endpoints are served by their file; other contents are not dependents
+    }
+    if (at("service:api") != 4 || reached.contains("endpoint:GET /other") || reached.contains("other.ts")) {
+      return 1;  // the service hub was walked through
+    }
+    // The model's own file is walked through as before: an importer of the
+    // barrel may call the model through a module attribute the graph never
+    // resolved, so it stays a dependent.
+    if (at("schema.ts") != 2 || at("barrel.ts") != 3 || at("unrelated.ts") != 4) {
+      return 1;
+    }
+    // A model declared in its own route file reaches that file's endpoint.
+    add("sql_table:w", "sql_table");
+    add("routes.ts", "file");
+    add("widgets", "variable");
+    add("endpoint:GET /w", "endpoint");
+    edge("widgets", "sql_table:w", "maps_table");
+    edge("routes.ts", "widgets", "contains");
+    edge("routes.ts", "endpoint:GET /w", "contains");
+    const std::vector<std::string> widgets{"sql_table:w"};
+    const auto from_w = cgraph::trace_impact(seam, widgets, "dependents", "", 8);
+    if (!from_w.contains("endpoint:GET /w") || from_w.at("endpoint:GET /w").depth != 3) {
+      return 1;
+    }
+    // A function in a route file reaches its file, but not the file's endpoints:
+    // the endpoints it affects are reached through calls into their handlers.
+    const std::vector<std::string> helper{"helper"};
+    const auto from_helper = cgraph::trace_impact(seam, helper, "dependents", "", 8);
+    if (!from_helper.contains("handler.ts") || from_helper.contains("endpoint:GET /t")) {
+      return 1;
+    }
+    // Nor through the handler's endpoint climbing back to the same file.
+    add("fmt", "function");
+    add("get_t", "function");
+    edge("handler.ts", "fmt", "contains");
+    edge("handler.ts", "get_t", "contains");
+    edge("get_t", "fmt", "CALLS");
+    edge("endpoint:GET /t", "get_t", "handled_by");
+    edge("handler.ts", "endpoint:GET /t2", "contains");
+    add("endpoint:GET /t2", "endpoint");
+    const std::vector<std::string> fmt{"fmt"};
+    const auto from_fmt = cgraph::trace_impact(seam, fmt, "dependents", "", 8);
+    if (!from_fmt.contains("endpoint:GET /t") || from_fmt.contains("endpoint:GET /t2")) {
+      return 1;
+    }
+    // An app file mounting the route file is still a dependent, as before, but
+    // its own inline routes are not: it was reached only through the container.
+    add("app.ts", "file");
+    add("endpoint:GET /health", "endpoint");
+    edge("app.ts", "handler.ts", "imports_from");
+    edge("app.ts", "endpoint:GET /health", "contains");
+    const auto fmt_app = cgraph::trace_impact(seam, fmt, "dependents", "", 8);
+    if (!fmt_app.contains("app.ts") || fmt_app.contains("endpoint:GET /health")) {
+      return 1;
+    }
+    // A function imported by name from another file makes the importer a
+    // dependent, and the app mounting the importer too, but serves no routes:
+    // the routes it affects are reached through calls into their handlers.
+    add("lib.ts", "file");
+    add("util", "function");
+    edge("lib.ts", "util", "contains");
+    edge("handler.ts", "util", "imports");
+    const std::vector<std::string> util{"util"};
+    const auto from_util = cgraph::trace_impact(seam, util, "dependents", "", 8);
+    if (!from_util.contains("handler.ts") || !from_util.contains("app.ts")) {
+      return 1;
+    }
+    for (const char* route : {"endpoint:GET /t", "endpoint:GET /t2", "endpoint:GET /health"}) {
+      if (from_util.contains(route)) {
+        return 1;
+      }
+    }
+    // A changed endpoint reaches its file, but not the file's other routes.
+    const std::vector<std::string> route_t{"endpoint:GET /t"};
+    const auto from_route = cgraph::trace_impact(seam, route_t, "dependents", "", 8);
+    if (!from_route.contains("handler.ts") || from_route.contains("endpoint:GET /t2")) {
+      return 1;
+    }
+    // A file mounting the route file, reached through the route file's weak
+    // climb and its strong import of a model, reports one consistent path.
+    add("b.ts", "file");
+    edge("b.ts", "handler.ts", "imports_from");
+    for (const auto& seeds : {std::vector<std::string>{"helper", "sql_table:t"},
+                              std::vector<std::string>{"sql_table:t", "helper"},
+                              std::vector<std::string>{"fmt", "util", "sql_table:t", "endpoint:GET /t"}}) {
+      if (!consistent(cgraph::trace_impact(seam, seeds, "dependents", "", 8))) {
+        return 1;
+      }
+    }
+    // Reached at the same depth by a function's climb and by an import of the
+    // model, the file is reported on the model's path.
+    const std::vector<std::string> tie{"helper", "model"};
+    const auto from_tie = cgraph::trace_impact(seam, tie, "dependents", "", 8);
+    if (from_tie.at("handler.ts").depth != 1 || from_tie.at("handler.ts").changed_id != "model") {
+      return 1;
+    }
+    // A changed file seed serves its endpoints directly.
+    const std::vector<std::string> handler_file{"handler.ts"};
+    const auto from_file = cgraph::trace_impact(seam, handler_file, "dependents", "", 1);
+    if (!from_file.contains("endpoint:GET /t") || from_file.at("endpoint:GET /t").depth != 1) {
+      return 1;
+    }
+    // The file serves its endpoints once anything else reaches it, even after the
+    // function climb already expanded it, whichever seed comes first.
+    // Its witness is the path that caused it: the endpoint, then each step back,
+    // leads to the table, not through the function's climb to its file.
+    for (const auto& seeds : {std::vector<std::string>{"helper", "sql_table:t"},
+                              std::vector<std::string>{"sql_table:t", "helper"}}) {
+      const auto both = cgraph::trace_impact(seam, seeds, "dependents", "", 8);
+      if (!both.contains("endpoint:GET /t") || both.at("endpoint:GET /t").depth != 3 ||
+          both.at("endpoint:GET /t").changed_id != "sql_table:t") {
+        return 1;
+      }
+      std::vector<std::string> relations;
+      for (const auto& step : both.at("endpoint:GET /t").witness) relations.push_back(step.relation);
+      if (relations != std::vector<std::string>{"contains", "imports", "maps_table"}) {
+        return 1;
+      }
+    }
+    // A hub given as the seed is still expanded: impact of the service itself.
+    const std::vector<std::string> hub{"service:api"};
+    if (!cgraph::trace_impact(seam, hub, "dependents", "", 1).contains("endpoint:GET /other")) {
+      return 1;
+    }
   }
 
   // Endpoints resolve by label too ("Alpha" -> id "a").

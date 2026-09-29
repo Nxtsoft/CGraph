@@ -124,12 +124,15 @@ class EnrichmentRunningScope {
 
 // Canonical directional multi-source traversal. Each reached node keeps a real
 // predecessor edge and the originating changed symbol; roots have depth zero.
+// `witness` is the path that reached it, nearest edge first, back to
+// `changed_id`: exactly `depth` edges, the first being `edge`.
 struct ImpactReach {
   int depth = 0;
   std::string via;
   std::string predecessor;
   std::string changed_id;
   Edge edge;
+  std::vector<Edge> witness;
 };
 [[nodiscard]] std::unordered_map<std::string, ImpactReach> trace_impact(
     const GraphSnapshot& graph, std::span<const std::string> seeds,

@@ -2280,39 +2280,87 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
     std::string_view direction, std::string_view relation, int max_depth) {
   struct Link { std::string to; const Edge* edge; };
+  // An endpoint is served by the file that contains it: changing the handler
+  // file changes the endpoint, so a dependents walk that reaches the file goes
+  // on to its endpoints. A seam `service` node is a hub every endpoint of that
+  // service hangs off: reached, it is reported but not walked through, or one
+  // stray consumer edge floods every endpoint and every consumer.
+  std::unordered_set<std::string_view> endpoints;
+  std::unordered_set<std::string_view> hubs;
+  std::unordered_set<std::string_view> callables;
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "endpoint") endpoints.insert(node.id);
+    else if (node.kind == "service") hubs.insert(node.id);
+    else if (node.kind == "function" || node.kind == "class") callables.insert(node.id);
+  }
   std::unordered_map<std::string, std::vector<Link>> adjacency;
+  std::unordered_map<std::string, std::vector<Link>> served;  // file -> the endpoints it contains
   for (const auto& edge : graph.edges) {
     if (!relation.empty() && edge.relation != relation) continue;
     if (direction == "dependents" || direction == "both")
       adjacency[edge.target].push_back({edge.source, &edge});
     if (direction == "dependencies" || direction == "both")
       adjacency[edge.source].push_back({edge.target, &edge});
+    if (direction == "dependents" && edge.relation == "contains" && endpoints.contains(edge.target))
+      served[edge.source].push_back({edge.target, &edge});
   }
-  for (auto& [_, links] : adjacency) {
-    std::ranges::sort(links, [](const Link& a, const Link& b) {
-      return std::tie(a.to, a.edge->relation, a.edge->source, a.edge->target) <
-             std::tie(b.to, b.edge->relation, b.edge->source, b.edge->target);
-    });
-  }
-  std::unordered_map<std::string, ImpactReach> reached;
-  std::queue<std::string> frontier;
-  for (const auto& seed : seeds) {
-    if (reached.emplace(seed, ImpactReach{.changed_id = seed}).second) frontier.push(seed);
-  }
+  const auto by_target = [](const Link& a, const Link& b) {
+    return std::tie(a.to, a.edge->relation, a.edge->source, a.edge->target) <
+           std::tie(b.to, b.edge->relation, b.edge->source, b.edge->target);
+  };
+  for (auto& [_, links] : adjacency) std::ranges::sort(links, by_target);
+  for (auto& [_, links] : served) std::ranges::sort(links, by_target);
+  // Endpoints hang off the file that serves them, but not every path to a
+  // file is evidence about its routes. A changed function or class reaches the
+  // routes it affects through resolved calls into their handlers, and an
+  // endpoint is already reached, so a path turns weak once it steps out of any
+  // of them and stays weak. A strong path (from a seed through values, types
+  // and files: a SQL table, the ORM model mapping it, the files importing that
+  // model) makes a file serve its endpoints. The walk runs over (node,
+  // strength) states, so a node first reached weakly is expanded again when a
+  // strong path reaches it, whatever the seed order. Each node is reported
+  // from its shallowest state (strong on a tie) with that state's own witness,
+  // so a served endpoint's witness is the strong path that caused it.
+  const auto weakens = [&](const std::string& from) {
+    return callables.contains(from) || endpoints.contains(from);
+  };
+  std::unordered_map<std::string, ImpactReach> strong_reach;
+  std::unordered_map<std::string, ImpactReach> weak_reach;
+  std::queue<std::pair<std::string, bool>> frontier;
+  const auto visit = [&](const std::string& to, bool strong, ImpactReach reach) {
+    if (strong_reach.contains(to) || (!strong && weak_reach.contains(to))) return;
+    (strong ? strong_reach : weak_reach).emplace(to, std::move(reach));
+    frontier.push({to, strong});
+  };
+  for (const auto& seed : seeds) visit(seed, true, ImpactReach{.changed_id = seed});
   while (!frontier.empty()) {
-    const auto current = frontier.front();
+    const auto [id, strong] = frontier.front();
     frontier.pop();
-    const auto current_reach = reached.at(current);
-    if (current_reach.depth >= max_depth) continue;
-    const auto links = adjacency.find(current);
-    if (links == adjacency.end()) continue;
-    for (const auto& link : links->second) {
-      if (reached.contains(link.to)) continue;
-      reached.emplace(link.to, ImpactReach{.depth = current_reach.depth + 1,
-          .via = link.edge->relation, .predecessor = current,
-          .changed_id = current_reach.changed_id, .edge = *link.edge});
-      frontier.push(link.to);
+    const auto& from = (strong ? strong_reach : weak_reach).at(id);
+    if (from.depth >= max_depth) continue;
+    if (from.depth > 0 && hubs.contains(id)) continue;
+    const auto step = [&](const Link& link, bool to_strong) {
+      if (strong_reach.contains(link.to) || (!to_strong && weak_reach.contains(link.to))) return;
+      std::vector<Edge> witness{*link.edge};
+      witness.insert(witness.end(), from.witness.begin(), from.witness.end());
+      visit(link.to, to_strong, ImpactReach{.depth = from.depth + 1, .via = link.edge->relation,
+          .predecessor = id, .changed_id = from.changed_id, .edge = *link.edge,
+          .witness = std::move(witness)});
+    };
+    if (strong) {
+      if (const auto links = served.find(id); links != served.end()) {
+        for (const auto& link : links->second) step(link, true);
+      }
     }
+    const auto links = adjacency.find(id);
+    if (links == adjacency.end()) continue;
+    const bool onward = strong && !weakens(id);
+    for (const auto& link : links->second) step(link, onward);
+  }
+  std::unordered_map<std::string, ImpactReach> reached = std::move(weak_reach);
+  for (auto& [id, reach] : strong_reach) {
+    const auto weak = reached.find(id);
+    if (weak == reached.end() || reach.depth <= weak->second.depth) reached.insert_or_assign(id, std::move(reach));
   }
   return reached;
 }
