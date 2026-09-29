@@ -809,6 +809,97 @@ public class OrderController {
   return 0;
 }
 
+// Only methods of a concrete controller class are handlers. An interface (an
+// openapi-generator API, a Feign client that CALLS the route), an object, a
+// companion object and a top-level function mint nothing, and neither does a
+// path that is not one plain literal. Kotlin's several positional paths, a
+// non-HTTP *Mapping placed first, arrayOf(...), a qualified annotation name and
+// a Java record all still mint.
+int test_spring_non_handlers() {
+  const auto built = build({
+      {"src/main/kotlin/Clients.kt", R"kt(
+@FeignClient(name = "users")
+interface UserClient {
+    @GetMapping("/internal/users/{id}")
+    fun fetchUser(@PathVariable id: String): User
+}
+
+interface ProductApi {
+    @GetMapping("/products")
+    fun products(): List<Product>
+}
+
+@GetMapping("/toplevel")
+fun topLevel() = "x"
+
+@RestController
+@RequestMapping("/v")
+class ShapesController {
+    @GetMapping("/one", "/two")
+    fun many() = "m"
+
+    @MessageMapping("/ws")
+    @GetMapping("/after-message")
+    fun afterMessage() = "a"
+
+    @GetMapping(value = arrayOf("/arr"))
+    fun arr() = "r"
+
+    @org.springframework.web.bind.annotation.PostMapping("/fq")
+    fun fq() = "f"
+
+    @GetMapping("/a" + "/b")
+    fun concat() = "c"
+
+    @GetMapping("""/raw""")
+    fun raw() = "w"
+
+    companion object {
+        @GetMapping("/companion")
+        fun companionRoute() = "c"
+    }
+
+    object Nested {
+        @GetMapping("/nested")
+        fun nestedRoute() = "n"
+    }
+}
+)kt"},
+      {"src/main/java/OrdersApi.java", R"java(
+@RequestMapping("/api/v2")
+public interface OrdersApi {
+    @GetMapping("/orders")
+    String orders();
+}
+)java"},
+      {"src/main/java/StatusController.java", R"java(
+@RestController
+@RequestMapping("/status")
+public record StatusController(String name) {
+    @GetMapping("/ping")
+    public String ping() { return "pong"; }
+}
+)java"},
+  });
+  const auto& graph = built.graph;
+  const char* expected[] = {"GET /v/one", "GET /v/two", "GET /v/after-message", "GET /v/arr", "POST /v/fq", "GET /status/ping"};
+  for (const auto* label : expected) {
+    if (endpoint(graph, label) == nullptr) {
+      for (const auto& node : graph.nodes) {
+        if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << '\n';
+      }
+      return fail(std::string("missing Spring endpoint ") + label);
+    }
+  }
+  if (endpoints(graph) != std::size(expected)) {
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << '\n';
+    }
+    return fail("interfaces, Feign clients, objects, top-level functions and non-literal paths mint no endpoint");
+  }
+  return 0;
+}
+
 int main() {
   int failures = 0;
   failures += test_join_route_path();
@@ -825,5 +916,6 @@ int main() {
   failures += test_mount_cycle_terminates();
   failures += test_no_routes_no_change();
   failures += test_spring_mappings();
+  failures += test_spring_non_handlers();
   return failures == 0 ? 0 : 1;
 }

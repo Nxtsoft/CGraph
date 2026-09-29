@@ -377,8 +377,11 @@ struct SpringAnnotation {
   }
   std::vector<std::string> paths;
   for (const auto& element : split_top_level(inner)) {
+    // Exactly one plain literal: an inner quote means concatenation ("/a" + "/b")
+    // or a Kotlin raw string, and `$` a template; none has a readable path.
     if (element.size() < 2 || element.front() != '"' || element.back() != '"' ||
-        element.find('$') != std::string::npos) {
+        element.find('$') != std::string::npos ||
+        element.substr(1, element.size() - 2).find('"') != std::string::npos) {
       return std::nullopt;
     }
     paths.push_back(element.substr(1, element.size() - 2));
@@ -409,14 +412,16 @@ struct SpringMapping {
     mapping.verbs.emplace_back(verb->second);
   }
   std::optional<std::vector<std::string>> paths = std::vector<std::string>{""};
-  bool have_path = false;
+  std::vector<std::string> positional;  // Kotlin passes several paths as separate arguments
+  bool positional_readable = true;
   for (const auto& arg : annotation.args) {
     const auto equals = arg.find('=');
     const bool named = equals != std::string::npos && arg.find('"') > equals;
     if (!named) {
-      if (!have_path) {
-        paths = spring_path_literals(arg);
-        have_path = true;
+      if (const auto literals = spring_path_literals(arg)) {
+        positional.insert(positional.end(), literals->begin(), literals->end());
+      } else {
+        positional_readable = false;
       }
       continue;
     }
@@ -426,7 +431,6 @@ struct SpringMapping {
     value.remove_prefix(std::min(value.find_first_not_of(" \t"), value.size()));
     if (key == "value" || key == "path") {
       paths = spring_path_literals(value);
-      have_path = true;
     } else if (key == "method") {
       std::string_view list = value;
       if ((list.starts_with("[") && list.ends_with("]")) || (list.starts_with("{") && list.ends_with("}"))) {
@@ -440,6 +444,12 @@ struct SpringMapping {
         }
       }
     }
+  }
+  if (!positional_readable) {
+    return std::nullopt;
+  }
+  if (!positional.empty()) {
+    paths = std::move(positional);
   }
   if (!paths) {
     return std::nullopt;
@@ -469,29 +479,72 @@ struct SpringMapping {
   return annotations;
 }
 
+[[nodiscard]] bool is_spring_mapping_name(std::string_view name) {
+  return name == "GetMapping" || name == "PostMapping" || name == "PutMapping" || name == "DeleteMapping" ||
+         name == "PatchMapping" || name == "RequestMapping";
+}
+
+// Whether a Kotlin `class_declaration` is an interface: this grammar has no
+// interface node, only an `interface` keyword token in place of `class`.
+[[nodiscard]] bool has_interface_keyword(const TSNode& declaration) {
+  for (std::uint32_t i = 0; i < ts_node_child_count(declaration); ++i) {
+    if (std::string_view(ts_node_type(ts_node_child(declaration, i))) == "interface") {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Which enclosing declarations count, per language. Spring routes only methods
+// of a concrete controller class: a method whose nearest enclosing type is an
+// interface (an openapi-generator API, a Feign client that CALLS the route), an
+// object or companion object, or no type at all (a top-level function) is not a
+// handler, and minting it would record a caller as the server.
+struct SpringScopes {
+  std::span<const std::string_view> methods;     // handler candidates
+  std::span<const std::string_view> classes;     // concrete class declarations
+  std::span<const std::string_view> non_routed;  // types whose methods are never handlers
+};
+
 void spring_route_relations(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
-                            std::vector<RawRelation>& out, std::span<const std::string_view> method_types,
-                            std::span<const std::string_view> class_types) {
-  if (std::ranges::find(method_types, std::string_view(ts_node_type(node))) == method_types.end()) {
+                            std::vector<RawRelation>& out, const SpringScopes& scopes) {
+  if (std::ranges::find(scopes.methods, std::string_view(ts_node_type(node))) == scopes.methods.end()) {
     return;
   }
+  // The first Spring mapping on the method decides; other *Mapping annotations
+  // (@MessageMapping, @SubscribeMapping) are not HTTP routes and are skipped.
   std::optional<SpringMapping> method_mapping;
   for (const auto& annotation : declaration_annotations(node, context.source)) {
-    if (annotation.name.ends_with("Mapping")) {
+    if (is_spring_mapping_name(annotation.name)) {
       method_mapping = spring_mapping(annotation);
+      if (!method_mapping) {
+        return;  // a mapping whose path is not a literal: no endpoint rather than a wrong one
+      }
       break;
     }
   }
   if (!method_mapping || method_mapping->verbs.empty()) {
     return;
   }
-  // The nearest enclosing class's @RequestMapping supplies the prefix(es).
+  // The nearest enclosing type must be a concrete class; its @RequestMapping
+  // supplies the prefix(es).
   std::vector<std::string> prefixes{""};
+  bool in_class = false;
   for (auto parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
-    if (std::ranges::find(class_types, std::string_view(ts_node_type(parent))) == class_types.end()) {
+    const std::string_view type = ts_node_type(parent);
+    if (std::ranges::find(scopes.non_routed, type) != scopes.non_routed.end()) {
+      return;
+    }
+    if (std::ranges::find(scopes.classes, type) == scopes.classes.end()) {
       continue;
     }
+    if (has_interface_keyword(parent)) {
+      return;
+    }
     for (const auto& annotation : declaration_annotations(parent, context.source)) {
+      if (annotation.name == "FeignClient") {
+        return;
+      }
       if (annotation.name == "RequestMapping") {
         const auto class_mapping = spring_mapping(annotation);
         if (!class_mapping) {
@@ -500,7 +553,11 @@ void spring_route_relations(const TSNode& node, const ExtractionContext& context
         prefixes = class_mapping->paths;
       }
     }
+    in_class = true;
     break;
+  }
+  if (!in_class) {
+    return;
   }
   for (const auto& prefix : prefixes) {
     for (const auto& path : method_mapping->paths) {
@@ -521,15 +578,18 @@ void spring_route_relations(const TSNode& node, const ExtractionContext& context
 void kotlin_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
                              std::vector<RawRelation>& out) {
   static constexpr std::string_view kMethods[] = {"function_declaration"};
-  static constexpr std::string_view kClasses[] = {"class_declaration", "object_declaration"};
-  spring_route_relations(node, context, node_id, out, kMethods, kClasses);
+  static constexpr std::string_view kClasses[] = {"class_declaration"};
+  static constexpr std::string_view kNonRouted[] = {"object_declaration", "companion_object", "object_literal"};
+  spring_route_relations(node, context, node_id, out, {kMethods, kClasses, kNonRouted});
 }
 
 void java_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
                            std::vector<RawRelation>& out) {
   static constexpr std::string_view kMethods[] = {"method_declaration"};
   static constexpr std::string_view kClasses[] = {"class_declaration", "record_declaration"};
-  spring_route_relations(node, context, node_id, out, kMethods, kClasses);
+  static constexpr std::string_view kNonRouted[] = {"interface_declaration", "enum_declaration",
+                                                    "annotation_type_declaration", "object_creation_expression"};
+  spring_route_relations(node, context, node_id, out, {kMethods, kClasses, kNonRouted});
 }
 
 [[nodiscard]] LanguageConfig java_config() {

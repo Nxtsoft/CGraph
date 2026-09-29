@@ -7,6 +7,7 @@ CGraph mints endpoints from JavaScript and TypeScript route registrations and fr
 ## What Changes
 
 - The Kotlin and Java extractors gain a relation handler. For each method annotated `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping` or `@PatchMapping`, or `@RequestMapping` with a `method`, it emits one `file_route` fact per (verb, path). The path is the nearest enclosing class's `@RequestMapping` prefix joined with the method's own path. These facts reuse the absolute-path branch `resolve_contracts` already has for Next.js route files, so endpoint minting, `contains` and `handled_by` edges, and `CONSUMES` linking from clients are unchanged.
+- Only methods of a concrete class are handlers. Interfaces (openapi-generator APIs, and `@FeignClient`s, which call routes rather than serve them), objects, companion objects and top-level functions mint nothing.
 - Paths are read from string literals only, in positional, `value =` and `path =` forms, including arrays: Kotlin `[...]` or `arrayOf(...)`, Java `{...}`. A constant, a string template, or a method-level `@RequestMapping` without a `method` mints nothing, because a wrong endpoint is worse than none.
 
 ## Contract that tests verify
@@ -21,7 +22,7 @@ CGraph mints endpoints from JavaScript and TypeScript route registrations and fr
 ## Non-goals
 
 - Resolving path constants (`@GetMapping(ApiPaths.USERS)`); idp-core uses none.
-- Mappings declared on interfaces and inherited by controllers.
+- Mappings declared on interfaces and inherited by controllers. These are refused, not resolved.
 - Spring WebFlux router functions and Ktor routing DSLs.
 - Controller detection: the mapping annotation alone decides.
 
