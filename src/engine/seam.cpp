@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -229,16 +230,27 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     }
   };
 
+  // Node ids are project-relative, so two services can both own `src_db_client_ts`.
+  // Scope every service-local id by its service; contract ids are shared on
+  // purpose, since that is where a provider and its consumers meet.
+  auto shared_id = [](std::string_view id) {
+    return id.starts_with("endpoint:") || id.starts_with("service:") || id.starts_with("schema:");
+  };
+  auto scoped = [&](const std::string& service, const std::string& id) {
+    return shared_id(id) || service.empty() ? id : service + "::" + id;
+  };
+
   // 1. Service code graphs: one community per service; real service nodes are authoritative.
   for (const auto& [name, graph] : services) {
     for (const auto& node : graph.nodes) {
       Node tagged = node;
+      tagged.id = scoped(name, node.id);
       tagged.properties["community"] = name;
       tagged.properties.try_emplace("service", name);
       put(std::move(tagged), /*authoritative=*/true);
     }
     for (const auto& edge : graph.edges) {
-      add_edge(edge);
+      add_edge({.source = scoped(name, edge.source), .target = scoped(name, edge.target), .relation = edge.relation});
     }
   }
 
@@ -252,8 +264,23 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     tagged.properties["community"] = seam_community(node);
     put(std::move(tagged), /*authoritative=*/false);
   }
+  // A seam edge names a service's code by its shadow's raw id; the shadow records
+  // which service it stands for, so the edge lands on that service's scoped node.
+  std::unordered_map<std::string, std::string> shadow_service;
+  for (const auto& node : seam.nodes) {
+    if (node.kind != "code-ref") {
+      continue;
+    }
+    if (const auto it = node.properties.find("service"); it != node.properties.end()) {
+      shadow_service.emplace(node.id, it->second);
+    }
+  }
+  auto seam_end = [&](const std::string& id) {
+    const auto it = shadow_service.find(id);
+    return it == shadow_service.end() ? id : scoped(it->second, id);
+  };
   for (const auto& edge : seam.edges) {
-    add_edge(edge);
+    add_edge({.source = seam_end(edge.source), .target = seam_end(edge.target), .relation = edge.relation});
   }
 
   // 3. Fail loud: every edge endpoint must resolve to a fused node (else a service
