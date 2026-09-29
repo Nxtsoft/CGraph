@@ -14,9 +14,9 @@ The thin client SHALL re-ask a daemon whose answer carries `graph_state: "buildi
 - **THEN** the answer carries `building` naming `web` and contains no `web` node
 
 #### Scenario: A wait that runs out bounds the whole workspace request
-- **GIVEN** the same workspace with `web`'s build never released and `build_wait` of 800 ms
+- **GIVEN** the same workspace with `web`'s build never released and `build_wait` of 1.5 s
 - **WHEN** the same `impact` runs, which asks both members and then each member again for the contract it reached
-- **THEN** it returns within about one wait (under 1.5 s), carrying `building` naming `web`
+- **THEN** it returns within about one wait (under 2.4 s), carrying `building` naming `web`
 
 ## MODIFIED Requirements
 

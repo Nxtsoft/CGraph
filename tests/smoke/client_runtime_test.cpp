@@ -262,9 +262,11 @@ int main() {
     // A wait that runs out bounds the whole federated request (first pass and
     // every contract hop), not each member ask: about one wait, never several.
     const auto started = std::chrono::steady_clock::now();
-    const auto bounded = ask(800ms);
+    // 1.5 s total; a wait per ask would take at least 3 s (first pass plus one
+    // contract hop), so the 2.4 s ceiling separates the two by a wide margin.
+    const auto bounded = ask(1500ms);
     const auto elapsed = std::chrono::steady_clock::now() - started;
-    if (!names_web_building(bounded) || elapsed > 1500ms) {
+    if (!names_web_building(bounded) || elapsed > 2400ms) {
       std::cerr << "bounded wait took " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
                 << " ms: " << (bounded.response ? bounded.response->dump() : bounded.error) << '\n';
       (void)finish(false);

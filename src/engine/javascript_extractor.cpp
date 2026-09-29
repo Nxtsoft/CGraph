@@ -997,8 +997,17 @@ constexpr int kMaxUrlInlineDepth = 3;
     return false;
   }
   for (uint32_t i = 0; i < ts_node_named_child_count(arguments); ++i) {
-    const std::string_view argument_type = ts_node_type(ts_node_named_child(arguments, i));
-    if (argument_type != "string" && argument_type != "comment") {
+    const TSNode argument = ts_node_named_child(arguments, i);
+    const std::string_view argument_type = ts_node_type(argument);
+    if (argument_type == "string" || argument_type == "comment") {
+      continue;
+    }
+    // A template with no substitution (`getUrl(\`api\`)`) is a constant too.
+    bool substituted = argument_type != "template_string";
+    for (uint32_t j = 0; !substituted && j < ts_node_named_child_count(argument); ++j) {
+      substituted = std::string_view(ts_node_type(ts_node_named_child(argument, j))) == "template_substitution";
+    }
+    if (substituted) {
       return true;
     }
   }

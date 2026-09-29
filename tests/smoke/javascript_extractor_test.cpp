@@ -536,6 +536,7 @@ export async function viaMember() {
 export async function viaGetter() {
   await fetch(`${getAgentsApiUrl()}/runs/wait`, { method: 'POST' });
   await fetch(`${process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '')}/api/v1/users`);
+  await fetch(`${config.get(`apiUrl`)}/api/v1/items`);
   return fetch(`${config.get('apiUrl')}/api/v1/orders`);
 }
 )ts"});
@@ -557,6 +558,7 @@ export async function viaGetter() {
         "http_call|" + fn("viaGetter") + "|fetch|POST /runs/wait",
         "http_call|" + fn("viaGetter") + "|fetch| /api/v1/users",
         "http_call|" + fn("viaGetter") + "|fetch| /api/v1/orders",
+        "http_call|" + fn("viaGetter") + "|fetch| /api/v1/items",
     };
     if (facts != expected) {
       for (const auto& fact : facts) std::cerr << "typed/opaque consumer fact: " << fact << '\n';
