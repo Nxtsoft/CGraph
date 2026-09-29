@@ -19,6 +19,12 @@ struct ClientRequest {
   std::filesystem::path daemon_path;
   int max_connect_attempts = 8;
   std::chrono::milliseconds initial_backoff{10};
+  // How long a graph-reading op (query, path, explain, impact, context, report,
+  // recall) keeps re-asking a daemon whose graph is still building. A cold
+  // daemon answers at once from an empty graph, and an empty answer reads as
+  // "nothing depends on this". Zero returns the building answer immediately;
+  // status, update, shutdown and remember never wait.
+  std::chrono::milliseconds build_wait{30000};
 };
 
 struct ClientResult {
