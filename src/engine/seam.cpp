@@ -264,23 +264,35 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     tagged.properties["community"] = seam_community(node);
     put(std::move(tagged), /*authoritative=*/false);
   }
-  // A seam edge names a service's code by its shadow's raw id; the shadow records
-  // which service it stands for, so the edge lands on that service's scoped node.
-  std::unordered_map<std::string, std::string> shadow_service;
+  // A seam edge into a service's code carries that service, so it lands on that
+  // service's scoped node even when two services own the same raw id. An edge to
+  // a code-ref with no service came from an older seam and cannot be placed.
+  std::unordered_set<std::string> shadow_ids;
   for (const auto& node : seam.nodes) {
-    if (node.kind != "code-ref") {
-      continue;
-    }
-    if (const auto it = node.properties.find("service"); it != node.properties.end()) {
-      shadow_service.emplace(node.id, it->second);
+    if (node.kind == "code-ref") {
+      shadow_ids.insert(node.id);
     }
   }
-  auto seam_end = [&](const std::string& id) {
-    const auto it = shadow_service.find(id);
-    return it == shadow_service.end() ? id : scoped(it->second, id);
-  };
+  std::vector<std::string> unplaced;
   for (const auto& edge : seam.edges) {
-    add_edge({.source = seam_end(edge.source), .target = seam_end(edge.target), .relation = edge.relation});
+    const auto service = edge.properties.find("service");
+    if (service == edge.properties.end()) {
+      if (shadow_ids.contains(edge.source) || shadow_ids.contains(edge.target)) {
+        unplaced.push_back(edge.relation + ": " + edge.source + " -> " + edge.target);
+        continue;
+      }
+      add_edge(edge);
+      continue;
+    }
+    add_edge({.source = scoped(service->second, edge.source), .target = scoped(service->second, edge.target),
+              .relation = edge.relation});
+  }
+  if (!unplaced.empty()) {
+    result.ok = false;
+    result.errors.push_back(std::to_string(unplaced.size()) +
+                            " seam edge(s) into service code name no service (regenerate the seam with this "
+                            "version of `seam discover` or `seam generate`): " + unplaced.front());
+    return result;
   }
 
   // 3. Fail loud: every edge endpoint must resolve to a fused node (else a service
@@ -471,7 +483,7 @@ SeamResult generate_seam(const nlohmann::json& spec,
              result;
     }
     add_shadow(graph_name, *resolved);
-    edges.push_back({.source = eid, .target = resolved->id, .relation = "CONSUMED_AT"});
+    edges.push_back({.source = eid, .target = resolved->id, .relation = "CONSUMED_AT", .properties = {{"service", graph_name}}});
     result.resolution_log.push_back("CONSUMED_AT  " + method + " " + path + "  ->  " + resolved->id);
   }
 
@@ -500,7 +512,7 @@ SeamResult generate_seam(const nlohmann::json& spec,
              result;
     }
     add_shadow(graph_name, *resolved);
-    edges.push_back({.source = sid, .target = resolved->id, .relation = "MIRRORED_BY"});
+    edges.push_back({.source = sid, .target = resolved->id, .relation = "MIRRORED_BY", .properties = {{"service", graph_name}}});
     result.resolution_log.push_back("MIRRORED_BY  " + schema_name + "  ->  " + resolved->id);
   }
 
@@ -555,9 +567,15 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
     index.emplace(node.id, nodes.size());
     nodes.push_back(std::move(node));
   };
-  auto add_edge = [&](std::string source, std::string target, std::string relation) {
-    if (seen_edges.insert(source + "\x1f" + target + "\x1f" + relation).second) {
-      edges.push_back({.source = std::move(source), .target = std::move(target), .relation = std::move(relation)});
+  // An edge into a service's code carries that service: two services can own the
+  // same project-relative id, so the id alone does not say whose code it is.
+  auto add_edge = [&](std::string source, std::string target, std::string relation, const std::string& service = {}) {
+    if (seen_edges.insert(source + "\x1f" + target + "\x1f" + relation + "\x1f" + service).second) {
+      Edge edge{.source = std::move(source), .target = std::move(target), .relation = std::move(relation)};
+      if (!service.empty()) {
+        edge.properties["service"] = service;
+      }
+      edges.push_back(std::move(edge));
     }
   };
 
@@ -628,7 +646,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         documented_by[node.id].insert(name);
         if (const auto file = file_by_path.find(node.source_file); file != file_by_path.end()) {
           add_node(code_ref_shadow(name, *file->second));
-          add_edge(node.id, file->second->id, "DOCUMENTED_IN");
+          add_edge(node.id, file->second->id, "DOCUMENTED_IN", name);
         }
       }
       if (served) {
@@ -637,7 +655,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         for (const auto* edge : handled[node.id]) {
           if (const auto* handler = graph.find(edge->target)) {
             add_node(code_ref_shadow(name, *handler));
-            add_edge(node.id, handler->id, "HANDLED_BY");
+            add_edge(node.id, handler->id, "HANDLED_BY", name);
           }
         }
       }
@@ -647,7 +665,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         for (const auto* edge : consumed[node.id]) {
           if (const auto* caller = graph.find(edge->source)) {
             add_node(code_ref_shadow(name, *caller));
-            add_edge(node.id, caller->id, "CONSUMED_AT");
+            add_edge(node.id, caller->id, "CONSUMED_AT", name);
           }
         }
       }

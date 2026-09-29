@@ -1,6 +1,7 @@
 #include "cgraph/seam.hpp"
 
 #include "cgraph/daemon_ops.hpp"
+#include "cgraph/export_json.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/semantic_fragment_validation.hpp"
@@ -294,6 +295,60 @@ int test_fuse_same_relative_file() {
   return 0;
 }
 
+// Two services whose callers share a raw id (`src_api_ts`) both consume one
+// endpoint. Discover keeps both CONSUMED_AT edges, each stamped with its
+// service, and fuse lands each on its own service's node. An unstamped edge
+// into service code (an older seam) is refused, never guessed.
+int test_shared_raw_id(const fs::path& root) {
+  const auto endpoint = std::string("endpoint:GET /api/v1/x");
+  auto consumer_graph = [&](const std::string& file) {
+    return json{{"nodes",
+                 {{{"id", "src_api_ts"}, {"label", "src/api.ts"}, {"type", "file"}, {"source_file", file},
+                   {"source_location", {{"start_line", 1}, {"end_line", 9}}}},
+                  {{"id", endpoint}, {"label", "GET /api/v1/x"}, {"type", "endpoint"},
+                   {"properties", {{"method", "GET"}, {"path", "/api/v1/x"}, {"served", "false"}}}}}},
+                {"links", {{{"source", "src_api_ts"}, {"target", endpoint}, {"relation", "CONSUMES"}}}}};
+  };
+  const auto web_graph = root / "shared-web.json";
+  const auto worker_graph = root / "shared-worker.json";
+  write_json(web_graph, consumer_graph("web/src/api.ts"));
+  write_json(worker_graph, consumer_graph("worker/src/api.ts"));
+  const auto res = cgraph::discover_seam({{"web", web_graph}, {"worker", worker_graph}});
+  int stamped = 0;
+  for (const auto& edge : res.fragment.edges) {
+    if (edge.relation == "CONSUMED_AT" && edge.source == endpoint && edge.target == "src_api_ts") {
+      const auto service = edge.properties.find("service");
+      stamped += service != edge.properties.end() && (service->second == "web" || service->second == "worker") ? 1 : 0;
+    }
+  }
+  if (!res.ok || stamped != 2) {
+    std::cerr << "discover: expected two service-stamped CONSUMED_AT edges, got " << stamped << "\n";
+    return 1;
+  }
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const auto fused = cgraph::fuse_seam(res.fragment, {{"web", snapshot(web_graph)}, {"worker", snapshot(worker_graph)}});
+  if (!fused.ok || !has_snapshot_edge(fused.graph, endpoint, "web::src_api_ts", "CONSUMED_AT") ||
+      !has_snapshot_edge(fused.graph, endpoint, "worker::src_api_ts", "CONSUMED_AT")) {
+    std::cerr << "fuse: a shared raw id did not land on each service's own node\n";
+    return 1;
+  }
+  cgraph::Fragment old_seam = res.fragment;
+  for (auto& edge : old_seam.edges) {
+    edge.properties.erase("service");
+  }
+  const auto refused = cgraph::fuse_seam(old_seam, {{"web", snapshot(web_graph)}, {"worker", snapshot(worker_graph)}});
+  if (refused.ok || refused.errors.empty() || !refused.graph.nodes.empty()) {
+    std::cerr << "fuse: an unstamped edge into service code was placed instead of refused\n";
+    return 1;
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-seam-test";
   fs::remove_all(root);
@@ -521,6 +576,9 @@ int main() {
     return 1;
   }
   if (test_fuse_same_relative_file() != 0) {
+    return 1;
+  }
+  if (test_shared_raw_id(root) != 0) {
     return 1;
   }
 

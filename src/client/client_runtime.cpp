@@ -69,7 +69,8 @@ std::chrono::milliseconds backoff_for(const ClientRequest& request, int attempt)
 }
 
 // Re-ask a daemon that answered from a graph it is still building, until the
-// build publishes or `build_wait` runs out. On timeout the last answer is kept,
+// build publishes or `build_wait` runs out (a workspace request shares one
+// `build_wait` across all its member asks). On timeout the last answer is kept,
 // with its `graph_state: building` marker, so the caller still sees why.
 void settle_building_answer(const ClientRequest& request, const ClientRuntimeHooks& hooks,
                             const DaemonIdentity& identity, const nlohmann::json& frame, ClientResult& result) {
@@ -190,12 +191,18 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
     const auto workspace = load_workspace(request.project_root);
     std::size_t spawned = 0;
     int attempts = 0;
+    // One build wait for the whole federated request: members and contract hops
+    // are asked in turn, so each ask gets what is left, never a fresh budget.
+    const auto build_deadline = std::chrono::steady_clock::now() + request.build_wait;
     const RepoAsk ask = [&](const WorkspaceRepo& repo, const std::string& op, const nlohmann::json& params,
                             std::string& error) -> std::optional<nlohmann::json> {
       ClientRequest forwarded = request;
       forwarded.project_root = repo.root;
       forwarded.operation = op;
       forwarded.params = params;
+      forwarded.build_wait = std::max(std::chrono::milliseconds(0),
+                                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          build_deadline - std::chrono::steady_clock::now()));
       auto answer = send_thin_client_request(forwarded, hooks);
       spawned += answer.spawned ? 1 : 0;
       attempts += answer.connect_attempts;

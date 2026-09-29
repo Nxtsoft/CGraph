@@ -96,9 +96,9 @@ struct RepoAnswer {
 }
 
 // Repos that answered from a graph they are still building. A cold daemon
-// replies immediately with an empty graph rather than blocking, so without this
-// a federated answer taken seconds after `workspace init` would silently be
-// missing a whole repository's witnesses.
+// replies immediately with an empty graph; the thin client waits (one
+// `build_wait` for the whole federated request) and a repo still building when
+// that runs out is named here, so the answer never silently misses its witnesses.
 [[nodiscard]] nlohmann::json building_of(const std::vector<RepoAnswer>& answers) {
   auto list = nlohmann::json::array();
   for (const auto& answer : answers) {

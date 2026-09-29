@@ -220,8 +220,8 @@ survive daemon restart, incremental edits, and full rescans — the sidecars und
 - The `cgraph` MCP server must be registered (it auto-spawns a per-project daemon
   keyed to the project root). The first tool call in a project triggers a
   one-time graph build (seconds), then queries are warm (~10ms).
-- Graph reads wait (up to 30 seconds) for that first build, including every repo
-  of a workspace. If a result still carries `"graph_state": "building"` (or a
+- Graph reads wait up to 30 seconds for that first build (for a workspace, 30
+  seconds for the whole request). If a result still carries `"graph_state": "building"` (or a
   workspace answer lists `building`), an empty result means "not built yet",
   not "no match": retry, or poll `graph_status` until `build_state` is `"ready"`.
 - The daemon watches the project tree (`graph_status` reports `watching`): file
