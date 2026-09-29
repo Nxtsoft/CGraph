@@ -3,6 +3,7 @@
 #include "cgraph/configured_extractors.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/javascript_extractor.hpp"
+#include "cgraph/non_grammar_extractors.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <iostream>
@@ -31,7 +32,8 @@ Built build(const std::vector<std::pair<std::string, std::string>>& files) {
   std::vector<cgraph::RawRelation> relations;
   for (const auto& [path, source] : files) {
     const cgraph::ExtractionContext context{.source_file = path, .relative_path = path, .source = source};
-    const auto result = path.ends_with(".kt")     ? *cgraph::extract_configured_language(cgraph::DetectedLanguage::Kotlin, context)
+    const auto result = path.ends_with(".sql")    ? *cgraph::extract_non_grammar_language(cgraph::DetectedLanguage::Sql, context)
+                        : path.ends_with(".kt")   ? *cgraph::extract_configured_language(cgraph::DetectedLanguage::Kotlin, context)
                         : path.ends_with(".java") ? *cgraph::extract_configured_language(cgraph::DetectedLanguage::Java, context)
                         : path.ends_with(".js")   ? cgraph::extract_javascript(context)
                                                   : cgraph::extract_typescript(context);
@@ -919,6 +921,46 @@ public record StatusController(String name) {
   return 0;
 }
 
+// A Drizzle model maps the table its migration creates, so impact from the
+// table reaches the model. Only a string-literal name on pgTable / mysqlTable /
+// sqliteTable counts, and a name no migration creates links nothing.
+int test_orm_table_links() {
+  const auto built = build({
+      {"src/db/migrations/0001_init.sql", R"sql(
+CREATE TABLE "competitors" ("id" uuid PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS "User_Library_Favorites" ("id" uuid PRIMARY KEY);
+CREATE TABLE "sessions" ("id" uuid PRIMARY KEY);
+)sql"},
+      {"src/db/schema/library.ts", R"ts(
+import { pgTable, mysqlTable, uuid } from 'drizzle-orm/pg-core';
+export const competitors = pgTable('competitors', { id: uuid('id') });
+export const favorites = pgTable("User_Library_Favorites", { id: uuid('id') }) as unknown as Table;
+export const sessionsMy = mysqlTable('sessions', { id: uuid('id') });
+export const orphan = pgTable('not_migrated', { id: uuid('id') });
+const sessions = 'competitors';
+export const dynamic = pgTable(sessions, { id: uuid('id') });
+export const other = makeTable('competitors', {});
+)ts"},
+  });
+  const auto& graph = built.graph;
+  const auto var = [](std::string_view name) { return cgraph::make_id(std::string("src/db/schema/library.ts:") + std::string(name)); };
+  const std::pair<std::string_view, std::string_view> linked[] = {
+      {"competitors", "competitors"}, {"favorites", "User_Library_Favorites"}, {"sessionsMy", "sessions"}};
+  for (const auto& [model, table] : linked) {
+    if (!has_edge(graph, var(model), cgraph::make_id(std::string("sql_table:") + std::string(table)), "maps_table")) {
+      return fail(std::string("model ") + std::string(model) + " does not map table " + std::string(table));
+    }
+  }
+  std::size_t maps = 0;
+  for (const auto& edge : graph.edges) {
+    maps += edge.relation == "maps_table" ? 1 : 0;
+  }
+  if (maps != std::size(linked)) {
+    return fail("an unmigrated name, a non-literal name or a non-Drizzle call mapped a table");
+  }
+  return 0;
+}
+
 int main() {
   int failures = 0;
   failures += test_join_route_path();
@@ -936,5 +978,6 @@ int main() {
   failures += test_no_routes_no_change();
   failures += test_spring_mappings();
   failures += test_spring_non_handlers();
+  failures += test_orm_table_links();
   return failures == 0 ? 0 : 1;
 }

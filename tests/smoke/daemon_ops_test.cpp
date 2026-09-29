@@ -521,6 +521,55 @@ int main() {
     return 1;
   }
 
+  // Data seam: table <-maps_table- model <-imports- handler file -contains-> its
+  // endpoint. A dependents walk from the table reaches the endpoint through the
+  // handler file. A seam `service` hub is reported but not walked through: the
+  // endpoint is SERVED_BY service:api, and walking back out of the hub would
+  // reach the unrelated endpoint too.
+  {
+    cgraph::GraphSnapshot seam;
+    const auto add = [&](std::string id, std::string kind) {
+      seam.nodes.push_back(cgraph::Node{.id = id, .label = id, .kind = std::move(kind)});
+    };
+    add("sql_table:t", "sql_table");
+    add("model", "variable");
+    add("handler.ts", "file");
+    add("endpoint:GET /t", "endpoint");
+    add("endpoint:GET /other", "endpoint");
+    add("other.ts", "file");
+    add("service:api", "service");
+    add("helper", "function");
+    const auto edge = [&](std::string from, std::string to, std::string relation) {
+      seam.edges.push_back(cgraph::Edge{.source = std::move(from), .target = std::move(to), .relation = std::move(relation)});
+    };
+    edge("model", "sql_table:t", "maps_table");
+    edge("handler.ts", "model", "imports");
+    edge("handler.ts", "endpoint:GET /t", "contains");
+    edge("handler.ts", "helper", "contains");
+    edge("other.ts", "endpoint:GET /other", "contains");
+    edge("endpoint:GET /t", "service:api", "SERVED_BY");
+    edge("endpoint:GET /other", "service:api", "SERVED_BY");
+    edge("service:api", "endpoint:GET /t", "CONSUMES");
+    const std::vector<std::string> table{"sql_table:t"};
+    const auto reached = cgraph::trace_impact(seam, table, "dependents", "", 8);
+    const auto at = [&](const std::string& id) { return reached.contains(id) ? reached.at(id).depth : -1; };
+    if (at("model") != 1 || at("handler.ts") != 2 || at("endpoint:GET /t") != 3 ||
+        reached.at("endpoint:GET /t").via != "contains") {
+      return 1;  // the handler file does not lead on to the endpoint it serves
+    }
+    if (reached.contains("helper")) {
+      return 1;  // only endpoints are served by their file; other contents are not dependents
+    }
+    if (at("service:api") != 4 || reached.contains("endpoint:GET /other") || reached.contains("other.ts")) {
+      return 1;  // the service hub was walked through
+    }
+    // A hub given as the seed is still expanded: impact of the service itself.
+    const std::vector<std::string> hub{"service:api"};
+    if (!cgraph::trace_impact(seam, hub, "dependents", "", 1).contains("endpoint:GET /other")) {
+      return 1;
+    }
+  }
+
   // Endpoints resolve by label too ("Alpha" -> id "a").
   const auto path = cgraph::handle_daemon_request(state, cgraph::make_request("path", {{"source", "Alpha"}, {"target", "b"}}));
   if (path["result"]["path"].size() != 2) {

@@ -2280,12 +2280,25 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
     std::string_view direction, std::string_view relation, int max_depth) {
   struct Link { std::string to; const Edge* edge; };
+  // An endpoint is served by the file that contains it: changing the handler
+  // file changes the endpoint, so a dependents walk that reaches the file goes
+  // on to its endpoints. A seam `service` node is a hub every endpoint of that
+  // service hangs off: reached, it is reported but not walked through, or one
+  // stray consumer edge floods every endpoint and every consumer.
+  std::unordered_set<std::string_view> endpoints;
+  std::unordered_set<std::string_view> hubs;
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "endpoint") endpoints.insert(node.id);
+    else if (node.kind == "service") hubs.insert(node.id);
+  }
   std::unordered_map<std::string, std::vector<Link>> adjacency;
   for (const auto& edge : graph.edges) {
     if (!relation.empty() && edge.relation != relation) continue;
     if (direction == "dependents" || direction == "both")
       adjacency[edge.target].push_back({edge.source, &edge});
     if (direction == "dependencies" || direction == "both")
+      adjacency[edge.source].push_back({edge.target, &edge});
+    if (direction == "dependents" && edge.relation == "contains" && endpoints.contains(edge.target))
       adjacency[edge.source].push_back({edge.target, &edge});
   }
   for (auto& [_, links] : adjacency) {
@@ -2304,6 +2317,7 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
     frontier.pop();
     const auto current_reach = reached.at(current);
     if (current_reach.depth >= max_depth) continue;
+    if (current_reach.depth > 0 && hubs.contains(current)) continue;
     const auto links = adjacency.find(current);
     if (links == adjacency.end()) continue;
     for (const auto& link : links->second) {

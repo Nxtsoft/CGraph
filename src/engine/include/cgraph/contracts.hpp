@@ -38,6 +38,10 @@
 //                  first parameter to a fixed prefix (`apiFetch(path)` calling
 //                  fetch(`${base}${path}`)), context = "<fixed METHOD or empty>
 //                  <prefix>". Calls to it are consumers of prefix + argument.
+//   "maps_table"   source_id = a module-level ORM model variable, target_label =
+//                  the SQL table it declares (`pgTable('competitors', ...)`).
+//                  Resolves to a `maps_table` edge from the variable to the
+//                  migration's `sql_table:<name>` node when one exists.
 //
 // A chain's own prefix (`new Elysia({ prefix: '/notebooks' })`,
 // `new Hono().basePath('/v1')`) is the `route_prefix` property on its variable

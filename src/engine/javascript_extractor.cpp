@@ -742,6 +742,33 @@ void route_mount_handler(const TSNode& node, const ExtractionContext& context, s
   });
 }
 
+// The SQL table name a Drizzle table constructor declares: `competitors` for
+// `pgTable('competitors', {...})` (likewise mysqlTable / sqliteTable). Empty for
+// any other value, and for a name that is not a plain string literal.
+[[nodiscard]] std::string drizzle_table_name(const TSNode& value, std::string_view source) {
+  const TSNode call = unwrap_expression(value);
+  if (ts_node_is_null(call) || std::string_view(ts_node_type(call)) != "call_expression") {
+    return {};
+  }
+  const TSNode callee = ts_node_child_by_field_name(call, "function", 8);
+  if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "identifier") {
+    return {};
+  }
+  const auto name = node_text(callee, source);
+  if (name != "pgTable" && name != "mysqlTable" && name != "sqliteTable") {
+    return {};
+  }
+  const TSNode arguments = ts_node_child_by_field_name(call, "arguments", 9);
+  if (ts_node_is_null(arguments) || ts_node_named_child_count(arguments) == 0) {
+    return {};
+  }
+  const TSNode first = ts_node_named_child(arguments, 0);
+  if (std::string_view(ts_node_type(first)) != "string") {
+    return {};
+  }
+  return strip_string_quotes(node_text(first, source));
+}
+
 void module_const_handler(const TSNode& node, const ExtractionContext& context, Fragment& fragment, std::vector<RawRelation>& raw_relations) {
   const std::string_view type = ts_node_type(node);
   if (type != "lexical_declaration" && type != "variable_declaration") {
@@ -791,6 +818,17 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
           .source_id = id,
           .target_label = node_text(aliased, context.source),
           .relation = "aliases",
+          .source_file = context.source_file,
+      });
+    }
+    // `export const competitors = pgTable('competitors', {...})` is the ORM model
+    // of a SQL table. resolve_contracts links it to the migration's `sql_table`
+    // node, so impact from a table reaches the code that uses its model.
+    if (auto table = drizzle_table_name(value, context.source); !table.empty()) {
+      raw_relations.push_back(RawRelation{
+          .source_id = id,
+          .target_label = std::move(table),
+          .relation = "maps_table",
           .source_file = context.source_file,
       });
     }
