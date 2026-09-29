@@ -2318,6 +2318,10 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
     const auto current_reach = reached.at(current);
     if (current_reach.depth >= max_depth) continue;
     if (current_reach.depth > 0 && hubs.contains(current)) continue;
+    // A symbol's own file is reported, not walked through: the file's importers
+    // that use the symbol already reach it by name, and the rest (every
+    // importer of a barrel re-exporting the file) do not depend on it.
+    if (direction == "dependents" && current_reach.via == "contains" && current_reach.edge.source == current) continue;
     const auto links = adjacency.find(current);
     if (links == adjacency.end()) continue;
     for (const auto& link : links->second) {

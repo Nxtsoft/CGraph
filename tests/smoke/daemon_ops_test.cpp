@@ -539,6 +539,9 @@ int main() {
     add("other.ts", "file");
     add("service:api", "service");
     add("helper", "function");
+    add("schema.ts", "file");
+    add("barrel.ts", "file");
+    add("unrelated.ts", "file");
     const auto edge = [&](std::string from, std::string to, std::string relation) {
       seam.edges.push_back(cgraph::Edge{.source = std::move(from), .target = std::move(to), .relation = std::move(relation)});
     };
@@ -550,6 +553,11 @@ int main() {
     edge("endpoint:GET /t", "service:api", "SERVED_BY");
     edge("endpoint:GET /other", "service:api", "SERVED_BY");
     edge("service:api", "endpoint:GET /t", "CONSUMES");
+    // The model's own file is re-exported by a barrel that an unrelated file
+    // imports for some other name.
+    edge("schema.ts", "model", "contains");
+    edge("barrel.ts", "schema.ts", "re_exports");
+    edge("unrelated.ts", "barrel.ts", "imports_from");
     const std::vector<std::string> table{"sql_table:t"};
     const auto reached = cgraph::trace_impact(seam, table, "dependents", "", 8);
     const auto at = [&](const std::string& id) { return reached.contains(id) ? reached.at(id).depth : -1; };
@@ -562,6 +570,16 @@ int main() {
     }
     if (at("service:api") != 4 || reached.contains("endpoint:GET /other") || reached.contains("other.ts")) {
       return 1;  // the service hub was walked through
+    }
+    // Climbing from the model to the file that declares it reports the file but
+    // goes no further: its barrel's importers reach the model by name if they use it.
+    if (at("schema.ts") != 2 || reached.contains("barrel.ts") || reached.contains("unrelated.ts")) {
+      return 1;
+    }
+    // A file seed still reaches its re-exporters and their importers.
+    const std::vector<std::string> schema{"schema.ts"};
+    if (!cgraph::trace_impact(seam, schema, "dependents", "", 2).contains("unrelated.ts")) {
+      return 1;
     }
     // A hub given as the seed is still expanded: impact of the service itself.
     const std::vector<std::string> hub{"service:api"};
