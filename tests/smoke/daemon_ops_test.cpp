@@ -16,6 +16,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 int main() {
   namespace fs = std::filesystem;
@@ -560,6 +561,23 @@ int main() {
     const std::vector<std::string> table{"sql_table:t"};
     const auto reached = cgraph::trace_impact(seam, table, "dependents", "", 8);
     const auto at = [&](const std::string& id) { return reached.contains(id) ? reached.at(id).depth : -1; };
+    // Every reported node's witness is its own path: `depth` edges, each joining
+    // the node before it to the next, ending at the seed named by changed_id.
+    const auto consistent = [](const std::unordered_map<std::string, cgraph::ImpactReach>& walk) {
+      for (const auto& [id, reach] : walk) {
+        if (reach.witness.size() != static_cast<std::size_t>(reach.depth)) return false;
+        std::string cursor = id;
+        for (const auto& step : reach.witness) {
+          if (step.source != cursor && step.target != cursor) return false;
+          cursor = step.source == cursor ? step.target : step.source;
+        }
+        if (cursor != reach.changed_id) return false;
+      }
+      return true;
+    };
+    if (!consistent(reached)) {
+      return 1;
+    }
     if (at("model") != 1 || at("handler.ts") != 2 || at("endpoint:GET /t") != 3 ||
         reached.at("endpoint:GET /t").via != "contains") {
       return 1;  // the handler file does not lead on to the endpoint it serves
@@ -643,6 +661,24 @@ int main() {
     if (!from_route.contains("handler.ts") || from_route.contains("endpoint:GET /t2")) {
       return 1;
     }
+    // A file mounting the route file, reached through the route file's weak
+    // climb and its strong import of a model, reports one consistent path.
+    add("b.ts", "file");
+    edge("b.ts", "handler.ts", "imports_from");
+    for (const auto& seeds : {std::vector<std::string>{"helper", "sql_table:t"},
+                              std::vector<std::string>{"sql_table:t", "helper"},
+                              std::vector<std::string>{"fmt", "util", "sql_table:t", "endpoint:GET /t"}}) {
+      if (!consistent(cgraph::trace_impact(seam, seeds, "dependents", "", 8))) {
+        return 1;
+      }
+    }
+    // Reached at the same depth by a function's climb and by an import of the
+    // model, the file is reported on the model's path.
+    const std::vector<std::string> tie{"helper", "model"};
+    const auto from_tie = cgraph::trace_impact(seam, tie, "dependents", "", 8);
+    if (from_tie.at("handler.ts").depth != 1 || from_tie.at("handler.ts").changed_id != "model") {
+      return 1;
+    }
     // A changed file seed serves its endpoints directly.
     const std::vector<std::string> handler_file{"handler.ts"};
     const auto from_file = cgraph::trace_impact(seam, handler_file, "dependents", "", 1);
@@ -660,11 +696,9 @@ int main() {
           both.at("endpoint:GET /t").changed_id != "sql_table:t") {
         return 1;
       }
-      std::vector<std::string> chain;
-      for (std::string cursor = "endpoint:GET /t"; !cursor.empty(); cursor = both.at(cursor).predecessor) {
-        chain.push_back(cursor);
-      }
-      if (chain != std::vector<std::string>{"endpoint:GET /t", "handler.ts", "model", "sql_table:t"}) {
+      std::vector<std::string> relations;
+      for (const auto& step : both.at("endpoint:GET /t").witness) relations.push_back(step.relation);
+      if (relations != std::vector<std::string>{"contains", "imports", "maps_table"}) {
         return 1;
       }
     }

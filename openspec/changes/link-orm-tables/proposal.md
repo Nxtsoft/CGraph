@@ -9,7 +9,7 @@ The area 7 measurement (`~/.agents/artifacts/2026-09-25/cgraph-context-engine-re
 ## What Changes
 
 - The JavaScript/TypeScript extractor records a `maps_table` fact for each module-level `pgTable` / `mysqlTable` / `sqliteTable` declaration with a string-literal name. `resolve_contracts` turns it into a `maps_table` edge from the model variable to the migration's `sql_table` node, when one exists.
-- `trace_impact`, which serves `impact` and change-context's dependents, treats an endpoint as a dependent of the file that contains it, when the file is reached by a strong path from a seed through values, types and files (a table, its model, the files importing it). A step out of a function, class or endpoint makes the rest of the path weak, and weakly reached files are reported without their routes, so impact from an ordinary function, imported or not, is unchanged. The nodes on the strong path to a served endpoint report that path, so change-context's witness names the real cause. It reports a `service` node it reaches but does not walk through it, unless the service is the seed.
+- `trace_impact`, which serves `impact` and change-context's dependents, treats an endpoint as a dependent of the file that contains it, when the file is reached by a strong path from a seed through values, types and files (a table, its model, the files importing it). A step out of a function, class or endpoint makes the rest of the path weak, and weakly reached files are reported without their routes, so impact from an ordinary function, imported or not, is unchanged. Each reported node carries the witness of the state it was reported from (`ImpactReach::witness`), which change-context now prints instead of re-walking predecessors, so a witness always has `depth` edges and ends at the node's `changed_id`, and a served endpoint's witness names its real cause. It reports a `service` node it reaches but does not walk through it, unless the service is the seed.
 
 ## Measured on turing-api
 
@@ -39,6 +39,6 @@ An earlier version also stopped the walk at a symbol's own file (depth-5 precisi
 
 - `src/engine/javascript_extractor.cpp`: `drizzle_table_name` and the `maps_table` raw relation.
 - `src/engine/contracts.cpp`, `include/cgraph/contracts.hpp`: step 7 resolves `maps_table`. `src/engine/graph_builder.cpp`: `resolve_raw_relations` skips it.
-- `src/engine/daemon_ops.cpp` `trace_impact`: file-to-endpoint and the service-hub stop.
+- `src/engine/daemon_ops.cpp` `trace_impact`: file-to-endpoint on strong paths, the service-hub stop, and per-node witnesses. `include/cgraph/daemon_ops.hpp`: `ImpactReach::witness`. `src/engine/change_context.cpp`: impacts print that witness.
 - `graph.json`: one `maps_table` edge per mapped model (175 on turing-api). No node or id changes. `kIndexVersionKey` is bumped to `logic-7`.
 - Tests: `contracts_test.cpp` `test_orm_table_links`, a data-seam block in `daemon_ops_test.cpp`, and the version literal in `index_persistence_test.cpp`.

@@ -2318,22 +2318,21 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
   // and files: a SQL table, the ORM model mapping it, the files importing that
   // model) makes a file serve its endpoints. The walk runs over (node,
   // strength) states, so a node first reached weakly is expanded again when a
-  // strong path reaches it, whatever the seed order. Each node is reported at
-  // its shallowest reach, except that the nodes on the strong path to a served
-  // endpoint report that path, so the endpoint's witness is its real cause.
+  // strong path reaches it, whatever the seed order. Each node is reported
+  // from its shallowest state (strong on a tie) with that state's own witness,
+  // so a served endpoint's witness is the strong path that caused it.
   const auto weakens = [&](const std::string& from) {
     return callables.contains(from) || endpoints.contains(from);
   };
   std::unordered_map<std::string, ImpactReach> strong_reach;
   std::unordered_map<std::string, ImpactReach> weak_reach;
   std::queue<std::pair<std::string, bool>> frontier;
-  const auto visit = [&](const std::string& to, bool strong, const ImpactReach& reach) {
+  const auto visit = [&](const std::string& to, bool strong, ImpactReach reach) {
     if (strong_reach.contains(to) || (!strong && weak_reach.contains(to))) return;
-    (strong ? strong_reach : weak_reach).emplace(to, reach);
+    (strong ? strong_reach : weak_reach).emplace(to, std::move(reach));
     frontier.push({to, strong});
   };
   for (const auto& seed : seeds) visit(seed, true, ImpactReach{.changed_id = seed});
-  std::vector<std::string> served_endpoints;
   while (!frontier.empty()) {
     const auto [id, strong] = frontier.front();
     frontier.pop();
@@ -2341,15 +2340,16 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
     if (from.depth >= max_depth) continue;
     if (from.depth > 0 && hubs.contains(id)) continue;
     const auto step = [&](const Link& link, bool to_strong) {
+      if (strong_reach.contains(link.to) || (!to_strong && weak_reach.contains(link.to))) return;
+      std::vector<Edge> witness{*link.edge};
+      witness.insert(witness.end(), from.witness.begin(), from.witness.end());
       visit(link.to, to_strong, ImpactReach{.depth = from.depth + 1, .via = link.edge->relation,
-          .predecessor = id, .changed_id = from.changed_id, .edge = *link.edge});
+          .predecessor = id, .changed_id = from.changed_id, .edge = *link.edge,
+          .witness = std::move(witness)});
     };
     if (strong) {
       if (const auto links = served.find(id); links != served.end()) {
-        for (const auto& link : links->second) {
-          if (!strong_reach.contains(link.to)) served_endpoints.push_back(link.to);
-          step(link, true);
-        }
+        for (const auto& link : links->second) step(link, true);
       }
     }
     const auto links = adjacency.find(id);
@@ -2357,17 +2357,10 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
     const bool onward = strong && !weakens(id);
     for (const auto& link : links->second) step(link, onward);
   }
-  std::unordered_map<std::string, ImpactReach> reached = weak_reach;
-  for (const auto& [id, reach] : strong_reach) {
+  std::unordered_map<std::string, ImpactReach> reached = std::move(weak_reach);
+  for (auto& [id, reach] : strong_reach) {
     const auto weak = reached.find(id);
-    if (weak == reached.end() || reach.depth <= weak->second.depth) reached.insert_or_assign(id, reach);
-  }
-  for (const auto& endpoint : served_endpoints) {
-    for (auto cursor = endpoint; !cursor.empty(); ) {
-      const auto& reach = strong_reach.at(cursor);
-      reached.insert_or_assign(cursor, reach);
-      cursor = reach.predecessor;
-    }
+    if (weak == reached.end() || reach.depth <= weak->second.depth) reached.insert_or_assign(id, std::move(reach));
   }
   return reached;
 }
