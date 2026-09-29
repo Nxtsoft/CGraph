@@ -6,6 +6,8 @@
 #include "cgraph/workspace.hpp"
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -52,6 +54,38 @@ std::shared_ptr<std::mutex> spawn_lock_for(const std::string& root_hash) {
 std::chrono::milliseconds backoff_for(const ClientRequest& request, int attempt) {
   const auto multiplier = 1 << std::min(attempt, 10);
   return request.initial_backoff * multiplier;
+}
+
+[[nodiscard]] bool waits_for_build(std::string_view operation) {
+  static constexpr std::array<std::string_view, 7> kGraphReads{"query",   "path",   "explain", "impact",
+                                                               "context", "report", "recall"};
+  return std::find(kGraphReads.begin(), kGraphReads.end(), operation) != kGraphReads.end();
+}
+
+[[nodiscard]] bool still_building(const nlohmann::json& response) {
+  const auto result = response.find("result");
+  return result != response.end() && result->is_object() &&
+         result->value("graph_state", std::string{}) == "building";
+}
+
+// Re-ask a daemon that answered from a graph it is still building, until the
+// build publishes or `build_wait` runs out (a workspace request shares one
+// `build_wait` across all its member asks). On timeout the last answer is kept,
+// with its `graph_state: building` marker, so the caller still sees why.
+void settle_building_answer(const ClientRequest& request, const ClientRuntimeHooks& hooks,
+                            const DaemonIdentity& identity, const nlohmann::json& frame, ClientResult& result) {
+  if (!result.response || !waits_for_build(request.operation) || request.build_wait.count() <= 0) {
+    return;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + request.build_wait;
+  int attempt = 0;
+  while (still_building(*result.response) && std::chrono::steady_clock::now() < deadline) {
+    hooks.sleep(std::min(backoff_for(request, attempt++), std::chrono::milliseconds(250)));
+    ++result.connect_attempts;
+    if (auto response = hooks.connect(identity, frame); response.has_value()) {
+      result.response = std::move(response);
+    }
+  }
 }
 
 [[nodiscard]] std::filesystem::path current_executable_path() {
@@ -157,12 +191,18 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
     const auto workspace = load_workspace(request.project_root);
     std::size_t spawned = 0;
     int attempts = 0;
+    // One build wait for the whole federated request: members and contract hops
+    // are asked in turn, so each ask gets what is left, never a fresh budget.
+    const auto build_deadline = std::chrono::steady_clock::now() + request.build_wait;
     const RepoAsk ask = [&](const WorkspaceRepo& repo, const std::string& op, const nlohmann::json& params,
                             std::string& error) -> std::optional<nlohmann::json> {
       ClientRequest forwarded = request;
       forwarded.project_root = repo.root;
       forwarded.operation = op;
       forwarded.params = params;
+      forwarded.build_wait = std::max(std::chrono::milliseconds(0),
+                                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          build_deadline - std::chrono::steady_clock::now()));
       auto answer = send_thin_client_request(forwarded, hooks);
       spawned += answer.spawned ? 1 : 0;
       attempts += answer.connect_attempts;
@@ -201,6 +241,7 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
   ++result.connect_attempts;
   if (auto response = hooks.connect(identity, frame); response.has_value()) {
     result.response = std::move(response);
+    settle_building_answer(request, hooks, identity, frame, result);
     return result;
   }
 
@@ -210,6 +251,7 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
     ++result.connect_attempts;
     if (auto response = hooks.connect(identity, frame); response.has_value()) {
       result.response = std::move(response);
+      settle_building_answer(request, hooks, identity, frame, result);
       return result;
     }
     result.spawned = hooks.spawn(identity);
@@ -226,6 +268,7 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
     ++result.connect_attempts;
     if (auto response = hooks.connect(identity, frame); response.has_value()) {
       result.response = std::move(response);
+      settle_building_answer(request, hooks, identity, frame, result);
       return result;
     }
   }

@@ -1,6 +1,7 @@
 #include "cgraph/seam.hpp"
 
 #include "cgraph/daemon_ops.hpp"
+#include "cgraph/export_json.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/semantic_fragment_validation.hpp"
@@ -254,6 +255,100 @@ int test_discover(const fs::path& root) {
   return 0;
 }
 
+// Two services with the same project-relative file must stay two nodes in the
+// fused graph: ids are scoped by service, while contract ids stay shared so a
+// provider and its consumer still meet.
+int test_fuse_same_relative_file() {
+  auto repo = [](const std::string& file, const std::string& importer) {
+    cgraph::GraphSnapshot graph;
+    graph.nodes.push_back(cgraph::Node{.id = "src_db_client_ts", .label = "db/client.ts", .source_file = file,
+                                       .kind = "file"});
+    graph.nodes.push_back(cgraph::Node{.id = importer, .label = importer, .kind = "file"});
+    graph.nodes.push_back(cgraph::Node{.id = "endpoint:GET /x", .label = "GET /x", .kind = "endpoint"});
+    graph.edges.push_back(cgraph::Edge{.source = importer, .target = "src_db_client_ts", .relation = "imports_from"});
+    graph.edges.push_back(cgraph::Edge{.source = importer, .target = "endpoint:GET /x", .relation = "CONSUMES"});
+    return graph;
+  };
+  const cgraph::Fragment no_seam;
+  const auto fused = cgraph::fuse_seam(no_seam, {{"api", repo("api/src/db/client.ts", "src_a_ts")},
+                                                 {"agents", repo("agents/src/db/client.ts", "src_b_ts")}});
+  const auto* api_client = find_in(fused.graph, "api::src_db_client_ts");
+  const auto* agents_client = find_in(fused.graph, "agents::src_db_client_ts");
+  if (!fused.ok || api_client == nullptr || agents_client == nullptr ||
+      api_client->source_file != "api/src/db/client.ts" || agents_client->source_file != "agents/src/db/client.ts" ||
+      find_in(fused.graph, "src_db_client_ts") != nullptr) {
+    std::cerr << "fuse: same relative file did not stay two scoped nodes\n";
+    return 1;
+  }
+  if (!has_snapshot_edge(fused.graph, "api::src_a_ts", "api::src_db_client_ts", "imports_from") ||
+      has_snapshot_edge(fused.graph, "api::src_a_ts", "agents::src_db_client_ts", "imports_from") ||
+      !has_snapshot_edge(fused.graph, "agents::src_b_ts", "agents::src_db_client_ts", "imports_from")) {
+    std::cerr << "fuse: an import edge crossed services\n";
+    return 1;
+  }
+  if (find_in(fused.graph, "endpoint:GET /x") == nullptr ||
+      !has_snapshot_edge(fused.graph, "api::src_a_ts", "endpoint:GET /x", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "agents::src_b_ts", "endpoint:GET /x", "CONSUMES")) {
+    std::cerr << "fuse: the shared endpoint was not shared\n";
+    return 1;
+  }
+  return 0;
+}
+
+// Two services whose callers share a raw id (`src_api_ts`) both consume one
+// endpoint. Discover keeps both CONSUMED_AT edges, each stamped with its
+// service, and fuse lands each on its own service's node. An unstamped edge
+// into service code (an older seam) is refused, never guessed.
+int test_shared_raw_id(const fs::path& root) {
+  const auto endpoint = std::string("endpoint:GET /api/v1/x");
+  auto consumer_graph = [&](const std::string& file) {
+    return json{{"nodes",
+                 {{{"id", "src_api_ts"}, {"label", "src/api.ts"}, {"type", "file"}, {"source_file", file},
+                   {"source_location", {{"start_line", 1}, {"end_line", 9}}}},
+                  {{"id", endpoint}, {"label", "GET /api/v1/x"}, {"type", "endpoint"},
+                   {"properties", {{"method", "GET"}, {"path", "/api/v1/x"}, {"served", "false"}}}}}},
+                {"links", {{{"source", "src_api_ts"}, {"target", endpoint}, {"relation", "CONSUMES"}}}}};
+  };
+  const auto web_graph = root / "shared-web.json";
+  const auto worker_graph = root / "shared-worker.json";
+  write_json(web_graph, consumer_graph("web/src/api.ts"));
+  write_json(worker_graph, consumer_graph("worker/src/api.ts"));
+  const auto res = cgraph::discover_seam({{"web", web_graph}, {"worker", worker_graph}});
+  int stamped = 0;
+  for (const auto& edge : res.fragment.edges) {
+    if (edge.relation == "CONSUMED_AT" && edge.source == endpoint && edge.target == "src_api_ts") {
+      const auto service = edge.properties.find("service");
+      stamped += service != edge.properties.end() && (service->second == "web" || service->second == "worker") ? 1 : 0;
+    }
+  }
+  if (!res.ok || stamped != 2) {
+    std::cerr << "discover: expected two service-stamped CONSUMED_AT edges, got " << stamped << "\n";
+    return 1;
+  }
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const auto fused = cgraph::fuse_seam(res.fragment, {{"web", snapshot(web_graph)}, {"worker", snapshot(worker_graph)}});
+  if (!fused.ok || !has_snapshot_edge(fused.graph, endpoint, "web::src_api_ts", "CONSUMED_AT") ||
+      !has_snapshot_edge(fused.graph, endpoint, "worker::src_api_ts", "CONSUMED_AT")) {
+    std::cerr << "fuse: a shared raw id did not land on each service's own node\n";
+    return 1;
+  }
+  cgraph::Fragment old_seam = res.fragment;
+  for (auto& edge : old_seam.edges) {
+    edge.properties.erase("service");
+  }
+  const auto refused = cgraph::fuse_seam(old_seam, {{"web", snapshot(web_graph)}, {"worker", snapshot(worker_graph)}});
+  if (refused.ok || refused.errors.empty() || !refused.graph.nodes.empty()) {
+    std::cerr << "fuse: an unstamped edge into service code was placed instead of refused\n";
+    return 1;
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-seam-test";
   fs::remove_all(root);
@@ -389,9 +484,10 @@ int main() {
   if (!fused.ok) {
     return 1;
   }
-  // Every backend node is tagged with its service community; the call site is the
-  // REAL node (kind function), not a dropped code-ref shadow.
-  const auto* score = find_in(fused.graph, "backend::scoreModel");
+  // Every backend node is tagged with its service community and scoped by its
+  // service (`backend::` + its own id); the call site is the REAL node (kind
+  // function), not a dropped code-ref shadow.
+  const auto* score = find_in(fused.graph, "backend::backend::scoreModel");
   if (score == nullptr || score->kind != "function" ||
       score->properties.at("community") != "backend") {
     return 1;
@@ -411,9 +507,9 @@ int main() {
   }
   // The CONSUMED_AT contract edge now binds to the real backend node, and the
   // backend's own CALLS edge survived the merge.
-  if (!has_snapshot_edge(fused.graph, "endpoint:ml-api:POST /v3/score", "backend::scoreModel",
+  if (!has_snapshot_edge(fused.graph, "endpoint:ml-api:POST /v3/score", "backend::backend::scoreModel",
                          "CONSUMED_AT") ||
-      !has_snapshot_edge(fused.graph, "backend::scoreModel", "backend::helper", "CALLS")) {
+      !has_snapshot_edge(fused.graph, "backend::backend::scoreModel", "backend::backend::helper", "CALLS")) {
     return 1;
   }
 
@@ -445,7 +541,7 @@ int main() {
 
   // path from a backend call site to the ml-api endpoint resolves across the seam.
   const auto path = cgraph::handle_daemon_request(
-      qstate, cgraph::make_request("path", {{"source", "backend::scoreModel"},
+      qstate, cgraph::make_request("path", {{"source", "backend::backend::scoreModel"},
                                             {"target", "endpoint:ml-api:POST /v3/score"}}));
   if (!path["ok"].get<bool>() || path["result"]["path"].size() < 2) {
     return 1;
@@ -477,6 +573,12 @@ int main() {
   }
 
   if (test_discover(root) != 0) {
+    return 1;
+  }
+  if (test_fuse_same_relative_file() != 0) {
+    return 1;
+  }
+  if (test_shared_raw_id(root) != 0) {
     return 1;
   }
 

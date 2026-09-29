@@ -512,6 +512,60 @@ export async function publish(projectId: string) {
     }
   }
 
+  // A typed awaited request is still a request: tree-sitter-typescript parses
+  // `await axios.post<T>(url)` as `(await axios.post)<T>(url)`. A call at the
+  // front of a URL that takes a runtime value is a builder that may hold a path
+  // this file cannot see, so the request is left unresolved instead of minting a
+  // truncated route (`/oracles`); a member or a host getter there is the host.
+  {
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/extra.ts", .relative_path = "lib/extra.ts", .source = R"ts(
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8080';
+const base = (projectId: string) => `${BACKEND_URL}/api/v1/projects/${projectId}`;
+export async function typedAwait() {
+  let r;
+  r = await axios.post<{ ok: boolean }>(`${BACKEND_URL}/api/v1/assigned-generic`, {});
+  const s = await axios.post<LoginResponse>(`${BACKEND_URL}/api/v1/login`, {});
+  return [r, s];
+}
+export async function viaHelper(projectId: string) {
+  return fetch(`${base(projectId)}/oracles`, { method: 'POST' });
+}
+export async function viaMember() {
+  return fetch(`${config.baseUrl}/items`);
+}
+export async function viaGetter() {
+  await fetch(`${getAgentsApiUrl()}/runs/wait`, { method: 'POST' });
+  await fetch(`${process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '')}/api/v1/users`);
+  await fetch(`${config.get(`apiUrl`)}/api/v1/items`);
+  return fetch(`${config.get('apiUrl')}/api/v1/orders`);
+}
+)ts"});
+    std::set<std::string> facts;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation == "http_call" || relation.relation == "http_wrapper" || relation.relation == "url_const") {
+        facts.insert(relation.relation + "|" + relation.source_id + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto fn = [](std::string_view name) { return cgraph::make_id(std::string("lib/extra.ts:") + std::string(name)); };
+    const auto file = cgraph::make_id("lib/extra.ts");
+    const std::set<std::string> expected{
+        "url_const|" + file + "|BACKEND_URL|",
+        "http_call|" + fn("typedAwait") + "|axios.post| /api/v1/assigned-generic",
+        "http_call|" + fn("typedAwait") + "|axios.post| /api/v1/login",
+        "http_call|" + fn("viaHelper") + "|fetch|POST ",
+        "http_call|" + fn("viaMember") + "|fetch| /items",
+        // A host getter (no arguments, only literals, or off process.env) is a host.
+        "http_call|" + fn("viaGetter") + "|fetch|POST /runs/wait",
+        "http_call|" + fn("viaGetter") + "|fetch| /api/v1/users",
+        "http_call|" + fn("viaGetter") + "|fetch| /api/v1/orders",
+        "http_call|" + fn("viaGetter") + "|fetch| /api/v1/items",
+    };
+    if (facts != expected) {
+      for (const auto& fact : facts) std::cerr << "typed/opaque consumer fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
   // openapi-typescript output (CGR-13 slice 3): `paths` members become documented
   // endpoints (`never` methods skipped, no `field` per path), component schemas
   // become `schema` nodes with fields, and operations link responses and bodies.

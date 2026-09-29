@@ -365,7 +365,7 @@ int run_report(int argc, char** argv) {
   }
   const auto& payload = response["result"];
   if (payload.value("graph_state", std::string{}) == "building") {
-    std::cerr << "report: the graph is still building; the report below may be empty -- retry in a few seconds\n";
+    std::cerr << "report: the graph was still building when the wait ran out; the report below may be empty -- retry once `status` reports ready\n";
   }
   if (payload.contains("rendered")) {
     std::cout << payload["rendered"].get<std::string>();

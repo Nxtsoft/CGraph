@@ -877,7 +877,8 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
 }
 
 // A URL argument reduced to the path it names. Literal text is kept; an
-// interpolation at the start is the host and is dropped; one that fills a whole
+// interpolation at the start is the host and is dropped, unless it is a call
+// that builds the URL from a runtime value (then the URL is unresolvable); one that fills a whole
 // segment is a parameter, `{}`; the enclosing function's first parameter at the
 // end is the tail a wrapper appends its argument to; anything else mid-segment
 // makes the URL unresolvable. The query string and fragment are not part of the
@@ -920,6 +921,21 @@ struct UrlTemplate {
       return;
     }
     resolvable = false;  // `/v1-${x}`: a partial segment no router template matches
+  }
+  // A call that builds the URL from a runtime value (`${base(projectId)}/oracles`).
+  // A local, member or host getter in front is the host (`${apiUrl}/api/v1/...`,
+  // `${getAgentsApiUrl()}/runs/wait`), but a builder's result may end in a path
+  // this file cannot see; dropping it as the host would mint a truncated route
+  // that matches the wrong provider or none. Leave it unresolved.
+  void built_by_call() {
+    if (in_query) {
+      return;
+    }
+    if (path.empty()) {
+      resolvable = false;
+      return;
+    }
+    unknown(true);
   }
   // The enclosing function's first parameter interpolated into the URL. After a
   // slash it fills a segment like any other value (`/projects/${projectId}/publish`
@@ -967,6 +983,36 @@ struct UrlTemplate {
 };
 
 constexpr int kMaxUrlInlineDepth = 3;
+
+// A call at the front of a URL either returns a host (`getAgentsApiUrl()`,
+// `config.get('apiUrl')`, `process.env.API_URL?.replace(/\/$/, '')`) or builds
+// part of the path from a runtime value (`base(projectId)`). Only the second
+// hides path segments; the first is read as the host like a constant would be.
+[[nodiscard]] bool builds_url_from_values(const TSNode& call, std::string_view source) {
+  if (node_text(call, source).starts_with("process.env.")) {
+    return false;
+  }
+  const TSNode arguments = ts_node_child_by_field_name(call, "arguments", 9);
+  if (ts_node_is_null(arguments)) {
+    return false;
+  }
+  for (uint32_t i = 0; i < ts_node_named_child_count(arguments); ++i) {
+    const TSNode argument = ts_node_named_child(arguments, i);
+    const std::string_view argument_type = ts_node_type(argument);
+    if (argument_type == "string" || argument_type == "comment") {
+      continue;
+    }
+    // A template with no substitution (`getUrl(\`api\`)`) is a constant too.
+    bool substituted = argument_type != "template_string";
+    for (uint32_t j = 0; !substituted && j < ts_node_named_child_count(argument); ++j) {
+      substituted = std::string_view(ts_node_type(ts_node_named_child(argument, j))) == "template_substitution";
+    }
+    if (substituted) {
+      return true;
+    }
+  }
+  return false;
+}
 
 void collect_url_template(const TSNode& node, const ExtractionContext& context, std::string_view tail_parameter,
                           UrlTemplate& url, int depth) {
@@ -1053,6 +1099,10 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
     url.unknown(false);
     return;
   }
+  if (type == "call_expression" && builds_url_from_values(expression, context.source)) {
+    url.built_by_call();
+    return;
+  }
   url.unknown(true);
 }
 
@@ -1128,7 +1178,14 @@ void http_call_handler(const TSNode& node, const ExtractionContext& context, con
   if (std::string_view(ts_node_type(node)) != "call_expression") {
     return;
   }
-  const TSNode callee = unwrap_expression(ts_node_child_by_field_name(node, "function", 8));
+  TSNode callee = unwrap_expression(ts_node_child_by_field_name(node, "function", 8));
+  // tree-sitter-typescript parses `await axios.post<T>(url)` as `(await axios.post)<T>(url)`:
+  // with type arguments the await wraps the callee, not the call. Read through it,
+  // or every typed awaited request (`await axios.post<LoginResponse>(...)`) is lost.
+  if (!ts_node_is_null(callee) && std::string_view(ts_node_type(callee)) == "await_expression" &&
+      !ts_node_is_null(ts_node_child_by_field_name(node, "type_arguments", 14))) {
+    callee = unwrap_expression(ts_node_named_child(callee, 0));
+  }
   if (ts_node_is_null(callee)) {
     return;
   }

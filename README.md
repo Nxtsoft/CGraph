@@ -191,13 +191,14 @@ The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/pu
 through a path wrapper (`apiFetch(path)` whose own `fetch(\`${base}${path}\`)` appends its first
 parameter to a module constant) each give the calling function (or the module-level object the
 arrow initialises) a `CONSUMES` edge to `endpoint:<METHOD> <canonical path>`. The host
-interpolation is dropped, a whole-segment interpolation is `{}`, the method comes from the call's
+interpolation is dropped (except a call that takes a runtime value, such as `${base(id)}/x`, a URL
+builder that may hold part of the path, which leaves the request unresolved), a whole-segment interpolation is `{}`, the method comes from the call's
 literal `method` option, the wrapper's own, or the client verb, else GET. When this repository
 does not serve the route the node is minted with `served: false` and no source; when it does
 (a Next.js route file fetched from the same app) the one node has both a handler and its callers.
 A URL assembled in a variable or spelled as an absolute `https://` literal adds nothing and is
 counted under `route_resolution.calls_unresolved`. Because the id carries no repository, two
-graphs built separately share their endpoint nodes:
+graphs built separately share their endpoint nodes. `seam fuse` scopes every other node id by its service (`api::src_db_client_ts`), so two repositories with the same relative file stay two nodes:
 
 ```sh
 cgraph seam discover --graph api=api-out/graph.json --graph web=web-out/graph.json --out seam-drop
@@ -366,7 +367,7 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 
 `graph_context` has two gather modes. The default (`gather: "fixed"`) packs the whole k-hop neighborhood. With a task query in hand, `gather: "adaptive"` keeps the full 2-hop core but expands the third hop only along query-relevant nodes — on the retrieval eval it lifted grade-2 recall **+0.057** for **+13%** candidate tokens, versus the **+96%** a full 3-hop gather costs (needs a `query`/`q`).
 
-The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds); while it runs, results carry `"graph_state": "building"` so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/home/you` with your absolute home directory.
+The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds). Graph reads wait up to 30 seconds for it (for a workspace, 30 seconds for the whole request); a result that still carries `"graph_state": "building"` is short because the build has not finished, so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/home/you` with your absolute home directory.
 
 <details>
 <summary><strong>🔌 Register with Claude Code · Codex · Cursor / Windsurf / other MCP clients</strong></summary>
