@@ -1,11 +1,16 @@
 #include "cgraph/graph_builder.hpp"
 
 #include "cgraph/normalize.hpp"
+#include "cgraph/pipeline.hpp"
 
 #include <algorithm>
 #include <vector>
 #include <utility>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
 
 namespace {
 
@@ -731,6 +736,85 @@ int test_library_member_names() {
   return 0;
 }
 
+namespace {
+
+void write_ts(const std::filesystem::path& path, const char* contents) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream(path) << contents;
+}
+
+// TypeScript barrels: `import { competitors } from '../../db/schema'` lands on
+// db/schema/index.ts, which only does `export * from './library'`, which does
+// `export * from './competitors'`. resolve_imports must follow the star chain to
+// the declaring file (turing-api's Drizzle schema, area 7). A named re-export
+// with an alias resolves by its exported name, two barrels starring the same
+// module both resolve, and a cycle of stars terminates with the import kept on
+// the barrel.
+int check_typescript_export_star() {
+  const auto root = std::filesystem::temp_directory_path() / "cgraph_export_star_test";
+  std::filesystem::remove_all(root);
+  write_ts(root / "src/db/schema/index.ts", "export * from './library';\n");
+  write_ts(root / "src/db/schema/library/index.ts",
+           "export * from './competitors';\nexport { widgets as gadgets } from './widgets';\n");
+  write_ts(root / "src/db/schema/library/competitors.ts", "export const competitors = pgTable('competitors', {});\n");
+  write_ts(root / "src/db/schema/library/widgets.ts", "export function widgets() { return 1; }\n");
+  write_ts(root / "src/modules/competitors/service.ts",
+           "import { competitors, gadgets } from '../../db/schema';\n"
+           "export function list() { return competitors; }\nexport function gadget() { return gadgets; }\n");
+  write_ts(root / "src/x/index.ts", "export * from '../lib/thing';\n");
+  write_ts(root / "src/y/index.ts", "export * from '../lib/thing';\n");
+  write_ts(root / "src/lib/thing.ts", "export function thing() { return 1; }\n");
+  write_ts(root / "src/use_x.ts", "import { thing } from './x';\nexport const a = thing();\n");
+  write_ts(root / "src/use_y.ts", "import { thing } from './y';\nexport const b = thing();\n");
+  write_ts(root / "src/cyc/a/index.ts", "export * from '../b';\n");
+  write_ts(root / "src/cyc/b/index.ts", "export * from '../a';\n");
+  write_ts(root / "src/use_cyc.ts", "import { missing } from './cyc/a';\nexport const c = missing;\n");
+
+  const auto result = cgraph::run_one_shot(root);
+  const auto& graph = result.graph;
+  const auto canonical_root = std::filesystem::weakly_canonical(root);
+  const auto id_of = [&](const char* rel, const char* label, const char* kind) {
+    const auto file = (canonical_root / rel).lexically_normal().generic_string();
+    for (const auto& node : graph.nodes) {
+      if (node.kind == kind && node.label == label &&
+          std::filesystem::path(node.source_file).lexically_normal().generic_string() == file) {
+        return node.id;
+      }
+    }
+    return std::string{};
+  };
+  const auto file_id = [&](const char* rel) {
+    const auto file = (canonical_root / rel).lexically_normal().generic_string();
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "file" && std::filesystem::path(node.source_file).lexically_normal().generic_string() == file) {
+        return node.id;
+      }
+    }
+    return std::string{};
+  };
+  const auto imports = [&](const std::string& source, const std::string& target) {
+    return !source.empty() && !target.empty() && std::ranges::any_of(graph.edges, [&](const cgraph::Edge& e) {
+      return e.relation == "imports" && e.source == source && e.target == target;
+    });
+  };
+  const auto service = file_id("src/modules/competitors/service.ts");
+  const auto competitors = id_of("src/db/schema/library/competitors.ts", "competitors", "variable");
+  const auto widgets = id_of("src/db/schema/library/widgets.ts", "widgets", "function");
+  const auto thing = id_of("src/lib/thing.ts", "thing", "function");
+  const bool ok_star = imports(service, competitors);
+  const bool ok_alias = imports(service, widgets);
+  const bool ok_two = imports(file_id("src/use_x.ts"), thing) && imports(file_id("src/use_y.ts"), thing);
+  const bool ok_cycle = imports(file_id("src/use_cyc.ts"), file_id("src/cyc/a/index.ts"));
+  std::filesystem::remove_all(root);
+  if (!ok_star) { std::cerr << "export * chain: service -> competitors missing (" << competitors << ")\n"; return 1; }
+  if (!ok_alias) { std::cerr << "aliased named re-export: service -> widgets missing (" << widgets << ")\n"; return 1; }
+  if (!ok_two) { std::cerr << "two barrels starring one module must both resolve\n"; return 1; }
+  if (!ok_cycle) { std::cerr << "a star cycle must terminate with the import on the barrel\n"; return 1; }
+  return 0;
+}
+
+}  // namespace
+
 int main() {
   if (test_qualified_scope() != 0) {
     std::fprintf(stderr, "FAIL test_qualified_scope\n");
@@ -837,6 +921,10 @@ int main() {
   cgraph::resolve_raw_calls(graph, self_call);
   if (graph.edges.size() != 2) {
     return 1;  // self-edge must be skipped
+  }
+
+  if (check_typescript_export_star() != 0) {
+    return 1;
   }
 
   return 0;

@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -489,31 +490,48 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     for (const auto& [id, _] : source_of_file) {
       file_ids.insert(id);
     }
-    // Which file owns each re-export stub, and what it re-exports by name.
-    std::unordered_map<std::string, std::string> reexport_owner;  // stub id -> file id
-    for (const auto& edge : graph.edges) {
-      if (edge.relation == "re_exports") {
-        reexport_owner.emplace(edge.target, edge.source);
+    // What each file re-exports. By name: a Rust `pub use` stub (tagged
+    // `reexport` on the node) or a JS/TS `export { a as b } from` edge carrying
+    // the exported name. Wholesale: a JS/TS `export * from './x'` edge marked
+    // `star`. Read from the per-file re_exports EDGES, because JS/TS stubs are
+    // shared by every file importing the same path: a node tag would be lost when
+    // an ordinary import of that path merged first, and one stub can be
+    // re-exported by several barrels.
+    std::unordered_map<std::string, const Node*> stub_by_id;
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "import" || node.kind == "module") {
+        stub_by_id.emplace(node.id, &node);
       }
     }
     // owner file id -> (item name key -> the re-export's resolved target)
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> reexported_by_file;
-    for (const auto& node : graph.nodes) {
-      if (node.kind != "import" && node.kind != "module") {
+    // owner file id -> files it re-exports wholesale (`export *`)
+    std::unordered_map<std::string, std::vector<std::string>> star_targets;
+    for (const auto& edge : graph.edges) {
+      if (edge.relation != "re_exports") {
         continue;
       }
-      if (const auto tag = node.properties.find("reexport");
-          tag == node.properties.end() || tag->second != "true") {
+      const auto stub = stub_by_id.find(edge.target);
+      const auto target = remap.find(edge.target);
+      if (stub == stub_by_id.end() || target == remap.end()) {
         continue;
       }
-      const auto owner = reexport_owner.find(node.id);
-      const auto target = remap.find(node.id);
-      if (owner == reexport_owner.end() || target == remap.end()) {
+      if (const auto star = edge.properties.find("star"); star != edge.properties.end() && star->second == "true") {
+        if (file_ids.contains(target->second)) {
+          star_targets[edge.source].push_back(target->second);
+        }
         continue;
       }
-      reexported_by_file[owner->second].emplace(make_id(node.label), target->second);
+      if (const auto name = edge.properties.find("reexport"); name != edge.properties.end()) {
+        reexported_by_file[edge.source].emplace(make_id(name->second), target->second);
+        continue;
+      }
+      if (const auto tag = stub->second->properties.find("reexport");
+          tag != stub->second->properties.end() && tag->second == "true") {
+        reexported_by_file[edge.source].emplace(make_id(stub->second->label), target->second);
+      }
     }
-    if (!reexported_by_file.empty()) {
+    if (!reexported_by_file.empty() || !star_targets.empty()) {
       // The item stubs that fell back to a module file, keyed for the follow.
       for (const auto& node : graph.nodes) {
         if (node.kind != "import") {
@@ -539,6 +557,47 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
             break;
           }
           current = reexp->second;
+        }
+        // Still on a barrel file: search its `export *` targets breadth-first
+        // (bounded, cycle-safe) for the file that declares the name exactly once,
+        // or re-exports it by name. A name declared nowhere reachable keeps the
+        // import on the barrel, as before.
+        if (file_ids.contains(current) && star_targets.contains(current)) {
+          const auto declared_in = [&](const std::string& file_id) -> const std::string* {
+            const auto declared = declared_by_file_label.find(source_of_file[file_id] + "\n" + node.label);
+            return declared != declared_by_file_label.end() && !declared->second.empty() ? &declared->second : nullptr;
+          };
+          std::deque<std::pair<std::string, int>> queue{{current, 0}};
+          std::unordered_set<std::string> seen;
+          std::optional<std::string> found;
+          while (!queue.empty() && !found) {
+            auto [file_id, depth] = queue.front();
+            queue.pop_front();
+            if (depth > 8 || !seen.insert(file_id).second) {
+              continue;
+            }
+            if (const auto named = reexported_by_file.find(file_id); named != reexported_by_file.end()) {
+              if (const auto reexp = named->second.find(name_key); reexp != named->second.end()) {
+                if (!file_ids.contains(reexp->second)) {
+                  found = reexp->second;  // a named re-export straight to the symbol
+                  break;
+                }
+                queue.emplace_back(reexp->second, depth + 1);
+              }
+            }
+            if (const auto stars = star_targets.find(file_id); stars != star_targets.end()) {
+              for (const auto& target : stars->second) {
+                if (const auto* symbol = declared_in(target)) {
+                  found = *symbol;
+                  break;
+                }
+                queue.emplace_back(target, depth + 1);
+              }
+            }
+          }
+          if (found) {
+            current = *found;
+          }
         }
         if (current != slot->second) {
           slot->second = current;
