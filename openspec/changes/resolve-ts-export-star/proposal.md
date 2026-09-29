@@ -29,5 +29,6 @@ The area 7 measurement (`~/.agents/artifacts/2026-09-25/cgraph-context-engine-re
 
 - `src/engine/javascript_extractor.cpp`: edge marks on `re_exports` edges.
 - `src/engine/graph_builder.cpp`: `resolve_imports`' re-export follow is built from edges and extended with star targets.
-- `tests/smoke/graph_builder_test.cpp`: `check_typescript_export_star` through `run_one_shot`.
+- `tests/smoke/graph_builder_test.cpp`: `check_typescript_export_star` through `run_one_shot`; `javascript_extractor_test.cpp`: the edge marks.
+- `merge_fragments` merges the `star` and `reexport` marks of duplicate edges (a change to the dedup/merge contract), so `kIndexVersionKey` is bumped to `logic-6`.
 - `graph.json`: TypeScript `imports` edges that used to stop at barrel files now reach declarations. No node or id changes.

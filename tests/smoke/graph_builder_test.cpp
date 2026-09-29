@@ -769,6 +769,26 @@ int check_typescript_export_star() {
   write_ts(root / "src/cyc/a/index.ts", "export * from '../b';\n");
   write_ts(root / "src/cyc/b/index.ts", "export * from '../a';\n");
   write_ts(root / "src/use_cyc.ts", "import { missing } from './cyc/a';\nexport const c = missing;\n");
+  // A named re-export of './x' before `export * from './x'` (the React barrel
+  // shape) and two aliases of one name: every statement's mark must survive the
+  // merge's edge dedup.
+  write_ts(root / "src/m/x.ts", "export default function main() { return 1; }\nexport function named() { return 2; }\n");
+  write_ts(root / "src/combo/index.ts", "export { default } from '../m/x';\nexport * from '../m/x';\n");
+  write_ts(root / "src/twice/index.ts", "export { named as one, named as two } from '../m/x';\n");
+  write_ts(root / "src/use_combo.ts",
+           "import { named } from './combo';\nimport { two } from './twice';\nexport const d = [named, two];\n");
+  // A two-hop alias chain: qux -> baz -> bar.
+  write_ts(root / "src/chain/index.ts", "export { baz as qux } from './inner';\n");
+  write_ts(root / "src/chain/inner.ts", "export { bar as baz } from '../lib/b';\n");
+  write_ts(root / "src/lib/b.ts", "export function bar() { return 3; }\n");
+  write_ts(root / "src/use_chain.ts", "import { qux } from './chain';\nexport const e = qux;\n");
+  // A file's own declaration (an overload set) shadows a deeper star target.
+  write_ts(root / "src/shadow/index.ts", "export * from './mid';\n");
+  write_ts(root / "src/shadow/mid.ts",
+           "export function over(a: string): string;\nexport function over(a: number): number;\n"
+           "export function over(a: any) { return a; }\nexport * from './deep';\n");
+  write_ts(root / "src/shadow/deep.ts", "export function over() { return 0; }\n");
+  write_ts(root / "src/use_shadow.ts", "import { over } from './shadow';\nexport const f = over;\n");
 
   const auto result = cgraph::run_one_shot(root);
   const auto& graph = result.graph;
@@ -805,11 +825,20 @@ int check_typescript_export_star() {
   const bool ok_alias = imports(service, widgets);
   const bool ok_two = imports(file_id("src/use_x.ts"), thing) && imports(file_id("src/use_y.ts"), thing);
   const bool ok_cycle = imports(file_id("src/use_cyc.ts"), file_id("src/cyc/a/index.ts"));
+  const auto named = id_of("src/m/x.ts", "named", "function");
+  const bool ok_combo = imports(file_id("src/use_combo.ts"), named);
+  const bool ok_chain = imports(file_id("src/use_chain.ts"), id_of("src/lib/b.ts", "bar", "function"));
+  const auto deep = id_of("src/shadow/deep.ts", "over", "function");
+  const bool ok_shadow = !imports(file_id("src/use_shadow.ts"), deep) &&
+                         imports(file_id("src/use_shadow.ts"), file_id("src/shadow/mid.ts"));
   std::filesystem::remove_all(root);
   if (!ok_star) { std::cerr << "export * chain: service -> competitors missing (" << competitors << ")\n"; return 1; }
   if (!ok_alias) { std::cerr << "aliased named re-export: service -> widgets missing (" << widgets << ")\n"; return 1; }
   if (!ok_two) { std::cerr << "two barrels starring one module must both resolve\n"; return 1; }
   if (!ok_cycle) { std::cerr << "a star cycle must terminate with the import on the barrel\n"; return 1; }
+  if (!ok_combo) { std::cerr << "a named re-export before export * must not drop the star, nor a second alias\n"; return 1; }
+  if (!ok_chain) { std::cerr << "a two-hop alias chain must reach the declaration under its source name\n"; return 1; }
+  if (!ok_shadow) { std::cerr << "a file's own overload set shadows a deeper star target\n"; return 1; }
   return 0;
 }
 
