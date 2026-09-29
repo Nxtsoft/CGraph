@@ -161,6 +161,11 @@ prefix: '/notebooks' })`, `.basePath('/v1')`) beneath every `.use(child)`, `.use
 inside `.use(new Elysia({ prefix }).get(…))`, a `.group('/v2', app => app.get(…))` or `.guard()`
 callback, and a module re-exported as `export const deckModule = deckRoutes as unknown as Elysia`
 all compose the same way. A Next.js `app/api/x/[id]/route.ts` exporting `GET` is `GET /api/x/:id`.
+Kotlin and Java Spring controllers get the same nodes: a method annotated `@GetMapping("/{id}")`
+(or `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`, or `@RequestMapping` with a
+`method`) under a class-level `@RequestMapping("/api/v1/users")` is `GET /api/v1/users/{id}`.
+Paths are read from string literals only (positional, `value =`, `path =`, or an array of them); a
+path built from a constant, and a method-level `@RequestMapping` without `method`, are not minted.
 The node's id is `endpoint:GET /api/v1/notebooks/{}/notes` with no repository in it and `{}` for
 every parameter segment (`:id`, `{id}`, `[id]`), its label keeps the provider's spelling
 (`GET /api/v1/notebooks/:id/notes`), and it carries `method` and `path`, the handler's file and

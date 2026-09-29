@@ -111,7 +111,9 @@ grep/read calls that burn context.
   `prefix`, `.basePath()` and `.use()` mount across files (turing-api's
   `notebookRoutes.get('/starred-notes')` under `/notebooks` under `/api/v1` is
   `endpoint:GET /api/v1/notebooks/starred-notes`), and a Next.js
-  `app/api/x/[id]/route.ts` exporting `GET` is `endpoint:GET /api/x/{}`. The
+  `app/api/x/[id]/route.ts` exporting `GET` is `endpoint:GET /api/x/{}`. A
+  Kotlin/Java Spring method with `@GetMapping("/{id}")` under a class-level
+  `@RequestMapping("/api/v1/users")` is `endpoint:GET /api/v1/users/{}`. The
   id carries no repo and `{}` for every parameter, so the same path in another
   repo's graph is the same node. Callers are `CONSUMES` edges into the
   endpoint: direct `fetch`, `api.GET`/`axios.post`, and calls through path

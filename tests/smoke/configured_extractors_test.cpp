@@ -530,6 +530,38 @@ bool check_kotlin_extraction() {
 
 }  // namespace
 
+// Spring request mappings emit `file_route` facts: lowercase verb, class prefix
+// joined with the method path, source = the annotated method. Nothing for a
+// constant path or a method-less method-level @RequestMapping.
+bool check_spring_route_facts() {
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::Kotlin,
+      {.source_file = "Users.kt", .relative_path = "Users.kt", .source = R"kt(
+@RestController
+@RequestMapping("/api/v1/users")
+class Users {
+    @GetMapping("/{id}")
+    fun get(id: String) = id
+    @PatchMapping
+    fun patch() {}
+    @GetMapping(Paths.X)
+    fun constant() {}
+    @RequestMapping("/any")
+    fun any() {}
+}
+)kt"});
+  if (!result) return fail("kotlin extraction failed");
+  std::multiset<std::string> facts;
+  for (const auto& relation : result->raw_relations) {
+    if (relation.relation == "file_route") facts.insert(relation.context);
+  }
+  if (facts != std::multiset<std::string>{"get /api/v1/users/{id}", "patch /api/v1/users"}) {
+    for (const auto& fact : facts) std::cerr << "  fact: " << fact << '\n';
+    return fail("spring file_route facts");
+  }
+  return true;
+}
+
 int main() {
   struct MemberCase { cgraph::DetectedLanguage language; std::string source; };
   for (const auto& test : std::vector<MemberCase>{
@@ -640,6 +672,9 @@ int main() {
   }
   if (!check_coverage_registry()) {
     return 3;
+  }
+  if (!check_spring_route_facts()) {
+    return 4;
   }
 
   return 0;
