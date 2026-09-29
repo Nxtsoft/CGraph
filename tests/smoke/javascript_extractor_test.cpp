@@ -667,5 +667,27 @@ import { util as pkg } from "util";
     if (relative_symbol_path != "/abs/proj/util" || relative_module_path != "/abs/proj/util" || !bare_symbol) return 1;
   }
 
+  // Re-export marks on the per-file edges: `star` on a bare `export *` (not on
+  // `export * as ns`), and the exported name on a named re-export.
+  {
+    const auto barrel = cgraph::extract_typescript({.source_file = "/p/barrel.ts", .relative_path = "barrel.ts", .source = R"ts(
+export * from "./all";
+export * as ns from "./space";
+export { a as b } from "./named";
+)ts"});
+    bool star_all = false;
+    bool star_ns = false;
+    bool named_b = false;
+    for (const auto& edge : barrel.fragment.edges) {
+      if (edge.relation != "re_exports") continue;
+      const auto star = edge.properties.find("star");
+      const bool starred = star != edge.properties.end() && star->second == "true";
+      if (edge.target == cgraph::make_id("import-relative-module:all")) star_all = starred;
+      if (edge.target == cgraph::make_id("import-relative-module:space")) star_ns = starred;
+      if (const auto name = edge.properties.find("reexport"); name != edge.properties.end() && name->second == "b") named_b = true;
+    }
+    if (!star_all || star_ns || !named_b) return 1;
+  }
+
   return 0;
 }

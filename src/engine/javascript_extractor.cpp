@@ -524,13 +524,30 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
           .properties = {{"import_path", resolved}},
       });
       // file -> source module: `imports_from` for imports, `re_exports` for
-      // `export ... from` statements.
-      fragment.edges.push_back(Edge{
+      // `export ... from` statements. `export * from './x'` (a bare star, not
+      // `export * as ns`) re-exports every name x exports, so the edge is marked
+      // for resolve_imports to follow when an import of a name lands on this
+      // barrel file. The mark is on the per-file edge, not the stub: module
+      // stubs are shared by every file importing the same path.
+      Edge module_edge{
           .source = file_id,
           .target = module_id,
           .relation = module_relation,
           .confidence = Confidence::Extracted,
-      });
+      };
+      if (is_export) {
+        bool star = false;
+        bool namespaced = false;
+        for (std::uint32_t i = 0; i < ts_node_child_count(node); ++i) {
+          const std::string_view type = ts_node_type(ts_node_child(node, i));
+          star = star || type == "*";
+          namespaced = namespaced || type == "namespace_export";
+        }
+        if (star && !namespaced) {
+          module_edge.properties.emplace("star", "true");
+        }
+      }
+      fragment.edges.push_back(std::move(module_edge));
     }
   }
 
@@ -568,12 +585,20 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
       // name resolution in this file can bind the alias.
       fragment.nodes.back().properties.emplace("alias", alias);
     }
-    fragment.edges.push_back(Edge{
+    Edge symbol_edge{
         .source = file_id,
         .target = symbol_id,
         .relation = symbol_relation,
         .confidence = Confidence::Extracted,
-    });
+    };
+    if (is_export && has_source) {
+      // `export { a as b } from './x'`: this file exports the name `b`, which is
+      // x's `a`. The exported name travels on the per-file edge (symbol stubs are
+      // shared across importing files) so resolve_imports can follow an import of
+      // `b` through this barrel to the declaration.
+      symbol_edge.properties.emplace("reexport", alias.empty() ? name : alias);
+    }
+    fragment.edges.push_back(std::move(symbol_edge));
   }
 }
 

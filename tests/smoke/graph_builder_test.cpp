@@ -1,11 +1,16 @@
 #include "cgraph/graph_builder.hpp"
 
 #include "cgraph/normalize.hpp"
+#include "cgraph/pipeline.hpp"
 
 #include <algorithm>
 #include <vector>
 #include <utility>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
 
 namespace {
 
@@ -731,6 +736,135 @@ int test_library_member_names() {
   return 0;
 }
 
+namespace {
+
+void write_ts(const std::filesystem::path& path, const char* contents) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream(path) << contents;
+}
+
+// TypeScript barrels: `import { competitors } from '../../db/schema'` lands on
+// db/schema/index.ts, which only does `export * from './library'`, which does
+// `export * from './competitors'`. resolve_imports must follow the star chain to
+// the declaring file (turing-api's Drizzle schema, area 7). A named re-export
+// with an alias resolves by its exported name, two barrels starring the same
+// module both resolve, and a cycle of stars terminates with the import kept on
+// the barrel.
+int check_typescript_export_star() {
+  const auto root = std::filesystem::temp_directory_path() / "cgraph_export_star_test";
+  std::filesystem::remove_all(root);
+  write_ts(root / "src/db/schema/index.ts", "export * from './library';\n");
+  write_ts(root / "src/db/schema/library/index.ts",
+           "export * from './competitors';\nexport { widgets as gadgets } from './widgets';\n");
+  write_ts(root / "src/db/schema/library/competitors.ts", "export const competitors = pgTable('competitors', {});\n");
+  write_ts(root / "src/db/schema/library/widgets.ts", "export function widgets() { return 1; }\n");
+  write_ts(root / "src/modules/competitors/service.ts",
+           "import { competitors, gadgets } from '../../db/schema';\n"
+           "export function list() { return competitors; }\nexport function gadget() { return gadgets; }\n");
+  write_ts(root / "src/x/index.ts", "export * from '../lib/thing';\n");
+  write_ts(root / "src/y/index.ts", "export * from '../lib/thing';\n");
+  write_ts(root / "src/lib/thing.ts", "export function thing() { return 1; }\n");
+  write_ts(root / "src/use_x.ts", "import { thing } from './x';\nexport const a = thing();\n");
+  write_ts(root / "src/use_y.ts", "import { thing } from './y';\nexport const b = thing();\n");
+  write_ts(root / "src/cyc/a/index.ts", "export * from '../b';\n");
+  write_ts(root / "src/cyc/b/index.ts", "export * from '../a';\n");
+  write_ts(root / "src/use_cyc.ts", "import { missing } from './cyc/a';\nexport const c = missing;\n");
+  // A named re-export of './x' before `export * from './x'` (the React barrel
+  // shape) and two aliases of one name: every statement's mark must survive the
+  // merge's edge dedup.
+  write_ts(root / "src/m/x.ts", "export default function main() { return 1; }\nexport function named() { return 2; }\n");
+  write_ts(root / "src/combo/index.ts", "export { default } from '../m/x';\nexport * from '../m/x';\n");
+  write_ts(root / "src/twice/index.ts", "export { named as one, named as two } from '../m/x';\n");
+  write_ts(root / "src/use_combo.ts",
+           "import { named } from './combo';\nimport { two } from './twice';\nexport const d = [named, two];\n");
+  // A two-hop alias chain: qux -> baz -> bar.
+  write_ts(root / "src/chain/index.ts", "export { baz as qux } from './inner';\n");
+  write_ts(root / "src/chain/inner.ts", "export { bar as baz } from '../lib/b';\n");
+  write_ts(root / "src/lib/b.ts", "export function bar() { return 3; }\n");
+  write_ts(root / "src/use_chain.ts", "import { qux } from './chain';\nexport const e = qux;\n");
+  // A file's own declaration (an overload set) shadows a deeper star target.
+  write_ts(root / "src/shadow/index.ts", "export * from './mid';\n");
+  write_ts(root / "src/shadow/mid.ts",
+           "export function over(a: string): string;\nexport function over(a: number): number;\n"
+           "export function over(a: any) { return a; }\nexport * from './deep';\n");
+  write_ts(root / "src/shadow/deep.ts", "export function over() { return 0; }\n");
+  write_ts(root / "src/use_shadow.ts", "import { over } from './shadow';\nexport const f = over;\n");
+  // The same overloaded file imported DIRECTLY: it stays on the file, as on main.
+  write_ts(root / "src/use_mid.ts", "import { over } from './shadow/mid';\nexport const g = over;\n");
+  // A class method named like a later star target's function does not stop the search.
+  write_ts(root / "src/meth/index.ts", "export * from './a';\nexport * from './b';\n");
+  write_ts(root / "src/meth/a.ts", "export class K {\n  run() { return 1; }\n}\n");
+  write_ts(root / "src/meth/b.ts", "export function run() { return 2; }\n");
+  write_ts(root / "src/use_meth.ts", "import { run } from './meth';\nexport const h = run;\n");
+
+  // Rust is untouched by the JS/TS search: an item import that lands on a file
+  // with an unrelated `pub use` resolves exactly as it does without one.
+  write_ts(root / "rs/src/lib.rs", "mod m;\nmod other;\nmod user;\n");
+  write_ts(root / "rs/src/other.rs", "pub struct X;\n");
+  write_ts(root / "rs/src/m.rs",
+           "pub use crate::other::X;\npub struct S;\nimpl S {\n    pub fn build() {}\n}\npub fn build() {}\n");
+  write_ts(root / "rs/src/user.rs", "use crate::m::build;\npub fn go() { build(); }\n");
+  write_ts(root / "rs/Cargo.toml", "[package]\nname = \"rs\"\nversion = \"0.1.0\"\n");
+  const auto result = cgraph::run_one_shot(root);
+  const auto& graph = result.graph;
+  const auto canonical_root = std::filesystem::weakly_canonical(root);
+  const auto id_of = [&](const char* rel, const char* label, const char* kind) {
+    const auto file = (canonical_root / rel).lexically_normal().generic_string();
+    for (const auto& node : graph.nodes) {
+      if (node.kind == kind && node.label == label &&
+          std::filesystem::path(node.source_file).lexically_normal().generic_string() == file) {
+        return node.id;
+      }
+    }
+    return std::string{};
+  };
+  const auto file_id = [&](const char* rel) {
+    const auto file = (canonical_root / rel).lexically_normal().generic_string();
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "file" && std::filesystem::path(node.source_file).lexically_normal().generic_string() == file) {
+        return node.id;
+      }
+    }
+    return std::string{};
+  };
+  const auto imports = [&](const std::string& source, const std::string& target) {
+    return !source.empty() && !target.empty() && std::ranges::any_of(graph.edges, [&](const cgraph::Edge& e) {
+      return e.relation == "imports" && e.source == source && e.target == target;
+    });
+  };
+  const auto service = file_id("src/modules/competitors/service.ts");
+  const auto competitors = id_of("src/db/schema/library/competitors.ts", "competitors", "variable");
+  const auto widgets = id_of("src/db/schema/library/widgets.ts", "widgets", "function");
+  const auto thing = id_of("src/lib/thing.ts", "thing", "function");
+  const bool ok_star = imports(service, competitors);
+  const bool ok_alias = imports(service, widgets);
+  const bool ok_two = imports(file_id("src/use_x.ts"), thing) && imports(file_id("src/use_y.ts"), thing);
+  const bool ok_cycle = imports(file_id("src/use_cyc.ts"), file_id("src/cyc/a/index.ts"));
+  const auto named = id_of("src/m/x.ts", "named", "function");
+  const bool ok_combo = imports(file_id("src/use_combo.ts"), named);
+  const bool ok_chain = imports(file_id("src/use_chain.ts"), id_of("src/lib/b.ts", "bar", "function"));
+  const auto deep = id_of("src/shadow/deep.ts", "over", "function");
+  const bool ok_shadow = !imports(file_id("src/use_shadow.ts"), deep) &&
+                         imports(file_id("src/use_shadow.ts"), file_id("src/shadow/mid.ts")) &&
+                         !imports(file_id("src/use_mid.ts"), deep) &&
+                         imports(file_id("src/use_mid.ts"), file_id("src/shadow/mid.ts"));
+  const bool ok_method = imports(file_id("src/use_meth.ts"), id_of("src/meth/b.ts", "run", "function"));
+  const bool ok_rust = imports(file_id("rs/src/user.rs"), file_id("rs/src/m.rs"));
+  std::filesystem::remove_all(root);
+  if (!ok_star) { std::cerr << "export * chain: service -> competitors missing (" << competitors << ")\n"; return 1; }
+  if (!ok_alias) { std::cerr << "aliased named re-export: service -> widgets missing (" << widgets << ")\n"; return 1; }
+  if (!ok_two) { std::cerr << "two barrels starring one module must both resolve\n"; return 1; }
+  if (!ok_cycle) { std::cerr << "a star cycle must terminate with the import on the barrel\n"; return 1; }
+  if (!ok_combo) { std::cerr << "a named re-export before export * must not drop the star, nor a second alias\n"; return 1; }
+  if (!ok_chain) { std::cerr << "a two-hop alias chain must reach the declaration under its source name\n"; return 1; }
+  if (!ok_shadow) { std::cerr << "a file's own overload set shadows a deeper star target, reached directly or through a barrel\n"; return 1; }
+  if (!ok_method) { std::cerr << "a class method must not stop a star search for a top-level function\n"; return 1; }
+  if (!ok_rust) { std::cerr << "a Rust item import resolves as before, whatever the target file re-exports\n"; return 1; }
+  return 0;
+}
+
+}  // namespace
+
 int main() {
   if (test_qualified_scope() != 0) {
     std::fprintf(stderr, "FAIL test_qualified_scope\n");
@@ -837,6 +971,10 @@ int main() {
   cgraph::resolve_raw_calls(graph, self_call);
   if (graph.edges.size() != 2) {
     return 1;  // self-edge must be skipped
+  }
+
+  if (check_typescript_export_star() != 0) {
+    return 1;
   }
 
   return 0;
