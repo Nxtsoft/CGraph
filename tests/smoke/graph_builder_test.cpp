@@ -789,6 +789,13 @@ int check_typescript_export_star() {
            "export function over(a: any) { return a; }\nexport * from './deep';\n");
   write_ts(root / "src/shadow/deep.ts", "export function over() { return 0; }\n");
   write_ts(root / "src/use_shadow.ts", "import { over } from './shadow';\nexport const f = over;\n");
+  // The same overloaded file imported DIRECTLY: it stays on the file, as on main.
+  write_ts(root / "src/use_mid.ts", "import { over } from './shadow/mid';\nexport const g = over;\n");
+  // A class method named like a later star target's function does not stop the search.
+  write_ts(root / "src/meth/index.ts", "export * from './a';\nexport * from './b';\n");
+  write_ts(root / "src/meth/a.ts", "export class K {\n  run() { return 1; }\n}\n");
+  write_ts(root / "src/meth/b.ts", "export function run() { return 2; }\n");
+  write_ts(root / "src/use_meth.ts", "import { run } from './meth';\nexport const h = run;\n");
 
   const auto result = cgraph::run_one_shot(root);
   const auto& graph = result.graph;
@@ -830,7 +837,10 @@ int check_typescript_export_star() {
   const bool ok_chain = imports(file_id("src/use_chain.ts"), id_of("src/lib/b.ts", "bar", "function"));
   const auto deep = id_of("src/shadow/deep.ts", "over", "function");
   const bool ok_shadow = !imports(file_id("src/use_shadow.ts"), deep) &&
-                         imports(file_id("src/use_shadow.ts"), file_id("src/shadow/mid.ts"));
+                         imports(file_id("src/use_shadow.ts"), file_id("src/shadow/mid.ts")) &&
+                         !imports(file_id("src/use_mid.ts"), deep) &&
+                         imports(file_id("src/use_mid.ts"), file_id("src/shadow/mid.ts"));
+  const bool ok_method = imports(file_id("src/use_meth.ts"), id_of("src/meth/b.ts", "run", "function"));
   std::filesystem::remove_all(root);
   if (!ok_star) { std::cerr << "export * chain: service -> competitors missing (" << competitors << ")\n"; return 1; }
   if (!ok_alias) { std::cerr << "aliased named re-export: service -> widgets missing (" << widgets << ")\n"; return 1; }
@@ -838,7 +848,8 @@ int check_typescript_export_star() {
   if (!ok_cycle) { std::cerr << "a star cycle must terminate with the import on the barrel\n"; return 1; }
   if (!ok_combo) { std::cerr << "a named re-export before export * must not drop the star, nor a second alias\n"; return 1; }
   if (!ok_chain) { std::cerr << "a two-hop alias chain must reach the declaration under its source name\n"; return 1; }
-  if (!ok_shadow) { std::cerr << "a file's own overload set shadows a deeper star target\n"; return 1; }
+  if (!ok_shadow) { std::cerr << "a file's own overload set shadows a deeper star target, reached directly or through a barrel\n"; return 1; }
+  if (!ok_method) { std::cerr << "a class method must not stop a star search for a top-level function\n"; return 1; }
   return 0;
 }
 

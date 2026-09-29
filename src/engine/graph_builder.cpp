@@ -577,6 +577,31 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
       }
     }
     if (!reexported_by_file.empty() || !star_targets.empty()) {
+      // What each file declares at module level, by label (empty when declared
+      // more than once): declared_by_file_label minus class members, because a
+      // method `run()` is not an export and must not stop a star search for a
+      // top-level `run`. Methods are the targets of `method` containment edges
+      // or carry the extractor's `method` tag.
+      std::unordered_set<std::string> method_ids;
+      for (const auto& edge : graph.edges) {
+        if (edge.relation == "method") {
+          method_ids.insert(edge.target);
+        }
+      }
+      std::unordered_map<std::string, std::string> top_level_by_file_label;
+      for (const auto& node : graph.nodes) {
+        if (node.kind != "function" && node.kind != "class" && node.kind != "type" && node.kind != "variable") {
+          continue;
+        }
+        if (const auto tag = node.properties.find("method");
+            method_ids.contains(node.id) || (tag != node.properties.end() && tag->second == "true")) {
+          continue;
+        }
+        const auto [slot, inserted] = top_level_by_file_label.emplace(node.source_file + "\n" + node.label, node.id);
+        if (!inserted && slot->second != node.id) {
+          slot->second.clear();
+        }
+      }
       // The item stubs that fell back to a module file, keyed for the follow.
       for (const auto& node : graph.nodes) {
         if (node.kind != "import") {
@@ -626,12 +651,13 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
             if (step.depth > 8 || !seen.insert(step.file + "\n" + step.label).second) {
               continue;
             }
-            if (step.depth > 0) {
-              if (const auto declared = declared_by_file_label.find(source_of_file[step.file] + "\n" + step.label);
-                  declared != declared_by_file_label.end()) {
-                found.emplace(declared->second.empty() ? step.file : declared->second, step.label);
-                break;
-              }
+            // Checked at every depth, the starting barrel included: a file that
+            // declares the name itself (an overload set lands the import on it)
+            // never defers to its star targets.
+            if (const auto declared = top_level_by_file_label.find(source_of_file[step.file] + "\n" + step.label);
+                declared != top_level_by_file_label.end()) {
+              found.emplace(declared->second.empty() ? step.file : declared->second, step.label);
+              break;
             }
             if (const auto named = reexported_by_file.find(step.file); named != reexported_by_file.end()) {
               if (const auto reexp = named->second.find(make_id(step.label)); reexp != named->second.end()) {

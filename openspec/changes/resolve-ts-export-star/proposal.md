@@ -23,6 +23,7 @@ The area 7 measurement (`~/.agents/artifacts/2026-09-25/cgraph-context-engine-re
 
 - `export * as ns from` (a namespace object, not a merge of names).
 - CommonJS `module.exports = require(...)` re-exports.
+- Telling exported from non-exported top-level declarations: the graph records no export marker, so a non-exported `function helper()` in a star target stops the search there. A direct import behaves the same way today.
 - Resolving which duplicate wins when two star targets both declare the name: the first found in breadth-first order is taken, and ties at the same depth follow edge order.
 
 ## Impact
