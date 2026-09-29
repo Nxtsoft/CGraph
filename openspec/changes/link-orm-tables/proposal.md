@@ -9,7 +9,7 @@ The area 7 measurement (`~/.agents/artifacts/2026-09-25/cgraph-context-engine-re
 ## What Changes
 
 - The JavaScript/TypeScript extractor records a `maps_table` fact for each module-level `pgTable` / `mysqlTable` / `sqliteTable` declaration with a string-literal name. `resolve_contracts` turns it into a `maps_table` edge from the model variable to the migration's `sql_table` node, when one exists.
-- `trace_impact`, which serves `impact` and change-context's dependents, treats an endpoint as a dependent of the file that contains it. It reports a `service` node it reaches but does not walk through it, unless the service is the seed.
+- `trace_impact`, which serves `impact` and change-context's dependents, treats an endpoint as a dependent of the file that contains it, when the file is reached by a strong path: a seed, an import, or a climb from a module-level value such as a model. A climb from a function or an endpoint to its own file makes the rest of that path weak, and weakly reached files are reported without their routes, so impact from an ordinary function in a route file is unchanged. It reports a `service` node it reaches but does not walk through it, unless the service is the seed.
 
 ## Measured on turing-api
 
@@ -23,7 +23,11 @@ Area 7's harness (40 sampled tables, `cgraph seam query ... impact` from `sql_ta
 
 The graph has 12,369 nodes on both sides; this change adds 175 `maps_table` edges.
 
-The historical change-impact benchmark (`scripts/change_impact_benchmark.py`, six pinned Click, Flask and Requests changes, one repetition) was run against main and against a variant that also stopped the walk at a symbol's own file; both scored the same recall (1.000 and 0.667 for the two arms). That variant was dropped anyway: review showed it loses real dependents the benchmark does not cover, such as a module that calls `pkg.base.outer()` through `import pkg.base` (no resolved call edge), a resolved caller of a function enclosing the changed one, and endpoints of a route file that declares its own model.
+For impact seeded at an ordinary function, 30 functions sampled from turing-api's route files at default depth report the same 114 nodes and 38 endpoints on main and this change, and lose none. Before the strong/weak walk, the file-to-endpoint step made that 397 endpoints: every route in the function's file, then the inline routes of `app.ts`, which imports each route file to mount it.
+
+The historical change-impact benchmark (`scripts/change_impact_benchmark.py`, six pinned Click, Flask and Requests changes, one repetition) scores identically on main and this change for all three arms: the same required-file recall (`cgraph_primitives` 1.000, `change_context` 0.667), passes, known-negative hits and median unjudged files (26 and 13.5).
+
+An earlier version also stopped the walk at a symbol's own file (depth-5 precision 0.244). Review showed it loses real dependents the benchmark does not cover: a module calling `pkg.base.outer()` through `import pkg.base` (no resolved call edge), a resolved caller of a function enclosing the changed one, and the endpoints of a route file that declares its own model. It was dropped.
 
 ## Non-goals
 

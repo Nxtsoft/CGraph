@@ -177,9 +177,12 @@ is not minted, and `stats.json` counts it under `route_resolution.routes_unresol
 Database tables join the same walk. Every `CREATE TABLE` in a repo's `.sql` migrations is a
 `sql_table` node, and a Drizzle model declared with a literal name (`export const competitors =
 pgTable('competitors', …)`, likewise `mysqlTable` and `sqliteTable`) gets a `maps_table` edge to the
-table of that name. A dependents walk that reaches a file also reaches the endpoints the file
-serves, so `graph_impact` on `sql_table_competitors` goes table, model, the services importing it,
-their route files, and the routes. A seam `service` node is listed when reached but not walked
+table of that name. A dependents walk that reaches a file through an import, or from a
+module-level value it declares, also reaches the endpoints the file serves, so `graph_impact` on
+`sql_table_competitors` goes table, model, the services importing it, their route files, and the
+routes. Climbing from a function to its own file does not, and neither does anything reached only
+through that climb (such as the app file that mounts the route file): the function reaches the
+routes it affects through the calls into their handlers, not every route nearby. A seam `service` node is listed when reached but not walked
 through, so one consumer edge into it does not pull in every endpoint of that service.
 
 The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/publish\`, { method:

@@ -589,6 +589,52 @@ int main() {
     if (!from_w.contains("endpoint:GET /w") || from_w.at("endpoint:GET /w").depth != 3) {
       return 1;
     }
+    // A function in a route file reaches its file, but not the file's endpoints:
+    // the endpoints it affects are reached through calls into their handlers.
+    const std::vector<std::string> helper{"helper"};
+    const auto from_helper = cgraph::trace_impact(seam, helper, "dependents", "", 8);
+    if (!from_helper.contains("handler.ts") || from_helper.contains("endpoint:GET /t")) {
+      return 1;
+    }
+    // Nor through the handler's endpoint climbing back to the same file.
+    add("fmt", "function");
+    add("get_t", "function");
+    edge("handler.ts", "fmt", "contains");
+    edge("handler.ts", "get_t", "contains");
+    edge("get_t", "fmt", "CALLS");
+    edge("endpoint:GET /t", "get_t", "handled_by");
+    edge("handler.ts", "endpoint:GET /t2", "contains");
+    add("endpoint:GET /t2", "endpoint");
+    const std::vector<std::string> fmt{"fmt"};
+    const auto from_fmt = cgraph::trace_impact(seam, fmt, "dependents", "", 8);
+    if (!from_fmt.contains("endpoint:GET /t") || from_fmt.contains("endpoint:GET /t2")) {
+      return 1;
+    }
+    // An app file mounting the route file is still a dependent, as before, but
+    // its own inline routes are not: it was reached only through the container.
+    add("app.ts", "file");
+    add("endpoint:GET /health", "endpoint");
+    edge("app.ts", "handler.ts", "imports_from");
+    edge("app.ts", "endpoint:GET /health", "contains");
+    const auto fmt_app = cgraph::trace_impact(seam, fmt, "dependents", "", 8);
+    if (!fmt_app.contains("app.ts") || fmt_app.contains("endpoint:GET /health")) {
+      return 1;
+    }
+    // A changed file seed serves its endpoints directly.
+    const std::vector<std::string> handler_file{"handler.ts"};
+    const auto from_file = cgraph::trace_impact(seam, handler_file, "dependents", "", 1);
+    if (!from_file.contains("endpoint:GET /t") || from_file.at("endpoint:GET /t").depth != 1) {
+      return 1;
+    }
+    // The file serves its endpoints once anything else reaches it, even after the
+    // function climb already expanded it, whichever seed comes first.
+    for (const auto& seeds : {std::vector<std::string>{"helper", "sql_table:t"},
+                              std::vector<std::string>{"sql_table:t", "helper"}}) {
+      const auto both = cgraph::trace_impact(seam, seeds, "dependents", "", 8);
+      if (!both.contains("endpoint:GET /t") || both.at("endpoint:GET /t").depth != 3) {
+        return 1;
+      }
+    }
     // A hub given as the seed is still expanded: impact of the service itself.
     const std::vector<std::string> hub{"service:api"};
     if (!cgraph::trace_impact(seam, hub, "dependents", "", 1).contains("endpoint:GET /other")) {
