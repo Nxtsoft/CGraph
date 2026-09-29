@@ -811,7 +811,8 @@ public class OrderController {
 
 // Only methods of a concrete controller class are handlers. An interface (an
 // openapi-generator API, a Feign client that CALLS the route), an object, a
-// companion object and a top-level function mint nothing, and neither does a
+// companion object, an abstract or sealed base class and a top-level function
+// mint nothing, and neither does a
 // path that is not one plain literal. Kotlin's several positional paths, a
 // non-HTTP *Mapping placed first, arrayOf(...), a qualified annotation name and
 // a Java record all still mint.
@@ -870,6 +871,24 @@ class ShapesController {
 public interface OrdersApi {
     @GetMapping("/orders")
     String orders();
+}
+)java"},
+      {"src/main/kotlin/Bases.kt", R"kt(
+abstract class CrudController<T> {
+    @GetMapping("/{id}")
+    fun get(@PathVariable id: String): T? = null
+}
+
+@RequestMapping("/sealed")
+sealed class SealedController {
+    @GetMapping("/s")
+    fun s() = "s"
+}
+)kt"},
+      {"src/main/java/AbstractCtl.java", R"java(
+public abstract class AbstractCtl {
+    @GetMapping("/{id}")
+    public String get(String id) { return id; }
 }
 )java"},
       {"src/main/java/StatusController.java", R"java(

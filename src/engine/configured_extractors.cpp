@@ -495,6 +495,28 @@ struct SpringMapping {
   return false;
 }
 
+// Whether a class declaration is abstract, sealed or an enum: Spring never
+// instantiates it as a controller bean, so a mapping on it is inherited by
+// subclasses under THEIR prefix, and minting it here would give a wrong path.
+// Kotlin spells these as `inheritance_modifier`/`class_modifier` nodes inside
+// `modifiers`, Java as keyword tokens there; reading each modifier's text
+// serves both.
+[[nodiscard]] bool is_non_instantiable_class(const TSNode& declaration, std::string_view source) {
+  for (std::uint32_t i = 0; i < ts_node_named_child_count(declaration); ++i) {
+    const auto child = ts_node_named_child(declaration, i);
+    if (std::string_view(ts_node_type(child)) != "modifiers") {
+      continue;
+    }
+    for (std::uint32_t j = 0; j < ts_node_child_count(child); ++j) {
+      const auto modifier = go_node_text(ts_node_child(child, j), source);
+      if (modifier == "abstract" || modifier == "sealed" || modifier == "enum") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Which enclosing declarations count, per language. Spring routes only methods
 // of a concrete controller class: a method whose nearest enclosing type is an
 // interface (an openapi-generator API, a Feign client that CALLS the route), an
@@ -538,7 +560,7 @@ void spring_route_relations(const TSNode& node, const ExtractionContext& context
     if (std::ranges::find(scopes.classes, type) == scopes.classes.end()) {
       continue;
     }
-    if (has_interface_keyword(parent)) {
+    if (has_interface_keyword(parent) || is_non_instantiable_class(parent, context.source)) {
       return;
     }
     for (const auto& annotation : declaration_annotations(parent, context.source)) {
