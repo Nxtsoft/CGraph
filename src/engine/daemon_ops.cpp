@@ -2336,7 +2336,7 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
   while (!frontier.empty()) {
     const auto [id, strong] = frontier.front();
     frontier.pop();
-    const auto from = (strong ? strong_reach : weak_reach).at(id);
+    const auto& from = (strong ? strong_reach : weak_reach).at(id);
     if (from.depth >= max_depth) continue;
     if (from.depth > 0 && hubs.contains(id)) continue;
     const auto step = [&](const Link& link, bool to_strong) {
