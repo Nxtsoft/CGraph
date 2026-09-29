@@ -174,6 +174,14 @@ on a handler reaches its endpoint. Chains mounted twice serve their routes twice
 router the file only receives as a function parameter (`function register(app) { app.get(…) }`)
 is not minted, and `stats.json` counts it under `route_resolution.routes_unresolved`.
 
+Database tables join the same walk. Every `CREATE TABLE` in a repo's `.sql` migrations is a
+`sql_table` node, and a Drizzle model declared with a literal name (`export const competitors =
+pgTable('competitors', …)`, likewise `mysqlTable` and `sqliteTable`) gets a `maps_table` edge to the
+table of that name. A dependents walk that reaches a file also reaches the endpoints the file
+serves, so `graph_impact` on `sql_table_competitors` goes table, model, the services importing it,
+their route files, and the routes. A seam `service` node is listed when reached but not walked
+through, so one consumer edge into it does not pull in every endpoint of that service.
+
 The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/publish\`, { method:
 'POST' })`, an openapi-fetch `api.GET('/api/v1/projects/{id}', …)`, an `axios.post(…)`, and a call
 through a path wrapper (`apiFetch(path)` whose own `fetch(\`${base}${path}\`)` appends its first

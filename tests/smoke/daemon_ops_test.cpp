@@ -553,8 +553,7 @@ int main() {
     edge("endpoint:GET /t", "service:api", "SERVED_BY");
     edge("endpoint:GET /other", "service:api", "SERVED_BY");
     edge("service:api", "endpoint:GET /t", "CONSUMES");
-    // The model's own file is re-exported by a barrel that an unrelated file
-    // imports for some other name.
+    // The model's own file is re-exported by a barrel another file imports.
     edge("schema.ts", "model", "contains");
     edge("barrel.ts", "schema.ts", "re_exports");
     edge("unrelated.ts", "barrel.ts", "imports_from");
@@ -571,14 +570,23 @@ int main() {
     if (at("service:api") != 4 || reached.contains("endpoint:GET /other") || reached.contains("other.ts")) {
       return 1;  // the service hub was walked through
     }
-    // Climbing from the model to the file that declares it reports the file but
-    // goes no further: its barrel's importers reach the model by name if they use it.
-    if (at("schema.ts") != 2 || reached.contains("barrel.ts") || reached.contains("unrelated.ts")) {
+    // The model's own file is walked through as before: an importer of the
+    // barrel may call the model through a module attribute the graph never
+    // resolved, so it stays a dependent.
+    if (at("schema.ts") != 2 || at("barrel.ts") != 3 || at("unrelated.ts") != 4) {
       return 1;
     }
-    // A file seed still reaches its re-exporters and their importers.
-    const std::vector<std::string> schema{"schema.ts"};
-    if (!cgraph::trace_impact(seam, schema, "dependents", "", 2).contains("unrelated.ts")) {
+    // A model declared in its own route file reaches that file's endpoint.
+    add("sql_table:w", "sql_table");
+    add("routes.ts", "file");
+    add("widgets", "variable");
+    add("endpoint:GET /w", "endpoint");
+    edge("widgets", "sql_table:w", "maps_table");
+    edge("routes.ts", "widgets", "contains");
+    edge("routes.ts", "endpoint:GET /w", "contains");
+    const std::vector<std::string> widgets{"sql_table:w"};
+    const auto from_w = cgraph::trace_impact(seam, widgets, "dependents", "", 8);
+    if (!from_w.contains("endpoint:GET /w") || from_w.at("endpoint:GET /w").depth != 3) {
       return 1;
     }
     // A hub given as the seed is still expanded: impact of the service itself.
