@@ -19,6 +19,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Full default suite.
-- [ ] 4.2 Real flow: re-run the 2026-09-29 probe (Turing and ModSquad) with the new binary; the cold scenario returns its nodes on the first ask, `POST /oracles` and `GET /items`-style truncations are gone, the typed awaited idp-front-end calls appear, and the fused graph holds both `src_db_client_ts` nodes.
-- [ ] 4.3 OpenSpec validation.
+- [x] 4.1 Full default suite: 83 of 84, the one failure `cgraph_file_watcher_test` (fails on mars at origin/main too, passes in CI).
+- [x] 4.2 Real flow: re-ran the 2026-09-29 probe on the eight pinned repositories. With no daemon running, the first workspace `impact` on `GET /api/v1/org/stats` returned 9 nodes from turing-api and turing-webapp after a 22.5 s wait (bin-v0.6.4: `total: 0`). Seam discover matches 426 Turing endpoints (unchanged) and 228 ModSquad (was 124). The ModSquad login scenario now reaches idp-front-end's `app/api/auth/login/route.ts` at depth 2 (bin-v0.6.4 returned only tests and the mock server). `POST /oracles`, `POST /runs` and `GET /cluster` are no longer minted. The fused Turing graph holds `turing-api::src_db_client_ts` (304 imports) and `turing-agents::src_db_client_ts` (1) where it held one node with 305.
+- [x] 4.3 OpenSpec validation (`--strict`).
