@@ -1,5 +1,6 @@
 #include "cgraph/configured_extractors.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/cpp_extractor.hpp"
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/non_grammar_extractors.hpp"
@@ -11,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -289,6 +292,246 @@ void java_member_handler(const TSNode& node, const ExtractionContext& context,
   return {};
 }
 
+// --- Spring MVC request mappings (Kotlin and Java) ---------------------------
+// A method annotated @GetMapping/@PostMapping/@PutMapping/@DeleteMapping/
+// @PatchMapping, or @RequestMapping with a `method`, is an HTTP handler whose
+// path is the enclosing class's @RequestMapping prefix joined with its own. The
+// path is absolute (no router chain to compose), so it is emitted as a
+// `file_route` fact, which resolve_contracts turns into an endpoint handled by
+// the method. The annotation's source text is parsed rather than its tree, so
+// one parser serves both grammars. A path that is not a string literal (a
+// constant, a template), or a method-level @RequestMapping without a method,
+// emits nothing: an endpoint with a wrong path is worse than none.
+
+struct SpringAnnotation {
+  std::string name;                 // simple name: "GetMapping", "RequestMapping", ...
+  std::vector<std::string> args;    // top-level arguments, verbatim
+};
+
+// Splits `text` at top-level commas, ignoring commas inside quotes and brackets.
+[[nodiscard]] std::vector<std::string> split_top_level(std::string_view text) {
+  std::vector<std::string> parts;
+  std::string current;
+  int depth = 0;
+  bool quoted = false;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char ch = text[i];
+    if (quoted) {
+      current.push_back(ch);
+      if (ch == '\\' && i + 1 < text.size()) {
+        current.push_back(text[++i]);
+      } else if (ch == '"') {
+        quoted = false;
+      }
+      continue;
+    }
+    if (ch == '"') {
+      quoted = true;
+    } else if (ch == '(' || ch == '[' || ch == '{') {
+      ++depth;
+    } else if (ch == ')' || ch == ']' || ch == '}') {
+      --depth;
+    } else if (ch == ',' && depth == 0) {
+      parts.push_back(std::move(current));
+      current.clear();
+      continue;
+    }
+    current.push_back(ch);
+  }
+  parts.push_back(std::move(current));
+  for (auto& part : parts) {
+    const auto first = part.find_first_not_of(" \t\r\n");
+    const auto last = part.find_last_not_of(" \t\r\n");
+    part = first == std::string::npos ? std::string{} : part.substr(first, last - first + 1);
+  }
+  std::erase_if(parts, [](const std::string& part) { return part.empty(); });
+  return parts;
+}
+
+[[nodiscard]] std::optional<SpringAnnotation> parse_spring_annotation(std::string_view text) {
+  if (text.empty() || text.front() != '@') {
+    return std::nullopt;
+  }
+  std::size_t end = 1;
+  while (end < text.size() && (std::isalnum(static_cast<unsigned char>(text[end])) != 0 || text[end] == '_' || text[end] == '.')) {
+    ++end;
+  }
+  auto qualified = text.substr(1, end - 1);
+  SpringAnnotation annotation{.name = std::string(qualified.substr(qualified.rfind('.') == std::string_view::npos ? 0 : qualified.rfind('.') + 1)), .args = {}};
+  const auto open = text.find('(', end);
+  const auto close = text.rfind(')');
+  if (open != std::string_view::npos && close != std::string_view::npos && close > open) {
+    annotation.args = split_top_level(text.substr(open + 1, close - open - 1));
+  }
+  return annotation;
+}
+
+// The string literals of a Spring path value: "x", ["x", "y"], {"x", "y"} or
+// arrayOf("x"). nullopt when any element is not a plain literal.
+[[nodiscard]] std::optional<std::vector<std::string>> spring_path_literals(std::string_view value) {
+  std::string_view inner = value;
+  if (inner.starts_with("arrayOf(") && inner.ends_with(")")) {
+    inner = inner.substr(8, inner.size() - 9);
+  } else if ((inner.starts_with("[") && inner.ends_with("]")) || (inner.starts_with("{") && inner.ends_with("}"))) {
+    inner = inner.substr(1, inner.size() - 2);
+  }
+  std::vector<std::string> paths;
+  for (const auto& element : split_top_level(inner)) {
+    if (element.size() < 2 || element.front() != '"' || element.back() != '"' ||
+        element.find('$') != std::string::npos) {
+      return std::nullopt;
+    }
+    paths.push_back(element.substr(1, element.size() - 2));
+  }
+  if (paths.empty()) {
+    paths.emplace_back();  // `[]` / `{}`: the prefix alone
+  }
+  return paths;
+}
+
+struct SpringMapping {
+  std::vector<std::string> verbs;   // lowercase; empty for a method-less @RequestMapping
+  std::vector<std::string> paths;   // "" means the prefix alone
+};
+
+// The mapping an annotation declares, or nullopt when it is not a mapping or its
+// path cannot be read literally.
+[[nodiscard]] std::optional<SpringMapping> spring_mapping(const SpringAnnotation& annotation) {
+  static constexpr std::pair<std::string_view, std::string_view> kVerbs[] = {
+      {"GetMapping", "get"}, {"PostMapping", "post"}, {"PutMapping", "put"},
+      {"DeleteMapping", "delete"}, {"PatchMapping", "patch"}, {"RequestMapping", ""}};
+  const auto verb = std::ranges::find(kVerbs, annotation.name, &std::pair<std::string_view, std::string_view>::first);
+  if (verb == std::end(kVerbs)) {
+    return std::nullopt;
+  }
+  SpringMapping mapping;
+  if (!verb->second.empty()) {
+    mapping.verbs.emplace_back(verb->second);
+  }
+  std::optional<std::vector<std::string>> paths = std::vector<std::string>{""};
+  bool have_path = false;
+  for (const auto& arg : annotation.args) {
+    const auto equals = arg.find('=');
+    const bool named = equals != std::string::npos && arg.find('"') > equals;
+    if (!named) {
+      if (!have_path) {
+        paths = spring_path_literals(arg);
+        have_path = true;
+      }
+      continue;
+    }
+    auto key = arg.substr(0, equals);
+    key.erase(key.find_last_not_of(" \t") + 1);
+    auto value = std::string_view(arg).substr(equals + 1);
+    value.remove_prefix(std::min(value.find_first_not_of(" \t"), value.size()));
+    if (key == "value" || key == "path") {
+      paths = spring_path_literals(value);
+      have_path = true;
+    } else if (key == "method") {
+      std::string_view list = value;
+      if ((list.starts_with("[") && list.ends_with("]")) || (list.starts_with("{") && list.ends_with("}"))) {
+        list = list.substr(1, list.size() - 2);
+      }
+      for (const auto& item : split_top_level(list)) {
+        auto name = item.substr(item.rfind('.') == std::string::npos ? 0 : item.rfind('.') + 1);
+        std::ranges::transform(name, name.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (is_http_verb(name)) {
+          mapping.verbs.push_back(std::move(name));
+        }
+      }
+    }
+  }
+  if (!paths) {
+    return std::nullopt;
+  }
+  mapping.paths = std::move(*paths);
+  return mapping;
+}
+
+// Annotations on a declaration: the annotation children of its `modifiers`.
+[[nodiscard]] std::vector<SpringAnnotation> declaration_annotations(const TSNode& declaration, std::string_view source) {
+  std::vector<SpringAnnotation> annotations;
+  for (std::uint32_t i = 0; i < ts_node_named_child_count(declaration); ++i) {
+    const auto child = ts_node_named_child(declaration, i);
+    if (std::string_view(ts_node_type(child)) != "modifiers") {
+      continue;
+    }
+    for (std::uint32_t j = 0; j < ts_node_named_child_count(child); ++j) {
+      const auto modifier = ts_node_named_child(child, j);
+      if (std::string_view(ts_node_type(modifier)).find("annotation") == std::string_view::npos) {
+        continue;
+      }
+      if (auto parsed = parse_spring_annotation(go_node_text(modifier, source))) {
+        annotations.push_back(std::move(*parsed));
+      }
+    }
+  }
+  return annotations;
+}
+
+void spring_route_relations(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
+                            std::vector<RawRelation>& out, std::span<const std::string_view> method_types,
+                            std::span<const std::string_view> class_types) {
+  if (std::ranges::find(method_types, std::string_view(ts_node_type(node))) == method_types.end()) {
+    return;
+  }
+  std::optional<SpringMapping> method_mapping;
+  for (const auto& annotation : declaration_annotations(node, context.source)) {
+    if (annotation.name.ends_with("Mapping")) {
+      method_mapping = spring_mapping(annotation);
+      break;
+    }
+  }
+  if (!method_mapping || method_mapping->verbs.empty()) {
+    return;
+  }
+  // The nearest enclosing class's @RequestMapping supplies the prefix(es).
+  std::vector<std::string> prefixes{""};
+  for (auto parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
+    if (std::ranges::find(class_types, std::string_view(ts_node_type(parent))) == class_types.end()) {
+      continue;
+    }
+    for (const auto& annotation : declaration_annotations(parent, context.source)) {
+      if (annotation.name == "RequestMapping") {
+        const auto class_mapping = spring_mapping(annotation);
+        if (!class_mapping) {
+          return;  // an unreadable prefix: every path under it is unknowable
+        }
+        prefixes = class_mapping->paths;
+      }
+    }
+    break;
+  }
+  for (const auto& prefix : prefixes) {
+    for (const auto& path : method_mapping->paths) {
+      const auto full = join_route_path(prefix.empty() ? "/" : prefix, path);
+      for (const auto& verb : method_mapping->verbs) {
+        out.push_back(RawRelation{
+            .source_id = node_id,
+            .target_label = {},
+            .relation = "file_route",  // the annotation's path is absolute: no chain to compose
+            .context = verb + " " + full,
+            .source_file = context.source_file,
+        });
+      }
+    }
+  }
+}
+
+void kotlin_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
+                             std::vector<RawRelation>& out) {
+  static constexpr std::string_view kMethods[] = {"function_declaration"};
+  static constexpr std::string_view kClasses[] = {"class_declaration", "object_declaration"};
+  spring_route_relations(node, context, node_id, out, kMethods, kClasses);
+}
+
+void java_relation_handler(const TSNode& node, const ExtractionContext& context, const std::string& node_id,
+                           std::vector<RawRelation>& out) {
+  static constexpr std::string_view kMethods[] = {"method_declaration"};
+  static constexpr std::string_view kClasses[] = {"class_declaration", "record_declaration"};
+  spring_route_relations(node, context, node_id, out, kMethods, kClasses);
+}
+
 [[nodiscard]] LanguageConfig java_config() {
   LanguageConfig config{
       .name = "java",
@@ -314,6 +557,7 @@ void java_member_handler(const TSNode& node, const ExtractionContext& context,
   config.extract_members = true;
   config.member_handler = java_member_handler;
   config.resolve_callee_name = java_callee_name;
+  config.relation_handler = java_relation_handler;
   return config;
 }
 
@@ -453,6 +697,7 @@ void java_member_handler(const TSNode& node, const ExtractionContext& context,
   };
   config.resolve_callee_name = kotlin_callee_name;
   config.resolve_function_name = kotlin_symbol_name;
+  config.relation_handler = kotlin_relation_handler;
   return config;
 }
 

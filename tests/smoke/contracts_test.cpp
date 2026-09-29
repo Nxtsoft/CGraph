@@ -1,5 +1,6 @@
 #include "cgraph/contracts.hpp"
 
+#include "cgraph/configured_extractors.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/normalize.hpp"
@@ -29,9 +30,11 @@ Built build(const std::vector<std::pair<std::string, std::string>>& files) {
   std::vector<cgraph::Fragment> fragments;
   std::vector<cgraph::RawRelation> relations;
   for (const auto& [path, source] : files) {
-    const auto result = path.ends_with(".js")
-                            ? cgraph::extract_javascript({.source_file = path, .relative_path = path, .source = source})
-                            : cgraph::extract_typescript({.source_file = path, .relative_path = path, .source = source});
+    const cgraph::ExtractionContext context{.source_file = path, .relative_path = path, .source = source};
+    const auto result = path.ends_with(".kt")     ? *cgraph::extract_configured_language(cgraph::DetectedLanguage::Kotlin, context)
+                        : path.ends_with(".java") ? *cgraph::extract_configured_language(cgraph::DetectedLanguage::Java, context)
+                        : path.ends_with(".js")   ? cgraph::extract_javascript(context)
+                                                  : cgraph::extract_typescript(context);
     fragments.push_back(result.fragment);
     relations.insert(relations.end(), result.raw_relations.begin(), result.raw_relations.end());
   }
@@ -702,6 +705,110 @@ cache.get('x');
 
 }  // namespace
 
+// Spring MVC: a method's @GetMapping/@PostMapping/... (or @RequestMapping with a
+// method) under the class-level @RequestMapping prefix is a file-routed endpoint
+// handled by the method, in Kotlin and in Java. A path that is not a literal, or a
+// method-level @RequestMapping with no method, mints nothing: a wrong endpoint is
+// worse than none.
+int test_spring_mappings() {
+  const auto built = build({
+      {"src/main/kotlin/UserController.kt", R"kt(
+@RestController
+@RequestMapping("/api/v1/users")
+class UserController(private val users: UserService) {
+    @GetMapping
+    fun list(): List<User> = users.all()
+
+    @GetMapping("/{id}", produces = [MediaType.APPLICATION_JSON_VALUE])
+    fun get(@PathVariable id: String): User = users.find(id)
+
+    @PostMapping("/{id}/roles", consumes = [MediaType.APPLICATION_JSON_VALUE])
+    fun addRole(@PathVariable id: String) { users.addRole(id) }
+
+    @RequestMapping(value = ["/sync", "/resync"], method = [RequestMethod.PUT])
+    fun sync() { users.sync() }
+
+    @GetMapping(ApiPaths.EXPORT)
+    fun export() { users.export() }
+
+    @RequestMapping("/any")
+    fun any() { users.any() }
+
+    fun helper() { users.helper() }
+}
+)kt"},
+      {"src/main/kotlin/HealthController.kt", R"kt(
+@RestController
+class HealthController {
+    @GetMapping("/health")
+    fun health(): String = "ok"
+}
+)kt"},
+      {"src/main/java/OrderController.java", R"java(
+@RestController
+@RequestMapping(path = "/api/orders")
+public class OrderController {
+    @GetMapping(value = {"", "/all"})
+    public List<Order> list() { return null; }
+
+    @DeleteMapping("/{orderId}")
+    public void delete(@PathVariable String orderId) { }
+
+    @RequestMapping(value = "/legacy", method = RequestMethod.POST)
+    public void legacy() { }
+}
+)java"},
+      {"web/users.ts", "export async function loadUsers() {\n  return fetch('/api/v1/users');\n}\n"},
+  });
+  const auto& graph = built.graph;
+  const char* expected[] = {
+      "GET /api/v1/users", "GET /api/v1/users/{id}", "POST /api/v1/users/{id}/roles",
+      "PUT /api/v1/users/sync", "PUT /api/v1/users/resync", "GET /health",
+      "GET /api/orders", "GET /api/orders/all", "DELETE /api/orders/{orderId}", "POST /api/orders/legacy",
+  };
+  for (const auto* label : expected) {
+    if (endpoint(graph, label) == nullptr) {
+      for (const auto& node : graph.nodes) {
+        if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << '\n';
+      }
+      return fail(std::string("missing Spring endpoint ") + label);
+    }
+  }
+  if (endpoints(graph) != std::size(expected)) {
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint") std::cerr << "  endpoint: " << node.label << '\n';
+    }
+    return fail("a constant path or a method-less @RequestMapping must mint no endpoint");
+  }
+  const auto* get = endpoint(graph, "GET /api/v1/users/{id}");
+  if (get->id != "endpoint:GET /api/v1/users/{}") {
+    return fail("a Spring endpoint id uses the canonical {} form: " + get->id);
+  }
+  const auto handler_of = [&](const cgraph::Node* ep, std::string_view label) {
+    for (const auto& edge : graph.edges) {
+      if (edge.source != ep->id || edge.relation != "handled_by") continue;
+      for (const auto& node : graph.nodes) {
+        if (node.id == edge.target && node.label.find(label) != std::string::npos) return true;
+      }
+    }
+    return false;
+  };
+  if (!handler_of(get, "get") || !handler_of(endpoint(graph, "PUT /api/v1/users/resync"), "sync") ||
+      !handler_of(endpoint(graph, "DELETE /api/orders/{orderId}"), "delete")) {
+    return fail("each Spring endpoint is handled_by its annotated method");
+  }
+  // The TypeScript client's fetch links to the Kotlin endpoint.
+  bool consumed = false;
+  const auto* list = endpoint(graph, "GET /api/v1/users");
+  for (const auto& edge : graph.edges) {
+    consumed = consumed || (edge.relation == "CONSUMES" && edge.target == list->id);
+  }
+  if (!consumed) {
+    return fail("a client fetch of the path consumes the Spring endpoint");
+  }
+  return 0;
+}
+
 int main() {
   int failures = 0;
   failures += test_join_route_path();
@@ -717,5 +824,6 @@ int main() {
   failures += test_documented_endpoint_joins();
   failures += test_mount_cycle_terminates();
   failures += test_no_routes_no_change();
+  failures += test_spring_mappings();
   return failures == 0 ? 0 : 1;
 }
