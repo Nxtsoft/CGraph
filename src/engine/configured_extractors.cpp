@@ -771,8 +771,8 @@ void java_relation_handler(const TSNode& node, const ExtractionContext& context,
 //           patch/delete/head/options member call on a receiver named like an
 //           HTTP client (`client`, `httpClient`, `api`); the verb is the member.
 //   Go      `http.Get(url)`, `http.NewRequest(method, url, body)`, and any call
-//           passing a method (`http.MethodPost` or a literal "POST") directly
-//           followed by the URL: `c.Do(ctx, http.MethodPost, "/api/v1/x", b)`.
+//           passing a context, then a method (`http.MethodPost` or a literal
+//           "POST"), then a URL: `c.Do(ctx, http.MethodPost, "/api/v1/x", b)`.
 // A call whose URL is the enclosing function's parameter makes that function a
 // wrapper (`postAuth(ctx, path, req)` -> `c.Do(ctx, http.MethodPost, path, b)`),
 // and a call to a function with a path-literal argument (`c.postAuth(ctx,
@@ -885,12 +885,14 @@ struct ClientUrl {
   return text;
 }
 
-// The receiver of `X.get(url)` is an HTTP client when its name says so, so a
-// `map.get("/key")` or a `cache.delete(key)` is never read as a request.
+// The receiver of `X.get(url)` is an HTTP client when its name ends in one
+// (`client`, `httpClient`, `http`, `api`, `authApi`), so a `map.get("/key")` or
+// a `cache.delete(key)` is never read as a request. A name that only contains
+// the word is something else holding clients or HTTP data: `clients.get(key)`
+// (a map), `clientRepository.get(id)`, `httpCache.get(key)`.
 [[nodiscard]] bool names_http_client(std::string_view receiver) {
   const auto lower = lower_ascii(std::string(receiver));
-  return lower.find("client") != std::string::npos || lower.find("http") != std::string::npos ||
-         lower == "api" || lower.ends_with("api");
+  return lower.ends_with("client") || lower.ends_with("http") || lower.ends_with("api");
 }
 
 [[nodiscard]] TSNode named_child_of_type(const TSNode& node, std::string_view type) {
@@ -947,19 +949,48 @@ void emit_wrapper_call(const ExtractionContext& context, const std::string& func
   });
 }
 
-// Kotlin: the parameters of the nearest enclosing named function. A lambda in
-// between (`request(send = { token -> client.post(...) })`) is its own scope:
-// its parameters are not the function's, so none count as a wrapper tail.
+// The parameters of the named function a call sits in, less every name a
+// lambda in between declares. A wrapper often runs its request inside one
+// (`= withContext(Dispatchers.IO) { client.post("$baseUrl$path") }`, `retry(func()
+// error { c.Do(ctx, method, path, body) })`): the function's `path` is still the
+// tail it appends. A lambda's own parameter (`ids.map { path -> ... }`) is a
+// value, not the function's argument, and shadows a function parameter so named.
+[[nodiscard]] std::vector<std::string> without_shadowed(std::vector<std::string> names,
+                                                        const std::vector<std::string>& shadowed) {
+  std::erase_if(names, [&](const std::string& name) { return std::ranges::find(shadowed, name) != shadowed.end(); });
+  return names;
+}
+
+// Kotlin: see without_shadowed. A lambda without declared parameters binds `it`.
 [[nodiscard]] std::vector<std::string> kotlin_enclosing_parameters(const TSNode& node, std::string_view source) {
-  std::vector<std::string> names;
+  std::vector<std::string> shadowed;
   for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
     const std::string_view type = ts_node_type(ancestor);
-    if (type == "lambda_literal" || type == "anonymous_function") {
-      return names;
-    }
-    if (type != "function_declaration") {
+    if (type == "lambda_literal") {
+      const TSNode parameters = named_child_of_type(ancestor, "lambda_parameters");
+      if (ts_node_is_null(parameters)) {
+        shadowed.emplace_back("it");
+        continue;
+      }
+      for (std::uint32_t index = 0; index < ts_node_named_child_count(parameters); ++index) {
+        const TSNode parameter = ts_node_named_child(parameters, index);
+        const std::string_view parameter_type = ts_node_type(parameter);
+        if (parameter_type == "variable_declaration") {
+          shadowed.push_back(go_node_text(named_child_of_type(parameter, "simple_identifier"), source));
+        } else if (parameter_type == "multi_variable_declaration") {  // `{ (key, value) -> ... }`
+          for (std::uint32_t n = 0; n < ts_node_named_child_count(parameter); ++n) {
+            shadowed.push_back(
+                go_node_text(named_child_of_type(ts_node_named_child(parameter, n), "simple_identifier"), source));
+          }
+        }
+      }
       continue;
     }
+    const bool anonymous = type == "anonymous_function";
+    if (!anonymous && type != "function_declaration") {
+      continue;
+    }
+    std::vector<std::string> names;
     const TSNode parameters = named_child_of_type(ancestor, "function_value_parameters");
     const auto count = ts_node_named_child_count(parameters);
     for (std::uint32_t index = 0; index < count; ++index) {
@@ -968,9 +999,13 @@ void emit_wrapper_call(const ExtractionContext& context, const std::string& func
         names.push_back(go_node_text(named_child_of_type(parameter, "simple_identifier"), source));
       }
     }
-    return names;
+    if (anonymous) {  // `fun(path: String) { ... }` is a lambda too
+      shadowed.insert(shadowed.end(), names.begin(), names.end());
+      continue;
+    }
+    return without_shadowed(std::move(names), shadowed);
   }
-  return names;
+  return {};
 }
 
 void kotlin_collect_url(const TSNode& node, std::string_view source, const std::vector<std::string>& parameters,
@@ -1233,18 +1268,17 @@ void go_relation_handler(const TSNode& node, const ExtractionContext& context, c
   });
 }
 
-// Go: the parameter names of the nearest enclosing function or method. A
-// function literal in between is its own scope (see kotlin_enclosing_parameters).
+// Go: the parameter names of the enclosing function or method, less those a
+// function literal in between declares (see without_shadowed).
 [[nodiscard]] std::vector<std::string> go_enclosing_parameters(const TSNode& node, std::string_view source) {
-  std::vector<std::string> names;
+  std::vector<std::string> shadowed;
   for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
     const std::string_view type = ts_node_type(ancestor);
-    if (type == "func_literal") {
-      return names;
-    }
-    if (type != "function_declaration" && type != "method_declaration") {
+    const bool literal = type == "func_literal";
+    if (!literal && type != "function_declaration" && type != "method_declaration") {
       continue;
     }
+    std::vector<std::string> names;
     const TSNode parameters = ts_node_child_by_field_name(ancestor, "parameters", 10);
     const auto count = ts_node_named_child_count(parameters);
     for (std::uint32_t index = 0; index < count; ++index) {
@@ -1257,9 +1291,13 @@ void go_relation_handler(const TSNode& node, const ExtractionContext& context, c
         }
       }
     }
-    return names;
+    if (literal) {
+      shadowed.insert(shadowed.end(), names.begin(), names.end());
+      continue;
+    }
+    return without_shadowed(std::move(names), shadowed);
   }
-  return names;
+  return {};
 }
 
 // The text of a Go string literal, or nullopt for anything else.
@@ -1324,6 +1362,50 @@ void go_collect_url(const TSNode& node, std::string_view source, const std::vect
   return is_http_verb(lower) && lower != "all" ? upper_ascii(name) : std::string{};
 }
 
+// Whether an argument is a context.Context: `ctx`, `reqCtx`, `s.ctx`,
+// `cmd.Context()`, `r.Context()`, `context.Background()`.
+[[nodiscard]] bool go_context_argument(const TSNode& argument, std::string_view source) {
+  const std::string_view type = ts_node_type(argument);
+  const auto names_context = [](std::string name) {
+    name = lower_ascii(std::move(name));
+    return name.ends_with("ctx") || name == "context";
+  };
+  if (type == "identifier") {
+    return names_context(go_node_text(argument, source));
+  }
+  if (type == "selector_expression") {
+    return names_context(go_node_text(ts_node_child_by_field_name(argument, "field", 5), source));
+  }
+  if (type != "call_expression") {
+    return false;
+  }
+  const TSNode function = ts_node_child_by_field_name(argument, "function", 8);
+  if (std::string_view(ts_node_type(function)) != "selector_expression") {
+    return false;
+  }
+  return go_node_text(ts_node_child_by_field_name(function, "field", 5), source) == "Context" ||
+         go_node_text(ts_node_child_by_field_name(function, "operand", 7), source) == "context";
+}
+
+// Whether the argument after a verb can be a URL: a string literal only when it
+// reads as a path or an absolute URL (`"rev-parse"` is a git subcommand); any
+// expression a URL may be held in or built by (`path`, `n.Base+"/import"`,
+// `n.itemPath(id)`); nothing else (`nil`, a number, a composite literal).
+[[nodiscard]] bool go_url_like(const TSNode& argument, std::string_view source) {
+  const std::string_view type = ts_node_type(argument);
+  if (const auto text = go_string_value(argument, source)) {
+    return text->starts_with('/') || text->starts_with("http://") || text->starts_with("https://");
+  }
+  if (type == "binary_expression") {
+    return go_url_like(ts_node_child_by_field_name(argument, "left", 4), source);
+  }
+  if (type == "parenthesized_expression" && ts_node_named_child_count(argument) == 1) {
+    return go_url_like(ts_node_named_child(argument, 0), source);
+  }
+  return type == "identifier" || type == "selector_expression" || type == "call_expression" ||
+         type == "index_expression";
+}
+
 void go_http_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
                   std::vector<RawRelation>& out) {
   if (std::string_view(ts_node_type(node)) != "call_expression") {
@@ -1360,6 +1442,18 @@ void go_http_walk(const TSNode& node, const ExtractionContext& context, const st
   } else {
     return;
   }
+  // httptest builds the server-side request a handler test feeds its handler
+  // (`httptest.NewRequest("GET", "/api/v1/users", nil)`): nothing is sent.
+  if (package == "httptest") {
+    return;
+  }
+  // A handler argument: a route registration (`r.Get("/x", func(w, r) {...})`)
+  // or a callback API, never a request -- the JavaScript extractor's rule.
+  if (std::ranges::any_of(args, [](const TSNode& argument) {
+        return std::string_view(ts_node_type(argument)) == "func_literal";
+      })) {
+    return;
+  }
   const auto client = package.empty() ? name : package + "." + name;
   const auto parameters = go_enclosing_parameters(node, context.source);
   const auto request = [&](std::string method, const TSNode& url_argument, bool absolute) {
@@ -1385,10 +1479,24 @@ void go_http_walk(const TSNode& node, const ExtractionContext& context, const st
       return;
     }
   }
-  // A client method taking the verb and then the URL: `c.Do(ctx, http.MethodGet, "/api/v1/auth/me", nil)`.
-  for (std::size_t index = 0; index + 1 < args.size(); ++index) {
-    if (auto method = go_method_argument(args[index], context.source); !method.empty()) {
-      request(std::move(method), args[index + 1], false);
+  // A client method taking a context, the verb and then the URL: `c.Do(ctx,
+  // http.MethodGet, "/api/v1/auth/me", nil)`, `s.Client.Mutate(cmd.Context(),
+  // "PATCH", path, nil)`. The receiver's name says nothing here (`c`, `scoped`
+  // are clients; `r`, `e`, `router` are routers), so the call's shape decides:
+  // a Go request carries its context.Context first, as net/http's own
+  // NewRequestWithContext does, while a route registration (`r.Handle(
+  // http.MethodGet, "/x", h)`, echo's `e.Add("DELETE", ...)`), a test helper
+  // (`httpmock.RegisterResponder("GET", ...)`), an assertion on a request's
+  // method (`assert.Equal(t, http.MethodPost, r.Method)`) or a log line takes
+  // none. The argument after the verb must read as a URL, so `git.Run(ctx,
+  // "HEAD", "--quiet")` is no request either.
+  for (std::size_t index = 0; index + 2 < args.size(); ++index) {
+    if (!go_context_argument(args[index], context.source)) {
+      continue;
+    }
+    if (auto method = go_method_argument(args[index + 1], context.source);
+        !method.empty() && go_url_like(args[index + 2], context.source)) {
+      request(std::move(method), args[index + 2], false);
       return;
     }
   }
