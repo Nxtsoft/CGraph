@@ -26,6 +26,7 @@ add_library(cgraph_engine STATIC
   graph_builder.cpp
   incremental_update.cpp
   index_persistence.cpp
+  http_consumers.cpp
   javascript_extractor.cpp
   language_config.cpp
   launch_agent.cpp
