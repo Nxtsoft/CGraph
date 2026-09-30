@@ -264,7 +264,8 @@ the budget, is never shed to make room for impacts, counts what it trims in
 `omitted.cross_service`, and names every repository that could not answer (`unreachable`) or was
 still building (`building`), so an empty `rows` means no caller CGraph can resolve, not that
 nobody looked (unless the section is a `stub` cut for budget, with `rows_found` saying how many there
-were, or carries `errors` because the workspace manifest could not be used); calls it cannot resolve are counted in `stats.json` under `calls_unresolved`.
+were, or carries `errors` because the workspace manifest could not be used); calls it cannot resolve are counted under `route_resolution.calls_unresolved`, in `stats.json` and
+in each daemon's `status` (null there until the daemon's first rebuild).
 Changing a route's path or mount counts as removing the old route, so its callers are named.
 
 ## Quick start
@@ -594,6 +595,20 @@ CGraph keeps provider and model concerns outside the native binary. Host integra
 integrations/hooks/cgraph-hook.sh status
 integrations/hooks/cgraph-hook.sh query '{"q":"GraphSnapshot"}'
 ```
+
+`integrations/hooks/cgraph-pre-edit.sh` is a Claude Code `PreToolUse` hook. Before an agent edits a
+file in a repository that a `cgraph.workspace.json` in a parent directory lists, it adds to the
+agent's context every other service on the far side of an endpoint the file serves or calls
+(`… serves GET /api/v1/org/stats, called from turing-webapp lib/org-api.ts:83 (getOrgStats)`). It
+prints nothing when there is nothing to say and never blocks an edit; `CGRAPH_HOOK_WAIT_MS` (default
+`3000`) bounds the wait for daemons that are still building. Register it in `.claude/settings.json`:
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit",
+  "hooks": [{"type": "command", "command": "/path/to/CGraph/integrations/hooks/cgraph-pre-edit.sh"}]}]}}
+```
+
+The same lookup is `cgraph-client --root REPO cross-service '{"file": "src/routes.ts"}'`.
 
 Useful environment variables: `CGRAPH_CLIENT` (client executable), `CGRAPH_PROJECT_ROOT` (project root), `CGRAPH_DAEMON` (daemon path), `CGRAPH_INTERVAL_SECONDS` (always-on interval, default `30`), `CGRAPH_REFRESH_ON_START` (`0` to skip the initial update), `CGRAPH_ONCE` (`1` to run one status check and exit). Run the always-on reference loop:
 
