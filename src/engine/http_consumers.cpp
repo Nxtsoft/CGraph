@@ -181,11 +181,12 @@ void visit_named_descendants(const TSNode& node, bool skip_functions, Visit&& vi
   const auto count = ts_node_named_child_count(node);
   for (std::uint32_t index = 0; index < count; ++index) {
     const TSNode child = ts_node_named_child(node, index);
-    // A type annotation, a default value or a renamed key names other things.
+    // A type annotation, a default value or a renamed key names other things;
+    // a renamed key's value (`{ data: url }`) is the name it binds.
     const char* field = ts_node_field_name_for_named_child(node, index);
     const std::string_view field_name = field == nullptr ? std::string_view{} : std::string_view(field);
-    if (std::string_view(ts_node_type(child)) == "type_annotation" || field_name == "value" || field_name == "right" ||
-        field_name == "key" || field_name == "type") {
+    if (std::string_view(ts_node_type(child)) == "type_annotation" || (field_name == "value" && type != "pair_pattern") ||
+        field_name == "right" || field_name == "key" || field_name == "type") {
       continue;
     }
     if (binds_pattern(child, name, source)) {
@@ -326,6 +327,19 @@ struct LocalBinding {
   return false;
 }
 
+// True when a loop sits between `node` and `stop`: code in one branch of an
+// if/else there can run before the other branch on a later pass.
+[[nodiscard]] bool loops_between(const TSNode& node, const TSNode& stop) {
+  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor) && !ts_node_eq(ancestor, stop);
+       ancestor = ts_node_parent(ancestor)) {
+    const std::string_view type = ts_node_type(ancestor);
+    if (type == "for_statement" || type == "for_in_statement" || type == "while_statement" || type == "do_statement") {
+      return true;
+    }
+  }
+  return false;
+}
+
 // True when `name` is read anywhere in `value` (`url = url + '/x'`).
 [[nodiscard]] bool mentions(const TSNode& value, std::string_view name, std::string_view source) {
   if (ts_node_is_null(value)) {
@@ -341,13 +355,16 @@ struct LocalBinding {
 // Every value the local `name` can hold where `use` reads it. Only a local
 // set once is read: its initializer with no assignment after it, or, with no
 // initializer, assignments before `use` in opposite branches of one if/else
-// (`let url; if (a) url = x; else url = y;`). Empty optional when `name` is
-// not a local; an empty list when it is one whose value cannot be known here:
-// it is reassigned (`url = url + '/x'`, a second `url = ...`, a loop's
-// `next = ...`), updated in place (`url +=`), assigned inside another function
-// than the read (a test's `beforeAll`), bound by a loop header or `catch`,
-// built from itself, its path is rewritten (`url.pathname = ...`), or it is
-// never given a value.
+// (`let url; if (a) url = x; else url = y;`). A write in the other branch of an
+// if/else from the read never reaches it (`if (a) { url = x } else { url = y;
+// fetch(url) }` reads only y) unless a loop around the read can carry it back
+// round. Empty optional when `name` is not a local; an empty list when it is
+// one whose value cannot be known here: it is reassigned (`url = url + '/x'`,
+// a second `url = ...`, a loop's `next = ...`, a destructuring `({ url } =
+// cfg)` or `[url] = cfg`), updated in place (`url +=`), assigned inside
+// another function than the read (a test's `beforeAll`), bound by a loop
+// header or `catch`, built from itself, its path is rewritten (`url.pathname =
+// ...`), or it is never given a value.
 [[nodiscard]] std::optional<std::vector<TSNode>> local_values(const TSNode& use, std::string_view name, std::string_view source) {
   const auto binding = local_binding(use, name, source);
   if (!binding) {
@@ -361,8 +378,13 @@ struct LocalBinding {
   std::vector<TSNode> assignments;
   const auto use_start = ts_node_start_byte(use);
   const TSNode use_function = enclosing_function(use);
+  const bool use_in_loop = loops_between(use, binding->scope);
   visit_named_descendants(binding->scope, false, [&](const TSNode& node) {
     const std::string_view type = ts_node_type(node);
+    if ((type == "update_expression" || type == "assignment_expression" || type == "augmented_assignment_expression") &&
+        !use_in_loop && exclusive_branches(node, use, binding->scope)) {
+      return;  // the other branch of an if/else from the read
+    }
     if (type == "update_expression") {
       const TSNode argument = unwrap_expression(ts_node_child_by_field_name(node, "argument", 8));
       unknowable = unknowable || (!ts_node_is_null(argument) && node_text(argument, source) == name);
@@ -382,6 +404,13 @@ struct LocalBinding {
       if (!ts_node_is_null(object) && std::string_view(ts_node_type(object)) == "identifier" &&
           node_text(object, source) == name && (property == "pathname" || property == "href")) {
         unknowable = true;
+      }
+      return;
+    }
+    if (left_type == "object_pattern" || left_type == "array_pattern") {
+      if (binds_pattern(left, name, source)) {
+        const auto same = local_binding(left, name, source);
+        unknowable = unknowable || (same && !same->opaque && ts_node_eq(same->declarator, binding->declarator));
       }
       return;
     }
@@ -1008,32 +1037,114 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
 // Where a request's method comes from: a fixed verb, a parameter of the
 // enclosing function (`fetch(url, { method })` in `request(method, path)`), or
 // an options parameter spread in after any fixed verb (`{ method: 'GET',
-// ...init }`: `init`'s method, when it has one, wins; `{ ...init, method:
-// 'PATCH' }` is PATCH whatever `init` holds).
+// ...init }`: `init`'s method, when it has one, wins; `{ ...options, method:
+// 'PATCH' }` is PATCH whatever `options` holds). `unknown` when the options
+// may carry a method this file cannot read: the object is a value it cannot
+// see, or something other than a parameter is spread in after any fixed verb.
 struct MethodSource {
   std::string verb;
   int parameter = -1;
   int options = -1;  // the enclosing function's parameter whose own `method` overrides `verb`
   std::vector<std::string> choices;  // `method: on ? 'POST' : 'DELETE'`: each verb is sent
+  bool unknown = false;
+
+  bool operator==(const MethodSource&) const = default;
 };
 
-// The `method` of an options object literal, members read in order so a later
-// one wins: `method: 'POST'` is fixed, `method` / `method: m` naming a
-// parameter of the enclosing function is that parameter, `...init` spreading a
-// parameter lets that parameter's method override what came before; an options
-// parameter passed as the whole object (`fetch(url, init)`) is that parameter.
-// Absent or anything else is empty.
+constexpr int kMaxOptionsDepth = 3;
+
+// The parameter a local takes the rest of: `const { skipRetry, ...rest } =
+// options` makes `rest` the parameter `options` less the named keys, method
+// included unless it is named. -1 for anything else.
+[[nodiscard]] int rest_of_parameter(const TSNode& use, std::string_view name, const std::vector<std::string>& parameters,
+                                    std::string_view source) {
+  for (TSNode ancestor = ts_node_parent(use); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+    const std::string_view type = ts_node_type(ancestor);
+    if (is_function_node(type) || type == "program") {
+      return -1;
+    }
+    if (type != "statement_block") {
+      continue;
+    }
+    const auto count = ts_node_named_child_count(ancestor);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode statement = ts_node_named_child(ancestor, index);
+      const std::string_view statement_type = ts_node_type(statement);
+      if (statement_type != "lexical_declaration" && statement_type != "variable_declaration") {
+        continue;
+      }
+      const auto declarators = ts_node_named_child_count(statement);
+      for (std::uint32_t d = 0; d < declarators; ++d) {
+        const TSNode declarator = ts_node_named_child(statement, d);
+        const TSNode pattern = ts_node_child_by_field_name(declarator, "name", 4);
+        if (ts_node_is_null(pattern) || std::string_view(ts_node_type(pattern)) != "object_pattern") {
+          continue;
+        }
+        bool rest = false;
+        bool names_method = false;
+        const auto members = ts_node_named_child_count(pattern);
+        for (std::uint32_t m = 0; m < members; ++m) {
+          const TSNode member = ts_node_named_child(pattern, m);
+          const std::string_view member_type = ts_node_type(member);
+          if (member_type == "rest_pattern") {
+            rest = rest || binds_pattern(member, name, source);
+          } else if (member_type == "shorthand_property_identifier_pattern") {
+            names_method = names_method || node_text(member, source) == "method";
+          } else if (member_type == "pair_pattern") {
+            names_method = names_method || strip_string_quotes(field_text(member, "key", source)) == "method";
+          } else if (member_type == "object_assignment_pattern") {
+            names_method = names_method || field_text(member, "left", source) == "method";
+          }
+        }
+        if (!rest) {
+          continue;
+        }
+        const TSNode value = unwrap_expression(ts_node_child_by_field_name(declarator, "value", 5));
+        if (names_method || ts_node_is_null(value) || std::string_view(ts_node_type(value)) != "identifier") {
+          return -1;
+        }
+        return parameter_index(parameters, node_text(value, source));
+      }
+    }
+  }
+  return -1;
+}
+
+// The `method` of an options object, members read in order so a later one
+// wins: `method: 'POST'` is fixed, `method` / `method: m` naming a parameter
+// of the enclosing function is that parameter, `...init` spreading a parameter
+// lets that parameter's method override what came before, `...{ method: 'HEAD'
+// }` or a spread local is read as that object. An options parameter passed as
+// the whole object (`fetch(url, init)`) is that parameter; a local set once
+// (`const opts = { ...init, method: 'DELETE' }`) is read through its value, and
+// `rest` from `const { a, ...rest } = options` is the parameter `options`.
+// Absent is empty; any other value, method or spread the file cannot read is
+// `unknown`.
 [[nodiscard]] MethodSource options_method(const TSNode& options, const std::vector<std::string>& parameters,
-                                          std::string_view source) {
+                                          std::string_view source, int depth = 0) {
   const TSNode object = unwrap_expression(options);
   if (ts_node_is_null(object)) {
     return {};
   }
-  if (std::string_view(ts_node_type(object)) == "identifier") {
-    return MethodSource{.options = parameter_index(parameters, node_text(object, source))};
+  const std::string_view type = ts_node_type(object);
+  if (type == "identifier") {
+    const auto name = node_text(object, source);
+    if (const int at = parameter_index(parameters, name); at >= 0) {
+      return MethodSource{.options = at};
+    }
+    if (depth < kMaxOptionsDepth) {
+      if (const auto values = local_values(object, name, source)) {
+        return values->size() == 1 ? options_method(values->front(), parameters, source, depth + 1)
+                                   : MethodSource{.unknown = true};
+      }
+      if (const int at = rest_of_parameter(object, name, parameters, source); at >= 0) {
+        return MethodSource{.options = at};
+      }
+    }
+    return MethodSource{.unknown = true};
   }
-  if (std::string_view(ts_node_type(object)) != "object") {
-    return {};
+  if (type != "object") {
+    return MethodSource{.unknown = true};
   }
   MethodSource found;
   const auto count = ts_node_named_child_count(object);
@@ -1041,35 +1152,43 @@ struct MethodSource {
     const TSNode member = ts_node_named_child(object, index);
     const std::string_view member_type = ts_node_type(member);
     if (member_type == "spread_element") {
-      const TSNode spread = ts_node_named_child_count(member) == 0 ? TSNode{} : unwrap_expression(ts_node_named_child(member, 0));
-      if (!ts_node_is_null(spread) && std::string_view(ts_node_type(spread)) == "identifier") {
-        if (const int at = parameter_index(parameters, node_text(spread, source)); at >= 0) {
-          found.options = at;  // its method, if any, overrides what came before
+      const TSNode spread = ts_node_named_child_count(member) == 0 ? TSNode{} : ts_node_named_child(member, 0);
+      const auto inner = depth < kMaxOptionsDepth ? options_method(spread, parameters, source, depth + 1)
+                                                  : MethodSource{.unknown = true};
+      if (!inner.verb.empty() || inner.parameter >= 0 || !inner.choices.empty()) {
+        found = inner;  // a method of its own replaces what came before
+      } else {
+        if (inner.options >= 0) {
+          found.options = inner.options;  // its method, if any, overrides what came before
         }
+        found.unknown = found.unknown || inner.unknown;
       }
       continue;
     }
     if (member_type == "shorthand_property_identifier" && node_text(member, source) == "method") {
-      found = MethodSource{.parameter = parameter_index(parameters, "method")};
+      const int at = parameter_index(parameters, "method");
+      found = at >= 0 ? MethodSource{.parameter = at} : MethodSource{.unknown = true};
       continue;
     }
     if (member_type != "pair" || strip_string_quotes(field_text(member, "key", source)) != "method") {
       continue;
     }
     const TSNode value = unwrap_expression(ts_node_child_by_field_name(member, "value", 5));
-    found = MethodSource{};
+    found = MethodSource{.unknown = true};
     if (ts_node_is_null(value)) {
       continue;
     }
     if (is_string_value(value)) {
-      found.verb = upper_verb(strip_string_quotes(node_text(value, source)));
+      found = MethodSource{.verb = upper_verb(strip_string_quotes(node_text(value, source)))};
     } else if (std::string_view(ts_node_type(value)) == "identifier") {
-      found.parameter = parameter_index(parameters, node_text(value, source));
+      if (const int at = parameter_index(parameters, node_text(value, source)); at >= 0) {
+        found = MethodSource{.parameter = at};
+      }
     } else if (std::string_view(ts_node_type(value)) == "ternary_expression") {
       auto consequence = literal_verb(ts_node_child_by_field_name(value, "consequence", 11), source);
       auto alternative = literal_verb(ts_node_child_by_field_name(value, "alternative", 11), source);
       if (!consequence.empty() && !alternative.empty()) {
-        found.choices = {std::move(consequence), std::move(alternative)};
+        found = MethodSource{.choices = {std::move(consequence), std::move(alternative)}};
       }
     }
   }
@@ -1087,8 +1206,7 @@ struct ClientCall {
   int base = -1;     // Wrapper: the parameter its callers' base URL fills (composed in-file only)
 
   [[nodiscard]] bool same_shape(const ClientCall& other) const {
-    return method.verb == other.method.verb && method.parameter == other.method.parameter &&
-           method.options == other.method.options && path == other.path && tail == other.tail && base == other.base;
+    return method == other.method && path == other.path && tail == other.tail && base == other.base;
   }
 };
 
@@ -1211,18 +1329,23 @@ void compose_wrapper_call(const ClientCall& shape, std::string client, const TSN
     }
     prefix = base.path + prefix;
   }
-  MethodSource method{.verb = shape.method.verb};
+  MethodSource method{.verb = shape.method.verb, .choices = shape.method.choices, .unknown = shape.method.unknown};
   // The call's own options override the wrapper's verb where the wrapper lets
   // them: at the options parameter it spreads in last, or, when the wrapper
-  // fixes no verb, right after the path.
+  // fixes no verb, right after the path. Options whose method this file cannot
+  // read leave the method unknown: the call is unresolved, not a guess.
   const int options_at = shape.method.options >= 0 ? shape.method.options
-                         : shape.method.verb.empty() && shape.method.parameter < 0 ? shape.tail + 1
-                                                                                  : -1;
+                         : shape.method.verb.empty() && shape.method.parameter < 0 && shape.method.choices.empty() &&
+                                   !shape.method.unknown
+                             ? shape.tail + 1
+                             : -1;
   if (options_at >= 0 && options_at < count) {
     const auto given = options_method(ts_node_named_child(arguments, static_cast<std::uint32_t>(options_at)),
                                       scope.parameters, context.source);
-    if (!given.verb.empty()) {
-      method.verb = given.verb;
+    if (given.unknown) {
+      method = MethodSource{.unknown = true};
+    } else if (!given.verb.empty() || !given.choices.empty()) {
+      method = MethodSource{.verb = given.verb, .choices = given.choices};
     } else if (given.parameter >= 0) {
       method = MethodSource{.parameter = given.parameter};
     }
@@ -1261,16 +1384,22 @@ void compose_wrapper_call(const ClientCall& shape, std::string client, const TSN
                              .path = *joined, .tail = url.tail_index});
     return;
   }
-  if (method.parameter >= 0 || !url.resolvable || url.base_index >= 0) {
+  if (method.parameter >= 0 || method.unknown || !url.resolvable || url.base_index >= 0) {
     unresolved();
     return;
   }
   const auto joined = join_client_path(prefix, url.path);
+  const auto path = joined && !joined->empty() && (joined->front() == '/' || joined->starts_with("${")) ? *joined : std::string{};
+  if (!method.choices.empty()) {
+    for (const auto& choice : method.choices) {
+      out.push_back(ClientCall{.kind = ClientCall::Kind::Consumer, .client = client, .method = {.verb = choice}, .path = path});
+    }
+    return;
+  }
   if (method.verb.empty()) {
     method.verb = "GET";
   }
-  out.push_back(ClientCall{.kind = ClientCall::Kind::Consumer, .client = std::move(client), .method = method,
-                           .path = joined && !joined->empty() && (joined->front() == '/' || joined->starts_with("${")) ? *joined : std::string{}});
+  out.push_back(ClientCall{.kind = ClientCall::Kind::Consumer, .client = std::move(client), .method = method, .path = path});
 }
 
 // The base URL a client instance carries: `axios.create({ baseURL })` held in
@@ -1382,8 +1511,8 @@ struct ReceiverBase {
         descriptor = "V" + literal;
       }
     } else if (type == "object") {
-      if (auto method = options_method(argument, {}, context.source).verb; !method.empty()) {
-        descriptor = "O" + method;
+      if (auto method = options_method(argument, scope.parameters, context.source); !method.verb.empty() && !method.unknown) {
+        descriptor = "O" + method.verb;
       }
     }
     if (index > 0) {
@@ -1531,6 +1660,9 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
                             : MethodSource{};
   if (!verb.empty()) {
     method.options = -1;  // `axios.post(url, data)`: the second argument is the body, the verb is fixed
+    method.unknown = false;
+  } else if (!primitive) {
+    method.unknown = false;  // a wrapper's second argument may be anything (a body); contracts read its method
   }
   for (const auto& value : values) {
     UrlTemplate url;
@@ -1575,9 +1707,10 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
       }
       continue;
     }
+    // Options whose method this file cannot read: the call is unresolved.
     out.push_back(ClientCall{.kind = ClientCall::Kind::Consumer, .client = client,
                              .method = MethodSource{.verb = method.verb},
-                             .path = url.resolvable ? url.path : std::string{}});
+                             .path = url.resolvable && !method.unknown ? url.path : std::string{}});
   }
   if (!primitive) {
     if (auto descriptors = argument_descriptors(arguments, scope, context)) {

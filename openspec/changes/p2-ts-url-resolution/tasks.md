@@ -25,3 +25,9 @@
 - [x] 4.4 Only locals set once are read; self-referencing, reassigned, loop-header and `catch` bindings are unresolved.
 - [x] 4.5 Destructured parameter position tested.
 - [x] 4.6 Full suite 85 of 85; probe links unchanged (Turing 15, ModSquad 7), zero matched edges lost.
+
+## 5. Review round 2 (#145)
+
+- [x] 5.1 A local read in one branch of an if/else ignores writes in the other branch, unless a loop encloses the read.
+- [x] 5.2 A local reassigned by object or array destructuring is not read through its initializer.
+- [x] 5.3 Wrapper methods read through local options, spread object literals and verb choices; unreadable options leave the call unresolved.

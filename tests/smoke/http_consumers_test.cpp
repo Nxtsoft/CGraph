@@ -411,5 +411,115 @@ export function positioned({ tenant }: Opts, path: string) {
     }
   }
 
+  // Review 2 of #145. A write in the other branch of an if/else from the read
+  // never reaches it (no `/admin` for a read in the else, no `/t1` or `/t2`
+  // for a read in the last branch of an else-if chain). A local reassigned by
+  // destructuring is not read through its initializer. A wrapper's method is
+  // read through a local options object (`const opts = { ...init, method:
+  // 'DELETE' }`), a caller's local options, a spread object literal, and a
+  // choice between two verbs gives one consumer per verb; options whose method
+  // the file cannot read leave the call unresolved rather than guessed.
+  {
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/review2.ts", .relative_path = "lib/review2.ts", .source = R"ts(
+const API = process.env.NEXT_PUBLIC_API_URL;
+export async function readInElse(admin: boolean) {
+  let url;
+  if (admin) {
+    url = `${API}/api/b/admin`;
+  } else {
+    url = `${API}/api/b/user`;
+    return fetch(url);
+  }
+  return null;
+}
+export async function readInLast(k: number) {
+  let url;
+  if (k === 1) {
+    url = `${API}/api/b/t1`;
+  } else if (k === 2) {
+    url = `${API}/api/b/t2`;
+  } else {
+    url = `${API}/api/b/t3`;
+    await fetch(url);
+  }
+}
+export async function loopCarries(items: string[]) {
+  let url = `${API}/api/b/first`;
+  for (const item of items) {
+    if (item) {
+      await fetch(url);
+    } else {
+      url = `${API}/api/b/next`;
+    }
+  }
+}
+export async function objectDestructure(cfg: { url: string }) {
+  let url = `${API}/api/l/destr`;
+  ({ url } = cfg);
+  return fetch(url);
+}
+export async function arrayDestructure(cfg: string[]) {
+  let url = `${API}/api/l/arr`;
+  [url] = cfg;
+  return fetch(url);
+}
+export async function renamedDestructure(cfg: { data: string }) {
+  let url = `${API}/api/l/renamed`;
+  ({ data: url } = cfg);
+  return fetch(url);
+}
+class LocalOpts {
+  request(path: string, init?: RequestInit) {
+    const opts = { ...init, method: 'DELETE' };
+    return fetch(`${API}${path}`, opts);
+  }
+  createV3() { return this.request('/api/v3/widgets', { method: 'POST' }); }
+}
+class CallerOpts {
+  request(path: string, init?: RequestInit) { return fetch(`${API}${path}`, { method: 'GET', ...init }); }
+  varOpts() { const opts = { method: 'POST' }; return this.request('/api/v1/varopts', opts); }
+  ternary(on: boolean) { return this.request('/api/v1/tern', { method: on ? 'PUT' : 'DELETE' }); }
+  unknownOpts() { return this.request('/api/v1/unknown', buildOptions()); }
+}
+class NestedSpread {
+  request(path: string, init?: RequestInit) {
+    return fetch(`${API}${path}`, { method: 'GET', ...init, ...{ method: 'HEAD' } });
+  }
+  createV4() { return this.request('/api/v4/widgets', { method: 'POST' }); }
+}
+class UnreadableSpread {
+  request(path: string, init?: RequestInit) { return fetch(`${API}${path}`, { method: 'GET', ...defaults }); }
+  createV6() { return this.request('/api/v6/widgets', { method: 'POST' }); }
+}
+)ts"});
+    std::set<std::string> facts;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation == "http_call") {
+        facts.insert(relation.relation + "|" + relation.source_id + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto fn = [](std::string_view name) { return cgraph::make_id(std::string("lib/review2.ts:") + std::string(name)); };
+    const std::set<std::string> expected{
+        "http_call|" + fn("readInElse") + "|fetch| /api/b/user",
+        "http_call|" + fn("readInLast") + "|fetch| /api/b/t3",
+        // A loop carries the other branch's write round to the next read.
+        "http_call|" + fn("loopCarries") + "|fetch| ",
+        "http_call|" + fn("objectDestructure") + "|fetch| ",
+        "http_call|" + fn("arrayDestructure") + "|fetch| ",
+        "http_call|" + fn("renamedDestructure") + "|fetch| ",
+        "http_call|" + fn("createV3") + "|this.request|DELETE /api/v3/widgets",
+        "http_call|" + fn("varOpts") + "|this.request|POST /api/v1/varopts",
+        "http_call|" + fn("ternary") + "|this.request|PUT /api/v1/tern",
+        "http_call|" + fn("ternary") + "|this.request|DELETE /api/v1/tern",
+        "http_call|" + fn("unknownOpts") + "|this.request|GET ",
+        "http_call|" + fn("createV4") + "|this.request|HEAD /api/v4/widgets",
+        "http_call|" + fn("createV6") + "|this.request|GET ",
+    };
+    if (facts != expected) {
+      for (const auto& fact : facts) std::cerr << "review2 fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
   return 0;
 }
