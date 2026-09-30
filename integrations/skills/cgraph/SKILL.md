@@ -122,7 +122,9 @@ grep/read calls that burn context.
   repo's graph is the same node. Callers are `CONSUMES` edges into the
   endpoint: direct `fetch`, `api.GET`/`axios.post`, and calls through path
   wrappers like `apiFetch('/notebooks')` whose own `fetch(\`${base}${path}\`)`
-  fixes the prefix. An endpoint this repo only calls carries `served: false`
+  fixes the prefix; Kotlin Ktor `client.get("$baseUrl/api/v1/…")` and Go
+  `c.Do(ctx, http.MethodGet, "/api/v1/…", nil)` / `http.NewRequest` calls,
+  and their same-file path wrappers, count the same way. An endpoint this repo only calls carries `served: false`
   and no source; "who calls `GET /api/v1/…`" is `graph_impact` on the endpoint
   with `dependents`. Across repos, `cgraph seam discover --graph a=… --graph b=…`
   joins the two graphs' endpoints with no spec and `seam fuse` renders them.
