@@ -107,6 +107,21 @@ nlohmann::json contract_resolution_json(const ContractResolution& contracts) {
   };
 }
 
+ContractResolution contract_resolution_from_json(const nlohmann::json& value) {
+  ContractResolution contracts;
+  contracts.routes = value.value("routes", std::size_t{0});
+  contracts.routes_unresolved = value.value("routes_unresolved", std::size_t{0});
+  contracts.mounts = value.value("mounts", std::size_t{0});
+  contracts.mounts_unresolved = value.value("mounts_unresolved", std::size_t{0});
+  contracts.endpoints = value.value("endpoints", std::size_t{0});
+  contracts.calls = value.value("calls", std::size_t{0});
+  contracts.calls_unresolved = value.value("calls_unresolved", std::size_t{0});
+  contracts.consumes = value.value("consumes", std::size_t{0});
+  contracts.endpoints_external = value.value("endpoints_external", std::size_t{0});
+  contracts.endpoints_documented = value.value("endpoints_documented", std::size_t{0});
+  return contracts;
+}
+
 nlohmann::json build_stats_json(const BuildStats& stats) {
   nlohmann::json phases{
       {"extract_ms", stats.extract_ms},

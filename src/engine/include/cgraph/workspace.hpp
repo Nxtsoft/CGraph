@@ -63,6 +63,7 @@ struct Workspace {
 struct EnclosingWorkspace {
   Workspace workspace;
   std::string home;
+  std::filesystem::path home_root;  // the home member's root as the manifest names it
 };
 [[nodiscard]] std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem::path& project_root);
 

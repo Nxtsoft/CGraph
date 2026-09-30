@@ -76,7 +76,12 @@ struct CrossServiceScope {
 // the other services on the far side of each, from the workspace enclosing
 // `base.project_root`. Carries `summary`, plain lines an agent can read, empty
 // when nothing crosses a service boundary; `workspace` is null outside one.
-[[nodiscard]] nlohmann::json cross_service_for_file(const ClientRequest& base, const std::filesystem::path& file);
+[[nodiscard]] nlohmann::json cross_service_for_file(const ClientRequest& base, const std::filesystem::path& file,
+                                                    std::size_t max_contracts = 24);
+
+// How many of a file's endpoints the pre-edit hook asks about: each is one ask
+// per other repository, and the hook runs before every edit.
+inline constexpr std::size_t kHookMaxContracts = 8;
 
 // A Claude Code PreToolUse hook for Edit, Write and MultiEdit: given the hook's
 // stdin JSON, the hook's stdout JSON (`hookSpecificOutput.additionalContext`

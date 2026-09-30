@@ -922,7 +922,16 @@ struct StructuralIntent {
 [[nodiscard]] nlohmann::json impact_radius(const GraphSnapshot& graph, const nlohmann::json& params) {
   const auto id = params.value("id", std::string{});
   const auto direction = params.value("direction", std::string{"dependents"});
-  const auto relation = params.value("relation", std::string{});
+  // `relation` is one relation name, or a list of them the walk may follow.
+  std::set<std::string, std::less<>> relation;
+  if (const auto given = params.find("relation"); given != params.end()) {
+    if (given->is_string() && !given->get<std::string>().empty()) relation.insert(given->get<std::string>());
+    if (given->is_array()) {
+      for (const auto& name : *given) {
+        if (name.is_string()) relation.insert(name.get<std::string>());
+      }
+    }
+  }
   const auto max_depth = std::max(0, params.value("max_depth", kDefaultImpactDepth));
   const auto limit = params.value("limit", kDefaultImpactLimit);
 
@@ -2283,6 +2292,14 @@ std::size_t serialized_context_tokens(const nlohmann::json& value) {
 std::unordered_map<std::string, ImpactReach> trace_impact(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
     std::string_view direction, std::string_view relation, int max_depth) {
+  std::set<std::string, std::less<>> relations;
+  if (!relation.empty()) relations.emplace(relation);
+  return trace_impact(graph, seeds, direction, relations, max_depth);
+}
+
+std::unordered_map<std::string, ImpactReach> trace_impact(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::string_view direction, const std::set<std::string, std::less<>>& relations, int max_depth) {
   struct Link { std::string to; const Edge* edge; };
   // An endpoint is served by the file that contains it: changing the handler
   // file changes the endpoint, so a dependents walk that reaches the file goes
@@ -2300,7 +2317,7 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
   std::unordered_map<std::string, std::vector<Link>> adjacency;
   std::unordered_map<std::string, std::vector<Link>> served;  // file -> the endpoints it contains
   for (const auto& edge : graph.edges) {
-    if (!relation.empty() && edge.relation != relation) continue;
+    if (!relations.empty() && !relations.contains(edge.relation)) continue;
     if (direction == "dependents" || direction == "both")
       adjacency[edge.target].push_back({edge.source, &edge});
     if (direction == "dependencies" || direction == "both")

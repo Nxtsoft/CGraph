@@ -272,5 +272,34 @@ int main() {
   }
 
   std::filesystem::remove_all(root);
+
+  // An incremental update keeps the route and call tallies current, so status
+  // can tell "no caller" from "calls CGraph could not resolve".
+  {
+    const auto calls_root = std::filesystem::temp_directory_path() / "cgraph-incremental-update-calls";
+    std::filesystem::remove_all(calls_root);
+    std::filesystem::create_directories(calls_root);
+    cgraph::DaemonState calls_state;
+    cgraph::IncrementalGraphIndex calls_index;
+    calls_index.project_root = calls_root;
+    const auto resolved = calls_root / "stats.ts";
+    const auto unresolved = calls_root / "dynamic.ts";
+    write_file(resolved, "export async function loadStats() {\n  return fetch('/api/v1/stats');\n}\n");
+    cgraph::FileWatchEvent first[] = {
+        {.path = resolved, .change = cgraph::FileWatchChange::Created, .kind = cgraph::WatchedFileKind::Code}};
+    (void)cgraph::apply_incremental_code_updates(calls_state, calls_index, first);
+    const auto after_first = calls_state.route_resolution;
+    write_file(unresolved,
+               "export async function loadAny(path: string) {\n  const url = build(path);\n  return fetch(url);\n}\n");
+    cgraph::FileWatchEvent second[] = {
+        {.path = unresolved, .change = cgraph::FileWatchChange::Created, .kind = cgraph::WatchedFileKind::Code}};
+    (void)cgraph::apply_incremental_code_updates(calls_state, calls_index, second);
+    const auto after_second = calls_state.route_resolution;
+    std::filesystem::remove_all(calls_root);
+    if (!after_first || after_first->calls != 1 || after_first->calls_unresolved != 0 || !after_second ||
+        after_second->calls != 2 || after_second->calls_unresolved != 1) {
+      return 1;
+    }
+  }
   return 0;
 }

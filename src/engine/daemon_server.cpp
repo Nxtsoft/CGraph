@@ -634,6 +634,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     IndexManifest manifest;
     manifest.version_key = index_version_key();
     manifest.content_root = deterministic_graph.content_root;
+    {
+      const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+      manifest.route_resolution = state.route_resolution;
+    }
     manifest.files.reserve(index.cache.size());
     for (const auto& [_, entry] : index.cache) {
       manifest.files.push_back(entry);
@@ -744,6 +748,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     {
       const std::scoped_lock enrichment_lock(state.enrichment_mutex);  // status reads unextracted
       state.unextracted = unextracted_counts(detected);
+      state.route_resolution = manifest->route_resolution;  // the tallies of the build it came from
     }
     // Reconcile from the deterministic fast-loaded graph before publishing any
     // cache-valid semantic drops or memory sidecars.

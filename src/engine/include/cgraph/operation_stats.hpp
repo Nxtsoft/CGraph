@@ -315,6 +315,7 @@ struct DaemonOpStats {
 // The route and client-call tallies (`route_resolution` in stats.json and in
 // daemon status): how many routes, mounts and calls resolved, and how many did not.
 [[nodiscard]] nlohmann::json contract_resolution_json(const ContractResolution& contracts);
+[[nodiscard]] ContractResolution contract_resolution_from_json(const nlohmann::json& value);
 
 [[nodiscard]] nlohmann::json build_stats_json(const BuildStats& stats);
 

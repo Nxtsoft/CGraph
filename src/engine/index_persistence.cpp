@@ -68,6 +68,10 @@ bool write_index_manifest(const IndexManifest& manifest, const std::filesystem::
        }},
       {"files", std::move(files)},
   };
+  auto written = document;
+  if (manifest.route_resolution) {
+    written["route_resolution"] = contract_resolution_json(*manifest.route_resolution);
+  }
 
   std::error_code error;
   if (path.has_parent_path()) {
@@ -80,7 +84,7 @@ bool write_index_manifest(const IndexManifest& manifest, const std::filesystem::
     if (!output) {
       return false;
     }
-    output << document.dump();
+    output << written.dump();
     if (!output) {
       return false;
     }
@@ -115,6 +119,9 @@ std::optional<IndexManifest> read_index_manifest(const std::filesystem::path& pa
       file.modified_at = mtime_from_count(entry.at("modified_at").get<std::int64_t>());
       file.sha256 = entry.at("sha256").get<std::string>();
       manifest.files.push_back(std::move(file));
+    }
+    if (const auto tallies = document.find("route_resolution"); tallies != document.end() && tallies->is_object()) {
+      manifest.route_resolution = contract_resolution_from_json(*tallies);
     }
     if (!is_valid_content_root(manifest.content_root)) {
       return std::nullopt;

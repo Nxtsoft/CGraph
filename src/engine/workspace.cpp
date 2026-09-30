@@ -591,8 +591,10 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
           }
           if (member != nullptr) {
             auto name = member->name;
+            auto declared = member->root;
             member->root = root;
-            return EnclosingWorkspace{.workspace = std::move(workspace), .home = std::move(name)};
+            return EnclosingWorkspace{.workspace = std::move(workspace), .home = std::move(name),
+                                      .home_root = std::move(declared)};
           }
         } else {
           // A manifest that lists this root but cannot be used (a malformed
@@ -607,7 +609,8 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
               auto resolved = std::filesystem::weakly_canonical(declared.is_absolute() ? declared : dir / declared, error);
               if (!error && contains(resolved, root)) {
                 workspace.name = manifest.value("name", dir.filename().generic_string());
-                return EnclosingWorkspace{.workspace = std::move(workspace), .home = entry.value("name", std::string{})};
+                return EnclosingWorkspace{.workspace = std::move(workspace), .home = entry.value("name", std::string{}),
+                                          .home_root = resolved};
               }
             }
           }

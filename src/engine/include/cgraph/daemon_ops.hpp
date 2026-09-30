@@ -13,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -143,6 +144,12 @@ struct ImpactReach {
 [[nodiscard]] std::unordered_map<std::string, ImpactReach> trace_impact(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
     std::string_view direction, std::string_view relation, int max_depth);
+// The same walk over edges whose relation is one of `relations` (every edge
+// when empty): `contains`, `defines`, `method` and `CONSUMES` from a file reach
+// what the file itself declares and calls, never what it imports.
+[[nodiscard]] std::unordered_map<std::string, ImpactReach> trace_impact(
+    const GraphSnapshot& graph, std::span<const std::string> seeds,
+    std::string_view direction, const std::set<std::string, std::less<>>& relations, int max_depth);
 // One union gather and one packing pass, never a per-seed budget multiplication.
 [[nodiscard]] nlohmann::json pack_seed_context(
     const GraphSnapshot& graph, std::span<const std::string> seeds,

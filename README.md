@@ -265,7 +265,7 @@ the budget, is never shed to make room for impacts, counts what it trims in
 still building (`building`), so an empty `rows` means no caller CGraph can resolve, not that
 nobody looked (unless the section is a `stub` cut for budget, with `rows_found` saying how many there
 were, or carries `errors` because the workspace manifest could not be used); calls it cannot resolve are counted under `route_resolution.calls_unresolved`, in `stats.json` and
-in each daemon's `status` (null there until the daemon's first rebuild).
+in each daemon's `status` (saved with the graph, so a restarted daemon still reports them).
 Changing a route's path or mount counts as removing the old route, so its callers are named.
 
 ## Quick start
@@ -600,8 +600,9 @@ integrations/hooks/cgraph-hook.sh query '{"q":"GraphSnapshot"}'
 file in a repository that a `cgraph.workspace.json` in a parent directory lists, it adds to the
 agent's context every other service on the far side of an endpoint the file serves or calls
 (`… serves GET /api/v1/org/stats, called from turing-webapp lib/org-api.ts:83 (getOrgStats)`). It
-prints nothing when there is nothing to say and never blocks an edit; `CGRAPH_HOOK_WAIT_MS` (default
-`3000`) bounds the wait for daemons that are still building. Register it in `.claude/settings.json`:
+prints nothing when there is nothing to say and never blocks an edit; it checks at most 8 of a file's
+endpoints per edit (naming the rest), and `CGRAPH_HOOK_WAIT_MS` (default `3000`) bounds the wait for
+daemons that are still building. A file that only imports a routes file claims none of its routes. Register it in `.claude/settings.json`:
 
 ```json
 {"hooks": {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit",
