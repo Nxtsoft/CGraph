@@ -260,12 +260,24 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   //    alias (`export const deckModule = deckRoutes as unknown as Elysia`) is
   //    the same chain under a second name: a mount with no path and no edge.
   std::unordered_map<std::string, std::vector<Mount>> parents_of;
+  // Chains mounted somewhere the extractor could not place: a mount with no
+  // mounting chain (Python's `app.include_router(r, prefix=settings.P)`, or one
+  // inside an app factory). A chain with no other mount is served at a path
+  // nobody knows, so its routes mint nothing rather than a wrong top-level path.
+  std::unordered_set<std::string> unplaced;
   for (const auto& relation : raw_relations) {
     const bool alias = relation.relation == kAliasRelation;
     if (relation.relation != kMountsRelation && !alias) {
       continue;
     }
     ++tally.mounts;
+    if (relation.source_id.empty() && !alias) {
+      ++tally.mounts_unresolved;
+      if (const auto child = name_in_scope(relation); !child.empty()) {
+        unplaced.insert(child);
+      }
+      continue;
+    }
     if (!by_id.contains(relation.source_id)) {
       ++tally.mounts_unresolved;
       continue;
@@ -305,7 +317,9 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
     std::vector<std::string> result;
     const auto parents = parents_of.find(chain);
-    if (parents == parents_of.end() || !on_stack.insert(chain).second) {
+    if (parents == parents_of.end() && unplaced.contains(chain)) {
+      // Served only under a mount nobody could place: no known path.
+    } else if (parents == parents_of.end() || !on_stack.insert(chain).second) {
       result.push_back(join_route_path("", own));
     } else {
       for (const auto& mount : parents->second) {
@@ -386,6 +400,10 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
         continue;
       }
       bases = paths_of(chain);
+      if (bases.empty()) {
+        ++tally.routes_unresolved;  // its chain hangs only off an unplaced mount
+        continue;
+      }
     }
     const auto method = to_upper(verb);
     for (const auto& base : bases) {
