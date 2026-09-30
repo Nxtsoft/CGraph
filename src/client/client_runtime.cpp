@@ -1,5 +1,7 @@
 #include "cgraph/client_runtime.hpp"
 
+#include "cgraph/change_context.hpp"
+
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_server.hpp"
 #include "cgraph/protocol.hpp"
@@ -177,6 +179,54 @@ ClientRuntimeHooks default_client_runtime_hooks(const ClientRequest& request) {
   return hooks;
 }
 
+namespace {
+
+// Asks every member of `workspace` through this same runtime. Forwarded asks
+// never re-federate, and share one build wait for the whole request: members and
+// contract hops are asked in turn, so each ask gets what is left.
+[[nodiscard]] RepoAsk forwarding_ask(const ClientRequest& request, const ClientRuntimeHooks& hooks,
+                                     std::shared_ptr<std::pair<std::size_t, int>> tallies) {
+  // The shared wait starts at the first ask, not when the ask is made: a caller
+  // may build its own snapshots first (change_context builds two).
+  auto build_deadline = std::make_shared<std::optional<std::chrono::steady_clock::time_point>>();
+  return [request, hooks, build_deadline, tallies](const WorkspaceRepo& repo, const std::string& op,
+                                                   const nlohmann::json& params,
+                                                   std::string& error) -> std::optional<nlohmann::json> {
+    if (!*build_deadline) {
+      *build_deadline = std::chrono::steady_clock::now() + request.build_wait;
+    }
+    ClientRequest forwarded = request;
+    forwarded.project_root = repo.root;
+    forwarded.operation = op;
+    forwarded.params = params;
+    forwarded.federate = false;
+    forwarded.build_wait = std::max(std::chrono::milliseconds(0),
+                                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        **build_deadline - std::chrono::steady_clock::now()));
+    auto answer = send_thin_client_request(forwarded, hooks);
+    tallies->first += answer.spawned ? 1 : 0;
+    tallies->second += answer.connect_attempts;
+    if (!answer.response) {
+      error = answer.error;
+      return std::nullopt;
+    }
+    return std::move(*answer.response);
+  };
+}
+
+[[nodiscard]] ClientResult federate_through(const Workspace& workspace, const ClientRequest& request,
+                                            const ClientRuntimeHooks& hooks) {
+  ClientResult result;
+  auto tallies = std::make_shared<std::pair<std::size_t, int>>(0, 0);
+  result.response = federate_workspace_request(workspace, request.operation, request.params,
+                                               forwarding_ask(request, hooks, tallies));
+  result.spawned = tallies->first > 0;
+  result.connect_attempts = tallies->second;
+  return result;
+}
+
+}  // namespace
+
 ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntimeHooks hooks) {
   ClientResult result;
   if (request.operation.empty()) {
@@ -187,35 +237,56 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
   // each of which is reached exactly as a lone project would be (same hooks, same
   // auto-spawn, same daemon per root). This is the only place federation is
   // entered, so the thin client and the MCP server both get it.
-  if (is_workspace_root(request.project_root)) {
-    const auto workspace = load_workspace(request.project_root);
-    std::size_t spawned = 0;
-    int attempts = 0;
-    // One build wait for the whole federated request: members and contract hops
-    // are asked in turn, so each ask gets what is left, never a fresh budget.
-    const auto build_deadline = std::chrono::steady_clock::now() + request.build_wait;
-    const RepoAsk ask = [&](const WorkspaceRepo& repo, const std::string& op, const nlohmann::json& params,
-                            std::string& error) -> std::optional<nlohmann::json> {
-      ClientRequest forwarded = request;
-      forwarded.project_root = repo.root;
-      forwarded.operation = op;
-      forwarded.params = params;
-      forwarded.build_wait = std::max(std::chrono::milliseconds(0),
-                                      std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          build_deadline - std::chrono::steady_clock::now()));
-      auto answer = send_thin_client_request(forwarded, hooks);
-      spawned += answer.spawned ? 1 : 0;
-      attempts += answer.connect_attempts;
-      if (!answer.response) {
-        error = answer.error;
-        return std::nullopt;
+  if (request.federate && is_workspace_root(request.project_root)) {
+    return federate_through(load_workspace(request.project_root), request, hooks);
+  }
+  // A root inside a workspace member answers from its own graph, except that the
+  // consequences of a change (`impact`) and the route between two nodes (`path`)
+  // cross the workspace: those are the questions another service can change.
+  if (request.federate && (request.operation == "impact" || request.operation == "path")) {
+    if (auto enclosing = find_enclosing_workspace(request.project_root)) {
+      nlohmann::json tag{{"name", enclosing->workspace.name}, {"home", enclosing->home}};
+      ClientResult result;
+      if (!enclosing->workspace.ok()) {
+        // The manifest lists this root but cannot be used: answer from home and
+        // say why the other services are missing.
+        ClientRequest alone = request;
+        alone.federate = false;
+        result = send_thin_client_request(alone, hooks);
+        tag["errors"] = enclosing->workspace.errors;
+      } else {
+        // A content-root pin names the home repo's graph. Only the home ask
+        // carries it, and a home pin that fails fails the request, as it does
+        // for a lone project; other members answer from their current graphs.
+        const bool pinned = request.params.contains("expected_content_root");
+        std::optional<nlohmann::json> home_failure;
+        auto tallies = std::make_shared<std::pair<std::size_t, int>>(0, 0);
+        const auto forward = forwarding_ask(request, hooks, tallies);
+        const RepoAsk ask = [&](const WorkspaceRepo& repo, const std::string& op, const nlohmann::json& params,
+                                std::string& error) -> std::optional<nlohmann::json> {
+          auto scoped = params;
+          if (repo.name != enclosing->home) {
+            scoped.erase("expected_content_root");
+          }
+          auto envelope = forward(repo, op, scoped, error);
+          if (pinned && repo.name == enclosing->home && envelope && !envelope->value("ok", false) && !home_failure) {
+            home_failure = envelope;
+          }
+          return envelope;
+        };
+        result.response = federate_workspace_request(enclosing->workspace, request.operation, request.params, ask);
+        result.spawned = tallies->first > 0;
+        result.connect_attempts = tallies->second;
+        if (home_failure) {
+          result.response = std::move(home_failure);
+          return result;
+        }
       }
-      return std::move(*answer.response);
-    };
-    result.response = federate_workspace_request(workspace, request.operation, request.params, ask);
-    result.spawned = spawned > 0;
-    result.connect_attempts = attempts;
-    return result;
+      if (result.response && result.response->contains("result") && (*result.response)["result"].is_object()) {
+        (*result.response)["result"]["workspace"] = std::move(tag);
+      }
+      return result;
+    }
   }
   if (request.max_connect_attempts <= 0) {
     result.error = "max_connect_attempts must be positive";
@@ -277,6 +348,28 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
   error << "daemon did not accept connections after " << result.connect_attempts << " attempts";
   result.error = error.str();
   return result;
+}
+
+std::optional<CrossServiceScope> cross_service_scope_for(const ClientRequest& request, ClientRuntimeHooks hooks) {
+  auto enclosing = find_enclosing_workspace(request.project_root);
+  if (!enclosing) {
+    return std::nullopt;
+  }
+  return CrossServiceScope{.enclosing = std::move(*enclosing),
+                           .ask = forwarding_ask(request, hooks, std::make_shared<std::pair<std::size_t, int>>(0, 0))};
+}
+
+nlohmann::json change_context_across_workspace(const nlohmann::json& parameters, const ClientRequest& base) {
+  ClientRequest request = base;
+  request.project_root = parameters.value("target_root", std::string{});
+  const auto scope = request.project_root.empty()
+                         ? std::nullopt
+                         : cross_service_scope_for(request, default_client_runtime_hooks(request));
+  if (!scope) {
+    return change_context(parameters);
+  }
+  const CrossServiceAsk ask{.enclosing = &scope->enclosing, .ask = scope->ask};
+  return change_context(parameters, &ask);
 }
 
 }  // namespace cgraph

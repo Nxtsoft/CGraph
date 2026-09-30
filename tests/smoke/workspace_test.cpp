@@ -1,5 +1,6 @@
 #include "cgraph/workspace.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -332,6 +333,100 @@ int test_path_bridges_and_unsupported_ops(const fs::path& root) {
   return 0;
 }
 
+// A project root finds the workspace that lists it (or a member that contains
+// it, as a nested worktree does), and the home repo is answered from that root.
+// A directory the manifest does not list, or a manifest above $HOME, is not used.
+int test_enclosing_workspace(const fs::path& root) {
+  int failures = 0;
+  const auto ws = root / "enclosing";
+  write_file(ws / "api" / "src" / "a.ts", "export const a = 1;\n");
+  write_file(ws / "web" / "src" / "w.ts", "export const w = 1;\n");
+  write_file(ws / "stray" / "src" / "s.ts", "export const s = 1;\n");
+  write_file(ws / std::string(cgraph::kWorkspaceFile),
+             R"({"name": "shop", "repos": [{"name": "api", "root": "./api"}, {"name": "web", "root": "./web"}]})");
+  const auto canonical = [](const fs::path& path) { return fs::weakly_canonical(path); };
+  const auto root_of = [](const cgraph::EnclosingWorkspace& found, const std::string& name) {
+    for (const auto& repo : found.workspace.repos) {
+      if (repo.name == name) return repo.root;
+    }
+    return fs::path{};
+  };
+
+  const auto member = cgraph::find_enclosing_workspace(ws / "api");
+  if (!member || member->home != "api" || member->workspace.name != "shop" ||
+      root_of(*member, "api") != canonical(ws / "api") || root_of(*member, "web") != canonical(ws / "web")) {
+    std::cerr << "enclosing: a member root did not find its workspace\n";
+    ++failures;
+  }
+  const auto nested = ws / "api" / ".agents" / "worktrees" / "feature";
+  fs::create_directories(nested);
+  const auto worktree = cgraph::find_enclosing_workspace(nested);
+  if (!worktree || worktree->home != "api" || root_of(*worktree, "api") != canonical(nested)) {
+    std::cerr << "enclosing: a worktree nested in a member was not answered from its own root\n";
+    ++failures;
+  }
+  if (cgraph::find_enclosing_workspace(ws / "stray")) {
+    std::cerr << "enclosing: a directory the manifest does not list joined the workspace\n";
+    ++failures;
+  }
+  // A member reached through a symlink still finds the workspace it sits in.
+  fs::create_directories(root / "code");
+  write_file(root / "code" / "shared" / "src" / "x.ts", "export const x = 1;\n");
+  const auto linked_ws = root / "linked";
+  fs::create_directories(linked_ws);
+  fs::create_directory_symlink(root / "code" / "shared", linked_ws / "shared");
+  write_file(linked_ws / std::string(cgraph::kWorkspaceFile),
+             R"({"name": "linked", "repos": [{"name": "shared", "root": "./shared"}]})");
+  const auto linked = cgraph::find_enclosing_workspace(linked_ws / "shared");
+  if (!linked || linked->home != "shared" || linked->workspace.name != "linked") {
+    std::cerr << "enclosing: a symlinked member did not find its workspace\n";
+    ++failures;
+  }
+  // When one member's root holds another's, the more specific member is home.
+  const auto nested_ws = root / "platform";
+  write_file(nested_ws / "services" / "api" / "src" / "a.ts", "export const a = 1;\n");
+  write_file(nested_ws / std::string(cgraph::kWorkspaceFile),
+             R"({"name": "platform", "repos": [{"name": "all", "root": "."}, {"name": "api", "root": "./services/api"}]})");
+  const auto specific = cgraph::find_enclosing_workspace(nested_ws / "services" / "api");
+  if (!specific || specific->home != "api") {
+    std::cerr << "enclosing: the broader member won over the specific one\n";
+    ++failures;
+  }
+  // A manifest that lists the root but names a member not present here is
+  // returned with its errors, never skipped as if the root were alone.
+  const auto partial_ws = root / "partial";
+  write_file(partial_ws / "api" / "src" / "a.ts", "export const a = 1;\n");
+  write_file(partial_ws / std::string(cgraph::kWorkspaceFile),
+             R"({"name": "partial", "repos": [{"name": "api", "root": "./api"}, {"name": "billing", "root": "./billing"}]})");
+  const auto partial = cgraph::find_enclosing_workspace(partial_ws / "api");
+  if (!partial || partial->workspace.ok() || partial->home != "api" || partial->workspace.name != "partial") {
+    std::cerr << "enclosing: an unusable manifest that lists the root was skipped\n";
+    ++failures;
+  }
+  // A manifest above $HOME is outside the search.
+  const char* saved = std::getenv("HOME");
+  const std::string saved_home = saved == nullptr ? "" : saved;
+  ::setenv("HOME", (ws / "api").c_str(), 1);
+  if (cgraph::find_enclosing_workspace(nested)) {
+    std::cerr << "enclosing: the search climbed above $HOME\n";
+    ++failures;
+  }
+  // $HOME spelled through a symlink (macOS's /var -> /private/var) still stops
+  // the walk along the path as given: the manifest above it is not used.
+  fs::create_directories(root / "code" / "shared" / "sub");
+  ::setenv("HOME", (linked_ws / "shared").c_str(), 1);
+  if (cgraph::find_enclosing_workspace(linked_ws / "shared" / "sub")) {
+    std::cerr << "enclosing: a symlinked $HOME did not stop the search\n";
+    ++failures;
+  }
+  if (saved == nullptr) {
+    ::unsetenv("HOME");
+  } else {
+    ::setenv("HOME", saved_home.c_str(), 1);
+  }
+  return failures;
+}
+
 }  // namespace
 
 int main() {
@@ -346,6 +441,7 @@ int main() {
   failures += test_query_and_explain(root);
   failures += test_impact_bridges_the_contract(root);
   failures += test_path_bridges_and_unsupported_ops(root);
+  failures += test_enclosing_workspace(root);
 
   fs::remove_all(root);
   return failures == 0 ? 0 : 1;

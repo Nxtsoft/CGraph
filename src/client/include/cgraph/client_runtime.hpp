@@ -2,6 +2,8 @@
 
 #include "cgraph/daemon_identity.hpp"
 
+#include "cgraph/workspace.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <chrono>
@@ -26,6 +28,10 @@ struct ClientRequest {
   // request, not each member. Zero returns the building answer immediately;
   // status, update, shutdown and remember never wait.
   std::chrono::milliseconds build_wait{30000};
+  // Whether this request may federate. A root inside a workspace member makes
+  // `impact` and `path` cross the workspace; asks forwarded to member repos set
+  // this false so a member never re-federates (which would recurse).
+  bool federate = true;
 };
 
 struct ClientResult {
@@ -49,5 +55,21 @@ struct ClientRuntimeHooks {
 
 [[nodiscard]] ClientRuntimeHooks default_client_runtime_hooks(const ClientRequest& request);
 [[nodiscard]] ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntimeHooks hooks);
+
+// The other repos of the workspace enclosing `request.project_root`, with an ask
+// that reaches each one's daemon (one shared build wait, never re-federating).
+// Empty when the root is in no workspace.
+struct CrossServiceScope {
+  EnclosingWorkspace enclosing;
+  RepoAsk ask;
+};
+[[nodiscard]] std::optional<CrossServiceScope> cross_service_scope_for(const ClientRequest& request,
+                                                                       ClientRuntimeHooks hooks);
+
+// change_context over `parameters`, adding the `cross_service` section when the
+// target root sits in a workspace member. The CLI and the MCP server both call
+// this, so both answer the same. Throws as change_context does.
+[[nodiscard]] nlohmann::json change_context_across_workspace(const nlohmann::json& parameters,
+                                                             const ClientRequest& base);
 
 }  // namespace cgraph

@@ -1,6 +1,7 @@
 #include "cgraph/workspace.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <set>
@@ -552,6 +553,72 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
 bool is_workspace_root(const std::filesystem::path& root) {
   std::error_code error;
   return std::filesystem::is_regular_file(root / std::filesystem::path(std::string(kWorkspaceFile)), error);
+}
+
+std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem::path& project_root) {
+  std::error_code error;
+  const auto root = std::filesystem::weakly_canonical(project_root, error);
+  if (error || root.empty()) {
+    return std::nullopt;
+  }
+  // $HOME in both spellings: the walk follows the path as given and as
+  // resolved, and on macOS the temp and home trees sit behind /private symlinks.
+  std::set<std::filesystem::path> homes;
+  if (const char* value = std::getenv("HOME"); value != nullptr && value[0] != '\0') {
+    homes.insert(std::filesystem::absolute(value, error).lexically_normal());
+    homes.insert(std::filesystem::weakly_canonical(value, error));
+  }
+  const auto contains = [](const std::filesystem::path& outer, const std::filesystem::path& inner) {
+    const auto relative = inner.lexically_relative(outer);
+    return !relative.empty() && *relative.begin() != "..";
+  };
+  // Walk the path as given as well as the resolved one: a member reached
+  // through a symlink sits under the workspace only in the path as given.
+  std::vector<std::filesystem::path> starts{std::filesystem::absolute(project_root, error).lexically_normal(), root};
+  std::set<std::filesystem::path> seen;
+  for (const auto& start : starts) {
+    for (auto dir = start.parent_path(); !dir.empty(); dir = dir.parent_path()) {
+      if (seen.insert(dir).second && is_workspace_root(dir)) {
+        auto workspace = load_workspace(dir);
+        if (workspace.ok()) {
+          // The most specific member wins when one member's root holds another's.
+          WorkspaceRepo* member = nullptr;
+          for (auto& repo : workspace.repos) {
+            if (contains(repo.root, root) &&
+                (member == nullptr || repo.root.native().size() > member->root.native().size())) {
+              member = &repo;
+            }
+          }
+          if (member != nullptr) {
+            auto name = member->name;
+            member->root = root;
+            return EnclosingWorkspace{.workspace = std::move(workspace), .home = std::move(name)};
+          }
+        } else {
+          // A manifest that lists this root but cannot be used (a malformed
+          // entry, a member not cloned here) is returned with its errors: the
+          // caller says so, rather than quietly answering as if alone.
+          std::ifstream input(dir / std::filesystem::path(std::string(kWorkspaceFile)));
+          const auto manifest = nlohmann::json::parse(input, nullptr, false);
+          if (manifest.is_object() && manifest.contains("repos") && manifest["repos"].is_array()) {
+            for (const auto& entry : manifest["repos"]) {
+              if (!entry.is_object() || entry.value("root", std::string{}).empty()) continue;
+              std::filesystem::path declared = entry.value("root", std::string{});
+              auto resolved = std::filesystem::weakly_canonical(declared.is_absolute() ? declared : dir / declared, error);
+              if (!error && contains(resolved, root)) {
+                workspace.name = manifest.value("name", dir.filename().generic_string());
+                return EnclosingWorkspace{.workspace = std::move(workspace), .home = entry.value("name", std::string{})};
+              }
+            }
+          }
+        }
+      }
+      if (homes.contains(dir) || dir == dir.parent_path()) {
+        break;
+      }
+    }
+  }
+  return std::nullopt;
 }
 
 Workspace load_workspace(const std::filesystem::path& root) {

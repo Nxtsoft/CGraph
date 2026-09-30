@@ -94,7 +94,10 @@ namespace {
           "graph_impact",
           "Transitive blast radius of a symbol: dependents (callers/importers that break if it "
           "changes), dependencies (what it relies on), or both, bounded by max_depth. Use before "
-          "modifying or deleting a symbol to see what is affected.",
+          "modifying or deleting a symbol to see what is affected. Inside a repository that a "
+          "cgraph.workspace.json in a parent directory lists, it crosses into the other "
+          "repositories at shared endpoints: each node carries its repo, and the result names "
+          "the workspace and home repo.",
           {{"id", string_param("node id or exact symbol name")},
            {"direction", {{"type", "string"}, {"enum", {"dependents", "dependencies", "both"}},
                           {"description", "default dependents"}}},
@@ -153,7 +156,10 @@ namespace {
           "snapshots, and return source-pinned advisory impact and globally budgeted context. "
           "Does not modify roots or the resident graph. Budget uses serialized UTF-8 bytes / 4, rounded up. "
           "symbols_only returns every changes[].symbol_changes entry and skips impacts and context, "
-          "so the budget never sheds a symbol change.",
+          "so the budget never sheds a symbol change. Inside a repository that a "
+          "cgraph.workspace.json in a parent directory lists, cross_service names the other "
+          "repositories' callers of each endpoint the change serves, moves or removes, and the "
+          "handler behind each endpoint it calls.",
           {{"base_root", string_param("existing immutable base source directory")},
            {"target_root", string_param("target source directory")},
            {"diff_path", string_param("unified diff file")},
@@ -291,7 +297,8 @@ namespace {
 
 }  // namespace
 
-nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder) {
+nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder,
+                                  const McpChangeContext& change_context_runner) {
   const auto id = request.value("id", nlohmann::json(nullptr));
   const auto method = request.value("method", std::string{});
   if (request.value("jsonrpc", std::string{}) != "2.0" || method.empty()) {
@@ -320,7 +327,8 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
   const auto arguments = params.value("arguments", nlohmann::json::object());
   if (name == "graph_change_context") {
     try {
-      return response(id, text_content(change_context(arguments)));
+      return response(id, text_content(change_context_runner ? change_context_runner(arguments)
+                                                             : change_context(arguments)));
     } catch (const std::exception& error) {
       return response(id, {{"isError", true},
           {"content", {{{"type", "text"}, {"text", nlohmann::json{{"error", error.what()}}.dump()}}}}});

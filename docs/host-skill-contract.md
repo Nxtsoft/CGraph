@@ -79,6 +79,15 @@ repository whose daemon cannot be reached is listed in `unreachable` rather than
 `report`, `context` and the session-memory ops are answered per project: at a workspace root they
 return `ok:false` with `code: "workspace_op_unsupported"` and the repository roots to use.
 
+A host usually passes one repository's root, not the workspace's. When a `cgraph.workspace.json`
+in a parent directory (up to `$HOME`) lists that repository, `impact` and `path` still cross the
+workspace (the result carries `workspace: {name, home}`) and every other op stays in that
+repository; a content-root pin applies to the home repository only. `graph_change_context` then
+adds `cross_service`: other repositories' callers of each endpoint the change serves, moves or
+removes, and the handler behind each endpoint it calls, with `unreachable` and `building` naming
+any repository that could not answer fully. A manifest that lists the root but cannot be used is
+reported in `workspace.errors` instead of being ignored.
+
 ## Chunk Plan Dispatch
 
 The native tool emits semantic chunk plans for uncached or stale documentation, media, and semantic inputs. Code extraction stays deterministic and does not require host model work.
