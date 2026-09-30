@@ -251,6 +251,19 @@ whose daemon is down appears in `unreachable` rather than vanishing from the ans
 `context` and the memory ops are answered per project and say so, naming the roots to use. The
 MCP server federates too when its root is a workspace, with no new tool.
 
+A tool opened inside one member repository (or a worktree nested in one) finds the workspace by
+looking for `cgraph.workspace.json` in its parent directories, up to `$HOME`, and uses it only
+when the manifest lists that repository. There, `impact` and `path` cross the workspace (the
+answer carries `workspace: {name, home}`) while `query`, `explain`, `context` and `status` stay in
+the home repository, answered from the tree the tool was opened in. `cgraph change-context` and
+the MCP `graph_change_context` add a `cross_service` section: for each endpoint the change serves
+(the endpoint it edits, one whose handler it reaches, or one in a file it changes) the direct
+callers in the other repositories, and for each endpoint it calls (from changed code, or from a
+function calling a changed helper) the handler that serves it. The section has its own quarter of
+the budget, is never shed to make room for impacts, counts what it trims in
+`omitted.cross_service`, and names every repository that could not answer (`unreachable`) or was
+still building (`building`), so an empty `rows` means none were found, not that nobody looked.
+
 ## Quick start
 
 Download the current Linux x64 release and build your first graph:
