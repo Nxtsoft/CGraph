@@ -161,6 +161,12 @@ prefix: '/notebooks' })`, `.basePath('/v1')`) beneath every `.use(child)`, `.use
 inside `.use(new Elysia({ prefix }).get(…))`, a `.group('/v2', app => app.get(…))` or `.guard()`
 callback, and a module re-exported as `export const deckModule = deckRoutes as unknown as Elysia`
 all compose the same way. A Next.js `app/api/x/[id]/route.ts` exporting `GET` is `GET /api/x/:id`.
+A repository holding a `langgraph.json` with a non-empty `graphs` object is a LangGraph Agent
+Server: its 53 framework routes (`POST /runs/wait`, `POST /threads/{thread_id}/runs/stream`,
+`GET /assistants/{assistant_id}`, ..., the table `@langchain/langgraph-api` 1.5.1 registers; see
+https://docs.langchain.com/langsmith/server-api-ref) are served endpoints handled by a
+`langgraph_server` node spanning that object, with one `langgraph_graph` node per graph. A group
+the config switches off (`http.disable_runs`, `disable_store`, ...) is not served.
 Kotlin and Java Spring controllers get the same nodes: a method annotated `@GetMapping("/{id}")`
 (or `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`, or `@RequestMapping` with a
 `method`) under a class-level `@RequestMapping("/api/v1/users")` is `GET /api/v1/users/{id}`.
@@ -211,6 +217,17 @@ and reports how many endpoints matched across services, how many are consumed wi
 among the graphs, and, when a graph carries a contract document, the **drift**: endpoints the
 document promises that no service serves, and endpoints served that no document mentions.
 
+A front end that reaches its backend through its own catch-all proxy (idp-front-end calls
+`/api/backend/v1/users/{id}`; its `app/api/backend/[...path]/route.ts` forwards to
+`${BACKEND_URL}/api/v1/users/{id}`) names that with `--prefix REPO:/from=/to` on both `seam discover`
+and `seam fuse` (`--prefix web:/api/backend=/api`). An endpoint `web` consumes but does not serve,
+under `/api/backend`, then joins the provider's `/api/...` endpoint; its `CONSUMED_AT` edge keeps
+the consumer's own path as `via`, and the log counts the endpoints each prefix joined. A route the
+front end serves itself (`/api/backend/healthz`) is never mapped, and a proxied path only the front
+end serves is not joined. Each repository's own graph keeps its own spelling. The forwarding target
+is not read from the proxy's code: it is built at run time from the handler's parameters, so it is
+declared, not guessed.
+
 ### Contract documents
 
 A contract stated in a document is read as one too. An OpenAPI JSON document (`openapi*.json`,
@@ -246,7 +263,10 @@ the traversal reaches an `endpoint:` node it forwards that contract once to the 
 with the depth that remains, so changing an API handler reports the frontend hooks that call it,
 each witness tagged with its `repo` and the contract it came through. `path` joins two repositories
 at a contract the same way, `query` and `explain` merge and tag, `update` fans out, and
-`workspace init` with no `--repo` discovers every git repository one level down. A repository
+`workspace init` with no `--repo` discovers every git repository one level down. The manifest's
+optional `prefixes` (`[{"repo": "web", "from": "/api/backend", "to": "/api"}]`) carry the same
+proxy mapping into `impact` and `path`, which then cross from web's `/api/backend/...` placeholder to the
+backend's `/api/...` endpoint and back; a `path` across it keeps both spellings. A repository
 whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
 `context` and the memory ops are answered per project and say so, naming the roots to use. The
 MCP server federates too when its root is a workspace, with no new tool.

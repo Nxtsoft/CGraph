@@ -1,5 +1,7 @@
 #include "cgraph/seam.hpp"
 
+#include "cgraph/endpoint_prefixes.hpp"
+
 #include <fstream>
 #include <map>
 #include <optional>
@@ -204,7 +206,8 @@ bool fail(SeamResult& result, std::string message) {
 }  // namespace
 
 SeamFuseResult fuse_seam(const Fragment& seam,
-                         const std::vector<std::pair<std::string, GraphSnapshot>>& services) {
+                         const std::vector<std::pair<std::string, GraphSnapshot>>& services,
+                         std::span<const EndpointPrefix> prefixes) {
   SeamFuseResult result;
   result.ok = true;
 
@@ -241,8 +244,49 @@ SeamFuseResult fuse_seam(const Fragment& seam,
   };
 
   // 1. Service code graphs: one community per service; real service nodes are authoritative.
+  //    A call through the service's own proxy prefix lands on the proxied
+  //    endpoint, as discover_seam joined it; the placeholder it leaves unused is
+  //    not rendered.
+  std::vector<std::string> unjoined;  // proxied endpoints no seam or service node carries
+  std::unordered_set<std::string> endpoint_ids;  // every endpoint a proxied call may land on
+  std::unordered_map<std::string, std::unordered_set<std::string>> servers;  // endpoint -> services with a handler
+  if (!prefixes.empty()) {
+    for (const auto& [name, graph] : services) {
+      for (const auto& edge : graph.edges) {
+        if (edge.relation == "handled_by") {
+          servers[edge.source].insert(name);
+        }
+      }
+    }
+    for (const auto& node : seam.nodes) {
+      if (node.kind == "endpoint") {
+        endpoint_ids.insert(node.id);
+      }
+    }
+    for (const auto& service : services) {
+      for (const auto& node : service.second.nodes) {
+        if (node.kind == "endpoint") {
+          endpoint_ids.insert(node.id);
+        }
+      }
+    }
+  }
   for (const auto& [name, graph] : services) {
+    std::unordered_map<std::string, std::string> proxied;  // placeholder id -> proxied id
     for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint" && node.properties.contains("served") && !node.properties.contains("documented")) {
+        auto target = proxied_endpoint_id(prefixes, name, node.id);
+        // As in discover: never onto an endpoint only this service serves.
+        if (const auto owners = target ? servers.find(*target) : servers.end();
+            target && !(owners != servers.end() && owners->second.size() == 1 && owners->second.contains(name))) {
+          proxied.emplace(node.id, std::move(*target));
+        }
+      }
+    }
+    for (const auto& node : graph.nodes) {
+      if (proxied.contains(node.id)) {
+        continue;
+      }
       Node tagged = node;
       tagged.id = scoped(name, node.id);
       tagged.properties["community"] = name;
@@ -250,8 +294,24 @@ SeamFuseResult fuse_seam(const Fragment& seam,
       put(std::move(tagged), /*authoritative=*/true);
     }
     for (const auto& edge : graph.edges) {
-      add_edge({.source = scoped(name, edge.source), .target = scoped(name, edge.target), .relation = edge.relation});
+      const auto target = proxied.find(edge.target);
+      if (target != proxied.end()) {
+        if (!endpoint_ids.contains(target->second)) {
+          unjoined.push_back(name + ": " + edge.target + " -> " + target->second);
+          continue;
+        }
+      }
+      add_edge({.source = scoped(name, edge.source),
+                .target = target != proxied.end() ? target->second : scoped(name, edge.target),
+                .relation = edge.relation});
     }
+  }
+  if (!unjoined.empty()) {
+    result.ok = false;
+    result.errors.push_back(std::to_string(unjoined.size()) +
+                            " proxied endpoint(s) are in neither the seam nor a service graph (discover the seam "
+                            "with the same --prefix): " + unjoined.front());
+    return result;
   }
 
   // 2. Seam contract nodes cluster with their service/provider; shadow code-refs
@@ -537,7 +597,8 @@ Node code_ref_shadow(const std::string& graph_name, const SeamNode& node) {
 }
 }  // namespace
 
-SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesystem::path>>& graphs) {
+SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesystem::path>>& graphs,
+                         std::span<const EndpointPrefix> prefixes) {
   SeamResult result;
   result.ok = true;
   if (graphs.empty()) {
@@ -569,15 +630,21 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
   };
   // An edge into a service's code carries that service: two services can own the
   // same project-relative id, so the id alone does not say whose code it is.
-  auto add_edge = [&](std::string source, std::string target, std::string relation, const std::string& service = {}) {
+  auto add_edge = [&](std::string source, std::string target, std::string relation, const std::string& service = {},
+                      const std::string& via = {}) {
     if (seen_edges.insert(source + "\x1f" + target + "\x1f" + relation + "\x1f" + service).second) {
       Edge edge{.source = std::move(source), .target = std::move(target), .relation = std::move(relation)};
       if (!service.empty()) {
         edge.properties["service"] = service;
       }
+      if (!via.empty()) {
+        edge.properties["via"] = via;
+      }
       edges.push_back(std::move(edge));
     }
   };
+  // Consumed endpoints each prefix mapped, in prefix order, for the log.
+  std::vector<std::size_t> mapped_per_prefix(prefixes.size(), 0);
 
   for (const auto& [name, graph] : loaded) {
     Node service;
@@ -589,6 +656,18 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
     add_node(std::move(service));
   }
 
+  // Who serves what, before any join: a proxied call forwards to another
+  // service, so it never joins an endpoint only its own service serves.
+  std::unordered_map<std::string, std::unordered_set<std::string>> servers;  // endpoint -> services with a handler
+  if (!prefixes.empty()) {
+    for (const auto& [name, graph] : loaded) {
+      for (const auto& edge : graph.edges()) {
+        if (edge.relation == "handled_by") {
+          servers[edge.source].insert(name);
+        }
+      }
+    }
+  }
   std::unordered_map<std::string, std::unordered_set<std::string>> served_by;      // endpoint -> services
   std::unordered_map<std::string, std::unordered_set<std::string>> consumed_by;    // endpoint -> services
   std::unordered_map<std::string, std::unordered_set<std::string>> documented_by;  // endpoint -> services
@@ -628,7 +707,30 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
           endpoint.properties[key] = value->second;
         }
       }
-      if (const auto existing = index.find(node.id); existing != index.end()) {
+      // A call this service only consumes, through its own proxy prefix, joins
+      // at the path the proxy forwards to. Its own spelling stays on the edge.
+      std::string via;
+      for (std::size_t slot = 0; !served && !documented && slot < prefixes.size(); ++slot) {
+        auto proxied = proxied_endpoint_id(prefixes.subspan(slot, 1), name, node.id);
+        if (!proxied) {
+          continue;
+        }
+        if (const auto owners = servers.find(*proxied);
+            owners != servers.end() && owners->second.size() == 1 && owners->second.contains(name)) {
+          break;  // only this service serves the proxied path: not where the proxy forwards to
+        }
+        ++mapped_per_prefix[slot];
+        via = endpoint.properties["path"];
+        // `endpoint:<METHOD> <path>`: the proxied id is canonical, so it is its own spelling.
+        const auto space = proxied->find(' ');
+        endpoint.properties["method"] = proxied->substr(9, space - 9);
+        endpoint.properties["path"] = proxied->substr(space + 1);
+        endpoint.label = proxied->substr(9);
+        endpoint.id = std::move(*proxied);
+        break;
+      }
+      const std::string eid = endpoint.id;
+      if (const auto existing = index.find(eid); existing != index.end()) {
         // A served or documented copy carries the provider's spelling; it wins
         // over a consumer's canonical placeholder copy.
         if ((served || documented) && nodes[existing->second].properties.contains("served")) {
@@ -643,29 +745,29 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         add_node(std::move(endpoint));
       }
       if (documented) {
-        documented_by[node.id].insert(name);
+        documented_by[eid].insert(name);
         if (const auto file = file_by_path.find(node.source_file); file != file_by_path.end()) {
           add_node(code_ref_shadow(name, *file->second));
-          add_edge(node.id, file->second->id, "DOCUMENTED_IN", name);
+          add_edge(eid, file->second->id, "DOCUMENTED_IN", name);
         }
       }
       if (served) {
-        served_by[node.id].insert(name);
-        add_edge(node.id, service_id(name), "SERVED_BY");
+        served_by[eid].insert(name);
+        add_edge(eid, service_id(name), "SERVED_BY");
         for (const auto* edge : handled[node.id]) {
           if (const auto* handler = graph.find(edge->target)) {
             add_node(code_ref_shadow(name, *handler));
-            add_edge(node.id, handler->id, "HANDLED_BY", name);
+            add_edge(eid, handler->id, "HANDLED_BY", name);
           }
         }
       }
       if (used) {
-        consumed_by[node.id].insert(name);
-        add_edge(service_id(name), node.id, "CONSUMES");
+        consumed_by[eid].insert(name);
+        add_edge(service_id(name), eid, "CONSUMES");
         for (const auto* edge : consumed[node.id]) {
           if (const auto* caller = graph.find(edge->source)) {
             add_node(code_ref_shadow(name, *caller));
-            add_edge(node.id, caller->id, "CONSUMED_AT", name);
+            add_edge(eid, caller->id, "CONSUMED_AT", name, via);
           }
         }
       }
@@ -721,6 +823,11 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
                                   " endpoints (served by one service, consumed by another or itself); " +
                                   std::to_string(consumer_only) + " consumed with no provider among these graphs; " +
                                   std::to_string(provider_only) + " served with no consumer");
+  for (std::size_t slot = 0; slot < prefixes.size(); ++slot) {
+    result.resolution_log.push_back("prefix " + prefixes[slot].repo + " " + prefixes[slot].from + " -> " +
+                                    prefixes[slot].to + ": " + std::to_string(mapped_per_prefix[slot]) +
+                                    " consumed endpoints joined at the proxied path");
+  }
   if (!documented_by.empty()) {
     // Contract drift: what the documents say against what the code serves.
     result.resolution_log.push_back("drift: " + std::to_string(documented_not_served) +

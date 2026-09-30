@@ -20,6 +20,7 @@ enum class DetectedLanguage {
   Java,
   JavaScript,
   Kotlin,
+  LangGraphConfig,
   McpConfig,
   MsBuild,
   OpenApi,

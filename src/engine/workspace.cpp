@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -124,6 +125,48 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
 [[nodiscard]] double centrality_of(const nlohmann::json& node) {
   const auto found = node.find("centrality");
   return found != node.end() && found->is_number() ? found->get<double>() : 0.0;
+}
+
+// ---- proxy prefixes ----------------------------------------------------------
+
+// True when `id` is an endpoint `repo` consumes but does not serve or document:
+// a placeholder with no source anchor. Only such an endpoint is reached through
+// the repo's proxy; one the repo serves itself is its own route.
+[[nodiscard]] bool is_placeholder(const nlohmann::json& brief) {
+  return is_endpoint_id(brief.value("id", std::string{})) && !brief.contains("source_file");
+}
+
+[[nodiscard]] bool placeholder_in(const WorkspaceRepo& repo, const std::string& id, const RepoAsk& ask) {
+  std::string error;
+  const auto envelope = ask(repo, "explain", {{"id", id}, {"limit", 1}}, error);
+  const auto* result = envelope ? result_of(*envelope) : nullptr;
+  return result != nullptr && found_in(*result) && result->value("id", std::string{}) == id && is_placeholder(*result);
+}
+
+// The id every repo shares for an endpoint `repo` reached: the proxied spelling
+// when the repo only consumes it under one of its prefixes, else the id itself.
+[[nodiscard]] std::string shared_contract(const Workspace& workspace, const std::string& repo, const nlohmann::json& brief) {
+  auto id = brief.value("id", std::string{});
+  if (is_placeholder(brief)) {
+    if (auto proxied = proxied_endpoint_id(workspace.prefixes, repo, id)) {
+      return std::move(*proxied);
+    }
+  }
+  return id;
+}
+
+// The ids to ask `repo` for when crossing at `contract`: the contract itself and
+// every consumer spelling of it through the repo's proxy that the repo really
+// consumes without serving.
+[[nodiscard]] std::vector<std::string> spellings_in(const Workspace& workspace, const WorkspaceRepo& repo,
+                                                    const std::string& contract, const RepoAsk& ask) {
+  std::vector<std::string> ids{contract};
+  for (auto& spelling : consumer_spellings(workspace.prefixes, repo.name, contract)) {
+    if (placeholder_in(repo, spelling, ask)) {
+      ids.push_back(std::move(spelling));
+    }
+  }
+  return ids;
 }
 
 // ---- status ----------------------------------------------------------------
@@ -299,8 +342,22 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   auto owners = nlohmann::json::array();
   // endpoint id -> the shallowest depth any repo reached it at.
   std::map<std::string, int> contracts;
+  // endpoint id -> repos that reached it only through their own proxy prefix.
+  // The proxy forwards to the other repos, so the contract is not asked back
+  // of the repo it was proxied from.
+  std::map<std::string, std::set<std::string>> proxied_from;
+  std::map<std::string, std::set<std::string>> reached_in;
   if (is_endpoint_id(seed)) {
     contracts.emplace(seed, 0);
+    // A seed spelled the way a repo calls it through its proxy is also the
+    // proxied contract.
+    for (const auto& repo : workspace.repos) {
+      auto proxied = proxied_endpoint_id(workspace.prefixes, repo.name, seed);
+      if (proxied && placeholder_in(repo, seed, ask)) {
+        proxied_from[*proxied].insert(repo.name);
+        contracts.emplace(std::move(*proxied), 0);
+      }
+    }
   }
   for (const auto& answer : answers) {
     const auto* result = answer.reachable ? result_of(answer.envelope) : nullptr;
@@ -314,10 +371,11 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
     }
     absorb(witnesses, index, *nodes, answer.repo->name, 0, {});
     for (const auto& node : *nodes) {
-      const auto id = node.value("id", std::string{});
-      if (!is_endpoint_id(id)) {
+      if (!is_endpoint_id(node.value("id", std::string{}))) {
         continue;
       }
+      const auto id = shared_contract(workspace, answer.repo->name, node);
+      (id == node.value("id", std::string{}) ? reached_in : proxied_from)[id].insert(answer.repo->name);
       const auto depth = node.value("depth", 0);
       if (const auto slot = contracts.find(id); slot == contracts.end() || depth < slot->second) {
         contracts[id] = depth;
@@ -340,26 +398,31 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
       continue;
     }
     auto forwarded = params;
-    forwarded["id"] = endpoint;
     forwarded["max_depth"] = remaining;
     bool crossed = false;
     for (const auto& repo : workspace.repos) {
-      std::string error;
-      const auto envelope = ask(repo, "impact", forwarded, error);
-      if (!envelope) {
-        continue;  // already reported through the first pass's `unreachable`
-      }
-      const auto* result = result_of(*envelope);
-      if (result == nullptr || !found_in(*result)) {
+      if (proxied_from[endpoint].contains(repo.name) && !reached_in[endpoint].contains(repo.name)) {
         continue;
       }
-      const auto nodes = result->find("nodes");
-      if (nodes == result->end()) {
-        continue;
+      for (const auto& spelling : spellings_in(workspace, repo, endpoint, ask)) {
+        forwarded["id"] = spelling;
+        std::string error;
+        const auto envelope = ask(repo, "impact", forwarded, error);
+        if (!envelope) {
+          continue;  // already reported through the first pass's `unreachable`
+        }
+        const auto* result = result_of(*envelope);
+        if (result == nullptr || !found_in(*result)) {
+          continue;
+        }
+        const auto nodes = result->find("nodes");
+        if (nodes == result->end()) {
+          continue;
+        }
+        const auto before = witnesses.size();
+        absorb(witnesses, index, *nodes, repo.name, depth, endpoint);
+        crossed = crossed || witnesses.size() > before;
       }
-      const auto before = witnesses.size();
-      absorb(witnesses, index, *nodes, repo.name, depth, endpoint);
-      crossed = crossed || witnesses.size() > before;
     }
     if (crossed) {
       bridged.push_back({{"endpoint", endpoint}, {"depth", depth}});
@@ -418,9 +481,16 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   return path != result.end() && path->is_array() && !path->empty();
 }
 
+// An endpoint a path can cross at: its id in the repo that reached it, and the
+// id the other repos share for it (different only through a proxy prefix).
+struct Crossing {
+  std::string local;
+  std::string shared;
+};
+
 // The endpoints reachable from `id` in `repo`, nearest first, from one impact
 // call. These are the contracts a cross-repo path can cross at.
-[[nodiscard]] std::vector<std::string> reachable_contracts(
+[[nodiscard]] std::vector<Crossing> reachable_contracts(const Workspace& workspace,
     const WorkspaceRepo& repo, const std::string& id, const std::string& direction, int max_depth, const RepoAsk& ask) {
   nlohmann::json params{{"id", id}, {"direction", direction}, {"max_depth", max_depth}, {"limit", 0}};
   std::string error;
@@ -432,24 +502,24 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   if (result == nullptr || !found_in(*result)) {
     return {};
   }
-  std::vector<std::pair<int, std::string>> found;
+  std::vector<std::tuple<int, std::string, std::string>> found;
   if (const auto nodes = result->find("nodes"); nodes != result->end() && nodes->is_array()) {
     for (const auto& node : *nodes) {
       const auto node_id = node.value("id", std::string{});
       if (is_endpoint_id(node_id)) {
-        found.emplace_back(node.value("depth", 0), node_id);
+        found.emplace_back(node.value("depth", 0), node_id, shared_contract(workspace, repo.name, node));
       }
     }
   }
   std::ranges::sort(found);
-  std::vector<std::string> ids;
-  for (auto& [depth, endpoint] : found) {
-    ids.push_back(std::move(endpoint));
-    if (ids.size() >= kMaxBridgeCandidates) {
+  std::vector<Crossing> crossings;
+  for (auto& [depth, local, shared] : found) {
+    crossings.push_back(Crossing{.local = std::move(local), .shared = std::move(shared)});
+    if (crossings.size() >= kMaxBridgeCandidates) {
       break;
     }
   }
-  return ids;
+  return crossings;
 }
 
 [[nodiscard]] nlohmann::json federate_path(const Workspace& workspace, const nlohmann::json& params, const RepoAsk& ask) {
@@ -475,11 +545,11 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   // contracts a source can cross at are the ones it reaches in either direction.
   const auto max_depth = std::max(1, params.value("max_depth", kDefaultImpactDepth));
   for (const auto& from : workspace.repos) {
-    const auto contracts = reachable_contracts(from, source, "both", max_depth, ask);
+    const auto contracts = reachable_contracts(workspace, from, source, "both", max_depth, ask);
     if (contracts.empty()) {
       continue;
     }
-    for (const auto& endpoint : contracts) {
+    for (const auto& [endpoint, shared] : contracts) {
       nlohmann::json head{{"source", source}, {"target", endpoint}};
       std::string error;
       const auto head_envelope = ask(from, "path", head, error);
@@ -491,34 +561,38 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
         if (to.name == from.name) {
           continue;
         }
-        nlohmann::json tail{{"source", endpoint}, {"target", target}};
-        const auto tail_envelope = ask(to, "path", tail, error);
-        const auto* tail_result = tail_envelope ? result_of(*tail_envelope) : nullptr;
-        if (tail_result == nullptr || !has_path(*tail_result)) {
-          continue;
+        for (const auto& entry : spellings_in(workspace, to, shared, ask)) {
+          nlohmann::json tail{{"source", entry}, {"target", target}};
+          const auto tail_envelope = ask(to, "path", tail, error);
+          const auto* tail_result = tail_envelope ? result_of(*tail_envelope) : nullptr;
+          if (tail_result == nullptr || !has_path(*tail_result)) {
+            continue;
+          }
+          // Concatenate at the contract. Both sides name it identically unless a
+          // proxy prefix sits between them; then both spellings stay on the path.
+          const std::size_t skip = entry == endpoint ? 1 : 0;
+          auto path = (*head_result)["path"];
+          auto path_nodes = (*head_result)["path_nodes"];
+          for (auto& node : path_nodes) {
+            node["repo"] = from.name;
+          }
+          const auto& tail_path = (*tail_result)["path"];
+          const auto& tail_nodes = (*tail_result)["path_nodes"];
+          for (std::size_t i = skip; i < tail_path.size(); ++i) {
+            path.push_back(tail_path[i]);
+          }
+          for (std::size_t i = skip; i < tail_nodes.size(); ++i) {
+            auto node = tail_nodes[i];
+            node["repo"] = to.name;
+            path_nodes.push_back(std::move(node));
+          }
+          nlohmann::json result{{"path", std::move(path)},
+                                {"path_nodes", std::move(path_nodes)},
+                                {"repos", nlohmann::json::array({from.name, to.name})},
+                                {"bridged_through", shared}};
+          attach_repo_health(result, answers);
+          return ok_response(std::move(result));
         }
-        // Concatenate at the contract, which both sides name identically.
-        auto path = (*head_result)["path"];
-        auto path_nodes = (*head_result)["path_nodes"];
-        for (auto& node : path_nodes) {
-          node["repo"] = from.name;
-        }
-        const auto& tail_path = (*tail_result)["path"];
-        const auto& tail_nodes = (*tail_result)["path_nodes"];
-        for (std::size_t i = 1; i < tail_path.size(); ++i) {
-          path.push_back(tail_path[i]);
-        }
-        for (std::size_t i = 1; i < tail_nodes.size(); ++i) {
-          auto node = tail_nodes[i];
-          node["repo"] = to.name;
-          path_nodes.push_back(std::move(node));
-        }
-        nlohmann::json result{{"path", std::move(path)},
-                              {"path_nodes", std::move(path_nodes)},
-                              {"repos", nlohmann::json::array({from.name, to.name})},
-                              {"bridged_through", endpoint}};
-        attach_repo_health(result, answers);
-        return ok_response(std::move(result));
       }
     }
   }
@@ -687,8 +761,17 @@ Workspace load_workspace(const std::filesystem::path& root) {
   if (workspace.repos.empty() && workspace.errors.empty()) {
     workspace.errors.push_back("workspace manifest lists no usable repos");
   }
+  if (const auto prefixes = manifest.find("prefixes"); prefixes != manifest.end()) {
+    workspace.prefixes = parse_endpoint_prefixes(*prefixes, workspace.errors);
+    for (const auto& prefix : workspace.prefixes) {
+      if (!names.contains(prefix.repo)) {
+        workspace.errors.push_back("prefix names repo '" + prefix.repo + "', which the manifest does not list");
+      }
+    }
+  }
   if (!workspace.errors.empty()) {
     workspace.repos.clear();
+    workspace.prefixes.clear();
   }
   return workspace;
 }
@@ -704,7 +787,11 @@ nlohmann::json workspace_manifest_json(const Workspace& workspace) {
                             : repo.root.generic_string();
     repos.push_back({{"name", repo.name}, {"root", stored}});
   }
-  return nlohmann::json{{"name", workspace.name}, {"repos", std::move(repos)}};
+  nlohmann::json manifest{{"name", workspace.name}, {"repos", std::move(repos)}};
+  if (!workspace.prefixes.empty()) {
+    manifest["prefixes"] = endpoint_prefixes_json(workspace.prefixes);
+  }
+  return manifest;
 }
 
 std::vector<WorkspaceRepo> discover_workspace_repos(const std::filesystem::path& root) {

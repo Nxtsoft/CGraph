@@ -1,6 +1,7 @@
 #include "cgraph/non_grammar_extractors.hpp"
 
 #include "cgraph/contract_schemas.hpp"
+#include "cgraph/langgraph_config.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <nlohmann/json.hpp>
@@ -297,6 +298,8 @@ std::optional<ExtractionResult> extract_non_grammar_language(
       return extract_protobuf(context);
     case DetectedLanguage::GraphQL:
       return extract_graphql_sdl(context);
+    case DetectedLanguage::LangGraphConfig:
+      return extract_langgraph_config(context);
     default:
       return std::nullopt;
   }
@@ -314,6 +317,7 @@ bool handles_non_grammar_language(DetectedLanguage language) {
     case DetectedLanguage::OpenApi:
     case DetectedLanguage::Protobuf:
     case DetectedLanguage::GraphQL:
+    case DetectedLanguage::LangGraphConfig:
       return true;
     default:
       return false;

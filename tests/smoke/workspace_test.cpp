@@ -429,6 +429,136 @@ int test_enclosing_workspace(const fs::path& root) {
 
 }  // namespace
 
+// A manifest's `prefixes` load, round-trip, and are validated against the
+// member names.
+int test_manifest_prefixes(const fs::path& root) {
+  const auto ws = root / "ws-prefixes";
+  fs::create_directories(ws / "idp");
+  fs::create_directories(ws / "web");
+  write_file(ws / std::string(cgraph::kWorkspaceFile),
+             R"({"name": "modsquad", "repos": [{"name": "idp", "root": "./idp"}, {"name": "web", "root": "./web"}],
+                 "prefixes": [{"repo": "web", "from": "/api/backend/", "to": "/api"}]})");
+  const auto loaded = cgraph::load_workspace(ws);
+  if (!loaded.ok() || loaded.prefixes.size() != 1 || loaded.prefixes[0].repo != "web" ||
+      loaded.prefixes[0].from != "/api/backend" || loaded.prefixes[0].to != "/api") {
+    return fail("a manifest's prefixes load, normalized");
+  }
+  if (cgraph::workspace_manifest_json(loaded)["prefixes"] !=
+      json::array({{{"repo", "web"}, {"from", "/api/backend"}, {"to", "/api"}}})) {
+    return fail("prefixes round-trip through the manifest JSON");
+  }
+  write_file(ws / "stranger" / std::string(cgraph::kWorkspaceFile),
+             R"({"repos": [{"name": "idp", "root": "../idp"}], "prefixes": [{"repo": "web", "from": "/api/backend", "to": "/api"}]})");
+  write_file(ws / "relative" / std::string(cgraph::kWorkspaceFile),
+             R"({"repos": [{"name": "idp", "root": "../idp"}], "prefixes": [{"repo": "idp", "from": "api/backend", "to": "/api"}]})");
+  for (const auto* name : {"stranger", "relative"}) {
+    const auto invalid = cgraph::load_workspace(ws / name);
+    if (invalid.ok() || !invalid.repos.empty() || !invalid.prefixes.empty()) {
+      return fail(std::string("a prefix naming no member, or a relative path, is a manifest error: ") + name);
+    }
+  }
+  return 0;
+}
+
+json endpoint_brief(const std::string& id, int depth, bool served) {
+  json brief{{"id", id}, {"label", id.substr(9)}, {"kind", "endpoint"}, {"depth", depth}};
+  if (served) {
+    brief["source_file"] = "/src/handler.ts";
+  }
+  return brief;
+}
+
+json explain_of(const std::string& id, bool served) {
+  json result{{"id", id}, {"label", id.substr(9)}, {"kind", "endpoint"}, {"neighbors", json::array()}};
+  if (served) {
+    result["source_file"] = "/src/route.ts";
+  }
+  return json{{"ok", true}, {"result", result}};
+}
+
+// impact crosses a proxy prefix both ways, only through an endpoint the front
+// end consumes without serving; path joins across it keeping both spellings.
+int test_impact_and_path_cross_a_proxy_prefix(const fs::path& root) {
+  auto workspace = workspace_of(root, {{"idp", root / "api"}, {"web", root / "web"}});
+  workspace.prefixes.push_back(cgraph::EndpointPrefix{.repo = "web", .from = "/api/backend", .to = "/api"});
+  const std::string provided = "endpoint:PATCH /api/v1/sessions/{}/extend";
+  const std::string proxied = "endpoint:PATCH /api/backend/v1/sessions/{}/extend";
+  const std::string backend_health = "endpoint:GET /api/healthz";
+  const std::string local_health = "endpoint:GET /api/backend/healthz";
+  FakeRepos repos;
+  // idp: the controller method's dependents are both served endpoints.
+  repos.answers["idp"]["impact:idp::extendSession"] =
+      impact_ok({endpoint_brief(provided, 1, true), endpoint_brief(backend_health, 1, true)});
+  // web: the hook consumes the proxied spelling; web serves /api/backend/healthz itself.
+  repos.answers["web"]["explain:" + proxied] = explain_of(proxied, false);
+  repos.answers["web"]["explain:" + local_health] = explain_of(local_health, true);
+  repos.answers["web"]["impact:" + proxied] = impact_ok({node("web::useExtendSession", 1)});
+  repos.answers["web"]["impact:" + local_health] = impact_ok({node("web::healthzRoute", 1)});
+  const auto response = cgraph::federate_workspace_request(
+      workspace, "impact", json{{"id", "idp::extendSession"}, {"direction", "dependents"}, {"max_depth", 3}}, repos.ask());
+  std::map<std::string, json> reached;
+  for (const auto& hit : response["result"]["nodes"]) {
+    reached[hit["id"]] = hit;
+  }
+  if (reached.count("web::useExtendSession") == 0 || reached["web::useExtendSession"]["depth"] != 2 ||
+      reached["web::useExtendSession"].value("bridged_through", std::string{}) != provided) {
+    std::cerr << response.dump(2) << '\n';
+    return fail("impact crosses from the provider to the consumer's proxied spelling");
+  }
+  if (reached.count("web::healthzRoute") != 0) {
+    return fail("a route the front end serves itself is not reached through the proxy");
+  }
+
+  // The other way: the hook reaches the placeholder, which crosses to idp.
+  repos.answers["web"]["impact:web::useExtendSession"] = impact_ok({endpoint_brief(proxied, 1, false)});
+  repos.answers["idp"]["impact:" + provided] = impact_ok({node("idp::extendSession", 1)});
+  // web also serves a route at the proxied path; the proxy never forwards to it.
+  repos.answers["web"]["impact:" + provided] = impact_ok({node("web::ownRouteAtProxiedPath", 1)});
+  const auto reverse = cgraph::federate_workspace_request(
+      workspace, "impact", json{{"id", "web::useExtendSession"}, {"direction", "dependencies"}, {"max_depth", 3}}, repos.ask());
+  bool crossed = false;
+  for (const auto& hit : reverse["result"]["nodes"]) {
+    crossed = crossed || (hit["id"] == "idp::extendSession" && hit.value("repo", std::string{}) == "idp" &&
+                          hit.value("bridged_through", std::string{}) == provided);
+  }
+  if (!crossed) {
+    std::cerr << reverse.dump(2) << '\n';
+    return fail("impact crosses from the consumer's proxied spelling to the provider");
+  }
+  for (const auto& hit : reverse["result"]["nodes"]) {
+    if (hit["id"] == "web::ownRouteAtProxiedPath") {
+      return fail("a contract reached through a repo's proxy is not asked back of that repo");
+    }
+  }
+  // Without the prefix the two spellings never meet.
+  const auto plain = cgraph::federate_workspace_request(
+      workspace_of(root, {{"idp", root / "api"}, {"web", root / "web"}}), "impact",
+      json{{"id", "web::useExtendSession"}, {"direction", "dependencies"}, {"max_depth", 3}}, repos.ask());
+  for (const auto& hit : plain["result"]["nodes"]) {
+    if (hit.value("repo", std::string{}) == "idp") {
+      return fail("no prefix, no crossing");
+    }
+  }
+
+  // path: web hook -> proxied placeholder, then idp from the provided endpoint.
+  repos.answers["web"]["path"] = json{{"ok", true}, {"result", {{"path", json::array()}, {"path_nodes", json::array()}}}};
+  repos.answers["idp"]["path"] = json{{"ok", true}, {"result", {{"path", json::array()}, {"path_nodes", json::array()}}}};
+  repos.answers["web"]["path:web::useExtendSession->" + proxied] =
+      json{{"ok", true}, {"result", {{"path", {"web::useExtendSession", proxied}},
+                                     {"path_nodes", {{{"id", "web::useExtendSession"}}, {{"id", proxied}}}}}}};
+  repos.answers["idp"]["path:" + provided + "->idp::extendSession"] =
+      json{{"ok", true}, {"result", {{"path", {provided, "idp::extendSession"}},
+                                     {"path_nodes", {{{"id", provided}}, {{"id", "idp::extendSession"}}}}}}};
+  const auto path = cgraph::federate_workspace_request(
+      workspace, "path", json{{"source", "web::useExtendSession"}, {"target", "idp::extendSession"}}, repos.ask());
+  if (path["result"]["path"] != json::array({"web::useExtendSession", proxied, provided, "idp::extendSession"}) ||
+      path["result"]["bridged_through"] != provided || path["result"]["path_nodes"][2]["repo"] != "idp") {
+    std::cerr << path.dump(2) << '\n';
+    return fail("path joins across the proxy, keeping both spellings of the contract");
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-workspace-test";
   fs::remove_all(root);
@@ -442,6 +572,8 @@ int main() {
   failures += test_impact_bridges_the_contract(root);
   failures += test_path_bridges_and_unsupported_ops(root);
   failures += test_enclosing_workspace(root);
+  failures += test_manifest_prefixes(root);
+  failures += test_impact_and_path_cross_a_proxy_prefix(root);
 
   fs::remove_all(root);
   return failures == 0 ? 0 : 1;

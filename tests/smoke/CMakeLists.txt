@@ -998,3 +998,27 @@ target_link_libraries(cgraph_path_classification_test PRIVATE cgraph::engine nlo
 cgraph_set_warnings(cgraph_path_classification_test)
 cgraph_enable_sanitizers(cgraph_path_classification_test)
 add_test(NAME cgraph_path_classification_test COMMAND cgraph_path_classification_test)
+
+add_executable(cgraph_langgraph_config_test
+  langgraph_config_test.cpp)
+
+target_link_libraries(cgraph_langgraph_config_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_langgraph_config_test)
+cgraph_enable_sanitizers(cgraph_langgraph_config_test)
+
+add_test(NAME cgraph_langgraph_config_test COMMAND cgraph_langgraph_config_test)
+
+add_executable(cgraph_endpoint_prefixes_test
+  endpoint_prefixes_test.cpp)
+
+target_link_libraries(cgraph_endpoint_prefixes_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_endpoint_prefixes_test)
+cgraph_enable_sanitizers(cgraph_endpoint_prefixes_test)
+
+add_test(NAME cgraph_endpoint_prefixes_test COMMAND cgraph_endpoint_prefixes_test)
