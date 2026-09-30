@@ -186,7 +186,10 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
     if (name.empty()) {
       continue;
     }
-    const auto symbol_id = make_id(symbol_stub + ":" + name);
+    // make_id folds `/`, `:` and `_` alike, so `from api.routes import
+    // items_router` and `from api.routes.items import router` would share one
+    // stub (and one label). The name's length keeps them apart.
+    const auto symbol_id = make_id(symbol_stub + ":" + name + ":" + std::to_string(name.size()));
     fragment.nodes.push_back(Node{
         .id = symbol_id,
         .label = name,
@@ -424,26 +427,43 @@ void python_router_variable(const TSNode& assignment, const ExtractionContext& c
 }
 
 // `app.include_router(router, prefix="/v1")`: the chain named by the first
-// argument is served under the mounting chain. A mount inside a function, one whose prefix is not a
-// literal, and one whose router is not a bare name (`users.router`) cannot be
-// composed; each is still recorded so resolve_contracts counts it unresolved.
+// argument (a bare name, or `module.router` of an imported module) is served
+// under the mounting chain. `app.mount("/api", api)` serves a sub-application
+// beneath a path the same way; a `mount` whose path does not start with `/`
+// (`session.mount("https://", adapter)`) or whose app is not a name
+// (`StaticFiles(...)`) is not a router mount. A mount inside a function or with
+// a prefix that is not a literal cannot be placed; it is still recorded, with
+// no mounting chain, so resolve_contracts counts it unresolved.
 void python_router_mount(const TSNode& call, const ExtractionContext& context, std::vector<RawRelation>& out) {
   const auto [parent, method] = python_member_call(call, context.source);
-  if (method != "include_router") {
+  const bool sub_application = method == "mount";
+  if (method != "include_router" && !sub_application) {
     return;
   }
   const auto arguments = python_call_arguments(call, context.source);
-  std::optional<TSNode> child = arguments.positional.empty() ? arguments.keyword("router")
-                                                             : std::optional<TSNode>{arguments.positional.front()};
+  const auto argument = [&](std::size_t position, std::string_view keyword) -> std::optional<TSNode> {
+    if (arguments.positional.size() > position) {
+      return arguments.positional[position];
+    }
+    return arguments.keyword(keyword);
+  };
+  const auto child = sub_application ? argument(1, "app") : argument(0, "router");
   if (!child) {
     return;
   }
+  const auto prefix_node = sub_application ? argument(0, "path") : arguments.keyword("prefix");
   std::string prefix;
   bool resolvable = !inside_function(call);
-  if (const auto value = arguments.keyword("prefix")) {
-    const auto literal = python_string_literal(*value, context.source);
+  if (prefix_node) {
+    const auto literal = python_string_literal(*prefix_node, context.source);
     resolvable = resolvable && literal.has_value();
     prefix = literal.value_or(std::string{});
+  }
+  if (sub_application) {
+    const std::string_view child_type = ts_node_type(*child);
+    if (child_type != "identifier" || !prefix_node || (resolvable && !prefix.starts_with('/'))) {
+      return;
+    }
   }
   out.push_back(RawRelation{
       .source_id = resolvable ? make_id(context.relative_path + ":" + parent) : std::string{},

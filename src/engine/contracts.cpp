@@ -216,7 +216,35 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // (`const app = new Elysia()`); a `.use(cors())` plugin call never reaches
   // here (its argument is not an identifier), and a `.use(authMiddleware)`
   // naming a function is middleware, not a mount.
+  // Python's `include_router(users.router)` after `from app.routers import
+  // users`: `users` is an imported module file, `router` its own variable.
+  // Only `module.name`; a longer chain resolves to nothing.
+  const auto python_dotted = [](const RawRelation& relation) {
+    return relation.target_label.find('.') != std::string::npos &&
+           std::filesystem::path(relation.source_file).extension() == ".py";
+  };
+  const auto python_module_attribute = [&](const RawRelation& relation) -> std::string {
+    const auto& label = relation.target_label;
+    const auto dot = label.find('.');
+    if (label.find('.', dot + 1) != std::string::npos) {
+      return {};
+    }
+    const auto module =
+        by_id.find(resolve_scoped_name(scopes, relation.source_file, make_id(label.substr(0, dot)), false));
+    if (module == by_id.end() || module->second->kind != "file") {
+      return {};
+    }
+    const auto file = variables_by_file.find(module->second->source_file);
+    if (file == variables_by_file.end()) {
+      return {};
+    }
+    const auto slot = file->second.find(label.substr(dot + 1));
+    return slot == file->second.end() ? std::string{} : slot->second;
+  };
   const auto name_in_scope = [&](const RawRelation& relation) -> std::string {
+    if (python_dotted(relation)) {
+      return python_module_attribute(relation);
+    }
     auto id = resolve_scoped_name(scopes, relation.source_file, make_id(relation.target_label), false);
     if (id.empty()) {
       if (const auto file = variables_by_file.find(relation.source_file); file != variables_by_file.end()) {

@@ -170,12 +170,18 @@ Python FastAPI services get them too: a function decorated `@router.post("/{proj
 (or `.get`, `.put`, `.patch`, `.delete`, `.head`, `.options`, or `.api_route(path, methods=[...])`,
 which defaults to GET) on a module-level `router = APIRouter(prefix="/project")` or `app =
 FastAPI()` is `POST /project/{project_id}/setup` beneath every `include_router(router,
-prefix="/v1")` that mounts it, composed across files through imports (`from api.routes.x import
-router as x_router` and package `__init__.py` files included). A path, prefix or `methods` list
-that is not a plain string literal (an f-string that interpolates, `prefix=settings.PREFIX`), a
-route or mount inside a function (an app factory), and a router whose only mount cannot be placed
-are not minted and are counted. Flask is not read: `register_blueprint(url_prefix=)` replaces the
-blueprint's own prefix rather than composing with it.
+prefix="/v1")` or `app.mount("/v1", sub_app)` that mounts it, composed across files through
+imports: `from api.routes.x import router as x_router` (the alias is the only name bound),
+`from app.routers import users` then `include_router(users.router)` (a submodule), and a router a
+package's `__init__.py` imports and another file imports from the package. A path, prefix or
+`methods` list that is not a plain string literal (an f-string that interpolates,
+`prefix=settings.PREFIX`), and a route or `include_router` inside a function (an app factory), are
+not minted and are counted in `routes_unresolved` / `mounts_unresolved`; a router whose every
+mount is one of those mints nothing. A router nothing mounts is served at its own prefix, as a
+JavaScript router is. `add_api_route(...)` is not read, and a mount of a longer dotted name
+(`include_router(api.v1.router)`) is counted unresolved without placing its router. Flask is not
+read: `register_blueprint(url_prefix=)` replaces the blueprint's own prefix rather than composing
+with it.
 The node's id is `endpoint:GET /api/v1/notebooks/{}/notes` with no repository in it and `{}` for
 every parameter segment (`:id`, `{id}`, `[id]`), its label keeps the provider's spelling
 (`GET /api/v1/notebooks/:id/notes`), and it carries `method` and `path`, the handler's file and

@@ -117,7 +117,7 @@ grep/read calls that burn context.
   `@RequestMapping("/api/v1/users")` is `endpoint:GET /api/v1/users/{}`, and a
   Python FastAPI `@router.post("/{project_id}/setup")` on
   `APIRouter(prefix="/project")` is `endpoint:POST /project/{}/setup` beneath
-  every `include_router(..., prefix=)` that mounts it. The
+  every `include_router(..., prefix=)` or `mount(path, app)` that mounts it. The
   id carries no repo and `{}` for every parameter, so the same path in another
   repo's graph is the same node. Callers are `CONSUMES` edges into the
   endpoint: direct `fetch`, `api.GET`/`axios.post`, and calls through path

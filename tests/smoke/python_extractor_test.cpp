@@ -211,10 +211,108 @@ async def computed():
   return 0;
 }
 
+std::set<std::string> endpoint_ids(const cgraph::GraphSnapshot& graph) {
+  std::set<std::string> ids;
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "endpoint") ids.insert(node.id);
+  }
+  return ids;
+}
+
+std::string joined(const std::set<std::string>& ids) {
+  std::string out;
+  for (const auto& id : ids) out += (out.empty() ? "" : ", ") + id;
+  return out;
+}
+
+// Router layouts from the FastAPI docs and review of PR #143: each must mint
+// at its real full path or not at all, never at a guessed top-level path.
+int fastapi_router_layouts() {
+  struct Case {
+    std::string name;
+    std::vector<std::pair<std::string, std::string>> files;
+    std::set<std::string> endpoints;
+    std::size_t routes_unresolved;
+    std::size_t mounts_unresolved;
+  };
+  const std::vector<Case> cases = {
+      // An aliased import binds only its alias: svc.py's own `router` is not
+      // the `other_router` it imports.
+      {"aliased import shadows nothing",
+       {{"app.py", "from fastapi import FastAPI\nfrom pkg.svc import router as svc_router\n\napp = FastAPI()\n"
+                   "app.include_router(svc_router)\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/other.py", "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/other\")\n\n\n"
+                         "@router.get(\"/y\")\nasync def y():\n    return {}\n"},
+        {"pkg/svc.py", "from fastapi import APIRouter\nfrom pkg.other import router as other_router\n\n"
+                       "router = APIRouter(prefix=\"/svc\")\nrouter.include_router(other_router, prefix=\"/o\")\n\n\n"
+                       "@router.get(\"/x\")\nasync def x():\n    return {}\n"}},
+       {"endpoint:GET /svc/x", "endpoint:GET /svc/o/other/y"},
+       0,
+       0},
+      // FastAPI's "Bigger Applications": `from app.routers import users` names
+      // a submodule, and `users.router` is its router.
+      {"dotted router of an imported submodule",
+       {{"app/__init__.py", ""},
+        {"app/main.py", "from fastapi import FastAPI\nfrom app.routers import users\n\napp = FastAPI()\n"
+                        "app.include_router(users.router, prefix=\"/api/v1\")\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/users.py", "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/users\")\n\n\n"
+                                 "@router.get(\"/{user_id}\")\nasync def read_user(user_id: str):\n    return {}\n"}},
+       {"endpoint:GET /api/v1/users/{}"},
+       0,
+       0},
+      // A sub-application mounted at a path is served beneath it; a requests
+      // adapter mounted on a URL scheme is not a mount at all.
+      {"mounted sub-application",
+       {{"main.py", "import requests\nfrom fastapi import FastAPI\n\napi = FastAPI()\napp = FastAPI()\n"
+                    "app.mount(\"/api\", api)\nsession = requests.Session()\nadapter = requests.adapters.HTTPAdapter()\n"
+                    "session.mount(\"https://\", adapter)\n\n\n"
+                    "@api.get(\"/items\")\nasync def items():\n    return {}\n"}},
+       {"endpoint:GET /api/items"},
+       0,
+       0},
+      // `.get` on things that are not routers mints nothing.
+      {"non-router decorators",
+       {{"main.py", "import pytest\nfrom fastapi import FastAPI\nfrom cachetools import cache\nfrom flask import Flask\n\n"
+                    "app = FastAPI()\nflask_app = Flask(__name__)\n\n\n@cache.get(\"/c\")\ndef c():\n    return 1\n\n\n"
+                    "@flask_app.get(\"/f\")\ndef f():\n    return 1\n\n\n@pytest.mark.get(\"/p\")\ndef p():\n    return 1\n\n\n"
+                    "@app.get(\"/real\")\ndef real():\n    return 1\n"}},
+       {"endpoint:GET /real"},
+       2,
+       0},
+      // A package __init__.py that imports a router re-exports it.
+      {"router re-exported by a package",
+       {{"api/__init__.py", ""},
+        {"api/routes/__init__.py", "from api.routes.items import router as items_router\n"},
+        {"api/routes/items.py", "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/items\")\n\n\n"
+                                "@router.get(\"/{item_id}\")\nasync def get_item(item_id: str):\n    return {}\n"},
+        {"main.py", "from fastapi import FastAPI\nfrom api.routes import items_router\n\napp = FastAPI()\n"
+                    "app.include_router(items_router, prefix=\"/v2\")\n"}},
+       {"endpoint:GET /v2/items/{}"},
+       0,
+       0},
+  };
+  int status = 0;  // every case reports, so one run shows each miss
+  for (const auto& test : cases) {
+    const auto built = build_python(test.files);
+    const auto ids = endpoint_ids(built.graph);
+    if (ids != test.endpoints) {
+      status = fail(test.name + ": endpoints [" + joined(ids) + "]");
+    } else if (built.stats.routes_unresolved != test.routes_unresolved) {
+      status = fail(test.name + ": routes_unresolved " + std::to_string(built.stats.routes_unresolved));
+    } else if (built.stats.mounts_unresolved != test.mounts_unresolved) {
+      status = fail(test.name + ": mounts_unresolved " + std::to_string(built.stats.mounts_unresolved));
+    }
+  }
+  return status;
+}
+
 }  // namespace
 
 int main() {
   if (const auto status = fastapi_routes(); status != 0) return status;
+  if (const auto status = fastapi_router_layouts(); status != 0) return status;
 
   const auto members = cgraph::extract_python({.source_file = "members.py", .relative_path = "members.py", .source = R"py(
 from dataclasses import dataclass
@@ -306,8 +404,8 @@ class Worker:
 from .config import Local
 from config import Remote
 )py"});
-    const auto relative_id = cgraph::make_id("import-relative-symbol:config:Local");
-    const auto absolute_id = cgraph::make_id("import-symbol:config:Remote");
+    const auto relative_id = cgraph::make_id("import-relative-symbol:config:Local:5");
+    const auto absolute_id = cgraph::make_id("import-symbol:config:Remote:6");
     std::string relative_path_prop;
     bool absolute_module = false;
     for (const auto& node : imported.fragment.nodes) {

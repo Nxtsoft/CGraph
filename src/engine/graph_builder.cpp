@@ -142,6 +142,11 @@ constexpr std::string_view kCallRelation = "CALLS";
   return index;
 }
 
+// A Python package's `__init__.py`: the module `import pkg` names.
+[[nodiscard]] bool is_python_package_init(const std::string& source_file) {
+  return std::filesystem::path(source_file).filename() == "__init__.py";
+}
+
 }  // namespace
 
 GraphSnapshot merge_fragments(std::span<const Fragment> fragments) {
@@ -576,6 +581,24 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
                                                 Reexport{target->second, stub->second->label});
       }
     }
+    // A Python package re-exports what its `__init__.py` imports: after
+    // `from pkg.items import router as items_router` there, `from pkg import
+    // items_router` elsewhere is items.py's `router`. Exported under the name
+    // the package binds (the alias when there is one).
+    for (const auto& edge : graph.edges) {
+      if (edge.relation != "imports" || !is_python_package_init(source_of_file[edge.source])) {
+        continue;
+      }
+      const auto stub = stub_by_id.find(edge.target);
+      const auto target = remap.find(edge.target);
+      if (stub == stub_by_id.end() || target == remap.end() || stub->second->kind != "import") {
+        continue;
+      }
+      const auto alias = edge.properties.find("alias");
+      reexported_by_file[edge.source].emplace(
+          make_id(alias != edge.properties.end() ? alias->second : stub->second->label),
+          Reexport{target->second, stub->second->label});
+    }
     if (!reexported_by_file.empty() || !star_targets.empty()) {
       // What each file declares at module level, by label (empty when declared
       // more than once): declared_by_file_label minus class members, because a
@@ -690,6 +713,25 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
         }
       }
     }
+    // `from app.routers import users` with nothing named `users` in the
+    // package's `__init__.py` (declared or re-exported) imports the submodule
+    // app/routers/users.py (or users/__init__.py).
+    for (const auto& node : graph.nodes) {
+      if (node.kind != "import") {
+        continue;
+      }
+      const auto slot = remap.find(node.id);
+      if (slot == remap.end() || !file_ids.contains(slot->second)) {
+        continue;
+      }
+      const auto& package = source_of_file[slot->second];
+      if (!is_python_package_init(package) || declared_by_file_label.contains(package + "\n" + node.label)) {
+        continue;
+      }
+      if (const auto module = lookup((fs::path(package).parent_path() / node.label).generic_string())) {
+        slot->second = *module;
+      }
+    }
   }
 
   if (removed.empty()) {
@@ -712,6 +754,22 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
       alias_of.emplace(node.id, alias->second);
     }
   }
+  // A Python `from m import name` binds `name` in the importing file, whatever
+  // the import lands on: a submodule file (`users` -> users.py) or a symbol a
+  // package re-exports under another name (`items_router` -> items.py's
+  // `router`). The name rides on that file's edge as its alias.
+  std::unordered_map<std::string, const Node*> item_stubs;
+  std::unordered_map<std::string, std::string> label_of;
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "import" && removed.contains(node.id) && !dropped.contains(node.id)) {
+      item_stubs.emplace(node.id, &node);
+    }
+  }
+  if (!item_stubs.empty()) {
+    for (const auto& node : graph.nodes) {
+      label_of.emplace(node.id, node.label);
+    }
+  }
   std::unordered_set<std::string> seen_edges;
   std::vector<Edge> rewritten;
   rewritten.reserve(graph.edges.size());
@@ -721,6 +779,15 @@ void resolve_imports(GraphSnapshot& graph, std::span<const PathAlias> aliases) {
     }
     if (const auto alias = alias_of.find(edge.target); alias != alias_of.end()) {
       edge.properties.emplace("alias", alias->second);
+    }
+    if (const auto stub = item_stubs.find(edge.target);
+        stub != item_stubs.end() && edge.relation == "imports" && !edge.properties.contains("alias") &&
+        source_of_file.contains(edge.source) &&
+        std::filesystem::path(source_of_file.at(edge.source)).extension() == ".py") {
+      if (const auto label = label_of.find(canonical(edge.target));
+          label != label_of.end() && label->second != stub->second->label) {
+        edge.properties.emplace("alias", stub->second->label);
+      }
     }
     edge.source = canonical(edge.source);
     edge.target = canonical(edge.target);
@@ -1354,11 +1421,10 @@ RelationScopes build_relation_scopes(const GraphSnapshot& graph) {
     }
     if (const auto label = scopes.label_by_id.find(edge.target); label != scopes.label_by_id.end()) {
       auto& names = scopes.imported_by_file[edge.source];
-      names.emplace(make_id(label->second), edge.target);
-      // `import { config as configModule }`: the file says `configModule`.
-      if (const auto alias = edge.properties.find("alias"); alias != edge.properties.end()) {
-        names.emplace(make_id(alias->second), edge.target);
-      }
+      // `import { config as configModule }`: the file says `configModule`, and
+      // only that. Its own `config`, if any, is a different thing.
+      const auto alias = edge.properties.find("alias");
+      names.emplace(make_id(alias != edge.properties.end() ? alias->second : label->second), edge.target);
     }
   }
   return scopes;
