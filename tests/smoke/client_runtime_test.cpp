@@ -292,6 +292,110 @@ int main() {
   }
 #endif
 
+#ifndef _WIN32
+  // Opened in one service repo, an agent sees the other services where a change
+  // crosses into them: `impact` from the api member root reaches web's caller,
+  // `query` stays in api, and change_context on an edit inside the api handler
+  // lists web's consumer in `cross_service`. Real daemons, no fakes.
+  {
+    namespace fs = std::filesystem;
+    const auto ws = fs::temp_directory_path() / "cgraph_client_runtime_member_workspace";
+    fs::remove_all(ws);
+    const auto api = ws / "api";
+    const auto web = ws / "web";
+    const std::string handler_before =
+        "import express from 'express';\n"
+        "const app = express();\n"
+        "app.get('/api/v1/stats', (req, res) => {\n"
+        "  const total = 1;\n"
+        "  res.json({ total });\n"
+        "});\n";
+    std::string handler_after = handler_before;
+    handler_after.replace(handler_after.find("total = 1"), 9, "total = 2");
+    write_file(api / "src" / "server.ts", handler_after);
+    write_file(ws / "api-base" / "src" / "server.ts", handler_before);
+    write_file(web / "src" / "stats.ts",
+               "export async function loadStats() {\n"
+               "  return fetch('/api/v1/stats');\n"
+               "}\n");
+    write_file(ws / std::string(cgraph::kWorkspaceFile),
+               R"({"name": "shop", "repos": [{"name": "api", "root": "./api"}, {"name": "web", "root": "./web"}]})");
+    write_file(ws / "change.diff",
+               "--- a/src/server.ts\n+++ b/src/server.ts\n@@ -3,4 +3,4 @@\n"
+               " app.get('/api/v1/stats', (req, res) => {\n-  const total = 1;\n+  const total = 2;\n"
+               "   res.json({ total });\n });\n");
+
+    cgraph::DaemonServerOptions options;
+    options.idle_timeout = std::chrono::seconds(60);
+    options.build_graph_on_start = true;
+    options.code_poll_interval = std::chrono::milliseconds(0);
+    std::thread api_server([&] { (void)cgraph::run_daemon_server(api, options); });
+    std::thread web_server([&] { (void)cgraph::run_daemon_server(web, options); });
+    const auto finish = [&](bool passed) {
+      for (const auto& root : {api, web}) {
+        cgraph::ClientRequest stop{.project_root = root, .operation = "shutdown"};
+        stop.federate = false;
+        (void)cgraph::send_thin_client_request(stop, cgraph::default_client_runtime_hooks(stop));
+      }
+      api_server.join();
+      web_server.join();
+      fs::remove_all(ws);
+      return passed;
+    };
+    const auto ask = [](const fs::path& root, const std::string& op, const nlohmann::json& params) {
+      cgraph::ClientRequest request{.project_root = root, .operation = op, .params = params};
+      return cgraph::send_thin_client_request(request, cgraph::default_client_runtime_hooks(request));
+    };
+
+    const auto impact = ask(api, "impact", {{"id", "endpoint:GET /api/v1/stats"}, {"direction", "dependents"}, {"max_depth", 3}});
+    bool web_caller = false;
+    if (impact.response && impact.response->value("ok", false)) {
+      for (const auto& node : (*impact.response)["result"].value("nodes", nlohmann::json::array())) {
+        web_caller = web_caller || (node.value("repo", std::string{}) == "web" && node.value("label", std::string{}) == "loadStats");
+      }
+    }
+    const bool tagged = impact.response && (*impact.response)["result"].value("workspace", nlohmann::json::object())
+                                                   .value("home", std::string{}) == "api";
+    if (!web_caller || !tagged) {
+      std::cerr << "member impact: " << (impact.response ? impact.response->dump() : impact.error) << '\n';
+      (void)finish(false);
+      return 1;
+    }
+    const auto query = ask(api, "query", {{"q", "loadStats"}});
+    if (!query.response || query.response->dump().find("loadStats") != std::string::npos) {
+      std::cerr << "member query left the home repo: " << (query.response ? query.response->dump() : query.error) << '\n';
+      (void)finish(false);
+      return 1;
+    }
+
+    nlohmann::json context;
+    try {
+      context = cgraph::change_context_across_workspace(
+          {{"base_root", (ws / "api-base").generic_string()}, {"target_root", api.generic_string()},
+           {"diff_path", (ws / "change.diff").generic_string()}},
+          cgraph::ClientRequest{});
+    } catch (const std::exception& error) {
+      std::cerr << "change_context: " << error.what() << '\n';
+      (void)finish(false);
+      return 1;
+    }
+    bool consumer = false;
+    for (const auto& row : context.value("cross_service", nlohmann::json::object()).value("rows", nlohmann::json::array())) {
+      consumer = consumer || (row.value("repo", std::string{}) == "web" && row.value("relation", std::string{}) == "consumer" &&
+                              row.value("path", std::string{}) == "src/stats.ts" && row.value("label", std::string{}) == "loadStats");
+    }
+    const auto contracts = context.value("cross_service", nlohmann::json::object()).value("contracts", nlohmann::json::array());
+    if (!consumer || contracts.size() != 1 || contracts[0].value("id", std::string{}) != "endpoint:GET /api/v1/stats") {
+      std::cerr << "cross_service: " << context.value("cross_service", nlohmann::json{}).dump() << '\n';
+      (void)finish(false);
+      return 1;
+    }
+    if (!finish(true)) {
+      return 1;
+    }
+  }
+#endif
+
   // Daemon discovery precedence: an explicit path wins, then CGRAPH_DAEMON_PATH,
   // then a graphd beside the executable (absent for this test binary -> empty).
   {

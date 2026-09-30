@@ -145,7 +145,7 @@ int run_change_context(int argc, char** argv) {
         params[arg == "--budget" ? "budget" : "max_depth"] = number;
       } else throw std::invalid_argument("unknown argument: " + arg);
     }
-    std::cout << cgraph::change_context(params).dump() << '\n';
+    std::cout << cgraph::change_context_across_workspace(params, cgraph::ClientRequest{}).dump() << '\n';
     return 0;
   } catch (const std::exception& error) {
     std::cout << nlohmann::json{{"error", error.what()}}.dump() << '\n';

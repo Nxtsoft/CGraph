@@ -47,7 +47,9 @@ int main(int argc, char** argv) {
       std::cout << nlohmann::json{{"jsonrpc", "2.0"}, {"id", nullptr}, {"error", {{"code", -32700}, {"message", "parse error"}}}}.dump() << '\n';
       continue;
     }
-    const auto response = cgraph::handle_mcp_request(request, dispatch);
+    const auto response = cgraph::handle_mcp_request(request, dispatch, [&](const nlohmann::json& arguments) {
+      return cgraph::change_context_across_workspace(arguments, base);
+    });
     if (!response.empty()) {
       std::cout << response.dump() << '\n';
     }

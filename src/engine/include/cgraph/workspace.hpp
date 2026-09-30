@@ -53,6 +53,17 @@ struct Workspace {
 // True when `root` holds a workspace manifest.
 [[nodiscard]] bool is_workspace_root(const std::filesystem::path& root);
 
+// A project root's enclosing workspace: the nearest ancestor directory (up to
+// and including $HOME) holding a manifest that lists a repo whose root is the
+// project root or contains it (a worktree nested in a member checkout counts).
+// `home` names that repo, and its `root` is replaced by the project root, so
+// the home repo is answered from the tree the caller is actually in.
+struct EnclosingWorkspace {
+  Workspace workspace;
+  std::string home;
+};
+[[nodiscard]] std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem::path& project_root);
+
 // Reads and validates `root/cgraph.workspace.json`. A missing file, malformed
 // JSON, an empty repo list, a duplicate name, or a repo root that does not exist
 // is an error; the returned Workspace then carries `errors` and no repos.

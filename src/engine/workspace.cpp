@@ -1,6 +1,7 @@
 #include "cgraph/workspace.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <set>
@@ -552,6 +553,37 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
 bool is_workspace_root(const std::filesystem::path& root) {
   std::error_code error;
   return std::filesystem::is_regular_file(root / std::filesystem::path(std::string(kWorkspaceFile)), error);
+}
+
+std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem::path& project_root) {
+  std::error_code error;
+  const auto root = std::filesystem::weakly_canonical(project_root, error);
+  if (error || root.empty()) {
+    return std::nullopt;
+  }
+  std::filesystem::path home;
+  if (const char* value = std::getenv("HOME"); value != nullptr && value[0] != '\0') {
+    home = std::filesystem::weakly_canonical(value, error);
+  }
+  for (auto dir = root.parent_path(); !dir.empty(); dir = dir.parent_path()) {
+    if (is_workspace_root(dir)) {
+      auto workspace = load_workspace(dir);
+      if (workspace.ok()) {
+        for (auto& repo : workspace.repos) {
+          const auto relative = root.lexically_relative(repo.root);
+          if (!relative.empty() && *relative.begin() != "..") {
+            auto name = repo.name;
+            repo.root = root;
+            return EnclosingWorkspace{.workspace = std::move(workspace), .home = std::move(name)};
+          }
+        }
+      }
+    }
+    if (dir == home || dir == dir.parent_path()) {
+      break;
+    }
+  }
+  return std::nullopt;
 }
 
 Workspace load_workspace(const std::filesystem::path& root) {

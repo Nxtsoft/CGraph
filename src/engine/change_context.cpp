@@ -348,9 +348,74 @@ Json uncertainty(const PipelineResult& pipeline) {
           {"warnings", pipeline.warnings}, {"call_resolution", stats.at("call_resolution")}};
 }
 
+// The endpoints a change touches: those it serves (reached through handled_by or
+// a handler file) and those it consumes (CONSUMES edges out of changed or
+// dependent code). Keyed by endpoint id; the value records each role seen.
+using TouchedContracts = std::map<std::string, std::set<std::string>>;
+
+constexpr std::size_t kMaxCrossServiceContracts = 24;
+
+// Asks every other repo of the workspace who consumes what this change serves
+// and who provides what it consumes. A repo that cannot answer, or answers from
+// a graph still building, is named: an empty list must mean "none", not "unknown".
+Json cross_service_section(const CrossServiceAsk& scope, const TouchedContracts& touched) {
+  const auto& enclosing = *scope.enclosing;
+  Json section{{"workspace", enclosing.workspace.name}, {"home", enclosing.home},
+               {"contracts", Json::array()}, {"rows", Json::array()},
+               {"unreachable", Json::array()}, {"building", Json::array()}};
+  std::set<std::string> unreachable, building;
+  std::size_t asked = 0;
+  for (const auto& [contract, roles] : touched) {
+    if (asked++ == kMaxCrossServiceContracts) {
+      section["contracts_omitted"] = touched.size() - kMaxCrossServiceContracts;
+      break;
+    }
+    section["contracts"].push_back({{"id", contract}, {"roles", Json(roles)}});
+    for (const auto& role : roles) {
+      const bool serves = role == "serves";
+      for (const auto& repo : enclosing.workspace.repos) {
+        if (repo.name == enclosing.home) continue;
+        std::string error;
+        // Direct callers of what this change serves (CONSUMES), and the handler
+        // behind what it calls (handled_by): the code another team would touch.
+        const Json params{{"id", contract}, {"direction", serves ? "dependents" : "dependencies"},
+                          {"relation", serves ? "CONSUMES" : "handled_by"}, {"max_depth", 1}};
+        const auto envelope = scope.ask(repo, "impact", params, error);
+        if (!envelope || !envelope->value("ok", false)) {
+          if (unreachable.insert(repo.name).second)
+            section["unreachable"].push_back({{"repo", repo.name},
+                {"error", envelope ? envelope->value("error", std::string{"request failed"}) : error}});
+          continue;
+        }
+        const auto& answer = envelope->at("result");
+        if (answer.value("graph_state", std::string{}) == "building" && building.insert(repo.name).second)
+          section["building"].push_back(repo.name);
+        for (const auto& node : answer.value("nodes", Json::array())) {
+          const auto id = node.value("id", std::string{});
+          if (id.starts_with("endpoint:")) continue;
+          const auto file = node.value("source_file", std::string{});
+          section["rows"].push_back({{"contract", contract}, {"relation", serves ? "consumer" : "provider"},
+              {"repo", repo.name}, {"id", id}, {"label", node.value("label", std::string{})},
+              {"kind", node.value("kind", std::string{})},
+              {"path", file.empty() ? "" : fs::path(file).lexically_relative(repo.root).generic_string()},
+              {"line", node.value("line", 0)}, {"depth", node.value("depth", 0)}});
+        }
+      }
+    }
+  }
+  auto& rows = section["rows"];
+  std::stable_sort(rows.begin(), rows.end(), [](const Json& a, const Json& b) {
+    return std::tuple(a.at("depth").get<int>(), a.at("contract").get<std::string>(), a.at("repo").get<std::string>(),
+                      a.at("path").get<std::string>(), a.at("line").get<int>()) <
+           std::tuple(b.at("depth").get<int>(), b.at("contract").get<std::string>(), b.at("repo").get<std::string>(),
+                      b.at("path").get<std::string>(), b.at("line").get<int>());
+  });
+  return section;
+}
+
 }  // namespace
 
-Json change_context(const Json& parameters) {
+Json change_context(const Json& parameters, const CrossServiceAsk* cross_service) {
   const auto base_root = fs::canonical(parameters.at("base_root").get<std::string>());
   const auto target_root = fs::canonical(parameters.at("target_root").get<std::string>());
   if (!fs::is_directory(base_root) || !fs::is_directory(target_root)) reject("roots must be directories");
@@ -469,6 +534,7 @@ Json change_context(const Json& parameters) {
   std::vector<std::string> combined_seeds;
   struct Origin { const Node* node; std::string snapshot; fs::path root; };
   std::unordered_map<std::string, Origin> origins;
+  TouchedContracts touched;
   const auto add_side = [&](const PipelineResult& pipeline, const fs::path& root,
                             const std::string& side, std::vector<std::string>& seeds) {
     std::ranges::sort(seeds);
@@ -476,6 +542,24 @@ Json change_context(const Json& parameters) {
     const auto reached = trace_impact(pipeline.graph, seeds, "dependents", "", max_depth);
     std::unordered_map<std::string, const Node*> by_id;
     for (const auto& node : pipeline.graph.nodes) by_id.emplace(node.id, &node);
+    // An endpoint the change serves: one it changed, one whose handler it
+    // reached (the last step is handled_by), or one a changed file contains.
+    // Not every endpoint reachable through the app's router mounts: a router
+    // chain spans its whole file, and its importers reach every mounted route.
+    for (const auto& [id, reach] : reached)
+      if (id.starts_with("endpoint:") &&
+          (reach.depth == 0 || reach.via == "handled_by" || (reach.depth == 1 && reach.via == "contains")))
+        touched[id].insert("serves");
+    // An endpoint the change calls: CONSUMES from changed code, or from a
+    // function that calls a changed helper directly (its request may change).
+    // Callers further out call other endpoints for their own reasons.
+    for (const auto& edge : pipeline.graph.edges) {
+      if (edge.relation != "CONSUMES" || !edge.target.starts_with("endpoint:")) continue;
+      const auto reach = reached.find(edge.source);
+      if (reach != reached.end() &&
+          (reach->second.depth == 0 || (reach->second.depth == 1 && reach->second.via == "CALLS")))
+        touched[edge.target].insert("consumes");
+    }
     const auto brief = [&](const std::string& id) {
       const auto& node = *by_id.at(id);
       Json item{{"id", id}, {"label", node.label}, {"kind", node.kind},
@@ -526,6 +610,22 @@ Json change_context(const Json& parameters) {
   };
   add_side(base, base_root, "base", base_seeds);
   add_side(target, target_root, "target", target_seeds);
+  // Other services' consumers and providers are never shed with the impacts:
+  // they get their own quarter of the budget, trimmed deepest first, and what
+  // was trimmed is counted.
+  if (cross_service != nullptr && cross_service->enclosing != nullptr) {
+    auto section = cross_service_section(*cross_service, touched);
+    const auto cap = std::max<std::size_t>(256, budget / 4);
+    const auto section_tokens = [&] { return (section.dump().size() + 3) / 4; };
+    std::size_t trimmed = 0;
+    while (section_tokens() > cap && !section["rows"].empty()) {
+      section["rows"].erase(section["rows"].end() - 1);
+      ++trimmed;
+    }
+    result["omitted"]["cross_service"] = trimmed;
+    result["truncated"] = result["truncated"].get<bool>() || trimmed > 0;
+    result["cross_service"] = std::move(section);
+  }
   // Keep the mandatory diff mapping and uncertainty intact. Shed the deepest
   // impact witnesses first; context gets one shared remaining allowance.
   const auto remove_impact = [&] {
