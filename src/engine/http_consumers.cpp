@@ -7,9 +7,12 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -204,7 +207,38 @@ struct LocalBinding {
   TSNode declarator;
   TSNode scope;
   bool constant = false;
+  bool opaque = false;  // bound by a loop header or a `catch`: a value per iteration or thrown, never readable
 };
+
+// True when a `for (... of/in ...)`, a `for (let ...;;)` header or a `catch
+// (e)` clause binds `name` for the code inside it.
+[[nodiscard]] bool header_binds(const TSNode& statement, std::string_view name, std::string_view source) {
+  const std::string_view type = ts_node_type(statement);
+  if (type == "for_in_statement") {
+    const TSNode left = ts_node_child_by_field_name(statement, "left", 4);
+    return !ts_node_is_null(left) && binds_pattern(left, name, source);
+  }
+  if (type == "for_statement") {
+    const TSNode initializer = ts_node_child_by_field_name(statement, "initializer", 11);
+    if (ts_node_is_null(initializer)) {
+      return false;
+    }
+    const auto count = ts_node_named_child_count(initializer);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode declarator = ts_node_named_child(initializer, index);
+      if (std::string_view(ts_node_type(declarator)) == "variable_declarator" &&
+          binds_pattern(ts_node_child_by_field_name(declarator, "name", 4), name, source)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (type == "catch_clause") {
+    const TSNode parameter = ts_node_child_by_field_name(statement, "parameter", 9);
+    return !ts_node_is_null(parameter) && binds_pattern(parameter, name, source);
+  }
+  return false;
+}
 
 [[nodiscard]] std::optional<LocalBinding> local_binding(const TSNode& use, std::string_view name, std::string_view source) {
   for (TSNode ancestor = ts_node_parent(use); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
@@ -217,6 +251,9 @@ struct LocalBinding {
     }
     if (type == "program") {
       return std::nullopt;
+    }
+    if (header_binds(ancestor, name, source)) {
+      return LocalBinding{.scope = ancestor, .opaque = true};
     }
     if (type != "statement_block") {
       continue;
@@ -256,26 +293,81 @@ struct LocalBinding {
   return TSNode{};
 }
 
-// Every value the local `name` can hold where `use` reads it: its initializer
-// and each plain assignment to it before `use` (`let url; if (a) url = x; else
-// url = y;`). Empty optional when `name` is not a local; an empty list when it
-// is one whose value cannot be known here: it is updated in place (`url +=`),
-// assigned inside another function than the read (a test's `beforeAll`),
-// its path is rewritten (`url.pathname = ...`), or it is never given a value.
+// The if/else branches `node` sits in below `stop`: (the `if`, 0 for its
+// consequence or 1 for its alternative) for each enclosing `if`.
+[[nodiscard]] std::vector<std::pair<const void*, int>> branch_path(TSNode node, const TSNode& stop) {
+  std::vector<std::pair<const void*, int>> path;
+  for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent) && !ts_node_eq(node, stop);
+       node = parent, parent = ts_node_parent(parent)) {
+    if (std::string_view(ts_node_type(parent)) != "if_statement") {
+      continue;
+    }
+    if (ts_node_eq(node, ts_node_child_by_field_name(parent, "consequence", 11))) {
+      path.emplace_back(parent.id, 0);
+    } else if (ts_node_eq(node, ts_node_child_by_field_name(parent, "alternative", 11))) {
+      path.emplace_back(parent.id, 1);
+    }
+  }
+  return path;
+}
+
+// True when `a` and `b` sit in opposite branches of one `if`/`else`: at most
+// one of them runs.
+[[nodiscard]] bool exclusive_branches(const TSNode& a, const TSNode& b, const TSNode& stop) {
+  const auto first = branch_path(a, stop);
+  const auto second = branch_path(b, stop);
+  for (const auto& [branch, side] : first) {
+    for (const auto& [other, other_side] : second) {
+      if (branch == other && side != other_side) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// True when `name` is read anywhere in `value` (`url = url + '/x'`).
+[[nodiscard]] bool mentions(const TSNode& value, std::string_view name, std::string_view source) {
+  if (ts_node_is_null(value)) {
+    return false;
+  }
+  bool found = std::string_view(ts_node_type(value)) == "identifier" && node_text(value, source) == name;
+  visit_named_descendants(value, false, [&](const TSNode& node) {
+    found = found || (std::string_view(ts_node_type(node)) == "identifier" && node_text(node, source) == name);
+  });
+  return found;
+}
+
+// Every value the local `name` can hold where `use` reads it. Only a local
+// set once is read: its initializer with no assignment after it, or, with no
+// initializer, assignments before `use` in opposite branches of one if/else
+// (`let url; if (a) url = x; else url = y;`). Empty optional when `name` is
+// not a local; an empty list when it is one whose value cannot be known here:
+// it is reassigned (`url = url + '/x'`, a second `url = ...`, a loop's
+// `next = ...`), updated in place (`url +=`), assigned inside another function
+// than the read (a test's `beforeAll`), bound by a loop header or `catch`,
+// built from itself, its path is rewritten (`url.pathname = ...`), or it is
+// never given a value.
 [[nodiscard]] std::optional<std::vector<TSNode>> local_values(const TSNode& use, std::string_view name, std::string_view source) {
   const auto binding = local_binding(use, name, source);
   if (!binding) {
     return std::nullopt;
   }
-  std::vector<TSNode> values;
-  if (const TSNode initial = ts_node_child_by_field_name(binding->declarator, "value", 5); !ts_node_is_null(initial)) {
-    values.push_back(unwrap_expression(initial));
+  if (binding->opaque) {
+    return std::vector<TSNode>{};
   }
+  const TSNode initial = ts_node_child_by_field_name(binding->declarator, "value", 5);
   bool unknowable = false;
+  std::vector<TSNode> assignments;
   const auto use_start = ts_node_start_byte(use);
   const TSNode use_function = enclosing_function(use);
   visit_named_descendants(binding->scope, false, [&](const TSNode& node) {
     const std::string_view type = ts_node_type(node);
+    if (type == "update_expression") {
+      const TSNode argument = unwrap_expression(ts_node_child_by_field_name(node, "argument", 8));
+      unknowable = unknowable || (!ts_node_is_null(argument) && node_text(argument, source) == name);
+      return;
+    }
     if (type != "assignment_expression" && type != "augmented_assignment_expression") {
       return;
     }
@@ -297,15 +389,30 @@ struct LocalBinding {
       return;
     }
     const auto same = local_binding(left, name, source);
-    if (!same || !ts_node_eq(same->declarator, binding->declarator)) {
+    if (!same || same->opaque || !ts_node_eq(same->declarator, binding->declarator)) {
       return;  // a nested declaration of the same name
     }
-    if (type == "augmented_assignment_expression" || !ts_node_eq(enclosing_function(node), use_function)) {
-      unknowable = true;  // updated in place, or set by a callback that runs who knows when (`beforeAll`)
-    } else if (ts_node_start_byte(node) < use_start) {
-      values.push_back(unwrap_expression(ts_node_child_by_field_name(node, "right", 5)));
+    if (type == "augmented_assignment_expression" || !ts_node_eq(enclosing_function(node), use_function) ||
+        ts_node_start_byte(node) >= use_start) {
+      unknowable = true;  // updated in place, set by a callback that runs who knows when, or after the read
+      return;
     }
+    assignments.push_back(node);
   });
+  std::vector<TSNode> values;
+  if (!ts_node_is_null(initial)) {
+    unknowable = unknowable || !assignments.empty();  // reassigned: which value the read sees is a guess
+    values.push_back(unwrap_expression(initial));
+  }
+  for (std::size_t i = 0; i < assignments.size() && !unknowable; ++i) {
+    for (std::size_t j = i + 1; j < assignments.size() && !unknowable; ++j) {
+      unknowable = !exclusive_branches(assignments[i], assignments[j], binding->scope);
+    }
+    values.push_back(unwrap_expression(ts_node_child_by_field_name(assignments[i], "right", 5)));
+  }
+  for (const auto& value : values) {
+    unknowable = unknowable || mentions(value, name, source);
+  }
   if (unknowable) {
     values.clear();
   }
@@ -898,53 +1005,75 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
   return is_http_verb(lower) && lower != "all" ? upper_verb(std::move(text)) : std::string{};
 }
 
-// Where a request's method comes from: a fixed verb, or a parameter of the
-// enclosing function (`fetch(url, { method })` in `request(method, path)`).
+// Where a request's method comes from: a fixed verb, a parameter of the
+// enclosing function (`fetch(url, { method })` in `request(method, path)`), or
+// an options parameter spread in after any fixed verb (`{ method: 'GET',
+// ...init }`: `init`'s method, when it has one, wins; `{ ...init, method:
+// 'PATCH' }` is PATCH whatever `init` holds).
 struct MethodSource {
   std::string verb;
   int parameter = -1;
+  int options = -1;  // the enclosing function's parameter whose own `method` overrides `verb`
   std::vector<std::string> choices;  // `method: on ? 'POST' : 'DELETE'`: each verb is sent
 };
 
-// The `method` of an options object literal: `method: 'POST'` is fixed,
-// `method` / `method: m` naming a parameter of the enclosing function is that
-// parameter; absent or anything else is empty.
+// The `method` of an options object literal, members read in order so a later
+// one wins: `method: 'POST'` is fixed, `method` / `method: m` naming a
+// parameter of the enclosing function is that parameter, `...init` spreading a
+// parameter lets that parameter's method override what came before; an options
+// parameter passed as the whole object (`fetch(url, init)`) is that parameter.
+// Absent or anything else is empty.
 [[nodiscard]] MethodSource options_method(const TSNode& options, const std::vector<std::string>& parameters,
                                           std::string_view source) {
   const TSNode object = unwrap_expression(options);
-  if (ts_node_is_null(object) || std::string_view(ts_node_type(object)) != "object") {
+  if (ts_node_is_null(object)) {
     return {};
   }
+  if (std::string_view(ts_node_type(object)) == "identifier") {
+    return MethodSource{.options = parameter_index(parameters, node_text(object, source))};
+  }
+  if (std::string_view(ts_node_type(object)) != "object") {
+    return {};
+  }
+  MethodSource found;
   const auto count = ts_node_named_child_count(object);
   for (std::uint32_t index = 0; index < count; ++index) {
     const TSNode member = ts_node_named_child(object, index);
     const std::string_view member_type = ts_node_type(member);
+    if (member_type == "spread_element") {
+      const TSNode spread = ts_node_named_child_count(member) == 0 ? TSNode{} : unwrap_expression(ts_node_named_child(member, 0));
+      if (!ts_node_is_null(spread) && std::string_view(ts_node_type(spread)) == "identifier") {
+        if (const int at = parameter_index(parameters, node_text(spread, source)); at >= 0) {
+          found.options = at;  // its method, if any, overrides what came before
+        }
+      }
+      continue;
+    }
     if (member_type == "shorthand_property_identifier" && node_text(member, source) == "method") {
-      return MethodSource{.parameter = parameter_index(parameters, "method")};
+      found = MethodSource{.parameter = parameter_index(parameters, "method")};
+      continue;
     }
     if (member_type != "pair" || strip_string_quotes(field_text(member, "key", source)) != "method") {
       continue;
     }
     const TSNode value = unwrap_expression(ts_node_child_by_field_name(member, "value", 5));
+    found = MethodSource{};
     if (ts_node_is_null(value)) {
-      return {};
+      continue;
     }
     if (is_string_value(value)) {
-      return MethodSource{.verb = upper_verb(strip_string_quotes(node_text(value, source)))};
-    }
-    if (std::string_view(ts_node_type(value)) == "identifier") {
-      return MethodSource{.parameter = parameter_index(parameters, node_text(value, source))};
-    }
-    if (std::string_view(ts_node_type(value)) == "ternary_expression") {
+      found.verb = upper_verb(strip_string_quotes(node_text(value, source)));
+    } else if (std::string_view(ts_node_type(value)) == "identifier") {
+      found.parameter = parameter_index(parameters, node_text(value, source));
+    } else if (std::string_view(ts_node_type(value)) == "ternary_expression") {
       auto consequence = literal_verb(ts_node_child_by_field_name(value, "consequence", 11), source);
       auto alternative = literal_verb(ts_node_child_by_field_name(value, "alternative", 11), source);
       if (!consequence.empty() && !alternative.empty()) {
-        return MethodSource{.choices = {std::move(consequence), std::move(alternative)}};
+        found.choices = {std::move(consequence), std::move(alternative)};
       }
     }
-    return {};
   }
-  return {};
+  return found;
 }
 
 // One HTTP fact a call yields, before it becomes a RawRelation.
@@ -958,8 +1087,8 @@ struct ClientCall {
   int base = -1;     // Wrapper: the parameter its callers' base URL fills (composed in-file only)
 
   [[nodiscard]] bool same_shape(const ClientCall& other) const {
-    return method.verb == other.method.verb && method.parameter == other.method.parameter && path == other.path &&
-           tail == other.tail && base == other.base;
+    return method.verb == other.method.verb && method.parameter == other.method.parameter &&
+           method.options == other.method.options && path == other.path && tail == other.tail && base == other.base;
   }
 };
 
@@ -971,10 +1100,41 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
 // call in its body agrees on (`patch(url) { return this.api.patch(url) }` is a
 // PATCH wrapper under the instance's baseURL). Empty when no call forwards a
 // parameter as the path, or two calls disagree.
+// Wrapper shapes already worked out for the file being extracted on this
+// thread, by function node and depth (a shape found deeper sees fewer levels).
+// Without it every `this.x()` call re-reads x and everything x calls.
+struct ShapeKey {
+  const void* node;
+  int depth;
+  bool operator==(const ShapeKey&) const = default;
+};
+struct ShapeKeyHash {
+  std::size_t operator()(const ShapeKey& key) const {
+    return std::hash<const void*>{}(key.node) ^ (static_cast<std::size_t>(key.depth) << 1);
+  }
+};
+using ShapeCache = std::unordered_map<ShapeKey, std::optional<ClientCall>, ShapeKeyHash>;
+thread_local ShapeCache* active_shapes = nullptr;
+
+[[nodiscard]] std::optional<ClientCall> read_wrapper_shape(const TSNode& function, const ExtractionContext& context, int depth);
+
 [[nodiscard]] std::optional<ClientCall> wrapper_shape(const TSNode& function, const ExtractionContext& context, int depth) {
   if (depth > kMaxWrapperDepth) {
     return std::nullopt;
   }
+  if (active_shapes == nullptr) {
+    return read_wrapper_shape(function, context, depth);
+  }
+  const ShapeKey key{.node = function.id, .depth = depth};
+  if (const auto found = active_shapes->find(key); found != active_shapes->end()) {
+    return found->second;
+  }
+  auto shape = read_wrapper_shape(function, context, depth);
+  active_shapes->insert_or_assign(key, shape);
+  return shape;
+}
+
+[[nodiscard]] std::optional<ClientCall> read_wrapper_shape(const TSNode& function, const ExtractionContext& context, int depth) {
   const TSNode body = ts_node_child_by_field_name(function, "body", 4);
   if (ts_node_is_null(body)) {
     return std::nullopt;
@@ -1052,6 +1212,24 @@ void compose_wrapper_call(const ClientCall& shape, std::string client, const TSN
     prefix = base.path + prefix;
   }
   MethodSource method{.verb = shape.method.verb};
+  // The call's own options override the wrapper's verb where the wrapper lets
+  // them: at the options parameter it spreads in last, or, when the wrapper
+  // fixes no verb, right after the path.
+  const int options_at = shape.method.options >= 0 ? shape.method.options
+                         : shape.method.verb.empty() && shape.method.parameter < 0 ? shape.tail + 1
+                                                                                  : -1;
+  if (options_at >= 0 && options_at < count) {
+    const auto given = options_method(ts_node_named_child(arguments, static_cast<std::uint32_t>(options_at)),
+                                      scope.parameters, context.source);
+    if (!given.verb.empty()) {
+      method.verb = given.verb;
+    } else if (given.parameter >= 0) {
+      method = MethodSource{.parameter = given.parameter};
+    }
+    if (given.options >= 0) {
+      method.options = given.options;  // the enclosing function's own options pass through
+    }
+  }
   if (shape.method.parameter >= 0) {
     if (shape.method.parameter >= count) {
       unresolved();
@@ -1088,10 +1266,6 @@ void compose_wrapper_call(const ClientCall& shape, std::string client, const TSN
     return;
   }
   const auto joined = join_client_path(prefix, url.path);
-  if (method.verb.empty() && shape.tail + 1 < count) {
-    method.verb = options_method(ts_node_named_child(arguments, static_cast<std::uint32_t>(shape.tail + 1)),
-                                 scope.parameters, context.source).verb;
-  }
   if (method.verb.empty()) {
     method.verb = "GET";
   }
@@ -1355,6 +1529,9 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
   MethodSource method = argument_count >= 2
                             ? options_method(ts_node_named_child(arguments, 1), scope.parameters, context.source)
                             : MethodSource{};
+  if (!verb.empty()) {
+    method.options = -1;  // `axios.post(url, data)`: the second argument is the body, the verb is fixed
+  }
   for (const auto& value : values) {
     UrlTemplate url;
     collect_url_template(value, context, scope, url, 0);
@@ -1438,6 +1615,20 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
 }
 
 }  // namespace
+
+struct HttpConsumerFileScope::Cache {
+  ShapeCache shapes;
+  ShapeCache* previous = nullptr;
+};
+
+HttpConsumerFileScope::HttpConsumerFileScope() : cache_(std::make_unique<Cache>()) {
+  cache_->previous = active_shapes;
+  active_shapes = &cache_->shapes;
+}
+
+HttpConsumerFileScope::~HttpConsumerFileScope() {
+  active_shapes = cache_->previous;
+}
 
 // Records the facts analyze_client_call finds: `http_call` for a consumer,
 // `http_wrapper` for a wrapper whose slots resolve_contracts can fill (its

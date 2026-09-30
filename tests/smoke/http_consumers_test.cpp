@@ -329,5 +329,87 @@ class AnalyticsApi {
     }
   }
 
+
+  // Review of #145. The method through wrappers follows spread order: a call's
+  // options override a wrapper's `{ method: 'GET', ...init }` but not its
+  // `{ ...options, method: 'PATCH' }`, including when the wrapper forwards into
+  // another one. A local reassigned, built from itself, or shadowed by a loop
+  // header is never read (no truncated `/tagged`, no stale `/old`, no
+  // `/outer`). A destructured parameter keeps its position.
+  {
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/review.ts", .relative_path = "lib/review.ts", .source = R"ts(
+const API = process.env.NEXT_PUBLIC_API_URL;
+class Req {
+  request(path: string, init: any = {}) { return fetch(`${API}${path}`, { method: 'GET', ...init }); }
+  create() { return this.request('/api/v1/widgets', { method: 'POST' }); }
+  read() { return this.request('/api/v1/widgets'); }
+}
+export async function authenticatedFetch(url: string, options: Opts = {}) {
+  const { skipRetry = false, ...fetchOptions } = options;
+  const requestOptions: RequestInit = { ...fetchOptions, credentials: 'include' };
+  return fetch(url, requestOptions);
+}
+export async function authenticatedPatch<T>(url: string, body: any, options: Opts = {}): Promise<T> {
+  const response = await authenticatedFetch(url, { ...options, method: 'PATCH', body: JSON.stringify(body) });
+  return response.json();
+}
+export async function updateBackupCodes(tenantId: string, settings: S) {
+  return authenticatedPatch(`/api/backend/v1/tenants/${tenantId}/settings/backup-codes`, settings);
+}
+export async function concatLocal(tag: string) {
+  let url = `${API}/api/v1/things`;
+  if (tag) url = url + '/tagged';
+  return fetch(url);
+}
+export async function sequential() {
+  let url = `${API}/api/v1/old`;
+  url = `${API}/api/v1/new`;
+  return fetch(url);
+}
+export async function forShadow(urls: string[]) {
+  const url = `${API}/api/v1/outer`;
+  for (const url of urls) {
+    await fetch(url);
+  }
+  return url;
+}
+export async function paged() {
+  let next = `${API}/api/v1/pages`;
+  while (next) {
+    const r = await fetch(next);
+    next = (await r.json()).next;
+  }
+}
+export function positioned({ tenant }: Opts, path: string) {
+  return fetch(`/api/v1${path}`);
+}
+)ts"});
+    std::set<std::string> facts;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation.starts_with("http_")) {
+        facts.insert(relation.relation + "|" + relation.source_id + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto fn = [](std::string_view name) { return cgraph::make_id(std::string("lib/review.ts:") + std::string(name)); };
+    const std::set<std::string> expected{
+        "http_wrapper|" + fn("request") + "|fetch|GET ",
+        "http_call|" + fn("create") + "|this.request|POST /api/v1/widgets",
+        "http_call|" + fn("read") + "|this.request|GET /api/v1/widgets",
+        "http_wrapper|" + fn("authenticatedFetch") + "|fetch| ",
+        "http_wrapper|" + fn("authenticatedPatch") + "|authenticatedFetch|PATCH ",
+        "http_call|" + fn("updateBackupCodes") + "|authenticatedPatch| /api/backend/v1/tenants/{}/settings/backup-codes",
+        "http_call_args|" + fn("updateBackupCodes") + "|authenticatedPatch|P/api/backend/v1/tenants/{}/settings/backup-codes\t",
+        "http_call|" + fn("concatLocal") + "|fetch| ",
+        "http_call|" + fn("sequential") + "|fetch| ",
+        "http_call|" + fn("forShadow") + "|fetch| ",
+        "http_call|" + fn("paged") + "|fetch| ",
+        "http_wrapper|" + fn("positioned") + "|fetch| /api/v1 #1",
+    };
+    if (facts != expected) {
+      for (const auto& fact : facts) std::cerr << "review fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
   return 0;
 }

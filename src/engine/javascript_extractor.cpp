@@ -1574,18 +1574,21 @@ LanguageConfig tsx_language_config() {
 ExtractionResult extract_javascript(const ExtractionContext& context) {
   auto config = javascript_language_config();
   intern_node_symbols(config, tree_sitter_javascript());
+  const HttpConsumerFileScope http_consumers;
   return extract_with_config(tree_sitter_javascript(), config, context);
 }
 
 ExtractionResult extract_typescript(const ExtractionContext& context) {
   auto config = typescript_language_config();
   intern_node_symbols(config, tree_sitter_typescript());
+  const HttpConsumerFileScope http_consumers;
   return extract_with_config(tree_sitter_typescript(), config, context);
 }
 
 ExtractionResult extract_tsx(const ExtractionContext& context) {
   auto config = tsx_language_config();
   intern_node_symbols(config, tree_sitter_tsx());
+  const HttpConsumerFileScope http_consumers;
   return extract_with_config(tree_sitter_tsx(), config, context);
 }
 
