@@ -1,4 +1,6 @@
 #include "cgraph/configured_extractors.hpp"
+#include "cgraph/contracts.hpp"
+#include "cgraph/graph_builder.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -6,6 +8,8 @@
 #include <string_view>
 #include <vector>
 #include <set>
+#include <string>
+#include <utility>
 
 namespace {
 
@@ -528,6 +532,203 @@ bool check_kotlin_extraction() {
   return true;
 }
 
+// HTTP client calls in Kotlin (Ktor) and Go (net/http and client wrappers)
+// record the same `http_call` / `http_wrapper` facts the JavaScript extractor
+// does: "<relation> <target_label> <context>" per fact, source checked apart.
+std::multiset<std::string> http_facts(const cgraph::ExtractionResult& result) {
+  std::multiset<std::string> facts;
+  for (const auto& relation : result.raw_relations) {
+    if (relation.relation == "http_call" || relation.relation == "http_wrapper") {
+      facts.insert(relation.relation + " " + relation.target_label + " " + relation.context);
+    }
+  }
+  return facts;
+}
+
+bool same_facts(const std::multiset<std::string>& got, const std::multiset<std::string>& want, std::string_view what) {
+  if (got == want) return true;
+  for (const auto& fact : got) std::cerr << "  got:  " << fact << '\n';
+  for (const auto& fact : want) std::cerr << "  want: " << fact << '\n';
+  return fail(what);
+}
+
+constexpr std::string_view kKotlinClient = R"kt(
+class SessionsApi(private val baseUrl: String, private val client: HttpClient) {
+    suspend fun sessions(token: String) = client.get("$baseUrl/api/v1/sessions/user/me") { bearerAuth(token) }
+    suspend fun revoke(sessionId: String) {
+        val response = client.patch("$baseUrl/api/v1/sessions/$sessionId/invalidate") { bearerAuth(t) }
+    }
+    suspend fun remove(deviceId: String) = request(send = { token -> client.delete("${baseUrl}/api/v1/mfa/devices/${deviceId}?force=true") })
+    suspend fun login(id: String) = postOutcome(path = "/api/v1/auth/login", request = id)
+    private suspend fun postOutcome(path: String, request: Any) = client.post("$baseUrl$path") { setBody(request) }
+    suspend fun approve(id: String) = decide("token", "$baseUrl/api/v1/proposals/$id/approve")
+    private suspend fun decide(token: String, url: String) = httpClient.post(url) { bearerAuth(token) }
+    suspend fun probe(p: Probe) = client.request("$baseUrl${p.endpoint}") { method = HttpMethod.parse(p.method) }
+    suspend fun stacked() = client.get("$host$prefix/users")
+    suspend fun external() = client.get("https://example.com/api/v1/x")
+    fun notRequests(cache: Map<String, String>) { cache.get("/api/v1/key"); restClient.post().uri("/api/v1/x"); log("GET", "fine") }
+}
+)kt";
+
+bool check_kotlin_http_clients() {
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::Kotlin,
+      {.source_file = "SessionsApi.kt", .relative_path = "SessionsApi.kt", .source = kKotlinClient});
+  if (!result) return fail("kotlin client extraction failed");
+  if (!same_facts(http_facts(*result),
+                  {"http_call client.get GET /api/v1/sessions/user/me",
+                   "http_call client.patch PATCH /api/v1/sessions/{}/invalidate",
+                   "http_call client.delete DELETE /api/v1/mfa/devices/{}",
+                   "http_call postOutcome  /api/v1/auth/login",
+                   "http_wrapper client.post POST ",
+                   "http_call decide  /api/v1/proposals/{}/approve",
+                   "http_wrapper httpClient.post POST ",
+                   // Unresolvable: counted by resolve_contracts, never guessed.
+                   "http_call client.request  ",
+                   "http_call client.get GET ",
+                   "http_call client.get GET "},
+                  "kotlin http facts")) {
+    return false;
+  }
+  for (const auto& relation : result->raw_relations) {
+    if (relation.relation == "http_wrapper" && relation.target_label == "client.post" &&
+        relation.source_id != cgraph::make_id("SessionsApi.kt:postOutcome")) {
+      return fail("kotlin wrapper is the function whose parameter is the URL tail: " + relation.source_id);
+    }
+    if (relation.relation == "http_call" && relation.target_label == "client.delete" &&
+        relation.source_id != cgraph::make_id("SessionsApi.kt:remove")) {
+      return fail("a request inside a lambda belongs to the enclosing function: " + relation.source_id);
+    }
+  }
+  return true;
+}
+
+constexpr std::string_view kGoClient = R"go(package api
+
+func (c *Client) Login(ctx context.Context, req LoginRequest) (*LoginResponse, error) {
+	return c.postAuth(ctx, "/api/v1/auth/login", req)
+}
+
+func (c *Client) postAuth(ctx context.Context, path string, req any) (*LoginResponse, error) {
+	resp, err := c.Do(ctx, http.MethodPost, path, body)
+	return nil, fmt.Errorf("decoding response from %s: %w", path, err)
+}
+
+func (c *Client) Me(ctx context.Context) (*UserInfo, error) {
+	resp, err := c.Do(ctx, http.MethodGet, "/api/v1/auth/me", nil)
+	_, err = scoped.DoForm(ctx, "POST", `/oauth2/token`, form)
+	_, err = c.Do(ctx, http.MethodDelete, "/api/v1/users/"+id+"/sessions", nil)
+	_, err = s.Client.Mutate(ctx, "POST", n.Base+"/import", body)
+	return nil, err
+}
+
+func (c *Client) ListPage(ctx context.Context, path string) (*Page, error) {
+	resp, err := c.Do(ctx, http.MethodGet, path+"?"+q.Encode(), nil)
+	return nil, err
+}
+
+func (c *Client) once(ctx context.Context, method, path string) {
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+ensureLeadingSlash(path), rdr)
+	resp, err := http.Get(base + "/healthz")
+	if strings.HasPrefix(path, "/") {
+	}
+}
+)go";
+
+bool check_go_http_clients() {
+  const auto result = cgraph::extract_configured_language(
+      cgraph::DetectedLanguage::Go,
+      {.source_file = "internal/api/auth.go", .relative_path = "internal/api/auth.go", .source = kGoClient});
+  if (!result) return fail("go client extraction failed");
+  if (!same_facts(http_facts(*result),
+                  {"http_call postAuth  /api/v1/auth/login",
+                   "http_wrapper c.Do POST ",
+                   "http_call c.Do GET /api/v1/auth/me",
+                   "http_call scoped.DoForm POST /oauth2/token",
+                   "http_call c.Do DELETE /api/v1/users/{}/sessions",
+                   // `path+"?"+...` is not a prefix wrapper; a method held in a
+                   // variable and a URL built by a call are unresolvable.
+                   "http_call c.Do GET ",
+                   "http_call Client.Mutate POST ",  // `n.Base` is a path prefix, not a host
+                   "http_call http.NewRequestWithContext  ",
+                   "http_call http.Get GET /healthz"},
+                  "go http facts")) {
+    return false;
+  }
+  for (const auto& relation : result->raw_relations) {
+    if (relation.relation == "http_wrapper" && relation.source_id != cgraph::make_id("internal/api/auth.go:postAuth")) {
+      return fail("go wrapper is postAuth: " + relation.source_id);
+    }
+  }
+  return true;
+}
+
+// End to end: a Spring controller serves the routes, and the Kotlin and Go
+// clients' calls (direct and through their wrappers) consume the same endpoint
+// ids, so a workspace links them.
+bool check_http_clients_consume_spring_routes() {
+  const std::vector<std::pair<cgraph::DetectedLanguage, std::pair<std::string, std::string>>> files = {
+      {cgraph::DetectedLanguage::Kotlin, {"AuthController.kt", R"kt(
+@RestController
+@RequestMapping("/api/v1/auth")
+class AuthController {
+    @PostMapping("/login")
+    fun login(@RequestBody body: LoginRequest) = service.login(body)
+}
+@RestController
+@RequestMapping("/api/v1/sessions")
+class SessionController {
+    @PatchMapping("/{id}/invalidate")
+    fun invalidateSession(@PathVariable id: String) = service.invalidate(id)
+}
+)kt"}},
+      {cgraph::DetectedLanguage::Kotlin, {"SessionsApi.kt", std::string(kKotlinClient)}},
+      {cgraph::DetectedLanguage::Go, {"internal/api/auth.go", std::string(kGoClient)}},
+  };
+  std::vector<cgraph::Fragment> fragments;
+  std::vector<cgraph::RawRelation> relations;
+  for (const auto& [language, file] : files) {
+    const auto result = cgraph::extract_configured_language(
+        language, {.source_file = file.first, .relative_path = file.first, .source = file.second});
+    if (!result) return fail("extraction failed for " + file.first);
+    fragments.push_back(result->fragment);
+    relations.insert(relations.end(), result->raw_relations.begin(), result->raw_relations.end());
+  }
+  auto graph = cgraph::merge_fragments(fragments);
+  cgraph::resolve_imports(graph);
+  cgraph::ContractResolution stats;
+  cgraph::resolve_contracts(graph, relations, &stats);
+  const auto has_edge = [&](const std::string& source, const std::string& target, std::string_view relation) {
+    return std::ranges::any_of(graph.edges, [&](const cgraph::Edge& edge) {
+      return edge.source == source && edge.target == target && edge.relation == relation;
+    });
+  };
+  const std::string login = "endpoint:POST /api/v1/auth/login";
+  const std::string invalidate = "endpoint:PATCH /api/v1/sessions/{}/invalidate";
+  if (!has_edge(login, cgraph::make_id("AuthController.kt:login"), "handled_by") ||
+      !has_edge(invalidate, cgraph::make_id("AuthController.kt:invalidateSession"), "handled_by")) {
+    return fail("spring endpoints are handled by their annotated methods");
+  }
+  const std::pair<std::string, std::string> consumers[] = {
+      {cgraph::make_id("SessionsApi.kt:login"), login},              // Kotlin wrapper call
+      {cgraph::make_id("SessionsApi.kt:revoke"), invalidate},        // Kotlin `$sessionId` segment
+      {cgraph::make_id("internal/api/auth.go:Login"), login},        // Go wrapper call
+      {cgraph::make_id("internal/api/auth.go:Me"), "endpoint:GET /api/v1/auth/me"},
+  };
+  for (const auto& [consumer, target] : consumers) {
+    if (!has_edge(consumer, target, "CONSUMES")) return fail(consumer + " should consume " + target);
+  }
+  // Unresolvable Kotlin/Go calls are tallied, never guessed.
+  // Kotlin: client.request, "$host$prefix", an absolute URL; Go: a query tail,
+  // a base-relative path behind a value, and NewRequestWithContext with a
+  // variable verb and a call-built URL.
+  if (stats.calls_unresolved != 6) {
+    std::cerr << "calls=" << stats.calls << " unresolved=" << stats.calls_unresolved << '\n';
+    return fail("unresolvable client calls are counted");
+  }
+  return true;
+}
+
 }  // namespace
 
 // Spring request mappings emit `file_route` facts: lowercase verb, class prefix
@@ -675,6 +876,15 @@ int main() {
   }
   if (!check_spring_route_facts()) {
     return 4;
+  }
+  if (!check_kotlin_http_clients()) {
+    return 9;
+  }
+  if (!check_go_http_clients()) {
+    return 10;
+  }
+  if (!check_http_clients_consume_spring_routes()) {
+    return 11;
   }
 
   return 0;

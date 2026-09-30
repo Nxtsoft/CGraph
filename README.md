@@ -205,7 +205,18 @@ does not serve the route the node is minted with `served: false` and no source; 
 (a Next.js route file fetched from the same app) the one node has both a handler and its callers.
 A URL whose value the file cannot read, a method a call does not spell out, a relative path
 (`v1/users`) with no base ending in `/` to join it to, or an absolute `https://` literal adds
-nothing and is counted under `route_resolution.calls_unresolved`. Because the id carries no repository, two
+nothing and is counted under `route_resolution.calls_unresolved`. Kotlin and Go clients consume the same way:
+a Ktor `client.patch("$baseUrl/api/v1/sessions/$id/invalidate") { … }` on a receiver named like
+a client (`client`, `httpClient`, `api`), Go's `http.Get(url)` and `http.NewRequest(method, url,
+body)`, and any Go call passing a method (`http.MethodPost` or `"POST"`) directly followed by the
+path, such as `c.Do(ctx, http.MethodGet, "/api/v1/auth/me", nil)`. The leading `$baseUrl` of a
+Ktor URL is the host; a Go client method's path is relative to its own base, so a value in front
+of it (`n.Base+"/import"`) leaves the call unresolved. A function whose request appends one of its
+parameters (`postAuth(ctx, path, req)` calling `c.Do(ctx, http.MethodPost, path, body)`, or
+`client.post("$baseUrl$path")`) is a wrapper, and a call to it in the same file with a path
+literal (`c.postAuth(ctx, "/api/v1/auth/login", req)`, `postLoginOutcome(path = "/api/v1/…")`)
+consumes the joined route. A Ktor `client.request(url) { method = … }` sets its verb in the
+builder and is counted unresolved. Because the id carries no repository, two
 graphs built separately share their endpoint nodes. `seam fuse` scopes every other node id by its service (`api::src_db_client_ts`), so two repositories with the same relative file stay two nodes:
 
 ```sh
