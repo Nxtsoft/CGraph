@@ -27,5 +27,5 @@
 ## 5. Review round 2 (PR #144)
 
 - [x] 5.1 One owner rule (`proxy_crosses_at`) shared by seam discover/fuse and every workspace mapping point: `shared_contract`, the impact seed, `reachable_contracts` and `spellings_in` (three-repo saml regression test).
-- [x] 5.2 `http.mount_prefix` prefixes the served routes (Python server); a malformed value is a warning and no routes; the JS server ignores it.
+- [x] 5.2 `http.mount_prefix` prefixes the served routes (Python server), normalized as langgraph-api 0.15.1 does (one trailing `/` dropped, empty or `/` is the root, `/noauth` reserved); a rejected value is a warning and no routes; the JS server ignores it.
 - [x] 5.3 `seam discover` no longer prints "--prefix prefix names repo".

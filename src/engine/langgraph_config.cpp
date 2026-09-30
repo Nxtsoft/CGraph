@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -153,6 +154,45 @@ constexpr std::array<LangGraphRoute, 49> kRoutes = {{
   return std::string_view::npos;
 }
 
+// Python truthiness of a JSON value: `if not mount_prefix` in langgraph-api.
+[[nodiscard]] bool python_falsy(const nlohmann::json& value) {
+  return value.is_null() || (value.is_boolean() && !value.get<bool>()) || (value.is_number() && value == 0) ||
+         (value.is_string() && value.get_ref<const std::string&>().empty()) ||
+         ((value.is_array() || value.is_object()) && value.empty());
+}
+
+// The mount prefix the Python server serves under ("" for the root), or
+// nullopt with `error` when it refuses to start. langgraph-api 0.15.1
+// config/__init__.py `_validate_mount_prefix`: falsy -> no prefix; must start
+// with `/`; one trailing `/` is dropped; `/noauth` and `/noauth/...` are
+// reserved. server.py then rejects a (non-empty) prefix that still ends in `/`.
+[[nodiscard]] std::optional<std::string> mount_prefix_of(const nlohmann::json& value, std::string& error) {
+  if (python_falsy(value)) {
+    return std::string{};
+  }
+  if (!value.is_string()) {
+    error = "must be a string";
+    return std::nullopt;
+  }
+  auto prefix = value.get<std::string>();
+  if (prefix.front() != '/') {
+    error = "must start with '/'";
+    return std::nullopt;
+  }
+  if (prefix.back() == '/') {
+    prefix.pop_back();
+  }
+  if (prefix == "/noauth" || prefix.starts_with("/noauth/")) {
+    error = "'/noauth' is reserved for internal SDK loopback requests";
+    return std::nullopt;
+  }
+  if (!prefix.empty() && prefix.back() == '/') {
+    error = "must not end with '/' after one trailing '/' is dropped";
+    return std::nullopt;
+  }
+  return prefix;
+}
+
 }  // namespace
 
 std::span<const LangGraphRoute> langgraph_server_routes() { return kRoutes; }
@@ -242,32 +282,28 @@ ExtractionResult extract_langgraph_config(const ExtractionContext& context) {
     return flag != http->end() && flag->is_boolean() && flag->get<bool>();
   };
   // `http.mount_prefix` moves the whole surface under a prefix. The Python
-  // server (langgraph-api 0.15.1, server.py) mounts the app there, keeps
-  // `GET /ok` at the root too, and refuses to start on a prefix that does not
-  // start with `/` or ends with `/`. The JS server (@langchain/langgraph-api
-  // 1.5.1) has no such key: its `http` schema drops it and mounts every group
-  // at `/`. The MOUNT_PREFIX environment override is deploy-time state, not
-  // config, so it is not read here.
+  // server (langgraph-api 0.15.1) normalizes it in config/__init__.py
+  // (`mount_prefix_of` mirrors that and server.py's check), mounts the app
+  // there, and keeps `GET /ok` at the root too. The JS server
+  // (@langchain/langgraph-api 1.5.1) has no such key: its `http` schema drops
+  // it and mounts every group at `/`. The MOUNT_PREFIX environment override is
+  // deploy-time state, not config, so it is not read here.
   std::string mount_prefix;
-  const nlohmann::json* prefix = nullptr;
   if (http != config.end() && http->is_object()) {
-    if (const auto member = http->find("mount_prefix"); member != http->end() && !member->is_null()) {
-      prefix = &*member;
-    }
-  }
-  if (prefix != nullptr) {
-    const auto value = prefix->is_string() ? prefix->get<std::string>() : std::string{};
-    if (value.empty() || value.front() != '/' || value.back() == '/') {
-      fragment.warnings.push_back("langgraph.json: invalid http.mount_prefix " + prefix->dump() +
-                                  ": must be a string that starts with '/' and does not end with '/'; the server "
-                                  "refuses to start, so it serves no routes");
-      return result;
-    }
-    if (config.contains("node_version")) {
-      fragment.warnings.push_back("langgraph.json: http.mount_prefix " + prefix->dump() +
-                                  " is ignored by the JS Agent Server (node_version is set); its routes stay at /");
-    } else {
-      mount_prefix = value;
+    if (const auto member = http->find("mount_prefix"); member != http->end() && !python_falsy(*member)) {
+      if (config.contains("node_version")) {
+        fragment.warnings.push_back("langgraph.json: http.mount_prefix " + member->dump() +
+                                    " is ignored by the JS Agent Server (node_version is set); its routes stay at /");
+      } else {
+        std::string error;
+        const auto normalized = mount_prefix_of(*member, error);
+        if (!normalized) {
+          fragment.warnings.push_back("langgraph.json: invalid http.mount_prefix " + member->dump() + ": " + error +
+                                      "; the server refuses to start, so it serves no routes");
+          return result;
+        }
+        mount_prefix = *normalized;
+      }
     }
   }
   const auto emit = [&](const LangGraphRoute& route, std::string_view prefix) {

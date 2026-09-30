@@ -118,18 +118,39 @@ int test_mount_prefix() {
       mounted.raw_relations.size() != cgraph::langgraph_server_routes().size() + 1 || !mounted.fragment.warnings.empty()) {
     return fail("mount_prefix prefixes every route and keeps GET /ok at the root");
   }
-  for (const std::string_view bad : {std::string_view{R"json({"graphs": {"a": "./a.py:graph"}, "http": {"mount_prefix": "api"}})json"},
-                                     std::string_view{R"json({"graphs": {"a": "./a.py:graph"}, "http": {"mount_prefix": "/api/"}})json"},
-                                     std::string_view{R"json({"graphs": {"a": "./a.py:graph"}, "http": {"mount_prefix": 7}})json"}}) {
-    const auto result = extract(bad);
+  // As langgraph-api 0.15.1 normalizes it: one trailing `/` is dropped, and an
+  // empty or bare `/` prefix serves at the root.
+  const auto with_prefix = [&](std::string_view prefix) {
+    return extract(R"json({"graphs": {"a": "./a.py:graph"}, "http": {"mount_prefix": )json" + std::string(prefix) + "}}");
+  };
+  const auto trailing = with_prefix(R"("/api/")");
+  if (!has_route(trailing, "post /api/runs/wait") || has_route(trailing, "post /api//runs/wait") ||
+      !has_route(trailing, "get /ok") || !trailing.fragment.warnings.empty()) {
+    return fail("\"/api/\" serves at /api, as the server strips one trailing slash");
+  }
+  for (const std::string_view root : {std::string_view{R"("")"}, std::string_view{R"("/")"}, std::string_view{"null"}}) {
+    const auto result = with_prefix(root);
+    if (!has_route(result, "post /runs/wait") ||
+        result.raw_relations.size() != cgraph::langgraph_server_routes().size() || !result.fragment.warnings.empty()) {
+      return fail("an empty, bare-slash or null mount_prefix serves at the root: " + std::string(root));
+    }
+  }
+  for (const std::string_view bad : {std::string_view{R"("api")"}, std::string_view{R"("//")"},
+                                     std::string_view{R"("/api//")"}, std::string_view{R"("/noauth")"},
+                                     std::string_view{R"("/noauth/x/")"}, std::string_view{"7"}}) {
+    const auto result = with_prefix(bad);
     if (!result.raw_relations.empty() || result.fragment.warnings.size() != 1 ||
         result.fragment.warnings.front().find("invalid http.mount_prefix") == std::string::npos) {
-      return fail("a malformed mount_prefix is a warning and no routes: " + std::string(bad));
+      return fail("a mount_prefix the server rejects is a warning and no routes: " + std::string(bad));
     }
   }
   const auto js = extract(R"json({"node_version": "20", "graphs": {"a": "./a.ts:graph"}, "http": {"mount_prefix": "/api"}})json");
   if (!has_route(js, "post /runs/wait") || has_route(js, "post /api/runs/wait") || js.fragment.warnings.size() != 1) {
     return fail("the JS server ignores mount_prefix, with a warning");
+  }
+  const auto js_bad = extract(R"json({"node_version": "20", "graphs": {"a": "./a.ts:graph"}, "http": {"mount_prefix": "api"}})json");
+  if (!has_route(js_bad, "post /runs/wait")) {
+    return fail("the JS server ignores even a mount_prefix Python would reject");
   }
   return 0;
 }
