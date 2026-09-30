@@ -33,6 +33,7 @@ Graphs for idp, passless-app and passless-cli rebuilt with this binary (the four
 - Data-driven requests (a method and path held in a struct or list), Ktor `defaultRequest` base URLs and `url { path(…) }` builders, Retrofit/OkHttp/Spring `RestClient`/`WebClient` clients, Go `fmt.Sprintf` URLs.
 - Cross-file wrapper resolution for Go methods (a package has no per-file imports) and Kotlin (imports are not resolved).
 - Inlining Kotlin/Go constants into a URL (`$API_BASE/users`).
+- Go client methods without a leading `context.Context` (`c.Do(http.MethodGet, "/x", nil)`), or whose context argument is not named `ctx`/`context`: they are not counted in `calls` at all, the price of not reading route registrations (`r.Handle(http.MethodGet, "/x", h)`) and assertions as requests. `http.NewRequest` and the other net/http entry points are read regardless.
 
 ## Impact
 
