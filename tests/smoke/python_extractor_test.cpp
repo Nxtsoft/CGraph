@@ -303,6 +303,55 @@ int fastapi_router_layouts() {
        {"endpoint:GET /v2/items/{}"},
        0,
        0},
+      // `import a.b as x` binds `x` to the module, as `from a import b as x`
+      // does, so `x.router` is that module's router.
+      {"router of a module imported as an alias",
+       {{"app/__init__.py", ""},
+        {"app/main.py", "from fastapi import FastAPI\nimport app.routers.items as items\n"
+                        "from app.routers import users as users_module\n\napp = FastAPI()\n"
+                        "app.include_router(items.router, prefix=\"/api/v1\")\n"
+                        "app.include_router(users_module.router, prefix=\"/api/v1\")\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/items.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/items\")\n\n"
+                                 "@router.get(\"/{x_id}\")\ndef get_items(x_id: int):\n    return x_id\n"},
+        {"app/routers/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                                 "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"}},
+       {"endpoint:GET /api/v1/items/{}", "endpoint:GET /api/v1/users/{}"},
+       0,
+       0},
+      // The mounting router is imported from another file (and mounted at
+      // /api/v1 there), which the extractor cannot follow: its children are
+      // served at a path nobody knows, so they mint nothing rather than
+      // `GET /users/{}` at their own prefix.
+      {"router mounted on an imported router",
+       {{"app/__init__.py", ""},
+        {"app/api.py", "from fastapi import APIRouter\napi_router = APIRouter()\n"},
+        {"app/main.py", "from fastapi import FastAPI\nfrom app.api import api_router\napp = FastAPI()\n"
+                        "app.include_router(api_router, prefix=\"/api/v1\")\n"},
+        {"app/wire.py", "from app.api import api_router\nfrom app.routers import users\n"
+                        "import app.routers.items as items\napi_router.include_router(users.router)\n"
+                        "api_router.include_router(items.router)\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/items.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/items\")\n\n"
+                                 "@router.get(\"/{item_id}\")\ndef get_item(item_id: int):\n    return item_id\n"},
+        {"app/routers/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                                 "@router.get(\"/{user_id}\")\ndef get_user(user_id: int):\n    return user_id\n"}},
+       {},
+       2,
+       2},
+      // `app = create_app()` is no chain the extractor knows, so a router
+      // mounted on it is served at a path nobody knows.
+      {"router mounted on a factory-built app",
+       {{"app/__init__.py", ""},
+        {"app/main.py", "from fastapi import FastAPI\nfrom app.routers import users\n\n\n"
+                        "def create_app() -> FastAPI:\n    return FastAPI(title=\"svc\")\n\n\n"
+                        "app = create_app()\napp.include_router(users.router, prefix=\"/api/v1\")\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                                 "@router.get(\"/{user_id}\")\ndef get_user(user_id: int):\n    return user_id\n"}},
+       {},
+       1,
+       1},
   };
   int status = 0;  // every case reports, so one run shows each miss
   for (const auto& test : cases) {

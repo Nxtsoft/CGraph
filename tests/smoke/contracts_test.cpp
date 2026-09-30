@@ -5,6 +5,7 @@
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/non_grammar_extractors.hpp"
 #include "cgraph/normalize.hpp"
+#include "cgraph/python_extractor.hpp"
 
 #include <iostream>
 #include <string>
@@ -35,6 +36,7 @@ Built build(const std::vector<std::pair<std::string, std::string>>& files) {
     const auto result = path.ends_with(".sql")    ? *cgraph::extract_non_grammar_language(cgraph::DetectedLanguage::Sql, context)
                         : path.ends_with(".kt")   ? *cgraph::extract_configured_language(cgraph::DetectedLanguage::Kotlin, context)
                         : path.ends_with(".java") ? *cgraph::extract_configured_language(cgraph::DetectedLanguage::Java, context)
+                        : path.ends_with(".py")   ? cgraph::extract_python(context)
                         : path.ends_with(".js")   ? cgraph::extract_javascript(context)
                                                   : cgraph::extract_typescript(context);
     fragments.push_back(result.fragment);
@@ -683,6 +685,60 @@ export const b = new Elysia({ prefix: '/b' }).use(a);
   return 0;
 }
 
+// A mount on a name that is no chain. In Python (`app = create_app()`) the
+// child is served somewhere nobody can place, so it mints nothing unless
+// another mount places it; a JavaScript child keeps its own path, as before.
+int test_unplaced_mounts() {
+  const auto built = build({
+      {"/proj/u/items.js", R"js(
+import { Router } from 'express';
+export const router = Router();
+router.get('/items', (req, res) => { res.json(list()); });
+)js"},
+      {"/proj/u/wire.js", R"js(
+import { server } from './server';
+import { router } from './items';
+server.use('/api', router);
+)js"},
+      {"/proj/u/server.js", R"js(
+export const server = makeServer();
+)js"},
+      {"/proj/u/main.py", R"py(
+from fastapi import APIRouter, FastAPI
+users = APIRouter(prefix="/users")
+orders = APIRouter(prefix="/orders")
+
+@users.get("/{user_id}")
+def get_user(user_id: int):
+    return user_id
+
+@orders.get("/{order_id}")
+def get_order(order_id: int):
+    return order_id
+
+app = create_app()
+app.include_router(users, prefix="/api/v1")
+app.include_router(orders, prefix="/api/v1")
+real = FastAPI()
+real.include_router(orders, prefix="/v2")
+)py"},
+  });
+  const auto& graph = built.graph;
+  if (endpoints(graph) != 2 || endpoint(graph, "GET /items") == nullptr ||
+      endpoint(graph, "GET /v2/orders/{order_id}") == nullptr) {
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "endpoint") std::cerr << "  minted: " << node.label << '\n';
+    }
+    return fail("unplaced mounts: JavaScript /items stays, Python users mints nothing, orders only under /v2");
+  }
+  if (built.stats.mounts != 4 || built.stats.mounts_unresolved != 3 || built.stats.routes_unresolved != 1) {
+    std::cerr << "  mounts " << built.stats.mounts << " unresolved " << built.stats.mounts_unresolved
+              << " routes_unresolved " << built.stats.routes_unresolved << '\n';
+    return fail("unplaced mount tally");
+  }
+  return 0;
+}
+
 // Resolution is a pure function of the merged fragments: running the pipeline
 // twice over the same files yields the same endpoints, and a repo with no
 // routes gains no nodes or edges at all (Graphify parity for every other repo).
@@ -975,6 +1031,7 @@ int main() {
   failures += test_consumers();
   failures += test_documented_endpoint_joins();
   failures += test_mount_cycle_terminates();
+  failures += test_unplaced_mounts();
   failures += test_no_routes_no_change();
   failures += test_spring_mappings();
   failures += test_spring_non_handlers();

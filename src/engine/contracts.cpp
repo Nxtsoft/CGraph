@@ -219,9 +219,11 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // Python's `include_router(users.router)` after `from app.routers import
   // users`: `users` is an imported module file, `router` its own variable.
   // Only `module.name`; a longer chain resolves to nothing.
-  const auto python_dotted = [](const RawRelation& relation) {
-    return relation.target_label.find('.') != std::string::npos &&
-           std::filesystem::path(relation.source_file).extension() == ".py";
+  const auto python_source = [](const RawRelation& relation) {
+    return std::filesystem::path(relation.source_file).extension() == ".py";
+  };
+  const auto python_dotted = [&](const RawRelation& relation) {
+    return relation.target_label.find('.') != std::string::npos && python_source(relation);
   };
   const auto python_module_attribute = [&](const RawRelation& relation) -> std::string {
     const auto& label = relation.target_label;
@@ -290,7 +292,7 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   std::unordered_map<std::string, std::vector<Mount>> parents_of;
   // Chains mounted somewhere the extractor could not place: a mount with no
   // mounting chain (Python's `app.include_router(r, prefix=settings.P)`, or one
-  // inside an app factory). A chain with no other mount is served at a path
+  // inside an app factory), or a Python mount on a name that is no chain. A chain with no other mount is served at a path
   // nobody knows, so its routes mint nothing rather than a wrong top-level path.
   std::unordered_set<std::string> unplaced;
   for (const auto& relation : raw_relations) {
@@ -308,6 +310,15 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
     if (!by_id.contains(relation.source_id)) {
       ++tally.mounts_unresolved;
+      // Python: the mounting name is no chain this file declares (`app =
+      // create_app()`, or an `api_router` imported from the file that mounts
+      // it), so the child is served somewhere nobody can place. A JavaScript
+      // child keeps its own path, as it always has.
+      if (python_source(relation)) {
+        if (const auto child = name_in_scope(relation); !child.empty()) {
+          unplaced.insert(child);
+        }
+      }
       continue;
     }
     const auto child = chain_named(relation);

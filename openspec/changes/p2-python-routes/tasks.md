@@ -21,3 +21,6 @@
 - [x] 4.3 Routers re-exported through a package `__init__.py` are followed; Python symbol stubs no longer collide under `make_id`.
 - [x] 4.4 `app.mount("/p", sub_app)` is a mount; `session.mount("https://", adapter)` is not, inside a function too.
 - [x] 4.5 `fastapi_router_layouts` fails on the first commit and passes after; probe re-scored.
+- [x] 4.6 A Python mount on a name that is no chain (`app = create_app()`, an imported `api_router`) leaves its child unplaced; JavaScript output unchanged.
+- [x] 4.7 `import a.b as x` binds `x` to the module through an aliased `imports` edge.
+- [x] 4.8 `kIndexVersionKey` bumped to `logic-10` (after #142's `logic-9`).

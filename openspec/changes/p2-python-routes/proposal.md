@@ -28,7 +28,7 @@ ml-backend, Turing's Python ML service, served 0 endpoints in its graph on bin-v
 ## Non-goals
 
 - Flask and Blueprints: `register_blueprint(bp, url_prefix=)` replaces the blueprint's own prefix, which the mount walk does not express.
-- App factories (`def create_app(): app = FastAPI(); app.include_router(...)`): counted unresolved, and a router mounted only there mints nothing.
+- App factories (`def create_app(): app = FastAPI(); app.include_router(...)`, or a module-level `app = create_app()`) and a mount on a router imported from another file (`api_router.include_router(users.router)`): counted unresolved, and a router mounted only there mints nothing.
 - `app.add_api_route(...)`: not read. A mount of a longer dotted name (`include_router(api.v1.router)`): counted unresolved, and its router is not identified, so if nothing else mounts it, it is served at its own prefix like any unmounted router.
 - Python HTTP clients (`requests`/`httpx`) as consumers.
 
@@ -36,6 +36,7 @@ ml-backend, Turing's Python ML service, served 0 endpoints in its graph on bin-v
 
 - `src/engine/python_extractor.cpp`: router variables, route decorators, include_router and mount mounts, import alias on the edge, symbol stub id.
 - `src/engine/contracts.cpp`: a mount with no mounting chain is counted and leaves an otherwise unmounted child without a path; a Python `module.router` resolves through the imported module.
+- `src/engine/index_persistence.cpp`: `kIndexVersionKey` `logic-10`.
 - `src/engine/graph_builder.cpp`: alias-only binding; Python package re-exports and submodules in `resolve_imports`.
 - `tests/smoke/python_extractor_test.cpp`, `tests/smoke/file_extraction_test.cpp`.
-- Graph output for Python repositories gains `variable`, `endpoint` nodes and `contains`, `handled_by`, `mounts` edges; a `from m import router` import now targets the router variable instead of its file. The index version bump is the orchestrator's.
+- Graph output for Python repositories gains `variable`, `endpoint` nodes and `contains`, `handled_by`, `mounts` edges; a `from m import router` import now targets the router variable instead of its file. `kIndexVersionKey` is bumped to `logic-10` (#142, which lands first, takes `logic-9`).

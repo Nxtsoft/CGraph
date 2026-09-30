@@ -126,15 +126,32 @@ void python_import_handler(const TSNode& node, const ExtractionContext& context,
     const auto child_count = ts_node_named_child_count(node);
     for (std::uint32_t index = 0; index < child_count; ++index) {
       auto child = ts_node_named_child(node, index);
+      std::string alias;
       if (std::string_view(ts_node_type(child)) == "aliased_import") {
+        if (const auto alias_node = ts_node_child_by_field_name(child, "alias", 5); !ts_node_is_null(alias_node)) {
+          alias = node_text(alias_node, context.source);
+        }
         child = ts_node_child_by_field_name(child, "name", 4);
         if (ts_node_is_null(child)) {
           continue;
         }
       }
       const auto spec = node_text(child, context.source);
-      if (!spec.empty()) {
-        add_module_stub(spec, spec);
+      if (spec.empty()) {
+        continue;
+      }
+      const auto module_id = add_module_stub(spec, spec);
+      // `import app.routers.items as items` binds `items` to the module, as
+      // `from app.routers import items` does: an `imports` edge carrying the
+      // alias, which build_relation_scopes binds (and only the alias).
+      if (!alias.empty()) {
+        fragment.edges.push_back(Edge{
+            .source = file_id,
+            .target = module_id,
+            .relation = "imports",
+            .confidence = Confidence::Extracted,
+            .properties = {{"alias", alias}},
+        });
       }
     }
     return;
