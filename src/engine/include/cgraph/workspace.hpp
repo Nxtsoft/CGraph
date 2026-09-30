@@ -57,7 +57,9 @@ struct Workspace {
 // and including $HOME) holding a manifest that lists a repo whose root is the
 // project root or contains it (a worktree nested in a member checkout counts).
 // `home` names that repo, and its `root` is replaced by the project root, so
-// the home repo is answered from the tree the caller is actually in.
+// the home repo is answered from the tree the caller is actually in. A manifest
+// that lists the root but cannot be loaded is returned with `workspace.errors`
+// set and no repos, so the caller can say so.
 struct EnclosingWorkspace {
   Workspace workspace;
   std::string home;

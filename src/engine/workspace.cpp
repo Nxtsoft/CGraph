@@ -565,22 +565,54 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
   if (const char* value = std::getenv("HOME"); value != nullptr && value[0] != '\0') {
     home = std::filesystem::weakly_canonical(value, error);
   }
-  for (auto dir = root.parent_path(); !dir.empty(); dir = dir.parent_path()) {
-    if (is_workspace_root(dir)) {
-      auto workspace = load_workspace(dir);
-      if (workspace.ok()) {
-        for (auto& repo : workspace.repos) {
-          const auto relative = root.lexically_relative(repo.root);
-          if (!relative.empty() && *relative.begin() != "..") {
-            auto name = repo.name;
-            repo.root = root;
+  const auto contains = [](const std::filesystem::path& outer, const std::filesystem::path& inner) {
+    const auto relative = inner.lexically_relative(outer);
+    return !relative.empty() && *relative.begin() != "..";
+  };
+  // Walk the path as given as well as the resolved one: a member reached
+  // through a symlink sits under the workspace only in the path as given.
+  std::vector<std::filesystem::path> starts{std::filesystem::absolute(project_root, error).lexically_normal(), root};
+  std::set<std::filesystem::path> seen;
+  for (const auto& start : starts) {
+    for (auto dir = start.parent_path(); !dir.empty(); dir = dir.parent_path()) {
+      if (seen.insert(dir).second && is_workspace_root(dir)) {
+        auto workspace = load_workspace(dir);
+        if (workspace.ok()) {
+          // The most specific member wins when one member's root holds another's.
+          WorkspaceRepo* member = nullptr;
+          for (auto& repo : workspace.repos) {
+            if (contains(repo.root, root) &&
+                (member == nullptr || repo.root.native().size() > member->root.native().size())) {
+              member = &repo;
+            }
+          }
+          if (member != nullptr) {
+            auto name = member->name;
+            member->root = root;
             return EnclosingWorkspace{.workspace = std::move(workspace), .home = std::move(name)};
+          }
+        } else {
+          // A manifest that lists this root but cannot be used (a malformed
+          // entry, a member not cloned here) is returned with its errors: the
+          // caller says so, rather than quietly answering as if alone.
+          std::ifstream input(dir / std::filesystem::path(std::string(kWorkspaceFile)));
+          const auto manifest = nlohmann::json::parse(input, nullptr, false);
+          if (manifest.is_object() && manifest.contains("repos") && manifest["repos"].is_array()) {
+            for (const auto& entry : manifest["repos"]) {
+              if (!entry.is_object() || entry.value("root", std::string{}).empty()) continue;
+              std::filesystem::path declared = entry.value("root", std::string{});
+              auto resolved = std::filesystem::weakly_canonical(declared.is_absolute() ? declared : dir / declared, error);
+              if (!error && contains(resolved, root)) {
+                workspace.name = manifest.value("name", dir.filename().generic_string());
+                return EnclosingWorkspace{.workspace = std::move(workspace), .home = entry.value("name", std::string{})};
+              }
+            }
           }
         }
       }
-    }
-    if (dir == home || dir == dir.parent_path()) {
-      break;
+      if (dir == home || dir == dir.parent_path()) {
+        break;
+      }
     }
   }
   return std::nullopt;

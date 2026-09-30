@@ -186,10 +186,15 @@ namespace {
 // contract hops are asked in turn, so each ask gets what is left.
 [[nodiscard]] RepoAsk forwarding_ask(const ClientRequest& request, const ClientRuntimeHooks& hooks,
                                      std::shared_ptr<std::pair<std::size_t, int>> tallies) {
-  const auto build_deadline = std::chrono::steady_clock::now() + request.build_wait;
+  // The shared wait starts at the first ask, not when the ask is made: a caller
+  // may build its own snapshots first (change_context builds two).
+  auto build_deadline = std::make_shared<std::optional<std::chrono::steady_clock::time_point>>();
   return [request, hooks, build_deadline, tallies](const WorkspaceRepo& repo, const std::string& op,
                                                    const nlohmann::json& params,
                                                    std::string& error) -> std::optional<nlohmann::json> {
+    if (!*build_deadline) {
+      *build_deadline = std::chrono::steady_clock::now() + request.build_wait;
+    }
     ClientRequest forwarded = request;
     forwarded.project_root = repo.root;
     forwarded.operation = op;
@@ -197,7 +202,7 @@ namespace {
     forwarded.federate = false;
     forwarded.build_wait = std::max(std::chrono::milliseconds(0),
                                     std::chrono::duration_cast<std::chrono::milliseconds>(
-                                        build_deadline - std::chrono::steady_clock::now()));
+                                        **build_deadline - std::chrono::steady_clock::now()));
     auto answer = send_thin_client_request(forwarded, hooks);
     tallies->first += answer.spawned ? 1 : 0;
     tallies->second += answer.connect_attempts;
@@ -240,9 +245,45 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
   // cross the workspace: those are the questions another service can change.
   if (request.federate && (request.operation == "impact" || request.operation == "path")) {
     if (auto enclosing = find_enclosing_workspace(request.project_root)) {
-      auto result = federate_through(enclosing->workspace, request, hooks);
+      nlohmann::json tag{{"name", enclosing->workspace.name}, {"home", enclosing->home}};
+      ClientResult result;
+      if (!enclosing->workspace.ok()) {
+        // The manifest lists this root but cannot be used: answer from home and
+        // say why the other services are missing.
+        ClientRequest alone = request;
+        alone.federate = false;
+        result = send_thin_client_request(alone, hooks);
+        tag["errors"] = enclosing->workspace.errors;
+      } else {
+        // A content-root pin names the home repo's graph. Only the home ask
+        // carries it, and a home pin that fails fails the request, as it does
+        // for a lone project; other members answer from their current graphs.
+        const bool pinned = request.params.contains("expected_content_root");
+        std::optional<nlohmann::json> home_failure;
+        auto tallies = std::make_shared<std::pair<std::size_t, int>>(0, 0);
+        const auto forward = forwarding_ask(request, hooks, tallies);
+        const RepoAsk ask = [&](const WorkspaceRepo& repo, const std::string& op, const nlohmann::json& params,
+                                std::string& error) -> std::optional<nlohmann::json> {
+          auto scoped = params;
+          if (repo.name != enclosing->home) {
+            scoped.erase("expected_content_root");
+          }
+          auto envelope = forward(repo, op, scoped, error);
+          if (pinned && repo.name == enclosing->home && envelope && !envelope->value("ok", false) && !home_failure) {
+            home_failure = envelope;
+          }
+          return envelope;
+        };
+        result.response = federate_workspace_request(enclosing->workspace, request.operation, request.params, ask);
+        result.spawned = tallies->first > 0;
+        result.connect_attempts = tallies->second;
+        if (home_failure) {
+          result.response = std::move(home_failure);
+          return result;
+        }
+      }
       if (result.response && result.response->contains("result") && (*result.response)["result"].is_object()) {
-        (*result.response)["result"]["workspace"] = {{"name", enclosing->workspace.name}, {"home", enclosing->home}};
+        (*result.response)["result"]["workspace"] = std::move(tag);
       }
       return result;
     }
