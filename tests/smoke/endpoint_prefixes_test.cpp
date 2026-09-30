@@ -64,11 +64,20 @@ int test_parse() {
   }
   for (const auto& bad : {nlohmann::json{{"repo", "web"}, {"from", "api/backend"}, {"to", "/api"}},
                           nlohmann::json{{"from", "/a"}, {"to", "/b"}}, nlohmann::json{{"repo", "web"}, {"from", "/a"}, {"to", "/a"}},
-                          nlohmann::json("web")}) {
+                          nlohmann::json("web"),
+                          // Non-string members: an entry error, not a JSON type exception.
+                          nlohmann::json{{"repo", 7}, {"from", "/a"}, {"to", "/b"}},
+                          nlohmann::json{{"repo", "web"}, {"from", nlohmann::json::array({"/a"})}, {"to", "/b"}}}) {
     std::vector<std::string> bad_errors;
     if (!cgraph::parse_endpoint_prefixes(nlohmann::json::array({bad}), bad_errors).empty() || bad_errors.empty()) {
       return fail("a malformed prefix entry is an error: " + bad.dump());
     }
+  }
+  // A prefix for a repo that is not given maps nothing: it is an error.
+  const std::vector<std::string> given{"idp", "web"};
+  if (!cgraph::unknown_prefix_repos(parsed, given).empty() ||
+      cgraph::unknown_prefix_repos(parsed, std::vector<std::string>{"idp"}).size() != 1) {
+    return fail("a prefix naming a repo that is not given is reported, one error per prefix");
   }
   std::string error;
   const auto flag = cgraph::parse_endpoint_prefix_flag("idp-front-end:/api/backend=/api", error);

@@ -451,10 +451,19 @@ int test_manifest_prefixes(const fs::path& root) {
              R"({"repos": [{"name": "idp", "root": "../idp"}], "prefixes": [{"repo": "web", "from": "/api/backend", "to": "/api"}]})");
   write_file(ws / "relative" / std::string(cgraph::kWorkspaceFile),
              R"({"repos": [{"name": "idp", "root": "../idp"}], "prefixes": [{"repo": "idp", "from": "api/backend", "to": "/api"}]})");
-  for (const auto* name : {"stranger", "relative"}) {
-    const auto invalid = cgraph::load_workspace(ws / name);
-    if (invalid.ok() || !invalid.repos.empty() || !invalid.prefixes.empty()) {
-      return fail(std::string("a prefix naming no member, or a relative path, is a manifest error: ") + name);
+  // Non-string members are manifest errors, never a JSON type exception.
+  write_file(ws / "typed-prefix" / std::string(cgraph::kWorkspaceFile),
+             R"({"repos": [{"name": "idp", "root": "../idp"}], "prefixes": [{"repo": 7, "from": ["/api"], "to": "/api"}]})");
+  write_file(ws / "typed-repo" / std::string(cgraph::kWorkspaceFile), R"({"repos": [{"name": 5, "root": ["../idp"]}]})");
+  write_file(ws / "typed-name" / std::string(cgraph::kWorkspaceFile), R"({"name": 3, "repos": [{"name": "idp", "root": "../idp"}]})");
+  for (const auto* name : {"stranger", "relative", "typed-prefix", "typed-repo", "typed-name"}) {
+    try {
+      const auto invalid = cgraph::load_workspace(ws / name);
+      if (invalid.ok() || !invalid.repos.empty() || !invalid.prefixes.empty()) {
+        return fail(std::string("a prefix naming no member, a relative path, or a non-string member is a manifest error: ") + name);
+      }
+    } catch (const std::exception& error) {
+      return fail(std::string("a malformed manifest threw instead of reporting an error: ") + name + ": " + error.what());
     }
   }
   return 0;
@@ -559,6 +568,54 @@ int test_impact_and_path_cross_a_proxy_prefix(const fs::path& root) {
   return 0;
 }
 
+// The front end serves `GET /api/saml/metadata` itself and also calls
+// `/api/backend/saml/metadata` through its proxy. The proxy forwards to the
+// backend, never to the front end's own route, so impact from that route does
+// not cross to the proxied caller -- unless another member serves the path too.
+int test_impact_does_not_proxy_onto_a_members_own_route(const fs::path& root) {
+  auto workspace = workspace_of(root, {{"idp", root / "api"}, {"web", root / "web"}});
+  workspace.prefixes.push_back(cgraph::EndpointPrefix{.repo = "web", .from = "/api/backend", .to = "/api"});
+  const std::string own = "endpoint:GET /api/saml/metadata";
+  const std::string proxied = "endpoint:GET /api/backend/saml/metadata";
+  FakeRepos repos;
+  repos.answers["web"]["impact:web::samlMetadataRoute"] = impact_ok({endpoint_brief(own, 1, true)});
+  repos.answers["web"]["explain:" + own] = explain_of(own, true);
+  repos.answers["web"]["explain:" + proxied] = explain_of(proxied, false);
+  repos.answers["web"]["impact:" + own] = impact_ok({node("web::samlMetadataRoute", 1)});
+  repos.answers["web"]["impact:" + proxied] = impact_ok({node("web::getIdpMetadata", 1)});
+  const json params{{"id", "web::samlMetadataRoute"}, {"direction", "dependents"}, {"max_depth", 3}};
+  const auto response = cgraph::federate_workspace_request(workspace, "impact", params, repos.ask());
+  for (const auto& hit : response["result"]["nodes"]) {
+    if (hit["id"] == "web::getIdpMetadata") {
+      std::cerr << response.dump(2) << '\n';
+      return fail("a proxied call crossed at a route only its own repo serves");
+    }
+  }
+  // idp serves the same path too (`/api/v1/users/profile` shape). A change to
+  // web's own route still does not reach the proxied caller, which hits idp's
+  // copy; a change to idp's handler does.
+  repos.answers["idp"]["explain:" + own] = explain_of(own, true);
+  repos.answers["idp"]["impact:idp::samlMetadata"] = impact_ok({endpoint_brief(own, 1, true)});
+  const auto from_web = cgraph::federate_workspace_request(workspace, "impact", params, repos.ask());
+  for (const auto& hit : from_web["result"]["nodes"]) {
+    if (hit["id"] == "web::getIdpMetadata") {
+      std::cerr << from_web.dump(2) << '\n';
+      return fail("a change to the front end's own route reached a caller of the backend's copy");
+    }
+  }
+  const auto from_idp = cgraph::federate_workspace_request(
+      workspace, "impact", json{{"id", "idp::samlMetadata"}, {"direction", "dependents"}, {"max_depth", 3}}, repos.ask());
+  bool reached = false;
+  for (const auto& hit : from_idp["result"]["nodes"]) {
+    reached = reached || (hit["id"] == "web::getIdpMetadata" && hit.value("repo", std::string{}) == "web");
+  }
+  if (!reached) {
+    std::cerr << from_idp.dump(2) << '\n';
+    return fail("a change to the backend's handler reaches the proxied caller when both repos serve the path");
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-workspace-test";
   fs::remove_all(root);
@@ -574,6 +631,7 @@ int main() {
   failures += test_enclosing_workspace(root);
   failures += test_manifest_prefixes(root);
   failures += test_impact_and_path_cross_a_proxy_prefix(root);
+  failures += test_impact_does_not_proxy_onto_a_members_own_route(root);
 
   fs::remove_all(root);
   return failures == 0 ? 0 : 1;

@@ -155,13 +155,33 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
   return id;
 }
 
+// True when `repo` serves `id` itself: its graph holds the endpoint with a
+// source anchor (a handler), not a placeholder.
+[[nodiscard]] bool served_in(const WorkspaceRepo& repo, const std::string& id, const RepoAsk& ask) {
+  std::string error;
+  const auto envelope = ask(repo, "explain", {{"id", id}, {"limit", 1}}, error);
+  const auto* result = envelope ? result_of(*envelope) : nullptr;
+  return result != nullptr && found_in(*result) && result->value("id", std::string{}) == id && !is_placeholder(*result);
+}
+
 // The ids to ask `repo` for when crossing at `contract`: the contract itself and
 // every consumer spelling of it through the repo's proxy that the repo really
-// consumes without serving.
+// consumes without serving. As in seam discovery, a proxied call never crosses
+// at an endpoint only `repo` itself serves: the proxy forwards to the other
+// repos, never to its own routes.
 [[nodiscard]] std::vector<std::string> spellings_in(const Workspace& workspace, const WorkspaceRepo& repo,
                                                     const std::string& contract, const RepoAsk& ask) {
   std::vector<std::string> ids{contract};
-  for (auto& spelling : consumer_spellings(workspace.prefixes, repo.name, contract)) {
+  auto spellings = consumer_spellings(workspace.prefixes, repo.name, contract);
+  if (spellings.empty()) {
+    return ids;
+  }
+  if (served_in(repo, contract, ask) && std::ranges::none_of(workspace.repos, [&](const WorkspaceRepo& other) {
+        return other.name != repo.name && served_in(other, contract, ask);
+      })) {
+    return ids;
+  }
+  for (auto& spelling : spellings) {
     if (placeholder_in(repo, spelling, ask)) {
       ids.push_back(std::move(spelling));
     }
@@ -404,7 +424,14 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
       if (proxied_from[endpoint].contains(repo.name) && !reached_in[endpoint].contains(repo.name)) {
         continue;
       }
-      for (const auto& spelling : spellings_in(workspace, repo, endpoint, ask)) {
+      // A contract the traversal reached only inside this repo is the repo's own
+      // route: its proxied callers reach another member's copy, never this one.
+      const auto& reached = reached_in[endpoint];
+      const bool own_only = !reached.empty() && std::ranges::all_of(reached, [&](const std::string& name) {
+        return name == repo.name;
+      });
+      const auto spellings = own_only ? std::vector<std::string>{endpoint} : spellings_in(workspace, repo, endpoint, ask);
+      for (const auto& spelling : spellings) {
         forwarded["id"] = spelling;
         std::string error;
         const auto envelope = ask(repo, "impact", forwarded, error);
@@ -678,11 +705,16 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
           const auto manifest = nlohmann::json::parse(input, nullptr, false);
           if (manifest.is_object() && manifest.contains("repos") && manifest["repos"].is_array()) {
             for (const auto& entry : manifest["repos"]) {
-              if (!entry.is_object() || entry.value("root", std::string{}).empty()) continue;
+              if (!entry.is_object() || !entry.contains("root") || !entry["root"].is_string() ||
+                  (entry.contains("name") && !entry["name"].is_string()) || entry["root"].get<std::string>().empty()) {
+                continue;
+              }
               std::filesystem::path declared = entry.value("root", std::string{});
               auto resolved = std::filesystem::weakly_canonical(declared.is_absolute() ? declared : dir / declared, error);
               if (!error && contains(resolved, root)) {
-                workspace.name = manifest.value("name", dir.filename().generic_string());
+                workspace.name = manifest.contains("name") && manifest["name"].is_string()
+                                     ? manifest["name"].get<std::string>()
+                                     : dir.filename().generic_string();
                 return EnclosingWorkspace{.workspace = std::move(workspace), .home = entry.value("name", std::string{}),
                                           .home_root = resolved};
               }
@@ -722,6 +754,10 @@ Workspace load_workspace(const std::filesystem::path& root) {
     workspace.errors.push_back("workspace manifest must be a JSON object");
     return workspace;
   }
+  if (manifest.contains("name") && !manifest["name"].is_string()) {
+    workspace.errors.push_back("workspace manifest `name` must be a string");
+    return workspace;
+  }
   workspace.name = manifest.value("name", workspace.root.filename().generic_string());
   const auto repos = manifest.find("repos");
   if (repos == manifest.end() || !repos->is_array() || repos->empty()) {
@@ -732,6 +768,10 @@ Workspace load_workspace(const std::filesystem::path& root) {
   for (const auto& entry : *repos) {
     if (!entry.is_object()) {
       workspace.errors.push_back("each `repos` entry must be an object with `name` and `root`");
+      continue;
+    }
+    if ((entry.contains("name") && !entry["name"].is_string()) || (entry.contains("root") && !entry["root"].is_string())) {
+      workspace.errors.push_back("a `repos` entry's `name` and `root` must be strings: " + entry.dump());
       continue;
     }
     WorkspaceRepo repo;
@@ -763,10 +803,9 @@ Workspace load_workspace(const std::filesystem::path& root) {
   }
   if (const auto prefixes = manifest.find("prefixes"); prefixes != manifest.end()) {
     workspace.prefixes = parse_endpoint_prefixes(*prefixes, workspace.errors);
-    for (const auto& prefix : workspace.prefixes) {
-      if (!names.contains(prefix.repo)) {
-        workspace.errors.push_back("prefix names repo '" + prefix.repo + "', which the manifest does not list");
-      }
+    const std::vector<std::string> members(names.begin(), names.end());
+    for (auto& unknown : unknown_prefix_repos(workspace.prefixes, members)) {
+      workspace.errors.push_back(std::move(unknown));
     }
   }
   if (!workspace.errors.empty()) {

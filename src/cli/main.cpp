@@ -579,6 +579,18 @@ int run_seam_discover(int argc, char** argv) {
     std::cerr << "seam discover: at least one --graph NAME=graph.json and --out are required\n";
     return 2;
   }
+  {
+    std::vector<std::string> names;
+    for (const auto& spec : graph_specs) {
+      names.push_back(spec.first);
+    }
+    if (const auto unknown = cgraph::unknown_prefix_repos(prefixes, names); !unknown.empty()) {
+      for (const auto& error : unknown) {
+        std::cerr << "seam discover: --prefix " << error << '\n';
+      }
+      return 2;
+    }
+  }
   const auto result = cgraph::discover_seam(graph_specs, prefixes);
   if (!result.ok) {
     for (const auto& error : result.errors) {
@@ -633,6 +645,18 @@ int run_seam_fuse(int argc, char** argv) {
   if (seam_path.empty() || out_dir.empty()) {
     std::cerr << "seam fuse: --seam and --out are required\n";
     return 2;
+  }
+  {
+    std::vector<std::string> names;
+    for (const auto& spec : graph_specs) {
+      names.push_back(spec.first);
+    }
+    if (const auto unknown = cgraph::unknown_prefix_repos(prefixes, names); !unknown.empty()) {
+      for (const auto& error : unknown) {
+        std::cerr << "seam fuse: --prefix " << error << '\n';
+      }
+      return 2;
+    }
   }
 
   std::ifstream seam_input(seam_path);

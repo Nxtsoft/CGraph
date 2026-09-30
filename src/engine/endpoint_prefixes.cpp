@@ -2,6 +2,8 @@
 
 #include "cgraph/contracts.hpp"
 
+#include <algorithm>
+#include <array>
 #include <utility>
 
 namespace cgraph {
@@ -69,6 +71,16 @@ std::vector<EndpointPrefix> parse_endpoint_prefixes(const nlohmann::json& entrie
       errors.push_back("each `prefixes` entry must be an object with `repo`, `from` and `to`");
       continue;
     }
+    // A non-string member is an entry error, never a JSON type exception: a
+    // parent manifest's typo must not take down every tool beneath it.
+    const bool strings = std::ranges::all_of(std::array{"repo", "from", "to"}, [&](const char* key) {
+      const auto member = entry.find(key);
+      return member == entry.end() || member->is_string();
+    });
+    if (!strings) {
+      errors.push_back("`repo`, `from` and `to` in a `prefixes` entry must be strings: " + entry.dump());
+      continue;
+    }
     const auto repo = entry.value("repo", std::string{});
     const auto from = normalized_prefix(entry.value("from", std::string{}));
     const auto to = normalized_prefix(entry.value("to", std::string{}));
@@ -102,6 +114,16 @@ std::optional<EndpointPrefix> parse_endpoint_prefix_flag(std::string_view flag, 
     return std::nullopt;
   }
   return std::move(parsed.front());
+}
+
+std::vector<std::string> unknown_prefix_repos(std::span<const EndpointPrefix> prefixes, std::span<const std::string> repos) {
+  std::vector<std::string> errors;
+  for (const auto& prefix : prefixes) {
+    if (std::ranges::find(repos, prefix.repo) == repos.end()) {
+      errors.push_back("prefix names repo '" + prefix.repo + "', which is not among the repos given");
+    }
+  }
+  return errors;
 }
 
 nlohmann::json endpoint_prefixes_json(std::span<const EndpointPrefix> prefixes) {

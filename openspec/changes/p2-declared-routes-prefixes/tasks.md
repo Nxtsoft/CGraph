@@ -16,3 +16,10 @@
 - [x] 3.1 Fail-before/pass-after for each test.
 - [x] 3.2 Probe scoring, precision sample, lost-match check, live workspace federation.
 - [x] 3.3 README and SKILL updated.
+
+## 4. Review round 1 (PR #144)
+
+- [x] 4.1 Workspace federation mirrors the seam's owner rule, and a contract reached only inside a repo is not crossed to its proxied callers (saml regression test).
+- [x] 4.2 Non-string manifest and prefix members are errors, not JSON exceptions.
+- [x] 4.3 `--prefix` naming a repo no `--graph` provides exits 2 (`unknown_prefix_repos`, shared with the manifest check).
+- [x] 4.4 The four unimplemented crons routes are dropped (49 routes); one docs URL.

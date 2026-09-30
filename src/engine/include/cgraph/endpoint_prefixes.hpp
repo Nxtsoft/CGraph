@@ -41,6 +41,12 @@ struct EndpointPrefix {
 // Parses the CLI spelling `REPO:/from=/to`; nullopt (with `error`) when malformed.
 [[nodiscard]] std::optional<EndpointPrefix> parse_endpoint_prefix_flag(std::string_view flag, std::string& error);
 
+// One error per prefix whose `repo` is not among `repos` (a manifest's members,
+// or the services given to a seam command): a prefix for a repo that is not
+// there would silently map nothing.
+[[nodiscard]] std::vector<std::string> unknown_prefix_repos(std::span<const EndpointPrefix> prefixes,
+                                                            std::span<const std::string> repos);
+
 // The JSON form parse_endpoint_prefixes reads.
 [[nodiscard]] nlohmann::json endpoint_prefixes_json(std::span<const EndpointPrefix> prefixes);
 

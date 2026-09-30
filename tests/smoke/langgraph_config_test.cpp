@@ -65,6 +65,12 @@ int test_extracts_server_graphs_and_routes() {
       compiq->properties.at("entrypoint") != "./src/compiq_agent/graph.ts:graph") {
     return fail("entrypoint property from the string and the object form");
   }
+  // 49 served routes: the four crons routes answer 500 "Not implemented" in
+  // @langchain/langgraph-api 1.5.1, so they are not served.
+  if (cgraph::langgraph_server_routes().size() != 49 || has_route(result, "post /runs/crons") ||
+      has_route(result, "post /threads/:thread_id/runs/crons")) {
+    return fail("the unimplemented crons routes are not served");
+  }
   if (result.raw_relations.size() != cgraph::langgraph_server_routes().size()) {
     return fail("one file_route per server route, got " + std::to_string(result.raw_relations.size()));
   }

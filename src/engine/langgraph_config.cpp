@@ -19,9 +19,12 @@ namespace {
 // dist/server.mjs behind the `http.disable_<group>` switches; the protocol routes
 // ride on `disable_runs`). `subgraphs/:namespace?` is Hono's optional segment,
 // so it serves both spellings. The internal `/internal/truncate` test hook is not
-// part of the public surface. Reference:
-// https://docs.langchain.com/langsmith/agent-server (Agent Server API, 2026).
-constexpr std::array<LangGraphRoute, 53> kRoutes = {{
+// part of the public surface, and the four `crons` routes (`/runs/crons`,
+// `/runs/crons/search`, `/runs/crons/:cron_id`, `/threads/:thread_id/runs/crons`)
+// are registered but answer 500 "Not implemented" (dist/api/runs.mjs), so they
+// serve nothing. Reference: https://docs.langchain.com/langsmith/server-api-ref
+// (Agent Server API reference, 2026).
+constexpr std::array<LangGraphRoute, 49> kRoutes = {{
     {"get", "/info", "meta"},
     {"get", "/ok", "meta"},
     {"post", "/assistants", "assistants"},
@@ -36,10 +39,6 @@ constexpr std::array<LangGraphRoute, 53> kRoutes = {{
     {"get", "/assistants/:assistant_id/subgraphs/:namespace", "assistants"},
     {"post", "/assistants/:assistant_id/latest", "assistants"},
     {"post", "/assistants/:assistant_id/versions", "assistants"},
-    {"post", "/runs/crons", "runs"},
-    {"post", "/runs/crons/search", "runs"},
-    {"delete", "/runs/crons/:cron_id", "runs"},
-    {"post", "/threads/:thread_id/runs/crons", "runs"},
     {"post", "/runs/stream", "runs"},
     {"get", "/runs/:run_id/stream", "runs"},
     {"post", "/runs/wait", "runs"},

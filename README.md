@@ -162,8 +162,8 @@ inside `.use(new Elysia({ prefix }).get(…))`, a `.group('/v2', app => app.get(
 callback, and a module re-exported as `export const deckModule = deckRoutes as unknown as Elysia`
 all compose the same way. A Next.js `app/api/x/[id]/route.ts` exporting `GET` is `GET /api/x/:id`.
 A repository holding a `langgraph.json` with a non-empty `graphs` object is a LangGraph Agent
-Server: its 53 framework routes (`POST /runs/wait`, `POST /threads/{thread_id}/runs/stream`,
-`GET /assistants/{assistant_id}`, ..., the table `@langchain/langgraph-api` 1.5.1 registers; see
+Server: its 49 framework routes (`POST /runs/wait`, `POST /threads/{thread_id}/runs/stream`,
+`GET /assistants/{assistant_id}`, ..., the table `@langchain/langgraph-api` 1.5.1 registers, less its four `crons` routes, which answer 500 "Not implemented"; see
 https://docs.langchain.com/langsmith/server-api-ref) are served endpoints handled by a
 `langgraph_server` node spanning that object, with one `langgraph_graph` node per graph. A group
 the config switches off (`http.disable_runs`, `disable_store`, ...) is not served.
@@ -266,7 +266,8 @@ at a contract the same way, `query` and `explain` merge and tag, `update` fans o
 `workspace init` with no `--repo` discovers every git repository one level down. The manifest's
 optional `prefixes` (`[{"repo": "web", "from": "/api/backend", "to": "/api"}]`) carry the same
 proxy mapping into `impact` and `path`, which then cross from web's `/api/backend/...` placeholder to the
-backend's `/api/...` endpoint and back; a `path` across it keeps both spellings. A repository
+backend's `/api/...` endpoint and back; a `path` across it keeps both spellings. A change to web's own
+route never reaches web's proxied callers, which hit the backend's copy. A repository
 whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
 `context` and the memory ops are answered per project and say so, naming the roots to use. The
 MCP server federates too when its root is a workspace, with no new tool.
