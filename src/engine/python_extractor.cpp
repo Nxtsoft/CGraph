@@ -454,14 +454,18 @@ void python_router_mount(const TSNode& call, const ExtractionContext& context, s
   const auto prefix_node = sub_application ? argument(0, "path") : arguments.keyword("prefix");
   std::string prefix;
   bool resolvable = !inside_function(call);
+  bool literal_prefix = false;
   if (prefix_node) {
     const auto literal = python_string_literal(*prefix_node, context.source);
-    resolvable = resolvable && literal.has_value();
+    literal_prefix = literal.has_value();
+    resolvable = resolvable && literal_prefix;
     prefix = literal.value_or(std::string{});
   }
   if (sub_application) {
+    // Wherever it is called, a literal path not starting with `/` says what
+    // the call is not, even when the call itself could not be placed.
     const std::string_view child_type = ts_node_type(*child);
-    if (child_type != "identifier" || !prefix_node || (resolvable && !prefix.starts_with('/'))) {
+    if (child_type != "identifier" || !prefix_node || (literal_prefix && !prefix.starts_with('/'))) {
       return;
     }
   }

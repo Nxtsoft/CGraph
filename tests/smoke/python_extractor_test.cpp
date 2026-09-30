@@ -272,6 +272,17 @@ int fastapi_router_layouts() {
        {"endpoint:GET /api/items"},
        0,
        0},
+      // A requests adapter mounted inside a function is no mount either: its
+      // URL-scheme path says so wherever the call sits.
+      {"requests adapter mounted in a function",
+       {{"client.py", "import requests\nfrom requests.adapters import HTTPAdapter\nfrom fastapi import FastAPI\n\n"
+                      "app = FastAPI()\n\n\ndef make_session():\n    session = requests.Session()\n"
+                      "    adapter = HTTPAdapter(max_retries=3)\n    session.mount(\"https://\", adapter)\n"
+                      "    session.mount(\"http://\", adapter)\n    return session\n\n\n"
+                      "@app.get(\"/ok\")\ndef ok():\n    return 1\n"}},
+       {"endpoint:GET /ok"},
+       0,
+       0},
       // `.get` on things that are not routers mints nothing.
       {"non-router decorators",
        {{"main.py", "import pytest\nfrom fastapi import FastAPI\nfrom cachetools import cache\nfrom flask import Flask\n\n"

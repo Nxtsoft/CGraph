@@ -1415,16 +1415,33 @@ RelationScopes build_relation_scopes(const GraphSnapshot& graph) {
   // Per-file imported names (file id -> label -> imported target id), built from
   // the import/re_export edges left by resolve_imports. This is the import-alias
   // map every relation target is resolved through.
+  //
+  // Python writes an alias on the importing file's own edge
+  // (`from m import router as setup_router`), so there it is the only name the
+  // file binds: its own `router` is a different thing. JavaScript keeps the
+  // alias on the import stub every importer of that name shares, and
+  // resolve_imports copies it onto each importer's edge, so it may be another
+  // file's alias: there both the name and the alias bind.
+  std::unordered_set<std::string> python_files;
+  for (const auto& [source_file, id] : scopes.file_id_by_source) {
+    if (std::filesystem::path(source_file).extension() == ".py") {
+      python_files.insert(id);
+    }
+  }
   for (const auto& edge : graph.edges) {
     if (edge.relation != "imports" && edge.relation != "re_exports") {
       continue;
     }
     if (const auto label = scopes.label_by_id.find(edge.target); label != scopes.label_by_id.end()) {
       auto& names = scopes.imported_by_file[edge.source];
-      // `import { config as configModule }`: the file says `configModule`, and
-      // only that. Its own `config`, if any, is a different thing.
       const auto alias = edge.properties.find("alias");
-      names.emplace(make_id(alias != edge.properties.end() ? alias->second : label->second), edge.target);
+      if (alias == edge.properties.end() || !python_files.contains(edge.source)) {
+        names.emplace(make_id(label->second), edge.target);
+      }
+      // `import { config as configModule }`: the file says `configModule`.
+      if (alias != edge.properties.end()) {
+        names.emplace(make_id(alias->second), edge.target);
+      }
     }
   }
   return scopes;
