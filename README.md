@@ -194,16 +194,24 @@ through, so one consumer edge into it does not pull in every endpoint of that se
 
 The callers are in the graph too. A `fetch(\`${API_URL}/api/v1/projects/${id}/publish\`, { method:
 'POST' })`, an openapi-fetch `api.GET('/api/v1/projects/{id}', …)`, an `axios.post(…)`, and a call
-through a path wrapper (`apiFetch(path)` whose own `fetch(\`${base}${path}\`)` appends its first
+through a path wrapper (`apiFetch(path)` whose own `fetch(\`${base}${path}\`)` appends a
 parameter to a module constant) each give the calling function (or the module-level object the
 arrow initialises) a `CONSUMES` edge to `endpoint:<METHOD> <canonical path>`. The host
 interpolation is dropped (except a call that takes a runtime value, such as `${base(id)}/x`, a URL
-builder that may hold part of the path, which leaves the request unresolved), a whole-segment interpolation is `{}`, the method comes from the call's
-literal `method` option, the wrapper's own, or the client verb, else GET. When this repository
+builder that may hold part of the path, which leaves the request unresolved unless the builder is
+a function of the same file, which is read), a whole-segment interpolation is `{}`, the method
+comes from the call's literal `method` option, the wrapper's own, or the client verb, else GET.
+What one file says for certain is read through: a URL held in a local (`const url = \`${BASE}/x\``,
+`new URL(...)` then `url.toString()`, a `let` set per branch), a class field prefix
+(`${this.API_BASE}/v1/...`), an axios instance's `baseURL` (`this.api.get('v1/users')` under
+`baseURL: '/api/backend'`), a class-method wrapper (`this.patch(\`v1/users/${id}/enable\`)`), and a
+wrapper whose path or method is a later parameter (`mlBackendRequest('POST', \`/project/${id}/setup\`)`,
+a method parameter's default applying when a call leaves it out). When this repository
 does not serve the route the node is minted with `served: false` and no source; when it does
 (a Next.js route file fetched from the same app) the one node has both a handler and its callers.
-A URL assembled in a variable or spelled as an absolute `https://` literal adds nothing and is
-counted under `route_resolution.calls_unresolved`. Kotlin and Go clients consume the same way:
+A URL whose value the file cannot read, a method a call does not spell out, a relative path
+(`v1/users`) with no base ending in `/` to join it to, or an absolute `https://` literal adds
+nothing and is counted under `route_resolution.calls_unresolved`. Kotlin and Go clients consume the same way:
 a Ktor `client.patch("$baseUrl/api/v1/sessions/$id/invalidate") { … }` on a receiver whose name
 ends like a client (`client`, `httpClient`, `api`; not `clients` or `httpCache`), Go's
 `http.Get(url)` and `http.NewRequest(method, url, body)`, and any Go call passing a context, then a

@@ -1,6 +1,8 @@
 #include "cgraph/javascript_extractor.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/http_consumers.hpp"
+#include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -16,11 +18,8 @@
 #include <vector>
 
 namespace cgraph {
-namespace {
 
-extern "C" const TSLanguage* tree_sitter_javascript();
-extern "C" const TSLanguage* tree_sitter_typescript();
-extern "C" const TSLanguage* tree_sitter_tsx();
+namespace js_syntax {
 
 [[nodiscard]] std::string node_text(const TSNode& node, std::string_view source) {
   const auto start = ts_node_start_byte(node);
@@ -31,29 +30,10 @@ extern "C" const TSLanguage* tree_sitter_tsx();
   return std::string(source.substr(start, end - start));
 }
 
-[[nodiscard]] SourceLocation source_location(const TSNode& node) {
-  const auto start = ts_node_start_point(node);
-  const auto end = ts_node_end_point(node);
-  return SourceLocation{
-      .start_line = start.row + 1,
-      .start_column = start.column,
-      .end_line = end.row + 1,
-      .end_column = end.column,
-  };
-}
-
 [[nodiscard]] std::string field_text(const TSNode& node, const char* field, std::string_view source) {
   const auto child = ts_node_child_by_field_name(node, field, static_cast<std::uint32_t>(std::string_view(field).size()));
   return ts_node_is_null(child) ? std::string{} : node_text(child, source);
 }
-
-[[nodiscard]] std::string strip_string_quotes(std::string value);
-
-// The verbs a router DSL exposes as methods. Elysia, Express, Hono, Fastify and
-// koa-router all register a route as `<router>.<verb>('<path>', ..., handler)`.
-constexpr std::array<std::string_view, 8> kRouteVerbs = {
-    "get", "post", "put", "patch", "delete", "head", "options", "all",
-};
 
 [[nodiscard]] bool is_function_value(const TSNode& node) {
   const std::string_view type = ts_node_type(node);
@@ -86,22 +66,6 @@ constexpr std::array<std::string_view, 8> kRouteVerbs = {
   return node;
 }
 
-[[nodiscard]] std::string chain_route_prefix(const TSNode& value, std::string_view source);
-
-// Where a fluent router chain is rooted, for resolve_contracts (contracts.hpp).
-struct ChainRef {
-  std::string root;     // the module-level identifier the chain hangs off; empty when unknown
-  std::string prefix;   // path accumulated from enclosing `.group('/p')`, `.route('/p', …)` and inline constructors
-  bool resolvable = true;
-};
-
-[[nodiscard]] std::string compose_prefix(const std::string& outer, const std::string& inner) {
-  if (outer.empty() && inner.empty()) {
-    return {};
-  }
-  return join_route_path(outer, inner);
-}
-
 [[nodiscard]] bool is_function_node(std::string_view type) {
   return type == "arrow_function" || type == "function_expression" || type == "function_declaration" ||
          type == "method_definition" || type == "generator_function_declaration";
@@ -123,15 +87,95 @@ void parameter_names(const TSNode& function, std::string_view source, std::vecto
   const auto count = ts_node_named_child_count(parameters);
   for (std::uint32_t index = 0; index < count; ++index) {
     const TSNode parameter = ts_node_named_child(parameters, index);
+    if (std::string_view(ts_node_type(parameter)) == "comment") {
+      continue;
+    }
     if (std::string_view(ts_node_type(parameter)) == "identifier") {
       out.push_back(node_text(parameter, source));
       continue;
     }
-    if (const TSNode pattern = ts_node_child_by_field_name(parameter, "pattern", 7);
-        !ts_node_is_null(pattern) && std::string_view(ts_node_type(pattern)) == "identifier") {
-      out.push_back(node_text(pattern, source));
+    TSNode pattern = ts_node_child_by_field_name(parameter, "pattern", 7);
+    if (std::string_view(ts_node_type(parameter)) == "assignment_pattern") {
+      pattern = ts_node_child_by_field_name(parameter, "left", 4);  // JavaScript `method = 'GET'`
+    }
+    // A destructured parameter keeps its position with an empty name: callers
+    // read later parameters by index (`request({ a }, path)` takes the path at 1).
+    out.push_back(!ts_node_is_null(pattern) && std::string_view(ts_node_type(pattern)) == "identifier"
+                      ? node_text(pattern, source)
+                      : std::string{});
+  }
+}
+
+[[nodiscard]] std::string strip_string_quotes(std::string value) {
+  if (value.size() >= 2) {
+    const char front = value.front();
+    if ((front == '\'' || front == '"' || front == '`') && value.back() == front) {
+      return value.substr(1, value.size() - 2);
     }
   }
+  return value;
+}
+
+// A declaration sits at module scope when it is a direct child of the program
+// or of a top-level `export`. Mirrors Graphify's `is_module_level` test.
+[[nodiscard]] bool is_module_level_declaration(const TSNode& node) {
+  const TSNode parent = ts_node_parent(node);
+  if (ts_node_is_null(parent)) {
+    return false;
+  }
+  const std::string_view parent_type = ts_node_type(parent);
+  if (parent_type == "program") {
+    return true;
+  }
+  if (parent_type == "export_statement") {
+    const TSNode grandparent = ts_node_parent(parent);
+    return !ts_node_is_null(grandparent) && std::string_view(ts_node_type(grandparent)) == "program";
+  }
+  return false;
+}
+
+}  // namespace js_syntax
+
+namespace {
+
+using namespace js_syntax;
+
+extern "C" const TSLanguage* tree_sitter_javascript();
+extern "C" const TSLanguage* tree_sitter_typescript();
+extern "C" const TSLanguage* tree_sitter_tsx();
+
+[[nodiscard]] SourceLocation source_location(const TSNode& node) {
+  const auto start = ts_node_start_point(node);
+  const auto end = ts_node_end_point(node);
+  return SourceLocation{
+      .start_line = start.row + 1,
+      .start_column = start.column,
+      .end_line = end.row + 1,
+      .end_column = end.column,
+  };
+}
+
+
+// The verbs a router DSL exposes as methods. Elysia, Express, Hono, Fastify and
+// koa-router all register a route as `<router>.<verb>('<path>', ..., handler)`.
+constexpr std::array<std::string_view, 8> kRouteVerbs = {
+    "get", "post", "put", "patch", "delete", "head", "options", "all",
+};
+
+[[nodiscard]] std::string chain_route_prefix(const TSNode& value, std::string_view source);
+
+// Where a fluent router chain is rooted, for resolve_contracts (contracts.hpp).
+struct ChainRef {
+  std::string root;     // the module-level identifier the chain hangs off; empty when unknown
+  std::string prefix;   // path accumulated from enclosing `.group('/p')`, `.route('/p', …)` and inline constructors
+  bool resolvable = true;
+};
+
+[[nodiscard]] std::string compose_prefix(const std::string& outer, const std::string& inner) {
+  if (outer.empty() && inner.empty()) {
+    return {};
+  }
+  return join_route_path(outer, inner);
 }
 
 // True when a statement directly in `body` declares `name` with `const` / `let`
@@ -414,16 +458,6 @@ struct RouteRegistration {
   return !route_handler_name(node, context).empty();
 }
 
-[[nodiscard]] std::string strip_string_quotes(std::string value) {
-  if (value.size() >= 2) {
-    const char front = value.front();
-    if ((front == '\'' || front == '"' || front == '`') && value.back() == front) {
-      return value.substr(1, value.size() - 2);
-    }
-  }
-  return value;
-}
-
 // Relative specifiers ("./x", "../y") resolve against the importing file's
 // directory so every file importing the same module lands on one shared module
 // hub node; bare package specifiers ("react") are already shared by name.
@@ -600,24 +634,6 @@ void module_import_handler(const TSNode& node, const ExtractionContext& context,
     }
     fragment.edges.push_back(std::move(symbol_edge));
   }
-}
-
-// A declaration sits at module scope when it is a direct child of the program
-// or of a top-level `export`. Mirrors Graphify's `is_module_level` test.
-[[nodiscard]] bool is_module_level_declaration(const TSNode& node) {
-  const TSNode parent = ts_node_parent(node);
-  if (ts_node_is_null(parent)) {
-    return false;
-  }
-  const std::string_view parent_type = ts_node_type(parent);
-  if (parent_type == "program") {
-    return true;
-  }
-  if (parent_type == "export_statement") {
-    const TSNode grandparent = ts_node_parent(parent);
-    return !ts_node_is_null(grandparent) && std::string_view(ts_node_type(grandparent)) == "program";
-  }
-  return false;
 }
 
 // Emits a node for each module-level `const` whose value is an object, array,
@@ -837,499 +853,6 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
         .target = std::move(id),
         .relation = "contains",
         .confidence = Confidence::Extracted,
-    });
-  }
-}
-
-// ---- HTTP consumers (contracts.hpp: http_call / http_wrapper) -------------
-
-// The value of a module-level `const NAME = ...` in this file (through casts),
-// or null. Base URLs are spelled this way (`const base = \`${API_URL}/api/v1\``)
-// and a wrapper's template inlines them.
-[[nodiscard]] TSNode module_const_value(const TSNode& from, std::string_view name, std::string_view source) {
-  TSNode program = from;
-  for (TSNode parent = ts_node_parent(program); !ts_node_is_null(parent); parent = ts_node_parent(program)) {
-    program = parent;
-  }
-  const auto count = ts_node_named_child_count(program);
-  for (std::uint32_t index = 0; index < count; ++index) {
-    TSNode statement = ts_node_named_child(program, index);
-    if (std::string_view(ts_node_type(statement)) == "export_statement") {
-      statement = ts_node_child_by_field_name(statement, "declaration", 11);
-      if (ts_node_is_null(statement)) {
-        continue;
-      }
-    }
-    const std::string_view type = ts_node_type(statement);
-    if (type != "lexical_declaration" && type != "variable_declaration") {
-      continue;
-    }
-    const auto declarators = ts_node_named_child_count(statement);
-    for (std::uint32_t d = 0; d < declarators; ++d) {
-      const TSNode declarator = ts_node_named_child(statement, d);
-      if (std::string_view(ts_node_type(declarator)) == "variable_declarator" &&
-          field_text(declarator, "name", source) == name) {
-        return unwrap_expression(ts_node_child_by_field_name(declarator, "value", 5));
-      }
-    }
-  }
-  return TSNode{};
-}
-
-// A URL argument reduced to the path it names. Literal text is kept; an
-// interpolation at the start is the host and is dropped, unless it is a call
-// that builds the URL from a runtime value (then the URL is unresolvable); one that fills a whole
-// segment is a parameter, `{}`; the enclosing function's first parameter at the
-// end is the tail a wrapper appends its argument to; anything else mid-segment
-// makes the URL unresolvable. The query string and fragment are not part of the
-// route. A literal absolute URL names another service and is unresolvable here.
-struct UrlTemplate {
-  std::string path;
-  bool tail = false;
-  bool resolvable = true;
-  bool in_query = false;
-  bool dropped_host = false;
-
-  void literal(std::string_view text) {
-    if (in_query) {
-      return;
-    }
-    if (tail && !text.empty()) {
-      resolvable = false;  // text after the appended argument: not a prefix wrapper
-      return;
-    }
-    const auto cut = text.find_first_of("?#");
-    path.append(text.substr(0, cut));
-    if (cut != std::string_view::npos) {
-      in_query = true;
-    }
-  }
-  // An interpolation whose value this file cannot read. `opaque` says whether it
-  // could hold a path: an in-file constant built from `process.env` is a host
-  // and nothing more, while an imported `API_BASE` or a `config.baseUrl` member
-  // may well end in `/api/v1`.
-  void unknown(bool opaque) {
-    if (in_query) {
-      return;
-    }
-    if (path.empty()) {
-      dropped_host = dropped_host || opaque;  // the host: `${API_URL}/api/v1/...`
-      return;
-    }
-    if (path.back() == '/') {
-      path += "{}";  // a whole-segment parameter: `/notes/${id}/star`
-      return;
-    }
-    resolvable = false;  // `/v1-${x}`: a partial segment no router template matches
-  }
-  // A call that builds the URL from a runtime value (`${base(projectId)}/oracles`).
-  // A local, member or host getter in front is the host (`${apiUrl}/api/v1/...`,
-  // `${getAgentsApiUrl()}/runs/wait`), but a builder's result may end in a path
-  // this file cannot see; dropping it as the host would mint a truncated route
-  // that matches the wrong provider or none. Leave it unresolved.
-  void built_by_call() {
-    if (in_query) {
-      return;
-    }
-    if (path.empty()) {
-      resolvable = false;
-      return;
-    }
-    unknown(true);
-  }
-  // The enclosing function's first parameter interpolated into the URL. After a
-  // slash it fills a segment like any other value (`/projects/${projectId}/publish`
-  // in `publishProject(projectId)`); appended to text (`${base}${path}`) or
-  // standing alone (`fetch(url)`) it is the tail a wrapper forwards.
-  void parameter(std::string_view /*name*/) {
-    if (in_query) {
-      return;
-    }
-    if (!path.empty() && path.back() == '/') {
-      path += "{}";
-      return;
-    }
-    if (path.empty() && dropped_host) {
-      // `${API_BASE}${path}` with a base this file does not define: the base may
-      // hold a path (`/api/v1`) we cannot see, so the prefix is unknowable. An
-      // in-file `process.env` host before the tail is fine: the prefix is empty.
-      resolvable = false;
-      return;
-    }
-    tail = true;
-  }
-  // An identifier this file does not define, in the base position: kept as a
-  // `${NAME}` placeholder for resolve_contracts, which inlines the constant when
-  // exactly one file in the project defines a URL constant of that name.
-  void reference(std::string_view name) {
-    if (in_query) {
-      return;
-    }
-    if (!path.empty()) {
-      unknown(true);
-      return;
-    }
-    path = "${" + std::string(name) + "}";
-  }
-  void finish() {
-    if (path.starts_with("http://") || path.starts_with("https://")) {
-      resolvable = false;  // another host, spelled out: not this repository's contract
-      return;
-    }
-    if (!tail && (path.empty() || (path.front() != '/' && !path.starts_with("${")))) {
-      resolvable = false;
-    }
-  }
-};
-
-constexpr int kMaxUrlInlineDepth = 3;
-
-// A call at the front of a URL either returns a host (`getAgentsApiUrl()`,
-// `config.get('apiUrl')`, `process.env.API_URL?.replace(/\/$/, '')`) or builds
-// part of the path from a runtime value (`base(projectId)`). Only the second
-// hides path segments; the first is read as the host like a constant would be.
-[[nodiscard]] bool builds_url_from_values(const TSNode& call, std::string_view source) {
-  if (node_text(call, source).starts_with("process.env.")) {
-    return false;
-  }
-  const TSNode arguments = ts_node_child_by_field_name(call, "arguments", 9);
-  if (ts_node_is_null(arguments)) {
-    return false;
-  }
-  for (uint32_t i = 0; i < ts_node_named_child_count(arguments); ++i) {
-    const TSNode argument = ts_node_named_child(arguments, i);
-    const std::string_view argument_type = ts_node_type(argument);
-    if (argument_type == "string" || argument_type == "comment") {
-      continue;
-    }
-    // A template with no substitution (`getUrl(\`api\`)`) is a constant too.
-    bool substituted = argument_type != "template_string";
-    for (uint32_t j = 0; !substituted && j < ts_node_named_child_count(argument); ++j) {
-      substituted = std::string_view(ts_node_type(ts_node_named_child(argument, j))) == "template_substitution";
-    }
-    if (substituted) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void collect_url_template(const TSNode& node, const ExtractionContext& context, std::string_view tail_parameter,
-                          UrlTemplate& url, int depth) {
-  const TSNode expression = unwrap_expression(node);
-  if (ts_node_is_null(expression)) {
-    url.resolvable = false;
-    return;
-  }
-  const std::string_view type = ts_node_type(expression);
-  if (type == "string") {
-    url.literal(strip_string_quotes(node_text(expression, context.source)));
-    return;
-  }
-  if (type == "template_string") {
-    const auto count = ts_node_named_child_count(expression);
-    for (std::uint32_t index = 0; index < count; ++index) {
-      const TSNode part = ts_node_named_child(expression, index);
-      const std::string_view part_type = ts_node_type(part);
-      if (part_type == "string_fragment") {
-        url.literal(node_text(part, context.source));
-      } else if (part_type == "template_substitution") {
-        if (ts_node_named_child_count(part) == 0) {
-          url.unknown(true);
-          continue;
-        }
-        collect_url_template(ts_node_named_child(part, 0), context, tail_parameter, url, depth);
-      }
-    }
-    return;
-  }
-  if (type == "binary_expression") {
-    const TSNode op = ts_node_child_by_field_name(expression, "operator", 8);
-    if (ts_node_is_null(op)) {
-      url.unknown(true);
-      return;
-    }
-    const auto op_text = node_text(op, context.source);
-    if (op_text == "||" || op_text == "??") {
-      // `process.env.API_URL || 'http://localhost:8080'`: a host with a fallback.
-      url.unknown(false);
-      return;
-    }
-    if (op_text != "+") {
-      url.unknown(true);
-      return;
-    }
-    // `API + '/notebooks'`: string concatenation reads like a template.
-    collect_url_template(ts_node_child_by_field_name(expression, "left", 4), context, tail_parameter, url, depth);
-    collect_url_template(ts_node_child_by_field_name(expression, "right", 5), context, tail_parameter, url, depth);
-    return;
-  }
-  if (type == "identifier") {
-    const auto name = node_text(expression, context.source);
-    if (!tail_parameter.empty() && name == tail_parameter) {
-      url.parameter(name);
-      return;
-    }
-    if (depth < kMaxUrlInlineDepth) {
-      if (const TSNode value = module_const_value(expression, name, context.source); !ts_node_is_null(value)) {
-        const std::string_view value_type = ts_node_type(value);
-        if (value_type == "string" || value_type == "template_string" || value_type == "binary_expression") {
-          collect_url_template(value, context, {}, url, depth + 1);
-          return;
-        }
-        // Defined here from something that is not a string (`process.env.X`, a
-        // call): whatever it is, it is the host.
-        url.unknown(false);
-        return;
-      }
-    }
-    // A variable declared in an enclosing function body (`const url = build();
-    // fetch(url)`) is local: no constant anywhere can stand for it.
-    for (TSNode ancestor = ts_node_parent(expression); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
-      if (is_function_node(ts_node_type(ancestor)) &&
-          declares_local(ts_node_child_by_field_name(ancestor, "body", 4), name, context.source)) {
-        url.unknown(true);
-        return;
-      }
-    }
-    url.reference(name);  // imported or otherwise unknown: resolved project-wide, or refused
-    return;
-  }
-  if (type == "member_expression" && node_text(expression, context.source).starts_with("process.env.")) {
-    url.unknown(false);
-    return;
-  }
-  if (type == "call_expression" && builds_url_from_values(expression, context.source)) {
-    url.built_by_call();
-    return;
-  }
-  url.unknown(true);
-}
-
-// The receiver of `X.get(url)` is an HTTP client when its name says so. Without
-// this, `map.get('/key')` and `router.get('/path', handler)` would read as
-// requests; the route shape is excluded separately by its handler argument.
-[[nodiscard]] bool looks_like_http_client(std::string_view receiver) {
-  std::string lower(receiver);
-  for (auto& ch : lower) {
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  }
-  for (const auto* hint : {"api", "client", "axios", "ky", "got", "http", "fetch", "request", "agent"}) {
-    if (lower.find(hint) != std::string::npos) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// What a consumer call is attributed to: the enclosing function when there is
-// one, else the module-level variable the call helps initialise (`export const
-// notebooksApi = { list: () => apiFetch('/notebooks') }`: the arrow is a
-// boundary, the object is the symbol), else the file.
-[[nodiscard]] std::string consumer_scope_id(const TSNode& node, const ExtractionContext& context,
-                                            const std::string& function_scope_id) {
-  if (!function_scope_id.empty()) {
-    return function_scope_id;
-  }
-  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
-    if (std::string_view(ts_node_type(ancestor)) != "variable_declarator") {
-      continue;
-    }
-    const TSNode declaration = ts_node_parent(ancestor);
-    if (!ts_node_is_null(declaration) && is_module_level_declaration(declaration)) {
-      return make_id(context.relative_path + ":" + field_text(ancestor, "name", context.source));
-    }
-  }
-  return make_id(context.relative_path);
-}
-
-// The `method: 'POST'` of an options object literal, uppercased; empty when the
-// options are absent, not a literal, or carry no literal method.
-[[nodiscard]] std::string options_method(const TSNode& options, std::string_view source) {
-  const TSNode object = unwrap_expression(options);
-  if (ts_node_is_null(object) || std::string_view(ts_node_type(object)) != "object") {
-    return {};
-  }
-  const auto count = ts_node_named_child_count(object);
-  for (std::uint32_t index = 0; index < count; ++index) {
-    const TSNode pair = ts_node_named_child(object, index);
-    if (std::string_view(ts_node_type(pair)) != "pair" || strip_string_quotes(field_text(pair, "key", source)) != "method") {
-      continue;
-    }
-    const TSNode value = ts_node_child_by_field_name(pair, "value", 5);
-    if (ts_node_is_null(value) || !is_string_value(value)) {
-      return {};
-    }
-    std::string method = strip_string_quotes(node_text(value, source));
-    for (auto& ch : method) {
-      ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-    }
-    return method;
-  }
-  return {};
-}
-
-// `fetch(url, opts)`, `api.GET('/path')`, `axios.post(url)` and calls to a
-// wrapper with a path-like first argument record `http_call` facts; a function
-// whose own client call appends its first parameter to a fixed prefix records an
-// `http_wrapper` fact instead of a call of its own.
-void http_call_handler(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
-                       std::vector<RawRelation>& out) {
-  if (std::string_view(ts_node_type(node)) != "call_expression") {
-    return;
-  }
-  TSNode callee = unwrap_expression(ts_node_child_by_field_name(node, "function", 8));
-  // tree-sitter-typescript parses `await axios.post<T>(url)` as `(await axios.post)<T>(url)`:
-  // with type arguments the await wraps the callee, not the call. Read through it,
-  // or every typed awaited request (`await axios.post<LoginResponse>(...)`) is lost.
-  if (!ts_node_is_null(callee) && std::string_view(ts_node_type(callee)) == "await_expression" &&
-      !ts_node_is_null(ts_node_child_by_field_name(node, "type_arguments", 14))) {
-    callee = unwrap_expression(ts_node_named_child(callee, 0));
-  }
-  if (ts_node_is_null(callee)) {
-    return;
-  }
-  std::string client;
-  std::string verb;
-  const std::string_view callee_type = ts_node_type(callee);
-  if (callee_type == "identifier") {
-    client = node_text(callee, context.source);
-  } else if (callee_type == "member_expression") {
-    const auto property = field_text(callee, "property", context.source);
-    std::string lower(property);
-    for (auto& ch : lower) {
-      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    if (!is_http_verb(lower) || lower == "all") {
-      return;
-    }
-    const TSNode receiver = unwrap_expression(ts_node_child_by_field_name(callee, "object", 6));
-    if (ts_node_is_null(receiver)) {
-      return;
-    }
-    const std::string_view receiver_type = ts_node_type(receiver);
-    const auto receiver_name = receiver_type == "identifier"
-                                   ? node_text(receiver, context.source)
-                                   : receiver_type == "member_expression" ? field_text(receiver, "property", context.source)
-                                                                          : std::string{};
-    if (!looks_like_http_client(receiver_name)) {
-      return;
-    }
-    client = receiver_name + "." + property;
-    verb = lower;
-  } else {
-    return;
-  }
-  const TSNode arguments = ts_node_child_by_field_name(node, "arguments", 9);
-  if (ts_node_is_null(arguments)) {
-    return;
-  }
-  const auto argument_count = ts_node_named_child_count(arguments);
-  if (argument_count == 0) {
-    return;
-  }
-  for (std::uint32_t index = 0; index < argument_count; ++index) {
-    if (is_function_value(ts_node_named_child(arguments, index))) {
-      return;  // a handler argument: this is a route registration (or a callback API), not a request
-    }
-  }
-  const TSNode first = ts_node_named_child(arguments, 0);
-  const std::string_view first_type = ts_node_type(unwrap_expression(first));
-  if (first_type != "string" && first_type != "template_string" && first_type != "identifier" &&
-      first_type != "binary_expression") {
-    return;
-  }
-  const bool primitive = client == "fetch" || !verb.empty();
-  // The first parameter of the function the call sits in: a wrapper appends it.
-  std::string tail_parameter;
-  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
-    if (is_function_node(ts_node_type(ancestor))) {
-      std::vector<std::string> parameters;
-      parameter_names(ancestor, context.source, parameters);
-      if (!parameters.empty()) {
-        tail_parameter = parameters.front();
-      }
-      break;
-    }
-  }
-  UrlTemplate url;
-  collect_url_template(first, context, tail_parameter, url, 0);
-  url.finish();
-  const auto method = argument_count >= 2 ? options_method(ts_node_named_child(arguments, 1), context.source)
-                                          : std::string{};
-  if (url.tail) {
-    // This call appends the enclosing function's first parameter: the function
-    // is a wrapper, and callers of it are the consumers.
-    if (primitive && url.resolvable && !function_scope_id.empty()) {
-      out.push_back(RawRelation{
-          .source_id = function_scope_id,
-          .target_label = client,
-          .relation = "http_wrapper",
-          .context = method + " " + url.path,
-          .source_file = context.source_file,
-      });
-    }
-    return;
-  }
-  if (!primitive && (!url.resolvable || url.path.empty())) {
-    return;  // a function taking some string: only a path-like literal marks a wrapper call
-  }
-  out.push_back(RawRelation{
-      .source_id = consumer_scope_id(node, context, function_scope_id),
-      .target_label = std::move(client),
-      .relation = "http_call",
-      .context = method + " " + (url.resolvable ? url.path : std::string{}),
-      .source_file = context.source_file,
-  });
-}
-
-// Module-level string constants that read as a URL or a URL prefix
-// (`export const API_BASE = \`${API_URL}/api/v1\``, `const API_URL =
-// process.env.X || 'http://localhost'`) record `url_const` facts: name and the
-// path they hold (empty for a bare host), so a wrapper in another file that
-// appends its argument to an imported base resolves the base project-wide.
-void url_const_handler(const TSNode& node, const ExtractionContext& context, std::vector<RawRelation>& out) {
-  const std::string_view type = ts_node_type(node);
-  if ((type != "lexical_declaration" && type != "variable_declaration") || !is_module_level_declaration(node)) {
-    return;
-  }
-  const auto count = ts_node_named_child_count(node);
-  for (std::uint32_t index = 0; index < count; ++index) {
-    const TSNode declarator = ts_node_named_child(node, index);
-    if (std::string_view(ts_node_type(declarator)) != "variable_declarator") {
-      continue;
-    }
-    const TSNode value = unwrap_expression(ts_node_child_by_field_name(declarator, "value", 5));
-    if (ts_node_is_null(value)) {
-      continue;
-    }
-    const std::string_view value_type = ts_node_type(value);
-    // `process.env.X || 'http://localhost'`, `(process.env.X || '…').replace(/\/$/, '')`:
-    // however it is trimmed, an environment-derived value is a host.
-    const bool mentions_env = node_text(value, context.source).find("process.env.") != std::string::npos;
-    std::string path;
-    bool is_url = false;
-    if (value_type == "string" || value_type == "template_string" || value_type == "binary_expression") {
-      UrlTemplate url;
-      collect_url_template(value, context, {}, url, 0);
-      url.finish();
-      if (url.resolvable && !url.tail) {
-        path = url.path;
-        is_url = true;
-      }
-    }
-    if (!is_url && mentions_env) {
-      is_url = true;  // a bare host
-    }
-    if (!is_url) {
-      continue;  // `const TITLE = 'Hello'`: a string, not a URL
-    }
-    out.push_back(RawRelation{
-        .source_id = make_id(context.relative_path),
-        .target_label = field_text(declarator, "name", context.source),
-        .relation = "url_const",
-        .context = std::move(path),
-        .source_file = context.source_file,
     });
   }
 }
@@ -2051,18 +1574,21 @@ LanguageConfig tsx_language_config() {
 ExtractionResult extract_javascript(const ExtractionContext& context) {
   auto config = javascript_language_config();
   intern_node_symbols(config, tree_sitter_javascript());
+  const HttpConsumerFileScope http_consumers;
   return extract_with_config(tree_sitter_javascript(), config, context);
 }
 
 ExtractionResult extract_typescript(const ExtractionContext& context) {
   auto config = typescript_language_config();
   intern_node_symbols(config, tree_sitter_typescript());
+  const HttpConsumerFileScope http_consumers;
   return extract_with_config(tree_sitter_typescript(), config, context);
 }
 
 ExtractionResult extract_tsx(const ExtractionContext& context) {
   auto config = tsx_language_config();
   intern_node_symbols(config, tree_sitter_tsx());
+  const HttpConsumerFileScope http_consumers;
   return extract_with_config(tree_sitter_tsx(), config, context);
 }
 
