@@ -16,6 +16,10 @@
 - **GIVEN** a `prefixes` entry for a repository the manifest does not list, or a relative `from`
 - **THEN** the workspace carries errors and no repos
 
+#### Scenario: A proxied call does not join a third member at the caller's own route
+- **GIVEN** members idp, web and mobile, prefix `web:/api/backend=/api`, web alone serving `GET /api/saml/metadata`, web calling `/api/backend/saml/metadata`, and mobile calling `GET /api/saml/metadata`
+- **THEN** `impact` from web's caller (either direction) and from `endpoint:GET /api/backend/saml/metadata` does not reach mobile, and `path` from web's caller to mobile's is empty; once idp serves the path too, all three cross
+
 #### Scenario: A member's own route does not reach its proxied callers
 - **GIVEN** web serves `GET /api/saml/metadata` and its `getIdpMetadata` calls `/api/backend/saml/metadata` through the prefix
 - **WHEN** `impact` runs on web's route handler with `dependents`

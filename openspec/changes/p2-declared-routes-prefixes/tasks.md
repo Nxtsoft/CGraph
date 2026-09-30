@@ -23,3 +23,9 @@
 - [x] 4.2 Non-string manifest and prefix members are errors, not JSON exceptions.
 - [x] 4.3 `--prefix` naming a repo no `--graph` provides exits 2 (`unknown_prefix_repos`, shared with the manifest check).
 - [x] 4.4 The four unimplemented crons routes are dropped (49 routes); one docs URL.
+
+## 5. Review round 2 (PR #144)
+
+- [x] 5.1 One owner rule (`proxy_crosses_at`) shared by seam discover/fuse and every workspace mapping point: `shared_contract`, the impact seed, `reachable_contracts` and `spellings_in` (three-repo saml regression test).
+- [x] 5.2 `http.mount_prefix` prefixes the served routes (Python server); a malformed value is a warning and no routes; the JS server ignores it.
+- [x] 5.3 `seam discover` no longer prints "--prefix prefix names repo".

@@ -566,7 +566,7 @@ int run_seam_discover(int argc, char** argv) {
       std::string error;
       auto prefix = cgraph::parse_endpoint_prefix_flag(argv[++index], error);
       if (!prefix) {
-        std::cerr << "seam discover: --prefix " << error << '\n';
+        std::cerr << "seam discover: --prefix: " << error << '\n';
         return 2;
       }
       prefixes.push_back(std::move(*prefix));
@@ -586,7 +586,7 @@ int run_seam_discover(int argc, char** argv) {
     }
     if (const auto unknown = cgraph::unknown_prefix_repos(prefixes, names); !unknown.empty()) {
       for (const auto& error : unknown) {
-        std::cerr << "seam discover: --prefix " << error << '\n';
+        std::cerr << "seam discover: --" << error << '\n';
       }
       return 2;
     }

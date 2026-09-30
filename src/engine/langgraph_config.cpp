@@ -241,17 +241,52 @@ ExtractionResult extract_langgraph_config(const ExtractionContext& context) {
     const auto flag = http->find("disable_" + std::string(group));
     return flag != http->end() && flag->is_boolean() && flag->get<bool>();
   };
+  // `http.mount_prefix` moves the whole surface under a prefix. The Python
+  // server (langgraph-api 0.15.1, server.py) mounts the app there, keeps
+  // `GET /ok` at the root too, and refuses to start on a prefix that does not
+  // start with `/` or ends with `/`. The JS server (@langchain/langgraph-api
+  // 1.5.1) has no such key: its `http` schema drops it and mounts every group
+  // at `/`. The MOUNT_PREFIX environment override is deploy-time state, not
+  // config, so it is not read here.
+  std::string mount_prefix;
+  const nlohmann::json* prefix = nullptr;
+  if (http != config.end() && http->is_object()) {
+    if (const auto member = http->find("mount_prefix"); member != http->end() && !member->is_null()) {
+      prefix = &*member;
+    }
+  }
+  if (prefix != nullptr) {
+    const auto value = prefix->is_string() ? prefix->get<std::string>() : std::string{};
+    if (value.empty() || value.front() != '/' || value.back() == '/') {
+      fragment.warnings.push_back("langgraph.json: invalid http.mount_prefix " + prefix->dump() +
+                                  ": must be a string that starts with '/' and does not end with '/'; the server "
+                                  "refuses to start, so it serves no routes");
+      return result;
+    }
+    if (config.contains("node_version")) {
+      fragment.warnings.push_back("langgraph.json: http.mount_prefix " + prefix->dump() +
+                                  " is ignored by the JS Agent Server (node_version is set); its routes stay at /");
+    } else {
+      mount_prefix = value;
+    }
+  }
+  const auto emit = [&](const LangGraphRoute& route, std::string_view prefix) {
+    result.raw_relations.push_back(RawRelation{
+        .source_id = server_id,
+        .target_label = {},
+        .relation = "file_route",  // the path is absolute: the mount prefix, if any, then the route
+        .context = std::string(route.method) + " " + std::string(prefix) + std::string(route.path),
+        .source_file = context.source_file,
+    });
+  };
   for (const auto& route : kRoutes) {
     if (disabled(route.group)) {
       continue;
     }
-    result.raw_relations.push_back(RawRelation{
-        .source_id = server_id,
-        .target_label = {},
-        .relation = "file_route",  // the path is absolute: the server mounts every group at `/`
-        .context = std::string(route.method) + " " + std::string(route.path),
-        .source_file = context.source_file,
-    });
+    emit(route, mount_prefix);
+    if (!mount_prefix.empty() && route.method == "get" && route.path == "/ok") {
+      emit(route, "");  // the health check answers at the root as well
+    }
   }
   return result;
 }

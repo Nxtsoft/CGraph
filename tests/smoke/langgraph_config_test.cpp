@@ -102,6 +102,38 @@ int test_disabled_group_is_not_served() {
   return 0;
 }
 
+// `http.mount_prefix` moves the Python server's surface under the prefix, with
+// `GET /ok` still at the root; a malformed prefix is a warning and no routes; the
+// JS server (node_version) does not read it.
+int test_mount_prefix() {
+  const auto extract = [](std::string_view source) {
+    return cgraph::extract_langgraph_config(
+        {.source_file = "/repo/langgraph.json", .relative_path = "langgraph.json", .source = source});
+  };
+  const auto mounted = extract(R"json({"python_version": "3.12", "graphs": {"a": "./a.py:graph"},
+                                       "http": {"mount_prefix": "/my-deployment/api"}})json");
+  if (!has_route(mounted, "post /my-deployment/api/runs/wait") ||
+      !has_route(mounted, "get /my-deployment/api/assistants/:assistant_id") || has_route(mounted, "post /runs/wait") ||
+      !has_route(mounted, "get /my-deployment/api/ok") || !has_route(mounted, "get /ok") ||
+      mounted.raw_relations.size() != cgraph::langgraph_server_routes().size() + 1 || !mounted.fragment.warnings.empty()) {
+    return fail("mount_prefix prefixes every route and keeps GET /ok at the root");
+  }
+  for (const std::string_view bad : {std::string_view{R"json({"graphs": {"a": "./a.py:graph"}, "http": {"mount_prefix": "api"}})json"},
+                                     std::string_view{R"json({"graphs": {"a": "./a.py:graph"}, "http": {"mount_prefix": "/api/"}})json"},
+                                     std::string_view{R"json({"graphs": {"a": "./a.py:graph"}, "http": {"mount_prefix": 7}})json"}}) {
+    const auto result = extract(bad);
+    if (!result.raw_relations.empty() || result.fragment.warnings.size() != 1 ||
+        result.fragment.warnings.front().find("invalid http.mount_prefix") == std::string::npos) {
+      return fail("a malformed mount_prefix is a warning and no routes: " + std::string(bad));
+    }
+  }
+  const auto js = extract(R"json({"node_version": "20", "graphs": {"a": "./a.ts:graph"}, "http": {"mount_prefix": "/api"}})json");
+  if (!has_route(js, "post /runs/wait") || has_route(js, "post /api/runs/wait") || js.fragment.warnings.size() != 1) {
+    return fail("the JS server ignores mount_prefix, with a warning");
+  }
+  return 0;
+}
+
 // Without graphs there is no server: the file node only.
 int test_no_graphs_declares_no_server() {
   for (const std::string_view source : {std::string_view{R"json({"graphs": {}})json"}, std::string_view{R"json({"node_version": "20"})json"},
@@ -170,6 +202,7 @@ int main() {
   int failures = 0;
   failures += test_extracts_server_graphs_and_routes();
   failures += test_disabled_group_is_not_served();
+  failures += test_mount_prefix();
   failures += test_no_graphs_declares_no_server();
   failures += test_pipeline_serves_endpoints();
   return failures == 0 ? 0 : 1;

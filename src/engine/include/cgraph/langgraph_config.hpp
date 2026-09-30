@@ -23,7 +23,8 @@
 // handler is the server node, so resolve_contracts mints the canonical
 // `endpoint:<METHOD> <path>` node `handled_by` it, exactly as for a Next.js route
 // file. A route group the config switches off (`http.disable_runs`, ...) is not
-// emitted. A `langgraph.json` without a non-empty `graphs` object yields its file
+// emitted, and `http.mount_prefix` (Python server only) prefixes every route. A
+// malformed mount prefix is a warning and no routes. A `langgraph.json` without a non-empty `graphs` object yields its file
 // node only: it declares no server.
 namespace cgraph {
 

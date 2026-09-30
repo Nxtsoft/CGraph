@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <optional>
 #include <span>
 #include <string>
@@ -54,6 +55,15 @@ struct EndpointPrefix {
 // prefix of `repo` that covers the id's path; nullopt when none does.
 [[nodiscard]] std::optional<std::string> proxied_endpoint_id(std::span<const EndpointPrefix> prefixes,
                                                              std::string_view repo, std::string_view endpoint_id);
+
+// The rule every matcher shares for crossing at a proxied endpoint: a call a
+// repo makes through its own proxy crosses at the proxied endpoint unless that
+// repo is the only one serving it. The proxy forwards to the other repos, never
+// to the repo's own routes. `servers` counts the repos with a handler for the
+// proxied endpoint; `served_by_caller` says whether the calling repo is one.
+[[nodiscard]] constexpr bool proxy_crosses_at(std::size_t servers, bool served_by_caller) {
+  return !(servers == 1 && served_by_caller);
+}
 
 // The inverse: every spelling `repo` could consume `endpoint_id` under through
 // one of its prefixes (`to` replaced by `from`). Empty when no prefix covers it.

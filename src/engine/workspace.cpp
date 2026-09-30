@@ -143,18 +143,6 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
   return result != nullptr && found_in(*result) && result->value("id", std::string{}) == id && is_placeholder(*result);
 }
 
-// The id every repo shares for an endpoint `repo` reached: the proxied spelling
-// when the repo only consumes it under one of its prefixes, else the id itself.
-[[nodiscard]] std::string shared_contract(const Workspace& workspace, const std::string& repo, const nlohmann::json& brief) {
-  auto id = brief.value("id", std::string{});
-  if (is_placeholder(brief)) {
-    if (auto proxied = proxied_endpoint_id(workspace.prefixes, repo, id)) {
-      return std::move(*proxied);
-    }
-  }
-  return id;
-}
-
 // True when `repo` serves `id` itself: its graph holds the endpoint with a
 // source anchor (a handler), not a placeholder.
 [[nodiscard]] bool served_in(const WorkspaceRepo& repo, const std::string& id, const RepoAsk& ask) {
@@ -162,6 +150,47 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
   const auto envelope = ask(repo, "explain", {{"id", id}, {"limit", 1}}, error);
   const auto* result = envelope ? result_of(*envelope) : nullptr;
   return result != nullptr && found_in(*result) && result->value("id", std::string{}) == id && !is_placeholder(*result);
+}
+
+// Whether a call `repo` makes through its proxy may cross at the proxied
+// endpoint `proxied`: the rule seam discovery applies, over the members that
+// serve it.
+[[nodiscard]] bool proxy_crosses_in(const Workspace& workspace, const WorkspaceRepo& repo, const std::string& proxied,
+                                    const RepoAsk& ask) {
+  std::size_t servers = 0;
+  bool served_by_caller = false;
+  for (const auto& member : workspace.repos) {
+    if (served_in(member, proxied, ask)) {
+      ++servers;
+      served_by_caller = served_by_caller || member.name == repo.name;
+    }
+  }
+  return proxy_crosses_at(servers, served_by_caller);
+}
+
+// The proxied spelling of `id` that `repo` crosses at, or nullopt when it has
+// none: no prefix of `repo` covers it, or only `repo` serves the proxied path.
+[[nodiscard]] std::optional<std::string> proxied_contract(const Workspace& workspace, const WorkspaceRepo& repo,
+                                                          const std::string& id, const RepoAsk& ask) {
+  auto proxied = proxied_endpoint_id(workspace.prefixes, repo.name, id);
+  if (!proxied || !proxy_crosses_in(workspace, repo, *proxied, ask)) {
+    return std::nullopt;
+  }
+  return proxied;
+}
+
+// The id every repo shares for an endpoint `repo` reached: the proxied spelling
+// when the repo only consumes it under one of its prefixes and may cross there,
+// else the id itself.
+[[nodiscard]] std::string shared_contract(const Workspace& workspace, const WorkspaceRepo& repo,
+                                          const nlohmann::json& brief, const RepoAsk& ask) {
+  auto id = brief.value("id", std::string{});
+  if (is_placeholder(brief)) {
+    if (auto proxied = proxied_contract(workspace, repo, id, ask)) {
+      return std::move(*proxied);
+    }
+  }
+  return id;
 }
 
 // The ids to ask `repo` for when crossing at `contract`: the contract itself and
@@ -173,12 +202,7 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
                                                     const std::string& contract, const RepoAsk& ask) {
   std::vector<std::string> ids{contract};
   auto spellings = consumer_spellings(workspace.prefixes, repo.name, contract);
-  if (spellings.empty()) {
-    return ids;
-  }
-  if (served_in(repo, contract, ask) && std::ranges::none_of(workspace.repos, [&](const WorkspaceRepo& other) {
-        return other.name != repo.name && served_in(other, contract, ask);
-      })) {
+  if (spellings.empty() || !proxy_crosses_in(workspace, repo, contract, ask)) {
     return ids;
   }
   for (auto& spelling : spellings) {
@@ -373,7 +397,7 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
     // proxied contract.
     for (const auto& repo : workspace.repos) {
       auto proxied = proxied_endpoint_id(workspace.prefixes, repo.name, seed);
-      if (proxied && placeholder_in(repo, seed, ask)) {
+      if (proxied && placeholder_in(repo, seed, ask) && proxy_crosses_in(workspace, repo, *proxied, ask)) {
         proxied_from[*proxied].insert(repo.name);
         contracts.emplace(std::move(*proxied), 0);
       }
@@ -394,7 +418,7 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
       if (!is_endpoint_id(node.value("id", std::string{}))) {
         continue;
       }
-      const auto id = shared_contract(workspace, answer.repo->name, node);
+      const auto id = shared_contract(workspace, *answer.repo, node, ask);
       (id == node.value("id", std::string{}) ? reached_in : proxied_from)[id].insert(answer.repo->name);
       const auto depth = node.value("depth", 0);
       if (const auto slot = contracts.find(id); slot == contracts.end() || depth < slot->second) {
@@ -534,7 +558,7 @@ struct Crossing {
     for (const auto& node : *nodes) {
       const auto node_id = node.value("id", std::string{});
       if (is_endpoint_id(node_id)) {
-        found.emplace_back(node.value("depth", 0), node_id, shared_contract(workspace, repo.name, node));
+        found.emplace_back(node.value("depth", 0), node_id, shared_contract(workspace, repo, node, ask));
       }
     }
   }

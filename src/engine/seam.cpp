@@ -278,7 +278,7 @@ SeamFuseResult fuse_seam(const Fragment& seam,
         auto target = proxied_endpoint_id(prefixes, name, node.id);
         // As in discover: never onto an endpoint only this service serves.
         if (const auto owners = target ? servers.find(*target) : servers.end();
-            target && !(owners != servers.end() && owners->second.size() == 1 && owners->second.contains(name))) {
+            target && (owners == servers.end() || proxy_crosses_at(owners->second.size(), owners->second.contains(name)))) {
           proxied.emplace(node.id, std::move(*target));
         }
       }
@@ -716,7 +716,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
           continue;
         }
         if (const auto owners = servers.find(*proxied);
-            owners != servers.end() && owners->second.size() == 1 && owners->second.contains(name)) {
+            owners != servers.end() && !proxy_crosses_at(owners->second.size(), owners->second.contains(name))) {
           break;  // only this service serves the proxied path: not where the proxy forwards to
         }
         ++mapped_per_prefix[slot];
