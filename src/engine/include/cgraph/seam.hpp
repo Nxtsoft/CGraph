@@ -1,10 +1,12 @@
 #pragma once
 
+#include "cgraph/endpoint_prefixes.hpp"
 #include "cgraph/types.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -51,8 +53,15 @@ struct SeamResult {
 // service what it serves and consumes, how many endpoints matched across
 // services, and how many are consumed with no provider among the given graphs.
 // Fails loud only when a graph cannot be read.
+//
+// `prefixes` (endpoint_prefixes.hpp) join a consumer that reaches its provider
+// through its own proxy route: an endpoint graph `repo` consumes but neither
+// serves nor documents, under `from`, joins as `to` + the rest. Its CONSUMED_AT
+// edge carries `via` = the consumer's own path, and the log counts the mapped
+// endpoints per prefix.
 [[nodiscard]] SeamResult discover_seam(
-    const std::vector<std::pair<std::string, std::filesystem::path>>& graphs);
+    const std::vector<std::pair<std::string, std::filesystem::path>>& graphs,
+    std::span<const EndpointPrefix> prefixes = {});
 
 // Result of fusing a seam fragment with its service graphs into one view graph.
 struct SeamFuseResult {
@@ -67,8 +76,14 @@ struct SeamFuseResult {
 // (the real service node already carries that id), and edges are deduplicated.
 // View-only -- the result is a static render artifact, not a daemon. Fails loud
 // (ok=false) if any edge endpoint is missing from the fused node set.
+//
+// With `prefixes`, a service's CONSUMES edge into an endpoint it does not serve
+// (`served: false`) under a `from` of its own is redirected to the `to` spelling,
+// the one the seam discovered with the same prefixes, and the placeholder node it
+// leaves unused is not rendered.
 [[nodiscard]] SeamFuseResult fuse_seam(
     const Fragment& seam,
-    const std::vector<std::pair<std::string, GraphSnapshot>>& services);
+    const std::vector<std::pair<std::string, GraphSnapshot>>& services,
+    std::span<const EndpointPrefix> prefixes = {});
 
 }  // namespace cgraph

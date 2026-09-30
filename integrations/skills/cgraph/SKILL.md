@@ -125,6 +125,12 @@ grep/read calls that burn context.
   and no source; "who calls `GET /api/v1/…`" is `graph_impact` on the endpoint
   with `dependents`. Across repos, `cgraph seam discover --graph a=… --graph b=…`
   joins the two graphs' endpoints with no spec and `seam fuse` renders them.
+  A repo with a `langgraph.json` serves the LangGraph Agent Server routes
+  (`endpoint:POST /runs/wait`, `endpoint:POST /threads/{}/runs/stream`, ...)
+  from its `langgraph_server` node. A front end calling its backend through
+  its own proxy (`/api/backend/*` forwarded to `/api/*`) needs
+  `--prefix web:/api/backend=/api` on `seam discover`/`seam fuse`, or a
+  `prefixes` entry in `cgraph.workspace.json`, to meet the backend.
   Contract documents count too: an OpenAPI JSON, `.proto` or `.graphql` file,
   or the openapi-typescript `paths` a client is typed against, gives
   `documented: true` endpoints and `schema` nodes with fields
