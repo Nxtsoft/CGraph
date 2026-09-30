@@ -175,9 +175,10 @@ int main() {
   // Relative-import stubs: `from .service import Service` in pkg/app.py resolves
   // to pkg/service; `import "./util"` in pkg/index.ts resolves to pkg/util. Both
   // live in the relative namespace, so neither can normalize onto a bare
-  // package's or an absolute module's stub id.
+  // package's or an absolute module's stub id. A Python symbol stub ends in the
+  // name's length, which keeps `pkg:a_b` and `pkg/a:b` apart.
   if (!has_id(cgraph::make_id("import-relative-module:pkg/service")) ||
-      !has_id(cgraph::make_id("import-relative-symbol:pkg/service:Service")) ||
+      !has_id(cgraph::make_id("import-relative-symbol:pkg/service:Service:7")) ||
       !has_id(cgraph::make_id("import-relative-module:pkg/util")) ||
       !has_id(cgraph::make_id("import-relative-symbol:pkg/util:util"))) {
     cleanup();

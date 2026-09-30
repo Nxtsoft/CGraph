@@ -217,7 +217,37 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // (`const app = new Elysia()`); a `.use(cors())` plugin call never reaches
   // here (its argument is not an identifier), and a `.use(authMiddleware)`
   // naming a function is middleware, not a mount.
+  // Python's `include_router(users.router)` after `from app.routers import
+  // users`: `users` is an imported module file, `router` its own variable.
+  // Only `module.name`; a longer chain resolves to nothing.
+  const auto python_source = [](const RawRelation& relation) {
+    return std::filesystem::path(relation.source_file).extension() == ".py";
+  };
+  const auto python_dotted = [&](const RawRelation& relation) {
+    return relation.target_label.find('.') != std::string::npos && python_source(relation);
+  };
+  const auto python_module_attribute = [&](const RawRelation& relation) -> std::string {
+    const auto& label = relation.target_label;
+    const auto dot = label.find('.');
+    if (label.find('.', dot + 1) != std::string::npos) {
+      return {};
+    }
+    const auto module =
+        by_id.find(resolve_scoped_name(scopes, relation.source_file, make_id(label.substr(0, dot)), false));
+    if (module == by_id.end() || module->second->kind != "file") {
+      return {};
+    }
+    const auto file = variables_by_file.find(module->second->source_file);
+    if (file == variables_by_file.end()) {
+      return {};
+    }
+    const auto slot = file->second.find(label.substr(dot + 1));
+    return slot == file->second.end() ? std::string{} : slot->second;
+  };
   const auto name_in_scope = [&](const RawRelation& relation) -> std::string {
+    if (python_dotted(relation)) {
+      return python_module_attribute(relation);
+    }
     auto id = resolve_scoped_name(scopes, relation.source_file, make_id(relation.target_label), false);
     if (id.empty()) {
       if (const auto file = variables_by_file.find(relation.source_file); file != variables_by_file.end()) {
@@ -261,14 +291,35 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   //    alias (`export const deckModule = deckRoutes as unknown as Elysia`) is
   //    the same chain under a second name: a mount with no path and no edge.
   std::unordered_map<std::string, std::vector<Mount>> parents_of;
+  // Chains mounted somewhere the extractor could not place: a mount with no
+  // mounting chain (Python's `app.include_router(r, prefix=settings.P)`, or one
+  // inside an app factory), or a Python mount on a name that is no chain. A chain with no other mount is served at a path
+  // nobody knows, so its routes mint nothing rather than a wrong top-level path.
+  std::unordered_set<std::string> unplaced;
   for (const auto& relation : raw_relations) {
     const bool alias = relation.relation == kAliasRelation;
     if (relation.relation != kMountsRelation && !alias) {
       continue;
     }
     ++tally.mounts;
+    if (relation.source_id.empty() && !alias) {
+      ++tally.mounts_unresolved;
+      if (const auto child = name_in_scope(relation); !child.empty()) {
+        unplaced.insert(child);
+      }
+      continue;
+    }
     if (!by_id.contains(relation.source_id)) {
       ++tally.mounts_unresolved;
+      // Python: the mounting name is no chain this file declares (`app =
+      // create_app()`, or an `api_router` imported from the file that mounts
+      // it), so the child is served somewhere nobody can place. A JavaScript
+      // child keeps its own path, as it always has.
+      if (python_source(relation)) {
+        if (const auto child = name_in_scope(relation); !child.empty()) {
+          unplaced.insert(child);
+        }
+      }
       continue;
     }
     const auto child = chain_named(relation);
@@ -306,7 +357,9 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
     std::vector<std::string> result;
     const auto parents = parents_of.find(chain);
-    if (parents == parents_of.end() || !on_stack.insert(chain).second) {
+    if (parents == parents_of.end() && unplaced.contains(chain)) {
+      // Served only under a mount nobody could place: no known path.
+    } else if (parents == parents_of.end() || !on_stack.insert(chain).second) {
       result.push_back(join_route_path("", own));
     } else {
       for (const auto& mount : parents->second) {
@@ -387,6 +440,10 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
         continue;
       }
       bases = paths_of(chain);
+      if (bases.empty()) {
+        ++tally.routes_unresolved;  // its chain hangs only off an unplaced mount
+        continue;
+      }
     }
     const auto method = to_upper(verb);
     for (const auto& base : bases) {

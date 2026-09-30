@@ -1,8 +1,412 @@
 #include "cgraph/python_extractor.hpp"
+#include "cgraph/contracts.hpp"
+#include "cgraph/graph_builder.hpp"
 #include "cgraph/normalize.hpp"
+#include <iostream>
 #include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+struct BuiltPython {
+  cgraph::GraphSnapshot graph;
+  cgraph::ContractResolution stats;
+};
+
+// Extract, merge, resolve imports, resolve contracts: the order run_one_shot uses.
+BuiltPython build_python(const std::vector<std::pair<std::string, std::string>>& files) {
+  std::vector<cgraph::Fragment> fragments;
+  std::vector<cgraph::RawRelation> relations;
+  for (const auto& [path, source] : files) {
+    const auto result = cgraph::extract_python({.source_file = "/proj/" + path, .relative_path = path, .source = source});
+    fragments.push_back(result.fragment);
+    relations.insert(relations.end(), result.raw_relations.begin(), result.raw_relations.end());
+  }
+  BuiltPython built;
+  built.graph = cgraph::merge_fragments(fragments);
+  cgraph::resolve_imports(built.graph);
+  cgraph::resolve_contracts(built.graph, relations, &built.stats);
+  return built;
+}
+
+bool has_edge(const cgraph::GraphSnapshot& graph, const std::string& source, const std::string& target,
+              const std::string& relation) {
+  for (const auto& edge : graph.edges) {
+    if (edge.source == source && edge.target == target && edge.relation == relation) return true;
+  }
+  return false;
+}
+
+int fail(const std::string& message) {
+  std::cerr << "python_extractor_test: " << message << '\n';
+  return 1;
+}
+
+// FastAPI routers become HTTP providers. The fixture has ml-backend's shapes
+// (api/app.py, api/routes/**, api/legacy/__init__.py): APIRouter(prefix=)
+// chains, @router.<verb>(...) handlers (one multi-line, one with an empty
+// path), include_router mounts composed across files through aliased imports
+// and a package __init__, a prefix on include_router, and an app-level route.
+int fastapi_routes() {
+  const auto built = build_python({
+      {"api/app.py", R"py(
+from fastapi import FastAPI
+from api.legacy import router as legacy_router
+from api.routes.project.router import router as project_router
+
+app = FastAPI(title="ML Backend")
+app.include_router(project_router)
+app.include_router(legacy_router)
+
+
+@app.get("/healthcheck")
+async def healthcheck():
+    return {}
+
+
+def create_app():
+    inner = FastAPI()
+    inner.include_router(project_router, prefix="/nested")
+
+    @inner.get("/inside")
+    def inside():
+        return {}
+
+    return inner
+)py"},
+      {"api/routes/project/router.py", R"py(
+from fastapi import APIRouter
+
+from api.routes.project.cluster.routes import router as cluster_router
+from api.routes.project.setup.routes import router as setup_router
+
+router = APIRouter()
+router.include_router(setup_router)
+router.include_router(cluster_router)
+)py"},
+      {"api/routes/project/setup/routes.py", R"py(
+from fastapi import APIRouter, Depends
+
+router = APIRouter(prefix="/project", tags=["Project API"])
+
+
+@router.post("/{project_id}/setup", response_model=dict)
+async def setup(project_id: str):
+    return {}
+
+
+@router.get(
+    "/{project_id}/formulations/score",
+    response_model=dict,
+)
+async def score(project_id: str):
+    return {}
+)py"},
+      {"api/routes/project/cluster/routes.py", R"py(
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/simulate/cluster", tags=["Simulate API"])
+
+
+@router.get("")
+async def cluster_status():
+    return {}
+
+
+@router.api_route("/wake", methods=["POST", "PUT"])
+async def wake():
+    return {}
+)py"},
+      {"api/legacy/__init__.py", R"py(
+from fastapi import APIRouter
+
+from api.legacy.routes import design_router, dynamic_router
+
+router = APIRouter()
+router.include_router(design_router, prefix="/v1/model", tags=["legacy"])
+router.include_router(dynamic_router, prefix=settings.PREFIX)
+)py"},
+      {"api/legacy/routes.py", R"py(
+from fastapi import APIRouter
+
+design_router = APIRouter()
+dynamic_router = APIRouter()
+elsewhere = APIRouter(prefix=settings.PREFIX)
+
+
+@design_router.get("/{model_id}/variables", status_code=200)
+async def get_model_variables(model_id: str):
+    return {}
+
+
+@dynamic_router.get("/dynamic")
+async def dynamic():
+    return {}
+
+
+@elsewhere.get("/elsewhere")
+async def elsewhere_route():
+    return {}
+
+
+@design_router.get(f"/{PREFIX}/computed")
+async def computed():
+    return {}
+)py"},
+  });
+
+  struct Expected {
+    std::string id;
+    std::string handler;
+    std::string file;
+  };
+  const std::vector<Expected> expected = {
+      {"endpoint:GET /healthcheck", "api/app.py:healthcheck", "api/app.py"},
+      {"endpoint:POST /project/{}/setup", "api/routes/project/setup/routes.py:setup", "api/routes/project/setup/routes.py"},
+      {"endpoint:GET /project/{}/formulations/score", "api/routes/project/setup/routes.py:score", "api/routes/project/setup/routes.py"},
+      {"endpoint:GET /simulate/cluster", "api/routes/project/cluster/routes.py:cluster_status", "api/routes/project/cluster/routes.py"},
+      {"endpoint:POST /simulate/cluster/wake", "api/routes/project/cluster/routes.py:wake", "api/routes/project/cluster/routes.py"},
+      {"endpoint:PUT /simulate/cluster/wake", "api/routes/project/cluster/routes.py:wake", "api/routes/project/cluster/routes.py"},
+      {"endpoint:GET /v1/model/{}/variables", "api/legacy/routes.py:get_model_variables", "api/legacy/routes.py"},
+  };
+  for (const auto& want : expected) {
+    const cgraph::Node* found = nullptr;
+    for (const auto& node : built.graph.nodes) {
+      if (node.id == want.id) found = &node;
+    }
+    if (found == nullptr || found->kind != "endpoint") return fail("missing " + want.id);
+    if (found->properties.contains("served")) return fail(want.id + " is not served");
+    if (!has_edge(built.graph, want.id, cgraph::make_id(want.handler), "handled_by")) return fail(want.id + " handler");
+    if (!has_edge(built.graph, cgraph::make_id(want.file), want.id, "contains")) return fail(want.id + " contains");
+  }
+  // An import of a router binds to its variable, which its file contains, so
+  // the importer still reaches the imported file.
+  if (!has_edge(built.graph, cgraph::make_id("api/routes/project/router.py"),
+                cgraph::make_id("api/routes/project/setup/routes.py:router"), "imports") ||
+      !has_edge(built.graph, cgraph::make_id("api/routes/project/setup/routes.py"),
+                cgraph::make_id("api/routes/project/setup/routes.py:router"), "contains")) {
+    return fail("router variable import/contains");
+  }
+  // The provider's spelling survives as the label; the id is canonical.
+  for (const auto& node : built.graph.nodes) {
+    if (node.id == "endpoint:POST /project/{}/setup" && node.label != "POST /project/{project_id}/setup") {
+      return fail("label " + node.label);
+    }
+  }
+  // Exactly these seven. Four routes have no knowable path and mint nothing,
+  // each counted: `inside` (its app is a local in a factory), `elsewhere_route`
+  // (APIRouter(prefix=settings.PREFIX)), `dynamic` (its only mount's prefix is
+  // not a literal, so serving it at `/dynamic` would be wrong) and `computed`
+  // (an f-string path). The factory's mount and the non-literal mount count as
+  // unresolved mounts.
+  std::size_t endpoint_count = 0;
+  for (const auto& node : built.graph.nodes) endpoint_count += node.kind == "endpoint" ? 1 : 0;
+  if (endpoint_count != expected.size()) return fail("endpoint count " + std::to_string(endpoint_count));
+  if (built.stats.routes != 11) return fail("routes " + std::to_string(built.stats.routes));
+  if (built.stats.routes_unresolved != 4) return fail("routes_unresolved " + std::to_string(built.stats.routes_unresolved));
+  if (built.stats.mounts != 7) return fail("mounts " + std::to_string(built.stats.mounts));
+  if (built.stats.mounts_unresolved != 2) return fail("mounts_unresolved " + std::to_string(built.stats.mounts_unresolved));
+  return 0;
+}
+
+std::set<std::string> endpoint_ids(const cgraph::GraphSnapshot& graph) {
+  std::set<std::string> ids;
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "endpoint") ids.insert(node.id);
+  }
+  return ids;
+}
+
+std::string joined(const std::set<std::string>& ids) {
+  std::string out;
+  for (const auto& id : ids) out += (out.empty() ? "" : ", ") + id;
+  return out;
+}
+
+// Router layouts from the FastAPI docs and review of PR #143: each must mint
+// at its real full path or not at all, never at a guessed top-level path.
+int fastapi_router_layouts() {
+  struct Case {
+    std::string name;
+    std::vector<std::pair<std::string, std::string>> files;
+    std::set<std::string> endpoints;
+    std::size_t routes_unresolved;
+    std::size_t mounts_unresolved;
+  };
+  const std::vector<Case> cases = {
+      // An aliased import binds only its alias: svc.py's own `router` is not
+      // the `other_router` it imports.
+      {"aliased import shadows nothing",
+       {{"app.py", "from fastapi import FastAPI\nfrom pkg.svc import router as svc_router\n\napp = FastAPI()\n"
+                   "app.include_router(svc_router)\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/other.py", "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/other\")\n\n\n"
+                         "@router.get(\"/y\")\nasync def y():\n    return {}\n"},
+        {"pkg/svc.py", "from fastapi import APIRouter\nfrom pkg.other import router as other_router\n\n"
+                       "router = APIRouter(prefix=\"/svc\")\nrouter.include_router(other_router, prefix=\"/o\")\n\n\n"
+                       "@router.get(\"/x\")\nasync def x():\n    return {}\n"}},
+       {"endpoint:GET /svc/x", "endpoint:GET /svc/o/other/y"},
+       0,
+       0},
+      // FastAPI's "Bigger Applications": `from app.routers import users` names
+      // a submodule, and `users.router` is its router.
+      {"dotted router of an imported submodule",
+       {{"app/__init__.py", ""},
+        {"app/main.py", "from fastapi import FastAPI\nfrom app.routers import users\n\napp = FastAPI()\n"
+                        "app.include_router(users.router, prefix=\"/api/v1\")\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/users.py", "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/users\")\n\n\n"
+                                 "@router.get(\"/{user_id}\")\nasync def read_user(user_id: str):\n    return {}\n"}},
+       {"endpoint:GET /api/v1/users/{}"},
+       0,
+       0},
+      // A sub-application mounted at a path is served beneath it; a requests
+      // adapter mounted on a URL scheme is not a mount at all.
+      {"mounted sub-application",
+       {{"main.py", "import requests\nfrom fastapi import FastAPI\n\napi = FastAPI()\napp = FastAPI()\n"
+                    "app.mount(\"/api\", api)\nsession = requests.Session()\nadapter = requests.adapters.HTTPAdapter()\n"
+                    "session.mount(\"https://\", adapter)\n\n\n"
+                    "@api.get(\"/items\")\nasync def items():\n    return {}\n"}},
+       {"endpoint:GET /api/items"},
+       0,
+       0},
+      // A requests adapter mounted inside a function is no mount either: its
+      // URL-scheme path says so wherever the call sits.
+      {"requests adapter mounted in a function",
+       {{"client.py", "import requests\nfrom requests.adapters import HTTPAdapter\nfrom fastapi import FastAPI\n\n"
+                      "app = FastAPI()\n\n\ndef make_session():\n    session = requests.Session()\n"
+                      "    adapter = HTTPAdapter(max_retries=3)\n    session.mount(\"https://\", adapter)\n"
+                      "    session.mount(\"http://\", adapter)\n    return session\n\n\n"
+                      "@app.get(\"/ok\")\ndef ok():\n    return 1\n"}},
+       {"endpoint:GET /ok"},
+       0,
+       0},
+      // `.get` on things that are not routers mints nothing.
+      {"non-router decorators",
+       {{"main.py", "import pytest\nfrom fastapi import FastAPI\nfrom cachetools import cache\nfrom flask import Flask\n\n"
+                    "app = FastAPI()\nflask_app = Flask(__name__)\n\n\n@cache.get(\"/c\")\ndef c():\n    return 1\n\n\n"
+                    "@flask_app.get(\"/f\")\ndef f():\n    return 1\n\n\n@pytest.mark.get(\"/p\")\ndef p():\n    return 1\n\n\n"
+                    "@app.get(\"/real\")\ndef real():\n    return 1\n"}},
+       {"endpoint:GET /real"},
+       2,
+       0},
+      // A package __init__.py that imports a router re-exports it.
+      {"router re-exported by a package",
+       {{"api/__init__.py", ""},
+        {"api/routes/__init__.py", "from api.routes.items import router as items_router\n"},
+        {"api/routes/items.py", "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/items\")\n\n\n"
+                                "@router.get(\"/{item_id}\")\nasync def get_item(item_id: str):\n    return {}\n"},
+        {"main.py", "from fastapi import FastAPI\nfrom api.routes import items_router\n\napp = FastAPI()\n"
+                    "app.include_router(items_router, prefix=\"/v2\")\n"}},
+       {"endpoint:GET /v2/items/{}"},
+       0,
+       0},
+      // `import a.b as x` binds `x` to the module, as `from a import b as x`
+      // does, so `x.router` is that module's router.
+      {"router of a module imported as an alias",
+       {{"app/__init__.py", ""},
+        {"app/main.py", "from fastapi import FastAPI\nimport app.routers.items as items\n"
+                        "from app.routers import users as users_module\n\napp = FastAPI()\n"
+                        "app.include_router(items.router, prefix=\"/api/v1\")\n"
+                        "app.include_router(users_module.router, prefix=\"/api/v1\")\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/items.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/items\")\n\n"
+                                 "@router.get(\"/{x_id}\")\ndef get_items(x_id: int):\n    return x_id\n"},
+        {"app/routers/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                                 "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"}},
+       {"endpoint:GET /api/v1/items/{}", "endpoint:GET /api/v1/users/{}"},
+       0,
+       0},
+      // The mounting router is imported from another file (and mounted at
+      // /api/v1 there), which the extractor cannot follow: its children are
+      // served at a path nobody knows, so they mint nothing rather than
+      // `GET /users/{}` at their own prefix.
+      {"router mounted on an imported router",
+       {{"app/__init__.py", ""},
+        {"app/api.py", "from fastapi import APIRouter\napi_router = APIRouter()\n"},
+        {"app/main.py", "from fastapi import FastAPI\nfrom app.api import api_router\napp = FastAPI()\n"
+                        "app.include_router(api_router, prefix=\"/api/v1\")\n"},
+        {"app/wire.py", "from app.api import api_router\nfrom app.routers import users\n"
+                        "import app.routers.items as items\napi_router.include_router(users.router)\n"
+                        "api_router.include_router(items.router)\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/items.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/items\")\n\n"
+                                 "@router.get(\"/{item_id}\")\ndef get_item(item_id: int):\n    return item_id\n"},
+        {"app/routers/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                                 "@router.get(\"/{user_id}\")\ndef get_user(user_id: int):\n    return user_id\n"}},
+       {},
+       2,
+       2},
+      // `app = create_app()` is no chain the extractor knows, so a router
+      // mounted on it is served at a path nobody knows.
+      {"router mounted on a factory-built app",
+       {{"app/__init__.py", ""},
+        {"app/main.py", "from fastapi import FastAPI\nfrom app.routers import users\n\n\n"
+                        "def create_app() -> FastAPI:\n    return FastAPI(title=\"svc\")\n\n\n"
+                        "app = create_app()\napp.include_router(users.router, prefix=\"/api/v1\")\n"},
+        {"app/routers/__init__.py", ""},
+        {"app/routers/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                                 "@router.get(\"/{user_id}\")\ndef get_user(user_id: int):\n    return user_id\n"}},
+       {},
+       1,
+       1},
+      // A mount on an attribute (`app.router`, `self.app`) names no chain the
+      // extractor knows: counted unresolved, and its router mints nothing.
+      {"router mounted on an attribute of the app",
+       {{"main.py", "from fastapi import FastAPI\nfrom pkg import users\napp = FastAPI()\n"
+                    "app.router.include_router(users.router, prefix=\"/api\")\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"}},
+       {},
+       1,
+       1},
+      {"router mounted on an app held by an instance",
+       {{"main.py", "from fastapi import FastAPI\nfrom pkg import users\n\nclass Server:\n"
+                    "    def __init__(self):\n        self.app = FastAPI()\n"
+                    "        self.app.include_router(users.router, prefix=\"/api\")\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"}},
+       {},
+       1,
+       1},
+      // A loop over a literal tuple mounts each of its routers.
+      {"routers mounted in a loop over a literal tuple",
+       {{"main.py", "from fastapi import FastAPI\nfrom pkg import users, items\napp = FastAPI()\n"
+                    "for r in (users.router, items.router):\n    app.include_router(r, prefix=\"/api/v1\")\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"},
+        {"pkg/items.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/items\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_items(x_id: int):\n    return x_id\n"}},
+       {"endpoint:GET /api/v1/items/{}", "endpoint:GET /api/v1/users/{}"},
+       0,
+       0},
+  };
+  int status = 0;  // every case reports, so one run shows each miss
+  for (const auto& test : cases) {
+    const auto built = build_python(test.files);
+    const auto ids = endpoint_ids(built.graph);
+    if (ids != test.endpoints) {
+      status = fail(test.name + ": endpoints [" + joined(ids) + "]");
+    } else if (built.stats.routes_unresolved != test.routes_unresolved) {
+      status = fail(test.name + ": routes_unresolved " + std::to_string(built.stats.routes_unresolved));
+    } else if (built.stats.mounts_unresolved != test.mounts_unresolved) {
+      status = fail(test.name + ": mounts_unresolved " + std::to_string(built.stats.mounts_unresolved));
+    }
+  }
+  return status;
+}
+
+}  // namespace
 
 int main() {
+  if (const auto status = fastapi_routes(); status != 0) return status;
+  if (const auto status = fastapi_router_layouts(); status != 0) return status;
+
   const auto members = cgraph::extract_python({.source_file = "members.py", .relative_path = "members.py", .source = R"py(
 from dataclasses import dataclass
 @dataclass
@@ -93,8 +497,8 @@ class Worker:
 from .config import Local
 from config import Remote
 )py"});
-    const auto relative_id = cgraph::make_id("import-relative-symbol:config:Local");
-    const auto absolute_id = cgraph::make_id("import-symbol:config:Remote");
+    const auto relative_id = cgraph::make_id("import-relative-symbol:config:Local:5");
+    const auto absolute_id = cgraph::make_id("import-symbol:config:Remote:6");
     std::string relative_path_prop;
     bool absolute_module = false;
     for (const auto& node : imported.fragment.nodes) {

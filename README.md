@@ -172,6 +172,27 @@ Kotlin and Java Spring controllers get the same nodes: a method annotated `@GetM
 `method`) under a class-level `@RequestMapping("/api/v1/users")` is `GET /api/v1/users/{id}`.
 Paths are read from string literals only (positional, `value =`, `path =`, or an array of them); a
 path built from a constant, and a method-level `@RequestMapping` without `method`, are not minted.
+Python FastAPI services get them too: a function decorated `@router.post("/{project_id}/setup")`
+(or `.get`, `.put`, `.patch`, `.delete`, `.head`, `.options`, or `.api_route(path, methods=[...])`,
+which defaults to GET) on a module-level `router = APIRouter(prefix="/project")` or `app =
+FastAPI()` is `POST /project/{project_id}/setup` beneath every `include_router(router,
+prefix="/v1")` or `app.mount("/v1", sub_app)` that mounts it, composed across files through
+imports: `from api.routes.x import router as x_router` (the alias is the only name bound),
+`from app.routers import users` then `include_router(users.router)` (a submodule), `import
+app.routers.items as items` then `include_router(items.router)`, a router a package's
+`__init__.py` imports and another file imports from the package, and each router of a
+`for r in (users.router, items.router): app.include_router(r)` loop over a literal tuple or list.
+A path, prefix or `methods` list that is not a plain string literal (an f-string that
+interpolates, `prefix=settings.PREFIX`), a route or `include_router` inside a function (an app
+factory), and an `include_router` on anything but a module-level router of its file
+(`app = create_app()`, `app.router`, `self.app`, a router imported from another file) are not
+minted and are counted in `routes_unresolved` / `mounts_unresolved`; a router whose every mount is
+one of those mints nothing. A loop over anything else (`for r in ROUTERS:`) is counted unresolved
+without identifying its routers. A router nothing mounts is served at its own prefix, as a
+JavaScript router is. `add_api_route(...)` is not read, and a mount of a longer dotted name
+(`include_router(api.v1.router)`) is counted unresolved without placing its router. Flask is not
+read: `register_blueprint(url_prefix=)` replaces the blueprint's own prefix rather than composing
+with it.
 The node's id is `endpoint:GET /api/v1/notebooks/{}/notes` with no repository in it and `{}` for
 every parameter segment (`:id`, `{id}`, `[id]`), its label keeps the provider's spelling
 (`GET /api/v1/notebooks/:id/notes`), and it carries `method` and `path`, the handler's file and

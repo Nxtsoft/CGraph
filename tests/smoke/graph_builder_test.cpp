@@ -863,6 +863,51 @@ int check_typescript_export_star() {
   return 0;
 }
 
+// A JavaScript alias lives on the import stub every importer of that name
+// shares, so it cannot say which importer wrote it: `import { router }` in
+// b.ts must still bind `router` though a.ts imported it `as usersRouter`
+// (PR #143 review fixture js2; the output of bin-v0.6.7).
+int check_shared_stub_alias_binds_both_names() {
+  const auto root = std::filesystem::temp_directory_path() / "cgraph_shared_alias_test";
+  std::filesystem::remove_all(root);
+  write_ts(root / "a.ts",
+           "import { Router } from 'express';\nimport { router as usersRouter } from './users';\n"
+           "export const api = Router();\napi.use('/a', usersRouter);\n");
+  write_ts(root / "b.ts",
+           "import express from 'express';\nimport { router } from './users';\nconst app = express();\n"
+           "app.use('/b', router);\napp.listen(3000);\n");
+  write_ts(root / "base.ts", "export class Base {}\n");
+  write_ts(root / "c.ts", "import { Base as B0 } from './base';\nexport class C extends B0 {}\n");
+  write_ts(root / "d.ts", "import { Base } from './base';\nexport class D extends Base {}\n");
+  write_ts(root / "users.ts",
+           "import { Router } from 'express';\nexport const router = Router();\n"
+           "router.get('/u', (req, res) => res.send('ok'));\n");
+  const auto result = cgraph::run_one_shot(root);
+  std::filesystem::remove_all(root);
+  const auto& graph = result.graph;
+  int status = 0;
+  for (const auto* id : {"endpoint:GET /a/u", "endpoint:GET /b/u"}) {
+    if (!has_node(graph, id)) {
+      std::cerr << "shared alias: missing " << id << "\n";
+      status = 1;
+    }
+  }
+  const std::pair<const char*, const char*> mounts[] = {{"a_ts_api", "users_ts_router"}, {"b_ts_app", "users_ts_router"}};
+  for (const auto& [source, target] : mounts) {
+    if (!has_edge(graph, source, target, "mounts")) {
+      std::cerr << "shared alias: missing mount " << source << " -> " << target << "\n";
+      status = 1;
+    }
+  }
+  for (const auto* source : {"c_ts_c", "d_ts_d"}) {
+    if (!has_edge(graph, source, "base_ts_base", "inherits")) {
+      std::cerr << "shared alias: missing " << source << " inherits base_ts_base\n";
+      status = 1;
+    }
+  }
+  return status;
+}
+
 }  // namespace
 
 int main() {
@@ -973,6 +1018,10 @@ int main() {
     return 1;  // self-edge must be skipped
   }
 
+  if (check_shared_stub_alias_binds_both_names() != 0) {
+    std::fprintf(stderr, "FAIL check_shared_stub_alias_binds_both_names\n");
+    return 1;
+  }
   if (check_typescript_export_star() != 0) {
     return 1;
   }
