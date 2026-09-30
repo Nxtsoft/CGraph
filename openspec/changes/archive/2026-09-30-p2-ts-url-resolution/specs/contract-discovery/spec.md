@@ -19,7 +19,7 @@ For every call to `fetch`, to `<receiver>.<verb>` where the receiver's name cont
 - **GIVEN** `const url = build(); fetch(url)`, `fetch('https://api.github.com/repos/x/y')` and `cache.get('/api/v1/key')`
 - **THEN** no endpoint for them exists, `calls_unresolved` counts the first two, and the Map lookup is counted nowhere
 
-#### Scenario: A builder the file defines is read, one it imports is not
+#### Scenario: A call at the front of a URL is not a host
 - **GIVEN** `const base = (id) => \`${BACKEND_URL}/api/v1/projects/${id}\`` and `fetch(\`${base(projectId)}/oracles\`, { method: 'POST' })` in `viaHelper`, `fetch(\`${importedBase(projectId)}/runs\`, { method: 'POST' })` in `viaImportedHelper`, and `fetch(\`${config.baseUrl}/items\`)` in `viaMember`
 - **THEN** `viaHelper` consumes `endpoint:POST /api/v1/projects/{}/oracles`, no `endpoint:POST /runs` exists and that call is counted in `calls_unresolved`, while `viaMember` consumes `endpoint:GET /items`
 
