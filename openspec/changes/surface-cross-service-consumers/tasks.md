@@ -22,8 +22,13 @@
 - [x] 4.4 The section never causes a rejection; a failing repo is asked once; the shared wait starts at the first ask.
 - [x] 4.5 Tests for the provider side, a mount move, the unreachable repo, a small budget, pins, and the served filter (Elysia chain with an app-level route); tool descriptions, CLAUDE.md and host-skill-contract updated.
 
-## 5. Verification
+## 5. Review round 2 and CI
 
-- [x] 5.1 Full default suite: 83 of 84, the one failure `cgraph_file_watcher_test` (flaky on mars at origin/main).
-- [x] 5.2 Real flow on the probe repositories: turing-api handler edit names turing-webapp `lib/org-api.ts:83`; idp-front-end login edit names idp `AuthController.kt:105`.
-- [x] 5.3 OpenSpec validation (`--strict`).
+- [x] 5.1 macOS CI: the walk along the path as given compared against the resolved `$HOME` only and climbed past it (`/var` vs `/private/var`); both spellings now stop it, with a Linux test using a symlinked `$HOME`.
+- [x] 5.2 Test independent of `CGRAPH_DAEMON_PATH`; removed/added routes from unsupplied differences marked `outside_diff`, ranked 3; the stub keeps array fields; the skill names `stub` and `errors`; the provider assertion checks the handler id.
+
+## 6. Verification
+
+- [x] 6.1 Full default suite: 83 of 84, the one failure `cgraph_file_watcher_test` (flaky on mars at origin/main).
+- [x] 6.2 Real flow on the probe repositories: turing-api handler edit names turing-webapp `lib/org-api.ts:83`; idp-front-end login edit names idp `AuthController.kt:105`.
+- [x] 6.3 OpenSpec validation (`--strict`).

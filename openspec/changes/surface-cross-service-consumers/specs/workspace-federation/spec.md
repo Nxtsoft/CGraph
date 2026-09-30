@@ -17,7 +17,7 @@ A project root SHALL belong to the workspace whose manifest sits in the nearest 
 - **THEN** its enclosing workspace names `api` as home, with `api`'s root replaced by the worktree
 
 #### Scenario: Unlisted directories and manifests above HOME are not used
-- **GIVEN** a directory beside the members that the manifest does not list, or `$HOME` set below the workspace directory
+- **GIVEN** a directory beside the members that the manifest does not list, or `$HOME` set below the workspace directory, including `$HOME` spelled through a symlink
 - **THEN** no enclosing workspace is found
 
 #### Scenario: A pin names the home graph

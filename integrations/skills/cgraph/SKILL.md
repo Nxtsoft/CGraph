@@ -148,10 +148,13 @@ grep/read calls that burn context.
   a client call, run `graph_change_context` on the diff: its `cross_service`
   section lists the other services' callers of every endpoint the change
   serves and the handler behind every endpoint it calls, with file and line.
-  A moved or removed route counts, so its old callers are listed. Empty
-  `rows` with no `unreachable` or `building` entries means no caller CGraph
-  can resolve; a URL built at runtime is not resolved, so grep for the path
-  before relying on "no callers". `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
+  A moved or removed route counts, so its old callers are listed (marked
+  `outside_diff` when the roots differ in files the diff does not supply).
+  Empty `rows` means no caller CGraph can resolve only when the section has
+  no `stub` (cut for budget: see `rows_found`), no `errors` (the workspace
+  manifest could not be used), and no `unreachable` or `building` entries. A
+  URL built at runtime is not resolved, so grep for the path before relying
+  on "no callers". `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
   inline to `.use()`, aliased imports and cast re-exports all compose. A
   route on a router the file only receives as a function parameter is not
   minted (its mount is unknowable from that file); `stats.json`

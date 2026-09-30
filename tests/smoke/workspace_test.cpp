@@ -411,6 +411,14 @@ int test_enclosing_workspace(const fs::path& root) {
     std::cerr << "enclosing: the search climbed above $HOME\n";
     ++failures;
   }
+  // $HOME spelled through a symlink (macOS's /var -> /private/var) still stops
+  // the walk along the path as given: the manifest above it is not used.
+  fs::create_directories(root / "code" / "shared" / "sub");
+  ::setenv("HOME", (linked_ws / "shared").c_str(), 1);
+  if (cgraph::find_enclosing_workspace(linked_ws / "shared" / "sub")) {
+    std::cerr << "enclosing: a symlinked $HOME did not stop the search\n";
+    ++failures;
+  }
   if (saved == nullptr) {
     ::unsetenv("HOME");
   } else {

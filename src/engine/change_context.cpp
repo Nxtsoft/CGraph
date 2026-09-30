@@ -354,7 +354,8 @@ Json uncertainty(const PipelineResult& pipeline) {
 // changed code calls. Asking and trimming both go in rank order.
 struct Touch {
   std::set<std::string> roles;
-  int rank = 3;
+  int rank = 4;
+  bool outside_diff = false;  // only from root differences the diff does not supply
 };
 using TouchedContracts = std::map<std::string, Touch>;
 
@@ -398,7 +399,9 @@ Json cross_service_section(const CrossServiceAsk& scope, const TouchedContracts&
   }
   std::set<std::string> unreachable, building;
   for (const auto& [contract, entry] : ordered) {
-    section["contracts"].push_back({{"id", contract}, {"roles", Json(entry->roles)}, {"rank", entry->rank}});
+    Json listed{{"id", contract}, {"roles", Json(entry->roles)}, {"rank", entry->rank}};
+    if (entry->outside_diff) listed["outside_diff"] = true;
+    section["contracts"].push_back(std::move(listed));
     const bool served = entry->roles.contains("serves") || entry->roles.contains("removed") || entry->roles.contains("added");
     const bool called = entry->roles.contains("consumes");
     for (const bool consumers : {true, false}) {
@@ -645,10 +648,19 @@ Json change_context(const Json& parameters, const CrossServiceAsk* cross_service
   // A route whose path the change moves or deletes (a mount prefix, a renamed
   // path, a removed handler) is served before and not after: its consumers are
   // exactly the code that breaks. A newly served route is asked about too.
+  // When the roots differ in files the diff does not supply, a route may have
+  // moved for reasons outside the diff: it is still named, marked, and ranked
+  // after everything the diff itself touches.
   {
+    const bool complete = outside.empty();
+    const auto mark = [&](const std::string& id, const std::string& role) {
+      const bool known = touched.contains(id);
+      touch(touched, id, role, complete ? 0 : 3);
+      if (!complete && !known) touched[id].outside_diff = true;
+    };
     const auto before = served_endpoints(base.graph), after = served_endpoints(target.graph);
-    for (const auto& id : before) if (!after.contains(id)) touch(touched, id, "removed", 0);
-    for (const auto& id : after) if (!before.contains(id)) touch(touched, id, "added", 0);
+    for (const auto& id : before) if (!after.contains(id)) mark(id, "removed");
+    for (const auto& id : after) if (!before.contains(id)) mark(id, "added");
   }
   // Other services' consumers and providers are never shed to make room for
   // impacts. They get at most a quarter of the budget, trimmed lowest rank
@@ -676,8 +688,11 @@ Json change_context(const Json& parameters, const CrossServiceAsk* cross_service
     if (!result.contains("cross_service")) return false;
     auto& section = result["cross_service"];
     if (!section.value("stub", false)) {
+      // Same shape, emptied: `stub` says the lists were cut for budget, and the
+      // counts say how much there was, so empty lists are never read as "none".
       section = Json{{"workspace", section.at("workspace")}, {"home", section.at("home")}, {"stub", true},
-                     {"contracts", section.at("contracts").size()}, {"rows", cross_rows_total}};
+                     {"contracts", Json::array()}, {"rows", Json::array()},
+                     {"contracts_found", section.at("contracts").size()}, {"rows_found", cross_rows_total}};
       result["omitted"]["cross_service"] = cross_rows_total;
       result["truncated"] = true;
     } else {

@@ -341,6 +341,11 @@ int main() {
     }
     for (const auto& root : {web, ws / "web-base"}) write_file(root / "src" / "stats.ts", web_before);
     fs::create_directories(ws / "billing");
+    // billing must be unreachable whatever the environment: with no graphd to
+    // start, asking it fails. Restored when the block ends.
+    const char* daemon_env = std::getenv("CGRAPH_DAEMON_PATH");
+    const std::string saved_daemon = daemon_env == nullptr ? "" : daemon_env;
+    (void)remove_environment("CGRAPH_DAEMON_PATH");
     write_file(ws / std::string(cgraph::kWorkspaceFile),
                R"({"name": "shop", "repos": [{"name": "api", "root": "./api"}, {"name": "web", "root": "./web"},
                                              {"name": "billing", "root": "./billing"}]})");
@@ -360,6 +365,7 @@ int main() {
       api_server.join();
       web_server.join();
       fs::remove_all(ws);
+      if (daemon_env != nullptr) (void)set_environment("CGRAPH_DAEMON_PATH", saved_daemon.c_str());
       return passed;
     };
     const auto fail = [&](const std::string& what, const nlohmann::json& got) {
@@ -444,6 +450,26 @@ int main() {
           has_row(context, "consumer", "web", "src/stats.ts", "loadPing") || !names_billing_once(context)) {
         return fail("handler edit", context["cross_service"]);
       }
+      // A route that differs only in a file the diff does not supply is still
+      // named, but marked outside_diff and ranked after the edited route.
+      write_file(ws / "api-base" / "src" / "admin.ts",
+                 "import { Elysia } from 'elysia';\n"
+                 "export const admin = new Elysia().get('/api/v1/admin', () => {\n  return {};\n});\n");
+      context = run_change(ws / "api-base", api,
+                           "--- a/src/routes/stats.ts\n+++ b/src/routes/stats.ts\n@@ -3,4 +3,4 @@\n"
+                           "   .get('/', () => {\n-    const total = 1;\n+    const total = 2;\n"
+                           "     return { total };\n   })\n");
+      fs::remove(ws / "api-base" / "src" / "admin.ts");
+      {
+        const auto contracts = context["cross_service"].value("contracts", nlohmann::json::array());
+        const bool edited_first = !contracts.empty() && contracts[0].value("id", std::string{}) == "endpoint:GET /api/v1/stats";
+        bool admin_marked = false;
+        for (const auto& contract : contracts) {
+          admin_marked = admin_marked || (contract.value("id", std::string{}) == "endpoint:GET /api/v1/admin" &&
+                                          contract.value("outside_diff", false) && contract.value("rank", 0) == 3);
+        }
+        if (!edited_first || !admin_marked) return fail("unsupplied difference", context["cross_service"]);
+      }
       // Moving the mount prefix serves neither route at its old path: both old
       // routes are removed contracts, and both web callers are named.
       write_file(api / "src" / "routes" / "stats.ts", routes_before);
@@ -469,16 +495,13 @@ int main() {
                            "--- a/src/stats.ts\n+++ b/src/stats.ts\n@@ -1,3 +1,3 @@\n"
                            " export async function loadStats() {\n-  return fetch('/api/v1/stats');\n"
                            "+  return fetch('/api/v1/stats' );\n }\n");
-      if (!has_row(context, "provider", "api", "src/routes/stats.ts", "router.get /stats") &&
-          !has_row(context, "provider", "api", "src/routes/stats.ts", "get /stats")) {
-        bool any_provider = false;
-        for (const auto& row : rows_of(context)) {
-          any_provider = any_provider || (row.value("relation", std::string{}) == "provider" &&
-                                          row.value("repo", std::string{}) == "api" &&
-                                          row.value("path", std::string{}) == "src/routes/stats.ts");
-        }
-        if (!any_provider) return fail("caller edit", context["cross_service"]);
+      bool provider = false;
+      for (const auto& row : rows_of(context)) {
+        provider = provider || (row.value("relation", std::string{}) == "provider" && row.value("repo", std::string{}) == "api" &&
+                                row.value("path", std::string{}) == "src/routes/stats.ts" &&
+                                row.value("id", std::string{}) == "src_routes_stats_ts_statsroutes_get");
       }
+      if (!provider) return fail("caller edit", context["cross_service"]);
       write_file(web / "src" / "stats.ts", web_before);
       // A budget the change alone fits must still fit with the section: it
       // shrinks, it never causes a rejection.

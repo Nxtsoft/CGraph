@@ -561,9 +561,12 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
   if (error || root.empty()) {
     return std::nullopt;
   }
-  std::filesystem::path home;
+  // $HOME in both spellings: the walk follows the path as given and as
+  // resolved, and on macOS the temp and home trees sit behind /private symlinks.
+  std::set<std::filesystem::path> homes;
   if (const char* value = std::getenv("HOME"); value != nullptr && value[0] != '\0') {
-    home = std::filesystem::weakly_canonical(value, error);
+    homes.insert(std::filesystem::absolute(value, error).lexically_normal());
+    homes.insert(std::filesystem::weakly_canonical(value, error));
   }
   const auto contains = [](const std::filesystem::path& outer, const std::filesystem::path& inner) {
     const auto relative = inner.lexically_relative(outer);
@@ -610,7 +613,7 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
           }
         }
       }
-      if (dir == home || dir == dir.parent_path()) {
+      if (homes.contains(dir) || dir == dir.parent_path()) {
         break;
       }
     }

@@ -263,7 +263,8 @@ function calling a changed helper) the handler that serves it. The section has i
 the budget, is never shed to make room for impacts, counts what it trims in
 `omitted.cross_service`, and names every repository that could not answer (`unreachable`) or was
 still building (`building`), so an empty `rows` means no caller CGraph can resolve, not that
-nobody looked; calls it cannot resolve are counted in `stats.json` under `calls_unresolved`.
+nobody looked (unless the section is a `stub` cut for budget, with `rows_found` saying how many there
+were, or carries `errors` because the workspace manifest could not be used); calls it cannot resolve are counted in `stats.json` under `calls_unresolved`.
 Changing a route's path or mount counts as removing the old route, so its callers are named.
 
 ## Quick start
