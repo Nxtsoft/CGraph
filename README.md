@@ -161,6 +161,12 @@ prefix: '/notebooks' })`, `.basePath('/v1')`) beneath every `.use(child)`, `.use
 inside `.use(new Elysia({ prefix }).get(…))`, a `.group('/v2', app => app.get(…))` or `.guard()`
 callback, and a module re-exported as `export const deckModule = deckRoutes as unknown as Elysia`
 all compose the same way. A Next.js `app/api/x/[id]/route.ts` exporting `GET` is `GET /api/x/:id`.
+A repository holding a `langgraph.json` with a non-empty `graphs` object is a LangGraph Agent
+Server: its 49 framework routes (`POST /runs/wait`, `POST /threads/{thread_id}/runs/stream`,
+`GET /assistants/{assistant_id}`, ..., the table `@langchain/langgraph-api` 1.5.1 registers, less its four `crons` routes, which answer 500 "Not implemented"; see
+https://docs.langchain.com/langsmith/server-api-ref) are served endpoints handled by a
+`langgraph_server` node spanning that object, with one `langgraph_graph` node per graph. A group
+the config switches off (`http.disable_runs`, `disable_store`, ...) is not served.
 Kotlin and Java Spring controllers get the same nodes: a method annotated `@GetMapping("/{id}")`
 (or `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`, or `@RequestMapping` with a
 `method`) under a class-level `@RequestMapping("/api/v1/users")` is `GET /api/v1/users/{id}`.
@@ -206,14 +212,17 @@ does not serve the route the node is minted with `served: false` and no source; 
 A URL whose value the file cannot read, a method a call does not spell out, a relative path
 (`v1/users`) with no base ending in `/` to join it to, or an absolute `https://` literal adds
 nothing and is counted under `route_resolution.calls_unresolved`. Kotlin and Go clients consume the same way:
-a Ktor `client.patch("$baseUrl/api/v1/sessions/$id/invalidate") { … }` on a receiver named like
-a client (`client`, `httpClient`, `api`), Go's `http.Get(url)` and `http.NewRequest(method, url,
-body)`, and any Go call passing a method (`http.MethodPost` or `"POST"`) directly followed by the
-path, such as `c.Do(ctx, http.MethodGet, "/api/v1/auth/me", nil)`. The leading `$baseUrl` of a
+a Ktor `client.patch("$baseUrl/api/v1/sessions/$id/invalidate") { … }` on a receiver whose name
+ends like a client (`client`, `httpClient`, `api`; not `clients` or `httpCache`), Go's
+`http.Get(url)` and `http.NewRequest(method, url, body)`, and any Go call passing a context, then a
+method (`http.MethodPost` or `"POST"`), then a path, such as `c.Do(ctx, http.MethodGet,
+"/api/v1/auth/me", nil)`. A Go route registration (`r.Handle(http.MethodGet, "/x", h)`), a call
+with a `func` literal argument, `httptest` and an assertion on `r.Method` carry no context or a
+handler, and are no requests. The leading `$baseUrl` of a
 Ktor URL is the host; a Go client method's path is relative to its own base, so a value in front
 of it (`n.Base+"/import"`) leaves the call unresolved. A function whose request appends one of its
 parameters (`postAuth(ctx, path, req)` calling `c.Do(ctx, http.MethodPost, path, body)`, or
-`client.post("$baseUrl$path")`) is a wrapper, and a call to it in the same file with a path
+`client.post("$baseUrl$path")`, also from inside a lambda such as `withContext(…) { … }`) is a wrapper, and a call to it in the same file with a path
 literal (`c.postAuth(ctx, "/api/v1/auth/login", req)`, `postLoginOutcome(path = "/api/v1/…")`)
 consumes the joined route. A Ktor `client.request(url) { method = … }` sets its verb in the
 builder and is counted unresolved. Because the id carries no repository, two
@@ -229,6 +238,17 @@ consumes (`CONSUMES`, `CONSUMED_AT`) and documents (`DOCUMENTED_IN`) with no han
 and reports how many endpoints matched across services, how many are consumed with no provider
 among the graphs, and, when a graph carries a contract document, the **drift**: endpoints the
 document promises that no service serves, and endpoints served that no document mentions.
+
+A front end that reaches its backend through its own catch-all proxy (idp-front-end calls
+`/api/backend/v1/users/{id}`; its `app/api/backend/[...path]/route.ts` forwards to
+`${BACKEND_URL}/api/v1/users/{id}`) names that with `--prefix REPO:/from=/to` on both `seam discover`
+and `seam fuse` (`--prefix web:/api/backend=/api`). An endpoint `web` consumes but does not serve,
+under `/api/backend`, then joins the provider's `/api/...` endpoint; its `CONSUMED_AT` edge keeps
+the consumer's own path as `via`, and the log counts the endpoints each prefix joined. A route the
+front end serves itself (`/api/backend/healthz`) is never mapped, and a proxied path only the front
+end serves is not joined. Each repository's own graph keeps its own spelling. The forwarding target
+is not read from the proxy's code: it is built at run time from the handler's parameters, so it is
+declared, not guessed.
 
 ### Contract documents
 
@@ -265,7 +285,11 @@ the traversal reaches an `endpoint:` node it forwards that contract once to the 
 with the depth that remains, so changing an API handler reports the frontend hooks that call it,
 each witness tagged with its `repo` and the contract it came through. `path` joins two repositories
 at a contract the same way, `query` and `explain` merge and tag, `update` fans out, and
-`workspace init` with no `--repo` discovers every git repository one level down. A repository
+`workspace init` with no `--repo` discovers every git repository one level down. The manifest's
+optional `prefixes` (`[{"repo": "web", "from": "/api/backend", "to": "/api"}]`) carry the same
+proxy mapping into `impact` and `path`, which then cross from web's `/api/backend/...` placeholder to the
+backend's `/api/...` endpoint and back; a `path` across it keeps both spellings. A change to web's own
+route never reaches web's proxied callers, which hit the backend's copy. A repository
 whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
 `context` and the memory ops are answered per project and say so, naming the roots to use. The
 MCP server federates too when its root is a workspace, with no new tool.

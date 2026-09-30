@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cgraph/endpoint_prefixes.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
@@ -32,6 +34,17 @@
 //
 // A repo whose daemon cannot be reached is reported in `unreachable`, never
 // silently dropped: a partial answer that looks total is worse than a loud gap.
+//
+// A repo that reaches another through its own proxy route (a Next.js
+// `/api/backend/[...path]` forwarding to the backend's `/api/...`) names that in
+// the manifest's optional `prefixes`:
+//
+//   "prefixes": [ { "repo": "web", "from": "/api/backend", "to": "/api" } ]
+//
+// `impact` and `path` then cross at `endpoint:GET /api/v1/users/{}` from web's
+// `endpoint:GET /api/backend/v1/users/{}` (and back), but only through an endpoint
+// web consumes and does not serve itself (endpoint_prefixes.hpp). Each repo's own
+// graph keeps its own spelling.
 namespace cgraph {
 
 inline constexpr std::string_view kWorkspaceFile = "cgraph.workspace.json";
@@ -45,6 +58,7 @@ struct Workspace {
   std::filesystem::path root;
   std::string name;
   std::vector<WorkspaceRepo> repos;
+  std::vector<EndpointPrefix> prefixes;  // proxy prefixes between members, manifest order
   std::vector<std::string> errors;  // non-empty when the manifest is unusable
 
   [[nodiscard]] bool ok() const { return errors.empty(); }
@@ -68,8 +82,8 @@ struct EnclosingWorkspace {
 [[nodiscard]] std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem::path& project_root);
 
 // Reads and validates `root/cgraph.workspace.json`. A missing file, malformed
-// JSON, an empty repo list, a duplicate name, or a repo root that does not exist
-// is an error; the returned Workspace then carries `errors` and no repos.
+// JSON, an empty repo list, a duplicate name, a repo root that does not exist,
+// or a `prefixes` entry that is malformed or names no member repo is an error; the returned Workspace then carries `errors` and no repos.
 [[nodiscard]] Workspace load_workspace(const std::filesystem::path& root);
 
 // The manifest text for a workspace (what `workspace init` writes): repo roots

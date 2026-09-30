@@ -48,6 +48,10 @@ DetectedLanguage detect_language(const std::filesystem::path& path) {
   if (is_msbuild_name(filename)) {
     return DetectedLanguage::MsBuild;
   }
+  // A LangGraph deployment config declares the Agent Server's routes.
+  if (filename == "langgraph.json") {
+    return DetectedLanguage::LangGraphConfig;
+  }
   // An OpenAPI document is JSON named for what it is (`openapi.json`,
   // `swagger.json`, `petstore.openapi.json`); every other .json stays undetected
   // rather than sniffing lockfiles and configs. YAML documents need a parser the
@@ -149,6 +153,8 @@ std::string_view language_name(DetectedLanguage language) {
       return "javascript";
     case DetectedLanguage::Kotlin:
       return "kotlin";
+    case DetectedLanguage::LangGraphConfig:
+      return "langgraph-config";
     case DetectedLanguage::McpConfig:
       return "mcp-config";
     case DetectedLanguage::MsBuild:

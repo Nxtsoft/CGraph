@@ -32,6 +32,13 @@ int main() {
   if (cgraph::detect_language("mcp.json") != DetectedLanguage::McpConfig) {
     return 1;
   }
+  // A LangGraph deployment config declares the Agent Server's routes; any other
+  // .json (package.json, tsconfig.json) stays undetected.
+  if (cgraph::detect_language("langgraph.json") != DetectedLanguage::LangGraphConfig ||
+      cgraph::language_name(DetectedLanguage::LangGraphConfig) != "langgraph-config" ||
+      cgraph::detect_language("package.json") != DetectedLanguage::Unknown) {
+    return 1;
+  }
   if (cgraph::detect_language("project.csproj") != DetectedLanguage::MsBuild) {
     return 1;
   }

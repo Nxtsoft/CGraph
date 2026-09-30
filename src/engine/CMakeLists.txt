@@ -14,6 +14,7 @@ add_library(cgraph_engine STATIC
   contracts.cpp
   cpp_extractor.cpp
   detect.cpp
+  endpoint_prefixes.cpp
   engine.cpp
   enrich_drainer.cpp
   extractor.cpp
@@ -28,6 +29,7 @@ add_library(cgraph_engine STATIC
   index_persistence.cpp
   http_consumers.cpp
   javascript_extractor.cpp
+  langgraph_config.cpp
   language_config.cpp
   launch_agent.cpp
   non_grammar_extractors.cpp

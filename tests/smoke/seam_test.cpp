@@ -8,11 +8,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -349,6 +351,147 @@ int test_shared_raw_id(const fs::path& root) {
   return 0;
 }
 
+// A front end reaching its backend through its own catch-all proxy
+// (`/api/backend/*` forwarded to `/api/*`): with a prefix, discover joins the
+// consumer's `/api/backend/v1/sessions/{}/extend` to the backend's
+// `/api/v1/sessions/{}/extend`, keeps the consumer's spelling on the edge, and
+// leaves a route the front end serves itself (`/api/backend/healthz`) alone.
+// Fuse redirects the service's CONSUMES edge to the joined endpoint.
+int test_proxy_prefix(const fs::path& root) {
+  const std::string proxied = "endpoint:PATCH /api/backend/v1/sessions/{}/extend";
+  const std::string provided = "endpoint:PATCH /api/v1/sessions/{}/extend";
+  const std::string local = "endpoint:GET /api/backend/healthz";
+  const std::string backend_health = "endpoint:GET /api/healthz";
+  // The front end also serves /api/saml/metadata itself; the proxy never
+  // forwards to its own routes, so /api/backend/saml/metadata stays unjoined.
+  const std::string own_route = "endpoint:GET /api/saml/metadata";
+  const std::string proxied_own = "endpoint:GET /api/backend/saml/metadata";
+  const auto web_graph = root / "proxy-web.json";
+  const auto idp_graph = root / "proxy-idp.json";
+  write_json(web_graph,
+             json{{"nodes",
+                   {{{"id", "hooks_sessions_ts_extend"}, {"label", "extendSession"}, {"type", "function"},
+                     {"source_file", "web/hooks/sessions.ts"}, {"source_location", {{"start_line", 3}, {"end_line", 9}}}},
+                    {{"id", "app_api_backend_healthz_route_ts_get"}, {"label", "GET"}, {"type", "function"},
+                     {"source_file", "web/app/api/backend/healthz/route.ts"},
+                     {"source_location", {{"start_line", 1}, {"end_line", 4}}}},
+                    {{"id", proxied}, {"label", "PATCH /api/backend/v1/sessions/{}/extend"}, {"type", "endpoint"},
+                     {"properties", {{"method", "PATCH"}, {"path", "/api/backend/v1/sessions/{}/extend"}, {"served", "false"}}}},
+                    {{"id", "app_api_saml_metadata_route_ts_get"}, {"label", "GET"}, {"type", "function"},
+                     {"source_file", "web/app/api/saml/metadata/route.ts"},
+                     {"source_location", {{"start_line", 1}, {"end_line", 4}}}},
+                    {{"id", own_route}, {"label", "GET /api/saml/metadata"}, {"type", "endpoint"},
+                     {"source_file", "web/app/api/saml/metadata/route.ts"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/saml/metadata"}}}},
+                    {{"id", proxied_own}, {"label", "GET /api/backend/saml/metadata"}, {"type", "endpoint"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/backend/saml/metadata"}, {"served", "false"}}}},
+                    {{"id", local}, {"label", "GET /api/backend/healthz"}, {"type", "endpoint"},
+                     {"source_file", "web/app/api/backend/healthz/route.ts"},
+                     {"properties", {{"method", "GET"}, {"path", "/api/backend/healthz"}}}}}},
+                  {"links",
+                   {{{"source", "hooks_sessions_ts_extend"}, {"target", proxied}, {"relation", "CONSUMES"}},
+                    {{"source", "hooks_sessions_ts_extend"}, {"target", local}, {"relation", "CONSUMES"}},
+                    {{"source", local}, {"target", "app_api_backend_healthz_route_ts_get"}, {"relation", "handled_by"}},
+                    {{"source", "hooks_sessions_ts_extend"}, {"target", proxied_own}, {"relation", "CONSUMES"}},
+                    {{"source", own_route}, {"target", "app_api_saml_metadata_route_ts_get"}, {"relation", "handled_by"}}}}});
+  write_json(idp_graph,
+             json{{"nodes",
+                   {{{"id", "sessioncontroller_extend"}, {"label", "extendSession"}, {"type", "method"},
+                     {"source_file", "idp/SessionController.kt"}, {"source_location", {{"start_line", 280}, {"end_line", 290}}}},
+                    {{"id", "healthcontroller_health"}, {"label", "health"}, {"type", "method"},
+                     {"source_file", "idp/HealthController.kt"}, {"source_location", {{"start_line", 5}, {"end_line", 7}}}},
+                    {{"id", provided}, {"label", "PATCH /api/v1/sessions/{id}/extend"}, {"type", "endpoint"},
+                     {"source_file", "idp/SessionController.kt"},
+                     {"properties", {{"method", "PATCH"}, {"path", "/api/v1/sessions/{id}/extend"}}}},
+                    {{"id", backend_health}, {"label", "GET /api/healthz"}, {"type", "endpoint"},
+                     {"source_file", "idp/HealthController.kt"}, {"properties", {{"method", "GET"}, {"path", "/api/healthz"}}}}}},
+                  {"links",
+                   {{{"source", provided}, {"target", "sessioncontroller_extend"}, {"relation", "handled_by"}},
+                    {{"source", backend_health}, {"target", "healthcontroller_health"}, {"relation", "handled_by"}}}}});
+  const std::vector<cgraph::EndpointPrefix> prefixes{{.repo = "web", .from = "/api/backend", .to = "/api"}};
+
+  // Without the prefix the two spellings never meet.
+  const auto plain = cgraph::discover_seam({{"idp", idp_graph}, {"web", web_graph}});
+  if (!plain.ok || has_edge(plain.fragment, provided, "hooks_sessions_ts_extend", "CONSUMED_AT")) {
+    std::cerr << "discover: the proxied call met its provider without a prefix\n";
+    return 1;
+  }
+
+  const auto res = cgraph::discover_seam({{"idp", idp_graph}, {"web", web_graph}}, prefixes);
+  if (!res.ok || !has_edge(res.fragment, provided, "hooks_sessions_ts_extend", "CONSUMED_AT") ||
+      !has_edge(res.fragment, "service:web", provided, "CONSUMES") ||
+      !has_edge(res.fragment, provided, "sessioncontroller_extend", "HANDLED_BY")) {
+    std::cerr << "discover: the proxied call did not join the provider's endpoint\n";
+    return 1;
+  }
+  if (find_node(res.fragment, proxied) != nullptr) {
+    std::cerr << "discover: the consumer's proxy spelling stayed a separate endpoint\n";
+    return 1;
+  }
+  const auto* joined = find_node(res.fragment, provided);
+  if (joined == nullptr || joined->properties.contains("served") || joined->label != "PATCH /api/v1/sessions/{id}/extend") {
+    std::cerr << "discover: the joined endpoint should carry the provider's spelling\n";
+    return 1;
+  }
+  bool via = false;
+  for (const auto& edge : res.fragment.edges) {
+    if (edge.relation == "CONSUMED_AT" && edge.source == provided && edge.target == "hooks_sessions_ts_extend") {
+      const auto found = edge.properties.find("via");
+      via = found != edge.properties.end() && found->second == "/api/backend/v1/sessions/{}/extend";
+    }
+  }
+  if (!via) {
+    std::cerr << "discover: CONSUMED_AT should keep the consumer's own path as `via`\n";
+    return 1;
+  }
+  // The front end serves /api/backend/healthz itself: its call stays local.
+  if (!has_edge(res.fragment, local, "hooks_sessions_ts_extend", "CONSUMED_AT") ||
+      has_edge(res.fragment, backend_health, "hooks_sessions_ts_extend", "CONSUMED_AT")) {
+    std::cerr << "discover: a route the consumer serves itself was mapped through the proxy\n";
+    return 1;
+  }
+  if (has_edge(res.fragment, own_route, "hooks_sessions_ts_extend", "CONSUMED_AT") ||
+      !has_edge(res.fragment, proxied_own, "hooks_sessions_ts_extend", "CONSUMED_AT")) {
+    std::cerr << "discover: a proxied call joined a route only the consumer itself serves\n";
+    return 1;
+  }
+  const bool logged = std::ranges::any_of(res.resolution_log, [](const std::string& line) {
+    return line == "prefix web /api/backend -> /api: 1 consumed endpoints joined at the proxied path";
+  });
+  if (!logged) {
+    std::cerr << "discover: the prefix count is not logged\n";
+    return 1;
+  }
+
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const std::vector<std::pair<std::string, cgraph::GraphSnapshot>> services{{"idp", snapshot(idp_graph)},
+                                                                            {"web", snapshot(web_graph)}};
+  const auto fused = cgraph::fuse_seam(res.fragment, services, prefixes);
+  if (!fused.ok || !has_snapshot_edge(fused.graph, "web::hooks_sessions_ts_extend", provided, "CONSUMES") ||
+      has_snapshot_edge(fused.graph, "web::hooks_sessions_ts_extend", proxied, "CONSUMES") ||
+      find_in(fused.graph, proxied) != nullptr ||
+      !has_snapshot_edge(fused.graph, "web::hooks_sessions_ts_extend", local, "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "web::hooks_sessions_ts_extend", proxied_own, "CONSUMES") ||
+      has_snapshot_edge(fused.graph, "web::hooks_sessions_ts_extend", own_route, "CONSUMES")) {
+    std::cerr << "fuse: the proxied CONSUMES edge was not redirected to the joined endpoint\n";
+    return 1;
+  }
+  // A seam discovered without the prefix does not carry the joined endpoint
+  // when no provider graph is fused: refused, never dangling.
+  const auto web_only = cgraph::discover_seam({{"web", web_graph}});
+  const auto refused = cgraph::fuse_seam(web_only.fragment, {{"web", snapshot(web_graph)}}, prefixes);
+  if (refused.ok || refused.errors.empty()) {
+    std::cerr << "fuse: a proxied edge with no joined endpoint was placed instead of refused\n";
+    return 1;
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-seam-test";
   fs::remove_all(root);
@@ -579,6 +722,9 @@ int main() {
     return 1;
   }
   if (test_shared_raw_id(root) != 0) {
+    return 1;
+  }
+  if (test_proxy_prefix(root) != 0) {
     return 1;
   }
 
