@@ -451,8 +451,65 @@ void python_router_variable(const TSNode& assignment, const ExtractionContext& c
 // (`StaticFiles(...)`) is not a router mount. A mount inside a function or with
 // a prefix that is not a literal cannot be placed; it is still recorded, with
 // no mounting chain, so resolve_contracts counts it unresolved.
+// The routers a mount's argument stands for. A name bound by an enclosing
+// `for r in (users.router, items.router):` over a literal tuple or list stands
+// for each item; any other argument stands for itself.
+[[nodiscard]] std::vector<std::string> python_mount_children(const TSNode& child, std::string_view source) {
+  auto text = node_text(child, source);
+  if (std::string_view(ts_node_type(child)) != "identifier") {
+    return {std::move(text)};
+  }
+  for (auto parent = ts_node_parent(child); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
+    const std::string_view type = ts_node_type(parent);
+    if (type == "function_definition" || type == "class_definition") {
+      break;
+    }
+    if (type != "for_statement") {
+      continue;
+    }
+    const auto left = ts_node_child_by_field_name(parent, "left", 4);
+    if (ts_node_is_null(left) || std::string_view(ts_node_type(left)) != "identifier" || node_text(left, source) != text) {
+      continue;
+    }
+    const auto right = ts_node_child_by_field_name(parent, "right", 5);
+    const std::string_view right_type = ts_node_is_null(right) ? std::string_view{} : ts_node_type(right);
+    if (right_type != "tuple" && right_type != "list" && right_type != "expression_list") {
+      break;  // `for r in ROUTERS:`: the loop name stands for routers nobody can list
+    }
+    std::vector<std::string> items;
+    const auto count = ts_node_named_child_count(right);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const auto item = ts_node_named_child(right, index);
+      const std::string_view item_type = ts_node_type(item);
+      if (item_type == "comment") {
+        continue;
+      }
+      if (item_type != "identifier" && item_type != "attribute") {
+        return {std::move(text)};
+      }
+      items.push_back(node_text(item, source));
+    }
+    return items;
+  }
+  return {std::move(text)};
+}
+
 void python_router_mount(const TSNode& call, const ExtractionContext& context, std::vector<RawRelation>& out) {
-  const auto [parent, method] = python_member_call(call, context.source);
+  // `X.include_router(...)`. X may be something other than a bare name
+  // (`app.router`, `self.app`): no chain the extractor knows, so the mount is
+  // recorded with no mounting chain and counted unresolved.
+  const auto callee = ts_node_child_by_field_name(call, "function", 8);
+  if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "attribute") {
+    return;
+  }
+  const auto object = ts_node_child_by_field_name(callee, "object", 6);
+  const auto attribute = ts_node_child_by_field_name(callee, "attribute", 9);
+  if (ts_node_is_null(object) || ts_node_is_null(attribute)) {
+    return;
+  }
+  const bool named_parent = std::string_view(ts_node_type(object)) == "identifier";
+  const std::string parent = named_parent ? node_text(object, context.source) : std::string{};
+  const auto method = node_text(attribute, context.source);
   const bool sub_application = method == "mount";
   if (method != "include_router" && !sub_application) {
     return;
@@ -470,7 +527,7 @@ void python_router_mount(const TSNode& call, const ExtractionContext& context, s
   }
   const auto prefix_node = sub_application ? argument(0, "path") : arguments.keyword("prefix");
   std::string prefix;
-  bool resolvable = !inside_function(call);
+  bool resolvable = named_parent && !inside_function(call);
   bool literal_prefix = false;
   if (prefix_node) {
     const auto literal = python_string_literal(*prefix_node, context.source);
@@ -486,13 +543,15 @@ void python_router_mount(const TSNode& call, const ExtractionContext& context, s
       return;
     }
   }
-  out.push_back(RawRelation{
-      .source_id = resolvable ? make_id(context.relative_path + ":" + parent) : std::string{},
-      .target_label = node_text(*child, context.source),
-      .relation = "mounts",
-      .context = std::move(prefix),
-      .source_file = context.source_file,
-  });
+  for (auto& label : python_mount_children(*child, context.source)) {
+    out.push_back(RawRelation{
+        .source_id = resolvable ? make_id(context.relative_path + ":" + parent) : std::string{},
+        .target_label = std::move(label),
+        .relation = "mounts",
+        .context = prefix,
+        .source_file = context.source_file,
+    });
+  }
 }
 
 void python_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope*/,

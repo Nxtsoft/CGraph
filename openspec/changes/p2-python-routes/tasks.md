@@ -24,3 +24,5 @@
 - [x] 4.6 A Python mount on a name that is no chain (`app = create_app()`, an imported `api_router`) leaves its child unplaced; JavaScript output unchanged.
 - [x] 4.7 `import a.b as x` binds `x` to the module through an aliased `imports` edge.
 - [x] 4.8 `kIndexVersionKey` bumped to `logic-10` (after #142's `logic-9`).
+- [x] 4.9 An `include_router`/`mount` on an attribute (`app.router`, `self.app`) is recorded with no mounting chain; its router mints nothing.
+- [x] 4.10 A mount in a loop over a literal tuple/list mounts each item; any other loop is a documented non-goal.

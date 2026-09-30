@@ -28,8 +28,9 @@ ml-backend, Turing's Python ML service, served 0 endpoints in its graph on bin-v
 ## Non-goals
 
 - Flask and Blueprints: `register_blueprint(bp, url_prefix=)` replaces the blueprint's own prefix, which the mount walk does not express.
-- App factories (`def create_app(): app = FastAPI(); app.include_router(...)`, or a module-level `app = create_app()`) and a mount on a router imported from another file (`api_router.include_router(users.router)`): counted unresolved, and a router mounted only there mints nothing.
+- App factories (`def create_app(): app = FastAPI(); app.include_router(...)`, or a module-level `app = create_app()`) a mount on a router imported from another file (`api_router.include_router(users.router)`), and a mount on an attribute (`app.router.include_router(...)`, `self.app.include_router(...)`): counted unresolved, and a router mounted only there mints nothing.
 - `app.add_api_route(...)`: not read. A mount of a longer dotted name (`include_router(api.v1.router)`): counted unresolved, and its router is not identified, so if nothing else mounts it, it is served at its own prefix like any unmounted router.
+- A mount in a loop over anything but a literal tuple or list (`for r in ROUTERS: app.include_router(r)`): counted unresolved, and its routers are not identified, so if nothing else mounts them they are served at their own prefix. A loop over a literal (`for r in (users.router, items.router):`) mounts each item.
 - Python HTTP clients (`requests`/`httpx`) as consumers.
 
 ## Impact

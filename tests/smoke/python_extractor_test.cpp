@@ -352,6 +352,39 @@ int fastapi_router_layouts() {
        {},
        1,
        1},
+      // A mount on an attribute (`app.router`, `self.app`) names no chain the
+      // extractor knows: counted unresolved, and its router mints nothing.
+      {"router mounted on an attribute of the app",
+       {{"main.py", "from fastapi import FastAPI\nfrom pkg import users\napp = FastAPI()\n"
+                    "app.router.include_router(users.router, prefix=\"/api\")\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"}},
+       {},
+       1,
+       1},
+      {"router mounted on an app held by an instance",
+       {{"main.py", "from fastapi import FastAPI\nfrom pkg import users\n\nclass Server:\n"
+                    "    def __init__(self):\n        self.app = FastAPI()\n"
+                    "        self.app.include_router(users.router, prefix=\"/api\")\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"}},
+       {},
+       1,
+       1},
+      // A loop over a literal tuple mounts each of its routers.
+      {"routers mounted in a loop over a literal tuple",
+       {{"main.py", "from fastapi import FastAPI\nfrom pkg import users, items\napp = FastAPI()\n"
+                    "for r in (users.router, items.router):\n    app.include_router(r, prefix=\"/api/v1\")\n"},
+        {"pkg/__init__.py", ""},
+        {"pkg/users.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/users\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_users(x_id: int):\n    return x_id\n"},
+        {"pkg/items.py", "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/items\")\n\n"
+                         "@router.get(\"/{x_id}\")\ndef get_items(x_id: int):\n    return x_id\n"}},
+       {"endpoint:GET /api/v1/items/{}", "endpoint:GET /api/v1/users/{}"},
+       0,
+       0},
   };
   int status = 0;  // every case reports, so one run shows each miss
   for (const auto& test : cases) {
