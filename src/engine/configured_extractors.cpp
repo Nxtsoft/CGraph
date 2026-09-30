@@ -763,6 +763,347 @@ void java_relation_handler(const TSNode& node, const ExtractionContext& context,
   return {};
 }
 
+// --- HTTP clients (Kotlin Ktor, Go net/http) ---------------------------------
+// The same `http_call` / `http_wrapper` facts the JavaScript extractor records
+// (contracts.hpp), so resolve_contracts turns them into CONSUMES edges
+// unchanged. A client call is:
+//   Kotlin  `client.post("$baseUrl/api/v1/x/$id") { ... }`: a get/post/put/
+//           patch/delete/head/options member call on a receiver named like an
+//           HTTP client (`client`, `httpClient`, `api`); the verb is the member.
+//   Go      `http.Get(url)`, `http.NewRequest(method, url, body)`, and any call
+//           passing a method (`http.MethodPost` or a literal "POST") directly
+//           followed by the URL: `c.Do(ctx, http.MethodPost, "/api/v1/x", b)`.
+// A call whose URL is the enclosing function's parameter makes that function a
+// wrapper (`postAuth(ctx, path, req)` -> `c.Do(ctx, http.MethodPost, path, b)`),
+// and a call to a function with a path-literal argument (`c.postAuth(ctx,
+// "/api/v1/auth/login", req)`) is a wrapper call resolve_contracts keeps only
+// when the name binds to a wrapper.
+
+// A URL argument reduced to the route path it names, as UrlTemplate does for
+// JavaScript: literal text is kept up to the query string; one leading value
+// (`$baseUrl`, `c.BaseURL`) is the host and is dropped; a value filling a whole
+// segment is a parameter, `{}`; the enclosing function's parameter as the tail
+// marks a wrapper; anything else makes the URL unresolvable.
+struct ClientUrl {
+  // Whether the URL is absolute (`http.Get(url)`, Ktor's `client.get(url)`), so a
+  // leading value is the host. A Go client method taking a path relative to its
+  // own base (`c.Do(ctx, method, path, body)`) has no host in front: a leading
+  // value there (`n.Base+"/import"`) is a path prefix this file cannot read.
+  bool absolute = true;
+  std::string path;
+  bool tail = false;
+  bool resolvable = true;
+  bool in_query = false;
+  bool dropped_host = false;
+
+  void literal(std::string_view text) {
+    if (in_query) {
+      return;
+    }
+    if (tail && !text.empty()) {
+      resolvable = false;  // text after the appended argument: not a prefix wrapper
+      return;
+    }
+    const auto cut = text.find_first_of("?#");
+    path.append(text.substr(0, cut));
+    if (cut != std::string_view::npos) {
+      in_query = true;
+    }
+  }
+  // A value this file does not read.
+  void value() {
+    if (in_query) {
+      return;
+    }
+    if (path.empty() && !tail) {
+      if (!absolute) {
+        resolvable = false;
+        return;
+      }
+      // The host. A second leading value (`$host$prefix/users`) may carry a path
+      // prefix this file cannot see: dropping it too would mint a truncated route.
+      resolvable = resolvable && !dropped_host;
+      dropped_host = true;
+      return;
+    }
+    if (!tail && path.back() == '/') {
+      path += "{}";  // a whole-segment parameter: `/sessions/$id/invalidate`
+      return;
+    }
+    resolvable = false;  // `/v1-$x`, or a value after the tail
+  }
+  // A call building part of the URL from runtime values (`ensureLeadingSlash(path)`,
+  // `base(projectId)`): at the front it may return a path, so it is not a host.
+  void built_by_call() {
+    if (in_query) {
+      return;
+    }
+    if (path.empty()) {
+      resolvable = false;
+      return;
+    }
+    value();
+  }
+  // A parameter of the enclosing function: after a slash it fills a segment;
+  // otherwise it is the tail a wrapper appends (`"$baseUrl$path"`, `path`).
+  void parameter() {
+    if (in_query) {
+      return;
+    }
+    if (tail) {
+      resolvable = false;
+      return;
+    }
+    if (!path.empty() && path.back() == '/') {
+      path += "{}";
+      return;
+    }
+    tail = true;
+  }
+  void finish() {
+    if (path.starts_with("http://") || path.starts_with("https://")) {
+      resolvable = false;  // another host, spelled out: not this repository's contract
+      return;
+    }
+    if (!tail && (path.empty() || path.front() != '/')) {
+      resolvable = false;
+    }
+  }
+};
+
+[[nodiscard]] std::string upper_ascii(std::string text) {
+  for (auto& ch : text) {
+    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  }
+  return text;
+}
+
+[[nodiscard]] std::string lower_ascii(std::string text) {
+  for (auto& ch : text) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return text;
+}
+
+// The receiver of `X.get(url)` is an HTTP client when its name says so, so a
+// `map.get("/key")` or a `cache.delete(key)` is never read as a request.
+[[nodiscard]] bool names_http_client(std::string_view receiver) {
+  const auto lower = lower_ascii(std::string(receiver));
+  return lower.find("client") != std::string::npos || lower.find("http") != std::string::npos ||
+         lower == "api" || lower.ends_with("api");
+}
+
+[[nodiscard]] TSNode named_child_of_type(const TSNode& node, std::string_view type) {
+  const auto count = ts_node_named_child_count(node);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode child = ts_node_named_child(node, index);
+    if (std::string_view(ts_node_type(child)) == type) {
+      return child;
+    }
+  }
+  return TSNode{};
+}
+
+// The http_call fact for a request, or the http_wrapper fact when the URL is
+// the enclosing function's parameter. `method` is uppercase, empty when the
+// call does not fix it (then the URL is left unresolved: a verb cannot be
+// guessed). `client` carries a `.` for a primitive client call and is a bare
+// name for a call to a (possible) wrapper.
+void emit_client_call(const ExtractionContext& context, const std::string& function_scope_id, std::string client,
+                      const std::string& method, ClientUrl url, std::vector<RawRelation>& out) {
+  url.finish();
+  if (url.tail && url.resolvable && !method.empty() && !function_scope_id.empty()) {
+    out.push_back(RawRelation{
+        .source_id = function_scope_id,
+        .target_label = std::move(client),
+        .relation = "http_wrapper",
+        .context = method + " " + url.path,
+        .source_file = context.source_file,
+    });
+    return;
+  }
+  // A parameter tail that is no prefix wrapper (`path+"?"+q`, a verb held in a
+  // variable) leaves the request itself unresolved.
+  const bool resolved = url.resolvable && !url.tail && !method.empty();
+  out.push_back(RawRelation{
+      .source_id = function_scope_id.empty() ? make_id(context.relative_path) : function_scope_id,
+      .target_label = std::move(client),
+      .relation = "http_call",
+      .context = method + " " + (resolved ? url.path : std::string{}),
+      .source_file = context.source_file,
+  });
+}
+
+// A call to a function (not a client) with a path-literal argument: the first
+// such argument is the path a wrapper appends. Method empty: the wrapper fixes it.
+void emit_wrapper_call(const ExtractionContext& context, const std::string& function_scope_id, std::string callee,
+                       const ClientUrl& url, std::vector<RawRelation>& out) {
+  out.push_back(RawRelation{
+      .source_id = function_scope_id.empty() ? make_id(context.relative_path) : function_scope_id,
+      .target_label = std::move(callee),
+      .relation = "http_call",
+      .context = " " + url.path,
+      .source_file = context.source_file,
+  });
+}
+
+// Kotlin: the parameters of the nearest enclosing named function. A lambda in
+// between (`request(send = { token -> client.post(...) })`) is its own scope:
+// its parameters are not the function's, so none count as a wrapper tail.
+[[nodiscard]] std::vector<std::string> kotlin_enclosing_parameters(const TSNode& node, std::string_view source) {
+  std::vector<std::string> names;
+  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+    const std::string_view type = ts_node_type(ancestor);
+    if (type == "lambda_literal" || type == "anonymous_function") {
+      return names;
+    }
+    if (type != "function_declaration") {
+      continue;
+    }
+    const TSNode parameters = named_child_of_type(ancestor, "function_value_parameters");
+    const auto count = ts_node_named_child_count(parameters);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode parameter = ts_node_named_child(parameters, index);
+      if (std::string_view(ts_node_type(parameter)) == "parameter") {
+        names.push_back(go_node_text(named_child_of_type(parameter, "simple_identifier"), source));
+      }
+    }
+    return names;
+  }
+  return names;
+}
+
+void kotlin_collect_url(const TSNode& node, std::string_view source, const std::vector<std::string>& parameters,
+                        ClientUrl& url) {
+  const std::string_view type = ts_node_type(node);
+  const auto named = [&](const TSNode& identifier) {
+    if (std::ranges::find(parameters, go_node_text(identifier, source)) != parameters.end()) {
+      url.parameter();
+    } else {
+      url.value();
+    }
+  };
+  if (type == "string_literal") {
+    const auto count = ts_node_named_child_count(node);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode part = ts_node_named_child(node, index);
+      const std::string_view part_type = ts_node_type(part);
+      if (part_type == "string_content") {
+        url.literal(go_node_text(part, source));
+      } else if (part_type == "interpolated_identifier") {
+        named(part);
+      } else if (part_type == "interpolated_expression") {
+        const TSNode inner = ts_node_named_child(part, 0);
+        const std::string_view inner_type = ts_node_is_null(inner) ? std::string_view{} : ts_node_type(inner);
+        if (inner_type == "simple_identifier") {
+          named(inner);
+        } else if (inner_type == "call_expression") {
+          url.built_by_call();
+        } else {
+          url.value();
+        }
+      }
+    }
+    return;
+  }
+  if (type == "simple_identifier") {
+    named(node);
+    return;
+  }
+  if (type == "additive_expression" && ts_node_named_child_count(node) == 2 && ts_node_child_count(node) == 3 &&
+      std::string_view(ts_node_type(ts_node_child(node, 1))) == "+") {
+    kotlin_collect_url(ts_node_named_child(node, 0), source, parameters, url);
+    kotlin_collect_url(ts_node_named_child(node, 1), source, parameters, url);
+    return;
+  }
+  if (type == "call_expression") {
+    url.built_by_call();
+    return;
+  }
+  url.value();
+}
+
+// The expression of a `value_argument`: its last named child (a named argument
+// `path = "..."` puts the label first).
+[[nodiscard]] TSNode kotlin_argument_value(const TSNode& argument) {
+  const auto count = ts_node_named_child_count(argument);
+  return count == 0 ? TSNode{} : ts_node_named_child(argument, count - 1);
+}
+
+// The last name of a receiver: `client`, `this.client`, `registered.client`.
+[[nodiscard]] std::string kotlin_receiver_name(const TSNode& receiver, std::string_view source) {
+  const std::string_view type = ts_node_type(receiver);
+  if (type == "simple_identifier") {
+    return go_node_text(receiver, source);
+  }
+  if (type != "navigation_expression") {
+    return {};
+  }
+  const auto count = ts_node_named_child_count(receiver);
+  const TSNode suffix = count == 0 ? TSNode{} : ts_node_named_child(receiver, count - 1);
+  if (ts_node_is_null(suffix) || std::string_view(ts_node_type(suffix)) != "navigation_suffix") {
+    return {};
+  }
+  return go_node_text(named_child_of_type(suffix, "simple_identifier"), source);
+}
+
+void kotlin_http_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                      Fragment& /*fragment*/, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& out) {
+  if (std::string_view(ts_node_type(node)) != "call_expression") {
+    return;
+  }
+  const TSNode callee = ts_node_named_child(node, 0);
+  const TSNode suffix = named_child_of_type(node, "call_suffix");
+  const TSNode arguments = ts_node_is_null(suffix) ? TSNode{} : named_child_of_type(suffix, "value_arguments");
+  if (ts_node_is_null(callee) || ts_node_is_null(arguments) || ts_node_named_child_count(arguments) == 0) {
+    return;  // `restClient.post()` starts a builder chain: no URL here
+  }
+  const std::string_view callee_type = ts_node_type(callee);
+  if (callee_type == "navigation_expression") {
+    const auto count = ts_node_named_child_count(callee);
+    const TSNode member = ts_node_named_child(callee, count - 1);
+    if (count != 2 || std::string_view(ts_node_type(member)) != "navigation_suffix") {
+      return;
+    }
+    const auto verb = go_node_text(named_child_of_type(member, "simple_identifier"), context.source);
+    const bool request = verb == "request";
+    if ((!is_http_verb(verb) || verb == "all") && !request) {
+      return;
+    }
+    const auto receiver = kotlin_receiver_name(ts_node_named_child(callee, 0), context.source);
+    if (!names_http_client(receiver)) {
+      return;
+    }
+    ClientUrl url;
+    kotlin_collect_url(kotlin_argument_value(ts_node_named_child(arguments, 0)), context.source,
+                       kotlin_enclosing_parameters(node, context.source), url);
+    // `client.request(url) { method = ... }` sets its verb in the builder, which
+    // this does not read: the call counts, unresolved.
+    emit_client_call(context, function_scope_id, receiver + "." + verb, request ? std::string{} : upper_ascii(verb),
+                     std::move(url), out);
+    return;
+  }
+  if (callee_type != "simple_identifier") {
+    return;
+  }
+  // `postLoginOutcome(path = "/api/v1/auth/login", ...)`, `decide(token,
+  // "$baseUrl/api/v1/x/$id/approve")`: a possible wrapper call.
+  const auto count = ts_node_named_child_count(arguments);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const TSNode value = kotlin_argument_value(ts_node_named_child(arguments, index));
+    if (ts_node_is_null(value) || std::string_view(ts_node_type(value)) != "string_literal") {
+      continue;
+    }
+    ClientUrl url;
+    kotlin_collect_url(value, context.source, {}, url);
+    url.finish();
+    if (url.resolvable && url.path.find_first_not_of('/') != std::string::npos) {
+      emit_wrapper_call(context, function_scope_id, go_node_text(callee, context.source), url, out);
+      return;  // the first path-like string argument is the path
+    }
+  }
+}
+
 [[nodiscard]] LanguageConfig kotlin_config() {
   LanguageConfig config{
       .name = "kotlin",
@@ -780,6 +1121,7 @@ void java_relation_handler(const TSNode& node, const ExtractionContext& context,
   config.resolve_callee_name = kotlin_callee_name;
   config.resolve_function_name = kotlin_symbol_name;
   config.relation_handler = kotlin_relation_handler;
+  config.extra_walk = kotlin_http_walk;
   return config;
 }
 
@@ -891,15 +1233,192 @@ void go_relation_handler(const TSNode& node, const ExtractionContext& context, c
   });
 }
 
+// Go: the parameter names of the nearest enclosing function or method. A
+// function literal in between is its own scope (see kotlin_enclosing_parameters).
+[[nodiscard]] std::vector<std::string> go_enclosing_parameters(const TSNode& node, std::string_view source) {
+  std::vector<std::string> names;
+  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+    const std::string_view type = ts_node_type(ancestor);
+    if (type == "func_literal") {
+      return names;
+    }
+    if (type != "function_declaration" && type != "method_declaration") {
+      continue;
+    }
+    const TSNode parameters = ts_node_child_by_field_name(ancestor, "parameters", 10);
+    const auto count = ts_node_named_child_count(parameters);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const TSNode declaration = ts_node_named_child(parameters, index);
+      const auto names_count = ts_node_named_child_count(declaration);
+      for (std::uint32_t n = 0; n < names_count; ++n) {
+        const TSNode child = ts_node_named_child(declaration, n);
+        if (std::string_view(ts_node_type(child)) == "identifier") {
+          names.push_back(go_node_text(child, source));  // `method, path string` names two
+        }
+      }
+    }
+    return names;
+  }
+  return names;
+}
+
+// The text of a Go string literal, or nullopt for anything else.
+[[nodiscard]] std::optional<std::string> go_string_value(const TSNode& node, std::string_view source) {
+  const std::string_view type = ts_node_type(node);
+  if (type != "interpreted_string_literal" && type != "raw_string_literal") {
+    return std::nullopt;
+  }
+  const auto text = go_node_text(node, source);
+  return text.size() >= 2 ? text.substr(1, text.size() - 2) : std::string{};
+}
+
+void go_collect_url(const TSNode& node, std::string_view source, const std::vector<std::string>& parameters,
+                    ClientUrl& url) {
+  const std::string_view type = ts_node_type(node);
+  if (const auto text = go_string_value(node, source)) {
+    url.literal(*text);
+    return;
+  }
+  if (type == "identifier") {
+    if (std::ranges::find(parameters, go_node_text(node, source)) != parameters.end()) {
+      url.parameter();
+    } else {
+      url.value();
+    }
+    return;
+  }
+  if (type == "binary_expression" &&
+      go_node_text(ts_node_child_by_field_name(node, "operator", 8), source) == "+") {
+    go_collect_url(ts_node_child_by_field_name(node, "left", 4), source, parameters, url);
+    go_collect_url(ts_node_child_by_field_name(node, "right", 5), source, parameters, url);
+    return;
+  }
+  if (type == "parenthesized_expression" && ts_node_named_child_count(node) == 1) {
+    go_collect_url(ts_node_named_child(node, 0), source, parameters, url);
+    return;
+  }
+  if (type == "call_expression") {
+    url.built_by_call();
+    return;
+  }
+  url.value();
+}
+
+// The HTTP method an argument names: `http.MethodPost` or a literal "POST".
+// Empty when it names none.
+[[nodiscard]] std::string go_method_argument(const TSNode& argument, std::string_view source) {
+  std::string name;
+  if (std::string_view(ts_node_type(argument)) == "selector_expression") {
+    if (go_node_text(ts_node_child_by_field_name(argument, "operand", 7), source) != "http") {
+      return {};
+    }
+    const auto field = go_node_text(ts_node_child_by_field_name(argument, "field", 5), source);
+    if (!field.starts_with("Method")) {
+      return {};
+    }
+    name = field.substr(6);
+  } else if (const auto text = go_string_value(argument, source); text && *text == upper_ascii(*text)) {
+    name = *text;
+  }
+  const auto lower = lower_ascii(name);
+  return is_http_verb(lower) && lower != "all" ? upper_ascii(name) : std::string{};
+}
+
+void go_http_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                  std::vector<RawRelation>& out) {
+  if (std::string_view(ts_node_type(node)) != "call_expression") {
+    return;
+  }
+  const TSNode callee = ts_node_child_by_field_name(node, "function", 8);
+  const TSNode arguments = ts_node_child_by_field_name(node, "arguments", 9);
+  if (ts_node_is_null(callee) || ts_node_is_null(arguments)) {
+    return;
+  }
+  std::vector<TSNode> args;
+  for (std::uint32_t index = 0; index < ts_node_named_child_count(arguments); ++index) {
+    const TSNode argument = ts_node_named_child(arguments, index);
+    if (std::string_view(ts_node_type(argument)) != "comment") {
+      args.push_back(argument);
+    }
+  }
+  if (args.empty()) {
+    return;
+  }
+  std::string package;
+  std::string name;
+  const std::string_view callee_type = ts_node_type(callee);
+  if (callee_type == "selector_expression") {
+    const TSNode operand = ts_node_child_by_field_name(callee, "operand", 7);
+    if (std::string_view(ts_node_type(operand)) == "identifier") {
+      package = go_node_text(operand, context.source);
+    } else if (std::string_view(ts_node_type(operand)) == "selector_expression") {
+      package = go_node_text(ts_node_child_by_field_name(operand, "field", 5), context.source);  // `c.http.Do`
+    }
+    name = go_node_text(ts_node_child_by_field_name(callee, "field", 5), context.source);
+  } else if (callee_type == "identifier") {
+    name = go_node_text(callee, context.source);
+  } else {
+    return;
+  }
+  const auto client = package.empty() ? name : package + "." + name;
+  const auto parameters = go_enclosing_parameters(node, context.source);
+  const auto request = [&](std::string method, const TSNode& url_argument, bool absolute) {
+    ClientUrl url{.absolute = absolute};
+    go_collect_url(url_argument, context.source, parameters, url);
+    emit_client_call(context, function_scope_id, client, method, std::move(url), out);
+  };
+  // net/http's own entry points.
+  if (package == "http") {
+    static constexpr std::pair<std::string_view, std::string_view> kShorthands[] = {
+        {"Get", "GET"}, {"Head", "HEAD"}, {"Post", "POST"}, {"PostForm", "POST"}};
+    for (const auto& [function, method] : kShorthands) {
+      if (name == function) {
+        request(std::string(method), args[0], true);
+        return;
+      }
+    }
+    if (name == "NewRequest" || name == "NewRequestWithContext") {
+      const std::size_t method_index = name == "NewRequest" ? 0 : 1;
+      if (args.size() > method_index + 1) {
+        request(go_method_argument(args[method_index], context.source), args[method_index + 1], true);
+      }
+      return;
+    }
+  }
+  // A client method taking the verb and then the URL: `c.Do(ctx, http.MethodGet, "/api/v1/auth/me", nil)`.
+  for (std::size_t index = 0; index + 1 < args.size(); ++index) {
+    if (auto method = go_method_argument(args[index], context.source); !method.empty()) {
+      request(std::move(method), args[index + 1], false);
+      return;
+    }
+  }
+  // `c.postAuth(ctx, "/api/v1/auth/login", req)`: a possible wrapper call, by the
+  // bare name resolve_contracts binds in this file.
+  for (const auto& argument : args) {
+    const auto text = go_string_value(argument, context.source);
+    if (!text) {
+      continue;
+    }
+    ClientUrl url;
+    url.literal(*text);
+    url.finish();
+    if (url.resolvable && url.path.find_first_not_of('/') != std::string::npos) {
+      emit_wrapper_call(context, function_scope_id, name, url, out);
+      return;  // the first path-like string argument is the path
+    }
+  }
+}
+
 // Materializes Go interface method sets: each `method_elem` of an
 // `interface_type` becomes a function node (tagged interface_method) owned by
 // the interface's type node via a `method` edge, so dispatch resolution can
 // see what an interface promises. The node id is namespaced — an interface
 // method is a contract entry, never the same node as an implementation.
 void go_extra_walk(const TSNode& node, const ExtractionContext& context,
-                   const std::string& /*function_scope_id*/, Fragment& fragment,
-                   std::vector<RawCall>& raw_calls, std::vector<RawRelation>&) {
+                   const std::string& function_scope_id, Fragment& fragment,
+                   std::vector<RawCall>& raw_calls, std::vector<RawRelation>& raw_relations) {
   (void)raw_calls;
+  go_http_walk(node, context, function_scope_id, raw_relations);
   if (std::string_view(ts_node_type(node)) != "type_spec") {
     return;
   }
