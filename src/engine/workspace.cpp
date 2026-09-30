@@ -140,7 +140,7 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
       ++reachable;
       nodes += result->value("node_count", std::size_t{0});
       edges += result->value("edge_count", std::size_t{0});
-      for (const auto* key : {"node_count", "edge_count", "build_state", "uptime_seconds"}) {
+      for (const auto* key : {"node_count", "edge_count", "build_state", "uptime_seconds", "route_resolution"}) {
         if (const auto value = result->find(key); value != result->end()) {
           entry[key] = *value;
         }
@@ -591,8 +591,10 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
           }
           if (member != nullptr) {
             auto name = member->name;
+            auto declared = member->root;
             member->root = root;
-            return EnclosingWorkspace{.workspace = std::move(workspace), .home = std::move(name)};
+            return EnclosingWorkspace{.workspace = std::move(workspace), .home = std::move(name),
+                                      .home_root = std::move(declared)};
           }
         } else {
           // A manifest that lists this root but cannot be used (a malformed
@@ -607,7 +609,8 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
               auto resolved = std::filesystem::weakly_canonical(declared.is_absolute() ? declared : dir / declared, error);
               if (!error && contains(resolved, root)) {
                 workspace.name = manifest.value("name", dir.filename().generic_string());
-                return EnclosingWorkspace{.workspace = std::move(workspace), .home = entry.value("name", std::string{})};
+                return EnclosingWorkspace{.workspace = std::move(workspace), .home = entry.value("name", std::string{}),
+                                          .home_root = resolved};
               }
             }
           }

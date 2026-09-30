@@ -4,6 +4,8 @@
 #include "cgraph/detect.hpp"
 #include "cgraph/file_cache.hpp"
 
+#include "cgraph/operation_stats.hpp"
+
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -21,6 +23,9 @@ struct IndexManifest {
   std::string version_key;
   std::vector<FileCacheEntry> files;
   ContentRoot content_root;
+  // The route and client-call tallies of the build the graph came from, so a
+  // fast-loaded daemon's status can report them; absent in older manifests.
+  std::optional<ContractResolution> route_resolution;
 };
 
 // Logic version of the persisted pipeline artifacts. A persisted cache is

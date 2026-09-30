@@ -92,6 +92,36 @@ double query_zero_hit_rate(std::size_t query_count, std::size_t query_zero_hits)
                           : static_cast<double>(query_zero_hits) / static_cast<double>(query_count);
 }
 
+nlohmann::json contract_resolution_json(const ContractResolution& contracts) {
+  return {
+      {"routes", contracts.routes},
+      {"routes_unresolved", contracts.routes_unresolved},
+      {"mounts", contracts.mounts},
+      {"mounts_unresolved", contracts.mounts_unresolved},
+      {"endpoints", contracts.endpoints},
+      {"calls", contracts.calls},
+      {"calls_unresolved", contracts.calls_unresolved},
+      {"consumes", contracts.consumes},
+      {"endpoints_external", contracts.endpoints_external},
+      {"endpoints_documented", contracts.endpoints_documented},
+  };
+}
+
+ContractResolution contract_resolution_from_json(const nlohmann::json& value) {
+  ContractResolution contracts;
+  contracts.routes = value.value("routes", std::size_t{0});
+  contracts.routes_unresolved = value.value("routes_unresolved", std::size_t{0});
+  contracts.mounts = value.value("mounts", std::size_t{0});
+  contracts.mounts_unresolved = value.value("mounts_unresolved", std::size_t{0});
+  contracts.endpoints = value.value("endpoints", std::size_t{0});
+  contracts.calls = value.value("calls", std::size_t{0});
+  contracts.calls_unresolved = value.value("calls_unresolved", std::size_t{0});
+  contracts.consumes = value.value("consumes", std::size_t{0});
+  contracts.endpoints_external = value.value("endpoints_external", std::size_t{0});
+  contracts.endpoints_documented = value.value("endpoints_documented", std::size_t{0});
+  return contracts;
+}
+
 nlohmann::json build_stats_json(const BuildStats& stats) {
   nlohmann::json phases{
       {"extract_ms", stats.extract_ms},
@@ -131,19 +161,7 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
            {"balances", stats.calls.balances()},
        }},
       // Likewise an unresolved route mints no endpoint node.
-      {"route_resolution",
-       {
-           {"routes", stats.contracts.routes},
-           {"routes_unresolved", stats.contracts.routes_unresolved},
-           {"mounts", stats.contracts.mounts},
-           {"mounts_unresolved", stats.contracts.mounts_unresolved},
-           {"endpoints", stats.contracts.endpoints},
-           {"calls", stats.contracts.calls},
-           {"calls_unresolved", stats.contracts.calls_unresolved},
-           {"consumes", stats.contracts.consumes},
-           {"endpoints_external", stats.contracts.endpoints_external},
-           {"endpoints_documented", stats.contracts.endpoints_documented},
-       }},
+      {"route_resolution", contract_resolution_json(stats.contracts)},
   };
   // Modeled, labeled, and omitted when it cannot be honestly formed.
   if (const auto saved = modeled_cache_saved_ms(stats.files_cache_hit, stats.files_extracted, stats.extract_ms)) {

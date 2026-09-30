@@ -312,6 +312,11 @@ struct DaemonOpStats {
 
 // stats.json body for a one-shot build, including the modeled saving when one
 // can be formed.
+// The route and client-call tallies (`route_resolution` in stats.json and in
+// daemon status): how many routes, mounts and calls resolved, and how many did not.
+[[nodiscard]] nlohmann::json contract_resolution_json(const ContractResolution& contracts);
+[[nodiscard]] ContractResolution contract_resolution_from_json(const nlohmann::json& value);
+
 [[nodiscard]] nlohmann::json build_stats_json(const BuildStats& stats);
 
 // One-line human-readable summary for stderr (file/node/edge counts + total time

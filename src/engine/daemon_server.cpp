@@ -634,6 +634,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     IndexManifest manifest;
     manifest.version_key = index_version_key();
     manifest.content_root = deterministic_graph.content_root;
+    {
+      const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+      manifest.route_resolution = state.route_resolution;
+    }
     manifest.files.reserve(index.cache.size());
     for (const auto& [_, entry] : index.cache) {
       manifest.files.push_back(entry);
@@ -666,6 +670,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         // this call, so reading it unlocked is safe.
         const std::scoped_lock enrichment_lock(state.enrichment_mutex);
         state.unextracted = scan_state.unextracted;
+        state.route_resolution = scan_state.route_resolution;
         state.last_files_cache_hit = scan_state.last_files_cache_hit;
         state.last_extract_mean_ms = scan_state.last_extract_mean_ms;
       }
@@ -743,6 +748,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     {
       const std::scoped_lock enrichment_lock(state.enrichment_mutex);  // status reads unextracted
       state.unextracted = unextracted_counts(detected);
+      state.route_resolution = manifest->route_resolution;  // the tallies of the build it came from
     }
     // Reconcile from the deterministic fast-loaded graph before publishing any
     // cache-valid semantic drops or memory sidecars.
@@ -908,6 +914,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
             {
               const std::scoped_lock enrichment_lock(state.enrichment_mutex);
               state.unextracted = hydration_state.unextracted;
+              state.route_resolution = hydration_state.route_resolution;
               state.last_files_cache_hit = hydration_state.last_files_cache_hit;
               state.last_extract_mean_ms = hydration_state.last_extract_mean_ms;
             }

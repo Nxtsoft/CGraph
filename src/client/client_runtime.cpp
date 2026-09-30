@@ -1,6 +1,7 @@
 #include "cgraph/client_runtime.hpp"
 
 #include "cgraph/change_context.hpp"
+#include "cgraph/normalize.hpp"
 
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_server.hpp"
@@ -370,6 +371,143 @@ nlohmann::json change_context_across_workspace(const nlohmann::json& parameters,
   }
   const CrossServiceAsk ask{.enclosing = &scope->enclosing, .ask = scope->ask};
   return change_context(parameters, &ask);
+}
+
+nlohmann::json cross_service_for_file(const ClientRequest& base, const std::filesystem::path& file,
+                                      std::size_t max_contracts) {
+  nlohmann::json out{{"file", file.generic_string()}, {"workspace", nullptr}, {"summary", nlohmann::json::array()}};
+  std::error_code error;
+  const auto root = std::filesystem::weakly_canonical(base.project_root, error);
+  // A relative file is relative to the project root, not to where the client runs.
+  const auto path = std::filesystem::weakly_canonical(file.is_absolute() ? file : root / file, error);
+  const auto relative_path = path.lexically_relative(root);
+  if (relative_path.empty() || *relative_path.begin() == "..") {
+    out["error"] = "file is outside the project root " + root.generic_string();
+    return out;
+  }
+  const auto relative = relative_path.generic_string();
+  out["file"] = relative;
+  const auto hooks = default_client_runtime_hooks(base);
+  const auto scope = cross_service_scope_for(base, hooks);
+  if (!scope) {
+    return out;
+  }
+  out["workspace"] = scope->enclosing.workspace.name;
+  auto& summary = out["summary"];
+  if (!scope->enclosing.workspace.ok()) {
+    for (const auto& problem : scope->enclosing.workspace.errors) summary.push_back("workspace manifest unusable: " + problem);
+    return out;
+  }
+  // The file's own endpoints, walking only its own structure (never imports):
+  // a route it declares is `contains` at depth 1; one its functions or class
+  // methods call is reached through CONSUMES. The home repo is asked through
+  // the same ask as the others, so one wait covers the whole lookup.
+  const auto home = std::ranges::find(scope->enclosing.workspace.repos, scope->enclosing.home, &WorkspaceRepo::name);
+  std::string ask_error;
+  const auto answer = scope->ask(*home, "impact",
+                                 {{"id", make_id(relative)}, {"direction", "dependencies"},
+                                  {"relation", nlohmann::json::array({"contains", "defines", "method", "CONSUMES"})},
+                                  {"max_depth", 3}},
+                                 ask_error);
+  if (!answer || !answer->value("ok", false)) {
+    summary.push_back("could not read " + scope->enclosing.home + ": " +
+                      (answer ? answer->value("error", std::string{"request failed"}) : ask_error));
+    return out;
+  }
+  const auto& found = answer->at("result");
+  if (found.value("graph_state", std::string{}) == "building") {
+    summary.push_back(scope->enclosing.home + " (this repository) is still building: its endpoints are not known yet");
+    return out;
+  }
+  CrossServiceContracts contracts;
+  for (const auto& node : found.value("nodes", nlohmann::json::array())) {
+    const auto id = node.value("id", std::string{});
+    const auto via = node.value("via", std::string{});
+    if (!id.starts_with("endpoint:")) continue;
+    if (via == "contains" && node.value("depth", 0) == 1) {
+      auto& contract = contracts[id];
+      contract.roles.insert("serves");
+      contract.rank = 0;
+    } else if (via == "CONSUMES") {
+      auto& contract = contracts[id];
+      contract.roles.insert("consumes");
+      contract.rank = std::min(contract.rank, 1);
+    }
+  }
+  const CrossServiceAsk ask{.enclosing = &scope->enclosing, .ask = scope->ask};
+  auto section = cross_service_section(ask, contracts, max_contracts);
+  for (const auto& row : section["rows"]) {
+    const auto contract = row.value("contract", std::string{}).substr(std::string_view("endpoint:").size());
+    const bool consumer = row.value("relation", std::string{}) == "consumer";
+    summary.push_back(relative + (consumer ? " serves " : " calls ") + contract + (consumer ? ", called from " : ", served by ") +
+                      row.value("repo", std::string{}) + " " + row.value("path", std::string{}) + ":" +
+                      std::to_string(row.value("line", 0)) + " (" + row.value("label", std::string{}) + ")");
+  }
+  out["crossings"] = section["rows"].size();
+  if (const auto omitted = section.value("contracts_omitted", std::size_t{0}); omitted > 0) {
+    summary.push_back(std::to_string(omitted) + " more endpoint(s) in this file were not checked (limit " +
+                      std::to_string(max_contracts) + "); run graph_change_context on the diff for all of them");
+  }
+  for (const auto& gap : section["unreachable"]) {
+    summary.push_back("could not ask " + gap.value("repo", std::string{}) + ": its callers are unknown");
+  }
+  for (const auto& repo : section["building"]) {
+    summary.push_back(repo.get<std::string>() + " is still building: its callers may be missing");
+  }
+  out["cross_service"] = std::move(section);
+  return out;
+}
+
+std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_input, const ClientRequest& base,
+                                                   std::chrono::milliseconds wait) {
+  if (!hook_input.is_object()) {
+    return std::nullopt;
+  }
+  const auto tool_input = hook_input.value("tool_input", nlohmann::json::object());
+  const auto file_text = tool_input.is_object() ? tool_input.value("file_path", std::string{}) : std::string{};
+  std::error_code error;
+  if (file_text.empty() || !std::filesystem::is_regular_file(file_text, error)) {
+    return std::nullopt;
+  }
+  const auto file = std::filesystem::weakly_canonical(file_text, error);
+  // The project root: the file's repository (nearest `.git`; a worktree's is a
+  // file) when a workspace lists it, else the workspace member that holds the
+  // file (members sharing one repository, as in a monorepo).
+  std::filesystem::path repo;
+  for (auto dir = file.parent_path(); !dir.empty(); dir = dir.parent_path()) {
+    if (std::filesystem::exists(dir / ".git", error)) {
+      repo = dir;
+      break;
+    }
+    if (dir == dir.parent_path()) break;
+  }
+  std::filesystem::path root;
+  if (!repo.empty() && find_enclosing_workspace(repo)) {
+    root = repo;
+  } else if (const auto enclosing = find_enclosing_workspace(file.parent_path())) {
+    root = enclosing->home_root;
+  }
+  if (root.empty()) {
+    return std::nullopt;
+  }
+  ClientRequest request = base;
+  request.project_root = root;
+  request.build_wait = wait;
+  const auto found = cross_service_for_file(request, file, kHookMaxContracts);
+  const auto& lines = found.at("summary");
+  if (lines.empty()) {
+    return std::nullopt;
+  }
+  const bool crosses = found.value("crossings", std::size_t{0}) > 0;
+  std::string context = std::string("cgraph: ") +
+                        (crosses ? "editing " + found.value("file", std::string{}) + " crosses into other services"
+                                 : "could not fully check " + found.value("file", std::string{}) + " for other services") +
+                        " (" + found.value("workspace", std::string{}) + " workspace):";
+  for (const auto& line : lines) {
+    context += "\n- " + line.get<std::string>();
+  }
+  if (crosses) context += "\nCheck those callers before changing a route, request or response shape.";
+  return nlohmann::json{{"hookSpecificOutput", {{"hookEventName", "PreToolUse"}, {"additionalContext", context}}}};
 }
 
 }  // namespace cgraph

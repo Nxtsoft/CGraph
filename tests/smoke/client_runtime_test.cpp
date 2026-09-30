@@ -274,6 +274,21 @@ int main() {
       (void)finish(false);
       return 1;
     }
+    // Editing a file in the repo that is still building: the hook says so,
+    // never the silence that means "nothing crosses a service".
+    {
+      fs::create_directories(web / ".git");
+      const nlohmann::json input{{"tool_name", "Edit"}, {"tool_input", {{"file_path", (web / "src" / "stats.ts").generic_string()}}}};
+      const auto building_hook = cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, 300ms);
+      const auto text = building_hook ? building_hook->at("hookSpecificOutput").value("additionalContext", std::string{})
+                                      : std::string{};
+      if (text.find("web (this repository) is still building") == std::string::npos ||
+          text.find("could not fully check") == std::string::npos) {
+        std::cerr << "hook while home builds: " << (building_hook ? building_hook->dump() : "silent") << '\n';
+        (void)finish(false);
+        return 1;
+      }
+    }
     // The default wait outlasts a build that publishes shortly: web's consumer
     // is in the answer and nothing is marked building.
     release = std::thread([&] {
@@ -341,6 +356,9 @@ int main() {
     }
     for (const auto& root : {web, ws / "web-base"}) write_file(root / "src" / "stats.ts", web_before);
     fs::create_directories(ws / "billing");
+    // Each repo is a repository to the pre-edit hook, which starts from `.git`.
+    fs::create_directories(api / ".git");
+    fs::create_directories(web / ".git");
     // billing must be unreachable whatever the environment: with no graphd to
     // start, asking it fails. Restored when the block ends.
     const char* daemon_env = std::getenv("CGRAPH_DAEMON_PATH");
@@ -368,6 +386,14 @@ int main() {
       if (daemon_env != nullptr) (void)set_environment("CGRAPH_DAEMON_PATH", saved_daemon.c_str());
       return passed;
     };
+    // The daemons listen from threads just started: wait until each accepts, or
+    // the first ask races them and tries to spawn one of its own.
+    for (const auto& root : {api, web}) {
+      const auto identity = cgraph::daemon_identity_for(root);
+      const auto probe = cgraph::make_request("status", nlohmann::json::object());
+      const auto hooks = cgraph::default_client_runtime_hooks(cgraph::ClientRequest{.project_root = root});
+      for (int attempt = 0; attempt < 200 && !hooks.connect(identity, probe); ++attempt) std::this_thread::sleep_for(25ms);
+    }
     const auto fail = [&](const std::string& what, const nlohmann::json& got) {
       std::cerr << what << ": " << got.dump() << '\n';
       (void)finish(false);
@@ -528,6 +554,80 @@ int main() {
       }
     } catch (const std::exception& error) {
       return fail(std::string("change_context threw: ") + error.what(), context);
+    }
+
+    // Status reports the route and call tallies of the last rebuild, so "no
+    // caller" can be told apart from "calls CGraph could not resolve".
+    const auto status = ask(web, "status", nlohmann::json::object(), false);
+    const auto tallies = status.value("result", nlohmann::json::object()).value("route_resolution", nlohmann::json{});
+    if (!tallies.is_object() || tallies.value("calls", 0) < 3 || tallies.value("calls_unresolved", -1) != 0) {
+      return fail("status route_resolution", status);
+    }
+
+    // Before an edit to the api routes file, the hook names web's callers; for
+    // a file that serves and calls nothing it says nothing.
+    const auto hook_for = [&](const fs::path& file) {
+      const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "Edit"},
+                                 {"tool_input", {{"file_path", file.generic_string()}}}};
+      return cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+    };
+    write_file(api / "src" / "routes" / "stats.ts", routes_before);
+    const auto hook = hook_for(api / "src" / "routes" / "stats.ts");
+    const auto hook_text = hook ? hook->value("hookSpecificOutput", nlohmann::json::object()).value("additionalContext", std::string{})
+                                : std::string{};
+    if (hook_text.find("GET /api/v1/stats, called from web src/stats.ts") == std::string::npos ||
+        hook_text.find("loadStats") == std::string::npos ||
+        hook->at("hookSpecificOutput").value("hookEventName", std::string{}) != "PreToolUse") {
+      return fail("pre-edit hook", hook ? *hook : nlohmann::json{});
+    }
+    write_file(api / "src" / "util.ts", "export const one = 1;\n");
+    if (const auto quiet = hook_for(api / "src" / "util.ts")) return fail("pre-edit hook spoke for a plain file", *quiet);
+    // A file that only imports a routes file or a caller serves and calls
+    // nothing itself: silent, never the imported file's endpoints.
+    write_file(api / "src" / "types.ts",
+               "import { statsRoutes } from './routes/stats';\nexport type StatsApp = typeof statsRoutes;\n");
+    write_file(web / "src" / "page.ts",
+               "import { loadStats } from './stats';\nexport async function render() {\n  return loadStats();\n}\n");
+    // A class method that calls an endpoint is the class file's call too.
+    write_file(web / "src" / "svc.ts",
+               "export class PingService {\n  async ping() {\n    return fetch('/api/v1/ping');\n  }\n}\n");
+    (void)ask(api, "update", {{"path", "."}}, false);
+    (void)ask(web, "update", {{"path", "."}}, false);
+    if (const auto importer = hook_for(api / "src" / "types.ts")) return fail("importer of routes spoke", *importer);
+    if (const auto importer = hook_for(web / "src" / "page.ts")) return fail("importer of a caller spoke", *importer);
+    const auto method = hook_for(web / "src" / "svc.ts");
+    const auto method_text = method ? method->at("hookSpecificOutput").value("additionalContext", std::string{}) : std::string{};
+    if (method_text.find("src/svc.ts calls GET /api/v1/ping, served by api src/server.ts") == std::string::npos) {
+      return fail("class method caller", method ? *method : nlohmann::json{});
+    }
+    // A relative file is relative to the root, wherever the client runs.
+    const auto relative = cgraph::cross_service_for_file(cgraph::ClientRequest{.project_root = api}, "src/routes/stats.ts");
+    if (relative.value("crossings", 0) < 1) return fail("relative file", relative);
+    // Members sharing one repository (a monorepo): the member holding the file
+    // is the root, so the warning still comes.
+    fs::remove_all(api / ".git");
+    fs::create_directories(ws / ".git");
+    const auto mono = hook_for(api / "src" / "routes" / "stats.ts");
+    fs::remove_all(ws / ".git");
+    fs::create_directories(api / ".git");
+    if (!mono || mono->dump().find("loadStats") == std::string::npos) return fail("monorepo member", mono ? *mono : nlohmann::json{});
+    // A daemon that fast-loads its saved graph still reports the tallies of
+    // the build that graph came from.
+    {
+      cgraph::ClientRequest stop{.project_root = web, .operation = "shutdown"};
+      stop.federate = false;
+      (void)cgraph::send_thin_client_request(stop, cgraph::default_client_runtime_hooks(stop));
+      web_server.join();
+      web_server = std::thread([&] { (void)cgraph::run_daemon_server(web, options); });
+      nlohmann::json restarted;
+      for (int attempt = 0; attempt < 100; ++attempt) {
+        restarted = ask(web, "status", nlohmann::json::object(), false);
+        if (restarted.value("ok", false) && restarted["result"].value("build_state", std::string{}) != "building" &&
+            restarted["result"].value("node_count", 0) > 0) break;
+        std::this_thread::sleep_for(50ms);
+      }
+      const auto restored = restarted.value("result", nlohmann::json::object()).value("route_resolution", nlohmann::json{});
+      if (!restored.is_object() || restored.value("calls", 0) < 3) return fail("fast-load tallies", restarted);
     }
     if (!finish(true)) {
       return 1;
