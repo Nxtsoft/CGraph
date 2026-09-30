@@ -666,6 +666,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         // this call, so reading it unlocked is safe.
         const std::scoped_lock enrichment_lock(state.enrichment_mutex);
         state.unextracted = scan_state.unextracted;
+        state.route_resolution = scan_state.route_resolution;
         state.last_files_cache_hit = scan_state.last_files_cache_hit;
         state.last_extract_mean_ms = scan_state.last_extract_mean_ms;
       }
@@ -908,6 +909,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
             {
               const std::scoped_lock enrichment_lock(state.enrichment_mutex);
               state.unextracted = hydration_state.unextracted;
+              state.route_resolution = hydration_state.route_resolution;
               state.last_files_cache_hit = hydration_state.last_files_cache_hit;
               state.last_extract_mean_ms = hydration_state.last_extract_mean_ms;
             }

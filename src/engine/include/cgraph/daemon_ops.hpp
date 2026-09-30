@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <optional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -69,6 +70,11 @@ struct DaemonState {
   // Populated by full rescans and the fast-load start, adjusted by incremental
   // updates, surfaced in `status` so a coverage hole is never silent.
   std::map<std::string, std::size_t> unextracted;
+  // Route and client-call tallies from the last rebuild (full rescan or
+  // incremental update); unset after a fast-load start until the next rebuild.
+  // Guarded by enrichment_mutex, surfaced in `status` as `route_resolution`, so
+  // "no consumer found" can be told apart from "calls CGraph could not resolve".
+  std::optional<ContractResolution> route_resolution;
   // Performs a deterministic rebuild for an `update` op and returns its result
   // payload. Injected by the running daemon (which owns the file index and
   // project root); when unset, `update` is accepted as a no-op so in-process

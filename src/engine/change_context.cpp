@@ -352,12 +352,7 @@ Json uncertainty(const PipelineResult& pipeline) {
 // rank: 0 for an endpoint the change edits, removes or adds, 1 for one whose
 // handler it reaches or that changed code calls, 2 for one a direct caller of
 // changed code calls. Asking and trimming both go in rank order.
-struct Touch {
-  std::set<std::string> roles;
-  int rank = 4;
-  bool outside_diff = false;  // only from root differences the diff does not supply
-};
-using TouchedContracts = std::map<std::string, Touch>;
+using TouchedContracts = CrossServiceContracts;
 
 void touch(TouchedContracts& touched, const std::string& id, const std::string& role, int rank) {
   auto& entry = touched[id];
@@ -381,7 +376,7 @@ constexpr std::size_t kMaxCrossServiceContracts = 24;
 // (or removed, or added) and who provides what it calls. A repo that cannot
 // answer is asked once and named, as is one answering from a graph still
 // building, so an empty list means "none found", not "unknown".
-Json cross_service_section(const CrossServiceAsk& scope, const TouchedContracts& touched) {
+Json cross_service_rows(const CrossServiceAsk& scope, const TouchedContracts& touched) {
   const auto& enclosing = *scope.enclosing;
   Json section{{"workspace", enclosing.workspace.name}, {"home", enclosing.home},
                {"contracts", Json::array()}, {"rows", Json::array()},
@@ -390,7 +385,7 @@ Json cross_service_section(const CrossServiceAsk& scope, const TouchedContracts&
     section["errors"] = enclosing.workspace.errors;
     return section;
   }
-  std::vector<std::pair<std::string, const Touch*>> ordered;
+  std::vector<std::pair<std::string, const CrossServiceContract*>> ordered;
   for (const auto& [id, entry] : touched) ordered.emplace_back(id, &entry);
   std::ranges::stable_sort(ordered, [](const auto& a, const auto& b) { return a.second->rank < b.second->rank; });
   if (ordered.size() > kMaxCrossServiceContracts) {
@@ -448,6 +443,10 @@ Json cross_service_section(const CrossServiceAsk& scope, const TouchedContracts&
 }
 
 }  // namespace
+
+Json cross_service_section(const CrossServiceAsk& scope, const CrossServiceContracts& contracts) {
+  return cross_service_rows(scope, contracts);
+}
 
 Json change_context(const Json& parameters, const CrossServiceAsk* cross_service) {
   const auto base_root = fs::canonical(parameters.at("base_root").get<std::string>());

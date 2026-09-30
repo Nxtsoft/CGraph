@@ -1,6 +1,7 @@
 #include "cgraph/client_runtime.hpp"
 
 #include "cgraph/change_context.hpp"
+#include "cgraph/normalize.hpp"
 
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_server.hpp"
@@ -370,6 +371,103 @@ nlohmann::json change_context_across_workspace(const nlohmann::json& parameters,
   }
   const CrossServiceAsk ask{.enclosing = &scope->enclosing, .ask = scope->ask};
   return change_context(parameters, &ask);
+}
+
+nlohmann::json cross_service_for_file(const ClientRequest& base, const std::filesystem::path& file) {
+  nlohmann::json out{{"file", file.generic_string()}, {"workspace", nullptr}, {"summary", nlohmann::json::array()}};
+  const auto hooks = default_client_runtime_hooks(base);
+  const auto scope = cross_service_scope_for(base, hooks);
+  if (!scope) {
+    return out;
+  }
+  std::error_code error;
+  const auto root = std::filesystem::weakly_canonical(base.project_root, error);
+  const auto relative = std::filesystem::weakly_canonical(file, error).lexically_relative(root).generic_string();
+  out["file"] = relative;
+  // The file's own endpoints: a route it declares is reached through `contains`,
+  // one its functions call through `CONSUMES` (file -> function -> endpoint).
+  ClientRequest home = base;
+  home.operation = "impact";
+  home.params = {{"id", make_id(relative)}, {"direction", "dependencies"}, {"max_depth", 2}};
+  home.federate = false;
+  const auto answer = send_thin_client_request(home, hooks);
+  CrossServiceContracts contracts;
+  if (answer.response && answer.response->value("ok", false)) {
+    for (const auto& node : (*answer.response)["result"].value("nodes", nlohmann::json::array())) {
+      const auto id = node.value("id", std::string{});
+      const auto via = node.value("via", std::string{});
+      if (!id.starts_with("endpoint:")) continue;
+      auto& contract = contracts[id];
+      if (via == "contains") {
+        contract.roles.insert("serves");
+        contract.rank = 0;
+      } else if (via == "CONSUMES") {
+        contract.roles.insert("consumes");
+        contract.rank = std::min(contract.rank, 1);
+      }
+      if (contract.roles.empty()) contracts.erase(id);
+    }
+  }
+  const CrossServiceAsk ask{.enclosing = &scope->enclosing, .ask = scope->ask};
+  auto section = cross_service_section(ask, contracts);
+  for (const auto& row : section["rows"]) {
+    const auto contract = row.value("contract", std::string{}).substr(std::string_view("endpoint:").size());
+    const bool consumer = row.value("relation", std::string{}) == "consumer";
+    out["summary"].push_back(relative + (consumer ? " serves " : " calls ") + contract + (consumer ? ", called from " : ", served by ") +
+                             row.value("repo", std::string{}) + " " + row.value("path", std::string{}) + ":" +
+                             std::to_string(row.value("line", 0)) + " (" + row.value("label", std::string{}) + ")");
+  }
+  for (const auto& gap : section["unreachable"]) {
+    out["summary"].push_back("could not ask " + gap.value("repo", std::string{}) + ": its callers are unknown");
+  }
+  for (const auto& repo : section["building"]) {
+    out["summary"].push_back(repo.get<std::string>() + " is still building: its callers may be missing");
+  }
+  out["workspace"] = section.at("workspace");
+  out["cross_service"] = std::move(section);
+  return out;
+}
+
+std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_input, const ClientRequest& base,
+                                                   std::chrono::milliseconds wait) {
+  if (!hook_input.is_object()) {
+    return std::nullopt;
+  }
+  const auto tool_input = hook_input.value("tool_input", nlohmann::json::object());
+  const auto file_text = tool_input.is_object() ? tool_input.value("file_path", std::string{}) : std::string{};
+  std::error_code error;
+  if (file_text.empty() || !std::filesystem::is_regular_file(file_text, error)) {
+    return std::nullopt;
+  }
+  const auto file = std::filesystem::weakly_canonical(file_text, error);
+  // The repository the file belongs to: the nearest directory with a `.git`
+  // entry (a worktree's is a file), which the workspace search starts from.
+  std::filesystem::path repo;
+  for (auto dir = file.parent_path(); !dir.empty(); dir = dir.parent_path()) {
+    if (std::filesystem::exists(dir / ".git", error)) {
+      repo = dir;
+      break;
+    }
+    if (dir == dir.parent_path()) break;
+  }
+  if (repo.empty()) {
+    return std::nullopt;
+  }
+  ClientRequest request = base;
+  request.project_root = repo;
+  request.build_wait = wait;
+  const auto found = cross_service_for_file(request, file);
+  const auto& lines = found.at("summary");
+  if (lines.empty()) {
+    return std::nullopt;
+  }
+  std::string context = "cgraph: editing " + found.value("file", std::string{}) + " crosses into other services (" +
+                        found.value("workspace", std::string{}) + " workspace):";
+  for (const auto& line : lines) {
+    context += "\n- " + line.get<std::string>();
+  }
+  context += "\nCheck those callers before changing a route, request or response shape.";
+  return nlohmann::json{{"hookSpecificOutput", {{"hookEventName", "PreToolUse"}, {"additionalContext", context}}}};
 }
 
 }  // namespace cgraph

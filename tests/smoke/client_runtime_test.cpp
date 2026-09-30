@@ -341,6 +341,9 @@ int main() {
     }
     for (const auto& root : {web, ws / "web-base"}) write_file(root / "src" / "stats.ts", web_before);
     fs::create_directories(ws / "billing");
+    // Each repo is a repository to the pre-edit hook, which starts from `.git`.
+    fs::create_directories(api / ".git");
+    fs::create_directories(web / ".git");
     // billing must be unreachable whatever the environment: with no graphd to
     // start, asking it fails. Restored when the block ends.
     const char* daemon_env = std::getenv("CGRAPH_DAEMON_PATH");
@@ -529,6 +532,33 @@ int main() {
     } catch (const std::exception& error) {
       return fail(std::string("change_context threw: ") + error.what(), context);
     }
+
+    // Status reports the route and call tallies of the last rebuild, so "no
+    // caller" can be told apart from "calls CGraph could not resolve".
+    const auto status = ask(web, "status", nlohmann::json::object(), false);
+    const auto tallies = status.value("result", nlohmann::json::object()).value("route_resolution", nlohmann::json{});
+    if (!tallies.is_object() || tallies.value("calls", 0) < 3 || tallies.value("calls_unresolved", -1) != 0) {
+      return fail("status route_resolution", status);
+    }
+
+    // Before an edit to the api routes file, the hook names web's callers; for
+    // a file that serves and calls nothing it says nothing.
+    const auto hook_for = [&](const fs::path& file) {
+      const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "Edit"},
+                                 {"tool_input", {{"file_path", file.generic_string()}}}};
+      return cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+    };
+    write_file(api / "src" / "routes" / "stats.ts", routes_before);
+    const auto hook = hook_for(api / "src" / "routes" / "stats.ts");
+    const auto hook_text = hook ? hook->value("hookSpecificOutput", nlohmann::json::object()).value("additionalContext", std::string{})
+                                : std::string{};
+    if (hook_text.find("GET /api/v1/stats, called from web src/stats.ts") == std::string::npos ||
+        hook_text.find("loadStats") == std::string::npos ||
+        hook->at("hookSpecificOutput").value("hookEventName", std::string{}) != "PreToolUse") {
+      return fail("pre-edit hook", hook ? *hook : nlohmann::json{});
+    }
+    write_file(api / "src" / "util.ts", "export const one = 1;\n");
+    if (const auto quiet = hook_for(api / "src" / "util.ts")) return fail("pre-edit hook spoke for a plain file", *quiet);
     if (!finish(true)) {
       return 1;
     }

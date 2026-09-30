@@ -140,7 +140,7 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
       ++reachable;
       nodes += result->value("node_count", std::size_t{0});
       edges += result->value("edge_count", std::size_t{0});
-      for (const auto* key : {"node_count", "edge_count", "build_state", "uptime_seconds"}) {
+      for (const auto* key : {"node_count", "edge_count", "build_state", "uptime_seconds", "route_resolution"}) {
         if (const auto value = result->find(key); value != result->end()) {
           entry[key] = *value;
         }

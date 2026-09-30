@@ -72,4 +72,20 @@ struct CrossServiceScope {
 [[nodiscard]] nlohmann::json change_context_across_workspace(const nlohmann::json& parameters,
                                                              const ClientRequest& base);
 
+// Before a file is edited: the endpoints it serves (declares) and calls, and
+// the other services on the far side of each, from the workspace enclosing
+// `base.project_root`. Carries `summary`, plain lines an agent can read, empty
+// when nothing crosses a service boundary; `workspace` is null outside one.
+[[nodiscard]] nlohmann::json cross_service_for_file(const ClientRequest& base, const std::filesystem::path& file);
+
+// A Claude Code PreToolUse hook for Edit, Write and MultiEdit: given the hook's
+// stdin JSON, the hook's stdout JSON (`hookSpecificOutput.additionalContext`
+// listing the other services behind the file's endpoints), or nothing when the
+// file is outside a workspace, touches no endpoint another service uses, or
+// cannot be read. Never blocks an edit. `wait` bounds how long cold daemons
+// are waited for.
+[[nodiscard]] std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_input,
+                                                                 const ClientRequest& base,
+                                                                 std::chrono::milliseconds wait);
+
 }  // namespace cgraph

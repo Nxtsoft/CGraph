@@ -1745,6 +1745,7 @@ struct StructuralIntent {
   std::size_t enrichment_failed = 0;
   std::size_t enrichment_plans_run = 0;
   std::map<std::string, std::size_t> unextracted;
+  std::optional<ContractResolution> route_resolution;
   std::size_t last_files_cache_hit = 0;
   double last_extract_mean_ms = 0.0;
   std::size_t last_memory_overlay_count = 0;
@@ -1757,6 +1758,7 @@ struct StructuralIntent {
     enrichment_failed = state.enrichment_failed;
     enrichment_plans_run = state.enrichment_plans_run;
     unextracted = state.unextracted;
+    route_resolution = state.route_resolution;
     // Written by the build/serve threads under the same lock; snapshot here so
     // a status read never tears them.
     last_files_cache_hit = state.last_files_cache_hit;
@@ -1783,6 +1785,8 @@ struct StructuralIntent {
       {"watching", state.watching},
       {"incremental_updates", state.incremental_updates},
       {"unextracted", unextracted},
+      // null until a rebuild has run (a fast-load start carries no tallies).
+      {"route_resolution", route_resolution ? contract_resolution_json(*route_resolution) : nlohmann::json(nullptr)},
       {"ops", op_stats_json(state.op_stats)},
       {"freshness", freshness_metadata(graph)},
   };

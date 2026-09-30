@@ -38,7 +38,7 @@ namespace {
 
 namespace {
 
-[[nodiscard]] GraphSnapshot rebuild_graph(const IncrementalGraphIndex& index) {
+[[nodiscard]] GraphSnapshot rebuild_graph(const IncrementalGraphIndex& index, ContractResolution& contracts) {
   std::vector<Fragment> fragments;
   std::vector<RawCall> raw_calls;
   std::vector<RawRelation> raw_relations;
@@ -69,7 +69,7 @@ namespace {
   resolve_imports(graph, index.aliases);
   resolve_raw_calls(graph, raw_calls);
   resolve_raw_relations(graph, raw_relations);
-  resolve_contracts(graph, raw_relations);
+  resolve_contracts(graph, raw_relations, &contracts);
   resolve_interface_dispatch(graph, raw_calls);
   return graph;
 }
@@ -267,7 +267,8 @@ IncrementalUpdateResult full_stat_index_rescan(
 
   const std::size_t files_total = result.files_reextracted + result.files_cache_hit;
 
-  auto graph = rebuild_graph(index);
+  ContractResolution contracts;
+  auto graph = rebuild_graph(index, contracts);
   semantic_dedup(graph, dedup_policy.options);
   finalize_graph(graph);  // communities + centrality on the deduped graph
   graph.cache_hit_rate = cache_hit_rate(result.files_cache_hit, files_total);
@@ -283,6 +284,7 @@ IncrementalUpdateResult full_stat_index_rescan(
     state.last_files_cache_hit = result.files_cache_hit;
     state.last_extract_mean_ms =
         result.files_reextracted == 0 ? 0.0 : extract_ms / static_cast<double>(result.files_reextracted);
+    state.route_resolution = contracts;
   }
 
   publish_graph_snapshot(state, std::move(graph));
@@ -401,7 +403,12 @@ IncrementalUpdateResult apply_incremental_code_updates(
     return result;
   }
 
-  auto graph = rebuild_graph(index);
+  ContractResolution contracts;
+  auto graph = rebuild_graph(index, contracts);
+  {
+    const std::scoped_lock lock(state.enrichment_mutex);  // status reads route_resolution
+    state.route_resolution = contracts;
+  }
   if (!changed_sources.empty()) {
     semantic_dedup_neighborhood(graph, changed_sources, dedup_policy.options);
     result.neighborhood_deduped = true;
