@@ -29,6 +29,7 @@ constexpr std::string_view kMountsRelation = "mounts";
 constexpr std::string_view kAliasRelation = "aliases";
 constexpr std::string_view kHttpCallRelation = "http_call";
 constexpr std::string_view kHttpWrapperRelation = "http_wrapper";
+constexpr std::string_view kHttpCallArgsRelation = "http_call_args";
 constexpr std::string_view kUrlConstRelation = "url_const";
 constexpr std::string_view kMapsTableRelation = "maps_table";
 constexpr std::string_view kSqlTableKind = "sql_table";
@@ -417,18 +418,48 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // 4. Wrappers: functions whose own client call appends their first parameter
   //    to a fixed prefix. `apiFetch('/notebooks')` is then a consumer of
   //    `/api/v1/notebooks`.
+  //    A wrapper whose path is another parameter (`request(method, path)`)
+  //    spells it `<METHOD> <prefix> #<index>`, and one whose method is a
+  //    parameter spells the method `@<index>` (`@<index>=<VERB>` when the
+  //    parameter defaults to a verb); calls to those are read from
+  //    their `http_call_args` facts (step 6b).
   struct Wrapper {
     std::string method;  // fixed by the wrapper's own call (`method: 'POST'`), else empty
     std::string prefix;
+    int method_parameter = -1;
+    std::string method_default;  // `method = 'GET'`: what a call leaving the method out sends
+    std::size_t path_parameter = 0;
   };
   std::unordered_map<std::string, Wrapper> wrappers;
   for (const auto& relation : raw_relations) {
     if (relation.relation != kHttpWrapperRelation || !by_id.contains(relation.source_id)) {
       continue;
     }
-    const auto [method, prefix] = split_context(relation.context);
-    wrappers.emplace(relation.source_id, Wrapper{.method = method, .prefix = prefix});
+    auto [method, prefix] = split_context(relation.context);
+    Wrapper wrapper;
+    if (const auto mark = prefix.rfind(" #"); mark != std::string::npos) {
+      wrapper.path_parameter = static_cast<std::size_t>(std::stoul(prefix.substr(mark + 2)));
+      prefix.resize(mark);
+    }
+    if (method.starts_with("@")) {
+      const auto equals = method.find('=');
+      wrapper.method_parameter = std::stoi(method.substr(1, equals == std::string::npos ? std::string::npos : equals - 1));
+      wrapper.method_default = equals == std::string::npos ? std::string{} : method.substr(equals + 1);
+      method.clear();
+    }
+    wrapper.method = std::move(method);
+    wrapper.prefix = std::move(prefix);
+    wrappers.emplace(relation.source_id, std::move(wrapper));
   }
+  const auto positional = [](const Wrapper& wrapper) {
+    return wrapper.path_parameter != 0 || wrapper.method_parameter >= 0;
+  };
+  // A path without a leading slash (`v1/users`) is joined to a base URL by its
+  // client; only a prefix ending in a slash (an axios baseURL, `${API}/${path}`)
+  // says where.
+  const auto relative_joins = [](const std::string& prefix, const std::string& path) {
+    return path.empty() || path.front() == '/' || path.starts_with("${") || (!prefix.empty() && prefix.back() == '/');
+  };
 
   // 5. URL constants by name, project-wide. A path spelled `${API_BASE}...`
   //    refers to a constant its file imports; when exactly one file defines a
@@ -472,8 +503,8 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     if (!primitive) {
       const auto callee = resolve_scoped_name(scopes, relation.source_file, make_id(relation.target_label), true);
       const auto wrapper = callee.empty() ? wrappers.end() : wrappers.find(callee);
-      if (wrapper == wrappers.end()) {
-        continue;
+      if (wrapper == wrappers.end() || positional(wrapper->second)) {
+        continue;  // positional wrappers are read from http_call_args below
       }
       prefix = wrapper->second.prefix;
       if (method.empty()) {
@@ -494,6 +525,10 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
     prefix = *expanded_prefix;
     const auto& call_path = *expanded_path;
+    if (!relative_joins(prefix, call_path)) {
+      ++tally.calls_unresolved;
+      continue;
+    }
     if (method.empty()) {
       method = "GET";
     }
@@ -504,6 +539,66 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       continue;
     }
     const auto path = canonical_route_path(join_route_path(prefix, call_path));
+    const auto id = "endpoint:" + method + " " + path;
+    if (mint(id, method + " " + path, method, path, nullptr)) {
+      ++tally.endpoints_external;
+    }
+    if (add_edge(relation.source_id, id, kConsumes, "", {})) {
+      ++tally.consumes;
+    }
+  }
+
+  // 6b. Calls to a wrapper that takes its path from a later parameter, or its
+  //     method from a parameter (`mlBackendRequest('POST', \`/project/${id}/setup\`)`):
+  //     the argument descriptors the extractor recorded fill those slots.
+  for (const auto& relation : raw_relations) {
+    if (relation.relation != kHttpCallArgsRelation) {
+      continue;
+    }
+    const auto callee = resolve_scoped_name(scopes, relation.source_file, make_id(relation.target_label), true);
+    const auto wrapper = callee.empty() ? wrappers.end() : wrappers.find(callee);
+    if (wrapper == wrappers.end() || !positional(wrapper->second)) {
+      continue;  // not a wrapper, or one whose first argument is the path (step 6)
+    }
+    ++tally.calls;
+    std::vector<std::string> arguments;
+    for (std::size_t start = 0;;) {
+      const auto tab = relation.context.find('\t', start);
+      arguments.push_back(relation.context.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+      if (tab == std::string::npos) {
+        break;
+      }
+      start = tab + 1;
+    }
+    const auto& shape = wrapper->second;
+    const auto argument = [&](std::size_t index, char kind) -> std::optional<std::string> {
+      if (index >= arguments.size() || arguments[index].empty() || arguments[index].front() != kind) {
+        return std::nullopt;
+      }
+      return arguments[index].substr(1);
+    };
+    std::string method = shape.method;
+    if (shape.method_parameter >= 0) {
+      const auto index = static_cast<std::size_t>(shape.method_parameter);
+      const auto verb = index >= arguments.size() ? std::optional<std::string>{shape.method_default} : argument(index, 'V');
+      method = verb ? *verb : std::string{};
+      if (method.empty()) {
+        ++tally.calls_unresolved;  // a method this call does not spell out
+        continue;
+      }
+    } else if (method.empty()) {
+      method = argument(shape.path_parameter + 1, 'O').value_or("GET");
+    }
+    const auto raw_call_path = argument(shape.path_parameter, 'P');
+    const auto expanded_prefix = expand(shape.prefix);
+    const auto expanded_path = raw_call_path ? expand(*raw_call_path) : std::nullopt;
+    if (!expanded_prefix || !expanded_path || expanded_path->empty() || !by_id.contains(relation.source_id) ||
+        !relative_joins(*expanded_prefix, *expanded_path) ||
+        canonical_route_path(*expanded_path).find_first_not_of("/{}") == std::string::npos) {
+      ++tally.calls_unresolved;
+      continue;
+    }
+    const auto path = canonical_route_path(join_route_path(*expanded_prefix, *expanded_path));
     const auto id = "endpoint:" + method + " " + path;
     if (mint(id, method + " " + path, method, path, nullptr)) {
       ++tally.endpoints_external;

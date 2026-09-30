@@ -961,6 +961,91 @@ export const other = makeTable('competitors', {});
   return 0;
 }
 
+// A wrapper whose path is a later parameter and whose method is a parameter
+// (`mlBackendRequest(method, path)` forwarding into `mlRequest(base, method,
+// path)`), called from another file, consumes `<method> <path>` from the
+// call's own arguments, the parameter's default verb when a call leaves the
+// method out; a relative path joins only a prefix ending in a slash.
+int test_positional_and_relative_wrappers() {
+  const auto built = build({
+      {"/proj/p/src/ml/service.ts", R"ts(
+const mlBackendBaseUrl = config.ml.mlBackendUrl;
+async function mlRequest<T>(baseUrl: string, method: 'GET' | 'POST', path: string): Promise<T> {
+  const url = `${baseUrl}${path}`;
+  const response = await fetch(url, { method });
+  return response.json();
+}
+export function mlBackendRequest<T>(method: 'GET' | 'POST', path: string, projectId?: string): Promise<T> {
+  return mlRequest<T>(mlBackendBaseUrl, method, path);
+}
+const API_BASE = '/api/backend';
+export async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE}/${endpoint.replace(/^\//, '')}`;
+  return (await fetch(url, { ...options })).json();
+}
+export async function apiFetch<T>(path: string): Promise<T> {
+  return (await fetch(`${API_BASE}${path}`)).json();
+}
+export async function presenceFetch(path: string, method = 'GET') {
+  return (await fetch(`/api/v1/notes${path}`, { method })).json();
+}
+)ts"},
+      {"/proj/p/src/ml/callers.ts", R"ts(
+import { mlBackendRequest, apiRequest, apiFetch, presenceFetch } from './service';
+export async function setup(projectId: string) {
+  return mlBackendRequest('POST', `/project/${projectId}/setup`, projectId);
+}
+export async function cluster(projectId: string) {
+  return mlBackendRequest('GET', '/simulate/cluster', projectId);
+}
+export async function unknownMethod(projectId: string, verb: string) {
+  return mlBackendRequest(verb, '/simulate/runs', projectId);
+}
+export async function refresh(id: string) {
+  return apiRequest(`v1/service-providers/${id}/refresh-metadata`, { method: 'POST' });
+}
+export async function glued(id: string) {
+  return apiFetch(`v1/users/${id}`);
+}
+export async function poll(id: string) {
+  return presenceFetch(`/${id}/presence`);
+}
+export async function beat(id: string) {
+  return presenceFetch(`/${id}/presence`, 'POST');
+}
+)ts"},
+  });
+  const auto& graph = built.graph;
+  const auto consumes = [&](std::string_view caller, std::string_view endpoint_id) {
+    return has_edge(graph, cgraph::make_id(std::string("/proj/p/src/ml/callers.ts:") + std::string(caller)),
+                    endpoint_id, "CONSUMES");
+  };
+  if (!consumes("setup", "endpoint:POST /project/{}/setup") || !consumes("cluster", "endpoint:GET /simulate/cluster") ||
+      !consumes("refresh", "endpoint:POST /api/backend/v1/service-providers/{}/refresh-metadata") ||
+      // A call leaving the method out sends the parameter's default.
+      !consumes("poll", "endpoint:GET /api/v1/notes/{}/presence") ||
+      !consumes("beat", "endpoint:POST /api/v1/notes/{}/presence")) {
+    for (const auto& edge : graph.edges) {
+      if (edge.relation == "CONSUMES") std::cerr << "  consumes: " << edge.source << " -> " << edge.target << '\n';
+    }
+    return fail("positional and slash-joined wrapper consumers");
+  }
+  // A method the call does not spell out, and a relative path glued onto a
+  // prefix with no slash (`/api/backendv1/...`), are counted, never guessed.
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "endpoint" && (node.label.find("/simulate/runs") != std::string::npos ||
+                                    node.label.find("users") != std::string::npos)) {
+      return fail("an unknown method or an unjoinable relative path minted an endpoint: " + node.label);
+    }
+  }
+  if (built.stats.calls != 7 || built.stats.calls_unresolved != 2 || built.stats.consumes != 5) {
+    std::cerr << "  calls " << built.stats.calls << " unresolved " << built.stats.calls_unresolved << " consumes "
+              << built.stats.consumes << '\n';
+    return fail("positional wrapper tally");
+  }
+  return 0;
+}
+
 int main() {
   int failures = 0;
   failures += test_join_route_path();
@@ -979,5 +1064,6 @@ int main() {
   failures += test_spring_mappings();
   failures += test_spring_non_handlers();
   failures += test_orm_table_links();
+  failures += test_positional_and_relative_wrappers();
   return failures == 0 ? 0 : 1;
 }
