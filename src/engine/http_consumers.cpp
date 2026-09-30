@@ -1489,7 +1489,9 @@ struct ReceiverBase {
 // form resolve_contracts reads when that function turns out to be a wrapper
 // whose path is not its first parameter or whose method is a parameter:
 // `P<path>` a resolvable path, `V<VERB>` a verb literal, `O<VERB>` an options
-// object with a literal method, empty for anything else; tab-separated.
+// object (inline or a local set once) whose method is that literal, `O` alone
+// for one with no method, empty for anything else (options this file cannot
+// read among them); tab-separated.
 [[nodiscard]] std::optional<std::string> argument_descriptors(const TSNode& arguments, const UrlScope& scope,
                                                               const ExtractionContext& context) {
   const auto count = ts_node_named_child_count(arguments);
@@ -1510,8 +1512,9 @@ struct ReceiverBase {
       } else if (auto literal = literal_verb(argument, context.source); !literal.empty()) {
         descriptor = "V" + literal;
       }
-    } else if (type == "object") {
-      if (auto method = options_method(argument, scope.parameters, context.source); !method.verb.empty() && !method.unknown) {
+    } else if (type == "object" || type == "identifier") {
+      if (const auto method = options_method(argument, scope.parameters, context.source);
+          !method.unknown && method.parameter < 0 && method.options < 0 && method.choices.empty()) {
         descriptor = "O" + method.verb;
       }
     }
@@ -1662,7 +1665,10 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
     method.options = -1;  // `axios.post(url, data)`: the second argument is the body, the verb is fixed
     method.unknown = false;
   } else if (!primitive) {
-    method.unknown = false;  // a wrapper's second argument may be anything (a body); contracts read its method
+    // Which argument of a call to a wrapper holds its options is the wrapper's
+    // to say, and its `http_wrapper` fact does not record it: a second argument
+    // may be a body. Contracts read the method from the wrapper there.
+    method.unknown = false;
   }
   for (const auto& value : values) {
     UrlTemplate url;

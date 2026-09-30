@@ -587,7 +587,20 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
         continue;
       }
     } else if (method.empty()) {
-      method = argument(shape.path_parameter + 1, 'O').value_or("GET");
+      // The call's options right after the path: left out, or an object with
+      // no `method`, is fetch's GET; options the extractor could not read are
+      // counted, never guessed.
+      const auto index = shape.path_parameter + 1;
+      if (index < arguments.size()) {
+        const auto verb = argument(index, 'O');
+        if (!verb) {
+          ++tally.calls_unresolved;
+          continue;
+        }
+        method = verb->empty() ? "GET" : *verb;
+      } else {
+        method = "GET";
+      }
     }
     const auto raw_call_path = argument(shape.path_parameter, 'P');
     const auto expanded_prefix = expand(shape.prefix);

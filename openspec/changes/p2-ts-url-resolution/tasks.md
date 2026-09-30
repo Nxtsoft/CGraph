@@ -31,3 +31,8 @@
 - [x] 5.1 A local read in one branch of an if/else ignores writes in the other branch, unless a loop encloses the read.
 - [x] 5.2 A local reassigned by object or array destructuring is not read through its initializer.
 - [x] 5.3 Wrapper methods read through local options, spread object literals and verb choices; unreadable options leave the call unresolved.
+
+## 6. Review round 3 (#145)
+
+- [x] 6.1 A positional wrapper fixing no method counts a call whose options it cannot read as unresolved; left-out options, or options naming no method, are GET.
+- [x] 6.2 Merged main (#142) and bumped the index key to logic-10.
