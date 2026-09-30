@@ -7,6 +7,7 @@
 ## 2. Tests
 
 - [x] 2.1 Kotlin and Go fact tests and the Spring end-to-end test in `configured_extractors_test.cpp`; fail on origin/main (exit 9).
+- [x] 2.2 Review fixes: Go non-requests (route registrations, `httptest`, `httpmock`, assertions, logs, `git.Run`) and Kotlin non-client receivers in `check_go_http_clients` / `check_kotlin_http_clients`; wrappers through lambdas in `check_wrappers_through_lambdas`; all fail on c23be8f.
 
 ## 3. Measurement and docs
 

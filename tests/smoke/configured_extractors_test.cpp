@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <optional>
 #include <string_view>
 #include <vector>
 #include <set>
@@ -552,6 +553,45 @@ bool same_facts(const std::multiset<std::string>& got, const std::multiset<std::
   return fail(what);
 }
 
+// Extracts one file, then merges and resolves contracts as a build does.
+struct ResolvedFile {
+  cgraph::GraphSnapshot graph;
+  cgraph::ContractResolution stats;
+};
+
+std::optional<ResolvedFile> resolve_file(cgraph::DetectedLanguage language, const std::string& path,
+                                         std::string_view source) {
+  const auto result =
+      cgraph::extract_configured_language(language, {.source_file = path, .relative_path = path, .source = source});
+  if (!result) return std::nullopt;
+  const std::vector<cgraph::Fragment> fragments{result->fragment};
+  ResolvedFile resolved{.graph = cgraph::merge_fragments(fragments), .stats = {}};
+  cgraph::resolve_imports(resolved.graph);
+  cgraph::resolve_contracts(resolved.graph, result->raw_relations, &resolved.stats);
+  return resolved;
+}
+
+std::vector<std::string> consumes_edges(const cgraph::GraphSnapshot& graph) {
+  std::vector<std::string> edges;
+  for (const auto& edge : graph.edges) {
+    if (edge.relation == "CONSUMES") edges.push_back(edge.source + " -> " + edge.target);
+  }
+  return edges;
+}
+
+// Receivers that merely contain "client" or "http" are no HTTP client.
+constexpr std::string_view kKotlinNotClients = R"kt(
+class Repo(private val clientRepository: ClientRepository, private val clients: Map<String, Client>, private val httpCache: Cache) {
+    fun a(e: Entity) = clientRepository.delete(e)
+    fun b(id: String) = clients.get(id)
+    fun c() = httpCache.get("/api/v1/cached")
+    fun d() = clientRepository.get("/api/v1/looks-like-a-path")
+    fun find(key: String) = clients.get(key)
+    fun lookupDefault() = find("/api/v1/not-an-endpoint")
+    fun real() = ktorClient.get("$baseUrl/api/v1/real")
+}
+)kt";
+
 constexpr std::string_view kKotlinClient = R"kt(
 class SessionsApi(private val baseUrl: String, private val client: HttpClient) {
     suspend fun sessions(token: String) = client.get("$baseUrl/api/v1/sessions/user/me") { bearerAuth(token) }
@@ -600,8 +640,52 @@ bool check_kotlin_http_clients() {
       return fail("a request inside a lambda belongs to the enclosing function: " + relation.source_id);
     }
   }
+  const auto negatives = resolve_file(cgraph::DetectedLanguage::Kotlin, "Repo.kt", kKotlinNotClients);
+  if (!negatives) return fail("kotlin extraction failed");
+  const auto edges = consumes_edges(negatives->graph);
+  const std::vector<std::string> want{cgraph::make_id("Repo.kt:real") + " -> endpoint:GET /api/v1/real"};
+  if (negatives->stats.calls != 1 || negatives->stats.calls_unresolved != 0 || edges != want) {
+    std::cerr << "calls=" << negatives->stats.calls << " unresolved=" << negatives->stats.calls_unresolved << '\n';
+    for (const auto& edge : edges) std::cerr << "  consumes: " << edge << '\n';
+    return fail("only a receiver named as an http client is a kotlin request");
+  }
   return true;
 }
+
+// Calls that pass an HTTP verb and a path but send no request: route
+// registrations (a handler value, no context), test helpers building
+// server-side requests, assertions on a request's method, logging, and a
+// non-HTTP subcommand. None may count as a client call.
+constexpr std::string_view kGoNotClients = R"go(package server
+
+func Register(r *gin.Engine, c chi.Router, e *echo.Echo, router *httprouter.Router) {
+	r.Handle(http.MethodGet, "/api/v1/users", listUsers)
+	c.Method(http.MethodPost, "/api/v1/orders", createOrder)
+	e.Add("DELETE", "/api/v1/items/:id", deleteItem)
+	router.HandlerFunc("PUT", "/api/v1/widgets", putWidget)
+	srv.Route(ctx, http.MethodGet, "/api/v1/hooks", func(w http.ResponseWriter, r *http.Request) {})
+}
+
+func TestHandler(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/users", nil)
+	httpmock.RegisterResponder("GET", "/api/v1/mocked", httpmock.NewStringResponder(200, "{}"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "GET", r.Method)
+	}))
+}
+
+func Other(ctx context.Context) {
+	log.Println("GET", "/api/v1/logged")
+	out, err := git.Run(ctx, "rev-parse", "--abbrev-ref", "HEAD", "--quiet")
+	out, err = git.Run(ctx, "HEAD", "--quiet")
+}
+
+func Real(cmd *cobra.Command) {
+	s.Client.Mutate(cmd.Context(), "PATCH", "/api/v1/things/"+id+"/enable", nil)
+}
+)go";
 
 constexpr std::string_view kGoClient = R"go(package api
 
@@ -659,6 +743,15 @@ bool check_go_http_clients() {
     if (relation.relation == "http_wrapper" && relation.source_id != cgraph::make_id("internal/api/auth.go:postAuth")) {
       return fail("go wrapper is postAuth: " + relation.source_id);
     }
+  }
+  const auto negatives = resolve_file(cgraph::DetectedLanguage::Go, "server.go", kGoNotClients);
+  if (!negatives) return fail("go extraction failed");
+  const auto edges = consumes_edges(negatives->graph);
+  const std::vector<std::string> want{cgraph::make_id("server.go:Real") + " -> endpoint:PATCH /api/v1/things/{}/enable"};
+  if (negatives->stats.calls != 1 || negatives->stats.calls_unresolved != 0 || edges != want) {
+    std::cerr << "calls=" << negatives->stats.calls << " unresolved=" << negatives->stats.calls_unresolved << '\n';
+    for (const auto& edge : edges) std::cerr << "  consumes: " << edge << '\n';
+    return fail("only the context-carrying client call with a URL is a go request");
   }
   return true;
 }
@@ -727,6 +820,54 @@ class SessionController {
     return fail("unresolvable client calls are counted");
   }
   return true;
+}
+
+// A wrapper whose request runs inside a lambda / function literal still appends
+// the enclosing function's parameter; the lambda's own parameters do not count.
+bool check_wrappers_through_lambdas() {
+  const auto kotlin = resolve_file(cgraph::DetectedLanguage::Kotlin, "Api.kt", R"kt(
+class AuthApi(private val baseUrl: String, private val client: HttpClient) {
+    private suspend fun postOutcome(path: String, body: Any) = withContext(Dispatchers.IO) { client.post("$baseUrl$path") { setBody(body) } }
+    suspend fun login(body: Any) = postOutcome("/api/v1/auth/login", body)
+    private suspend fun each(ids: List<String>) = ids.map { path -> client.get("$baseUrl$path") }
+    suspend fun all() = each("/api/v1/not-a-tail")
+}
+)kt");
+  if (!kotlin) return fail("kotlin extraction failed");
+  const std::vector<std::string> kotlin_want{cgraph::make_id("Api.kt:login") + " -> endpoint:POST /api/v1/auth/login"};
+  bool ok = true;
+  if (consumes_edges(kotlin->graph) != kotlin_want) {
+    for (const auto& edge : consumes_edges(kotlin->graph)) std::cerr << "  consumes: " << edge << '\n';
+    ok = fail("a kotlin wrapper's request inside a lambda appends the function's parameter");
+  }
+  const auto go = resolve_file(cgraph::DetectedLanguage::Go, "c.go", R"go(package c
+
+func (c *Client) post(ctx context.Context, path string, body any) error {
+	return retry(func() error {
+		_, err := c.Do(ctx, http.MethodPost, path, body)
+		return err
+	})
+}
+
+func (c *Client) Login(ctx context.Context) error {
+	return c.post(ctx, "/api/v1/auth/login", nil)
+}
+
+func (c *Client) each(ctx context.Context, paths []string) {
+	forEach(paths, func(path string) { c.Do(ctx, http.MethodGet, path, nil) })
+}
+
+func (c *Client) All(ctx context.Context) {
+	c.each(ctx, "/api/v1/not-a-tail")
+}
+)go");
+  if (!go) return fail("go extraction failed");
+  const std::vector<std::string> go_want{cgraph::make_id("c.go:Login") + " -> endpoint:POST /api/v1/auth/login"};
+  if (consumes_edges(go->graph) != go_want) {
+    for (const auto& edge : consumes_edges(go->graph)) std::cerr << "  consumes: " << edge << '\n';
+    ok = fail("a go wrapper's request inside a func literal appends the function's parameter");
+  }
+  return ok;
 }
 
 }  // namespace
@@ -885,6 +1026,9 @@ int main() {
   }
   if (!check_http_clients_consume_spring_routes()) {
     return 11;
+  }
+  if (!check_wrappers_through_lambdas()) {
+    return 12;
   }
 
   return 0;
