@@ -1,6 +1,7 @@
 #include "cgraph/detect.hpp"
 
 #include "cgraph/path_ignore.hpp"
+#include "cgraph/spring_actuator.hpp"
 
 #include <algorithm>
 #include <string>
@@ -51,6 +52,12 @@ DetectedLanguage detect_language(const std::filesystem::path& path) {
   // A LangGraph deployment config declares the Agent Server's routes.
   if (filename == "langgraph.json") {
     return DetectedLanguage::LangGraphConfig;
+  }
+  // A Spring Boot application config decides which Actuator endpoints are
+  // served. Only `application[-<profile>]` under `src/main/resources` is read;
+  // other YAML and properties stay undetected.
+  if (is_spring_application_config(path)) {
+    return DetectedLanguage::SpringConfig;
   }
   // An OpenAPI document is JSON named for what it is (`openapi.json`,
   // `swagger.json`, `petstore.openapi.json`); every other .json stays undetected
@@ -171,6 +178,8 @@ std::string_view language_name(DetectedLanguage language) {
       return "ruby";
     case DetectedLanguage::Scala:
       return "scala";
+    case DetectedLanguage::SpringConfig:
+      return "spring-config";
     case DetectedLanguage::Sql:
       return "sql";
     case DetectedLanguage::TypeScript:

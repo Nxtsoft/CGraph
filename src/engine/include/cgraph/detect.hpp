@@ -30,6 +30,7 @@ enum class DetectedLanguage {
   Ruby,
   Rust,
   Scala,
+  SpringConfig,
   Sql,
   TypeScript,
   Tsx,

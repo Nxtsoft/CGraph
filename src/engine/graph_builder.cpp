@@ -1571,7 +1571,8 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
   for (const auto& relation : raw_relations) {
     if (relation.relation == "route" || relation.relation == "file_route" || relation.relation == "mounts" ||
         relation.relation == "aliases" || relation.relation == "http_call" || relation.relation == "http_wrapper" ||
-        relation.relation == "url_const" || relation.relation == "maps_table") {
+        relation.relation == "url_const" || relation.relation == "maps_table" ||
+        relation.relation == "actuator_app" || relation.relation == "actuator_config") {
       continue;  // contract facts: resolve_contracts mints endpoints and table links from these
     }
     if (relation.source_id.empty() || relation.target_label.empty() || !node_ids.contains(relation.source_id)) {
