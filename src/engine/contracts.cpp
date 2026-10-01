@@ -626,9 +626,10 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
   }
 
-  // 6b. Calls to a wrapper that takes its path from a later parameter, or its
-  //     method from a parameter (`mlBackendRequest('POST', \`/project/${id}/setup\`)`):
-  //     the argument descriptors the extractor recorded fill those slots.
+  // 6b. Calls to a wrapper that takes its path from a later parameter, its
+  //     method from a parameter (`mlBackendRequest('POST', \`/project/${id}/setup\`)`)
+  //     or from the options it spreads, or whose own method is unreadable or a
+  //     choice: the argument descriptors the extractor recorded fill those slots.
   for (const auto& relation : raw_relations) {
     if (relation.relation != kHttpCallArgsRelation) {
       continue;

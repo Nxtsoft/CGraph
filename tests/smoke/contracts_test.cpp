@@ -1157,7 +1157,8 @@ export async function unreadableMethod(h: H) { return authed(h, '/unreadable-met
 // and one whose own method is unreadable but spreads the caller's options after
 // it takes a method only a caller spells; a
 // wrapper choosing between two verbs consumes both. A path held in a constant,
-// a local or `new URL(...)` reaches such a wrapper as it reaches `fetch`.
+// a local or `new URL(...)` reaches such a wrapper as it reaches `fetch`. A
+// same-class call into a wrapper that takes no options sends the wrapper's GET.
 int test_first_parameter_wrapper_options() {
   const auto built = build({
       {"/proj/q/src/api.ts", R"ts(
@@ -1172,6 +1173,10 @@ export async function toggle(path: string, on: boolean) {
   return fetch(`${API}${path}`, { method: on ? 'POST' : 'DELETE' });
 }
 export async function jsonFetch(url: string, init?: RequestInit) { return fetch(url, { ...init }); }
+export class Client {
+  raw(path: string) { return fetch(`${API}${path}`); }
+  save() { return this.raw('/saved', { method: 'POST' }); }
+}
 )ts"},
       {"/proj/q/src/callers.ts", R"ts(
 import { apiFetch, plain, built, mixed, toggle, jsonFetch } from './api';
@@ -1209,7 +1214,7 @@ export async function viaLocal() { const url = `${HOST}/api/v1/config`; return j
       !consumes("ignored", "endpoint:GET /api/v1/plain") || !consumes("overridden", "endpoint:PUT /api/v1/mixed") ||
       !consumes("flip", "endpoint:POST /api/v1/flags") || !consumes("flip", "endpoint:DELETE /api/v1/flags") ||
       !consumes("viaConst", "endpoint:POST /api/v1/links") || !consumes("viaUrl", "endpoint:GET /api/v1/sessions") ||
-      !consumes("viaLocal", "endpoint:GET /api/v1/config")) {
+      !consumes("viaLocal", "endpoint:GET /api/v1/config") || endpoint(graph, "GET /api/v1/saved") == nullptr) {
     for (const auto& edge : graph.edges) {
       if (edge.relation == "CONSUMES") std::cerr << "  consumes: " << edge.source << " -> " << edge.target << '\n';
     }
@@ -1219,11 +1224,12 @@ export async function viaLocal() { const url = `${HOST}/api/v1/config`; return j
     if (node.kind == "endpoint" &&
         (node.label.find("unreadable") != std::string::npos || node.label.find("/built") != std::string::npos ||
          node.label.find("/spelled") != std::string::npos || node.label.find("/bare") != std::string::npos ||
-         node.label == "GET /api/v1/composites/{}/top-level" || node.label == "POST /api/v1/plain")) {
+         node.label == "GET /api/v1/composites/{}/top-level" || node.label == "POST /api/v1/plain" ||
+         node.label == "POST /api/v1/saved")) {
       return fail("a wrapper call's method was guessed: " + node.label);
     }
   }
-  if (built.stats.calls != 13 || built.stats.calls_unresolved != 4 || built.stats.consumes != 10) {
+  if (built.stats.calls != 14 || built.stats.calls_unresolved != 4 || built.stats.consumes != 11) {
     std::cerr << "  calls " << built.stats.calls << " unresolved " << built.stats.calls_unresolved << " consumes "
               << built.stats.consumes << '\n';
     return fail("first-parameter wrapper options tally");

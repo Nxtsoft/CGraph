@@ -1343,15 +1343,11 @@ void compose_wrapper_call(const ClientCall& shape, std::string client, const TSN
     prefix = base.path + prefix;
   }
   MethodSource method{.verb = shape.method.verb, .choices = shape.method.choices, .unknown = shape.method.unknown};
-  // The call's own options override the wrapper's verb where the wrapper lets
-  // them: at the options parameter it spreads in last, or, when the wrapper
-  // fixes no verb, right after the path. Options whose method this file cannot
-  // read leave the method unknown: the call is unresolved, not a guess.
-  const int options_at = shape.method.options >= 0 ? shape.method.options
-                         : shape.method.verb.empty() && shape.method.parameter < 0 && shape.method.choices.empty() &&
-                                   !shape.method.unknown
-                             ? shape.tail + 1
-                             : -1;
+  // The call's own options override the wrapper's verb only at the options
+  // parameter it spreads in last; a wrapper that takes none sends its own.
+  // Options whose method this file cannot read leave the method unknown: the
+  // call is unresolved, not a guess.
+  const int options_at = shape.method.options;
   if (options_at >= 0 && options_at < count) {
     const auto given = options_method(ts_node_named_child(arguments, static_cast<std::uint32_t>(options_at)),
                                       scope.parameters, context.source);
@@ -1500,9 +1496,10 @@ struct ReceiverBase {
 
 // Every argument of a call to a function this file does not define, in the
 // form resolve_contracts reads when that function turns out to be a wrapper
-// whose path is not its first parameter or whose method is a parameter:
-// `P<path>` a resolvable path, `V<VERB>` a verb literal, `O<VERB>` an options
-// object (inline or a local set once) whose method is that literal, `O` alone
+// it resolves from arguments (a later path, a method parameter, an options
+// index, an unreadable method or a choice): `P<path>` a resolvable path,
+// `V<VERB>` a verb literal, `O<VERB>` an options object (inline or a local set
+// once) whose method is that literal (`OPOST|DELETE` for a choice), `O` alone
 // for one with no method, empty for anything else (options this file cannot
 // read among them); tab-separated.
 [[nodiscard]] std::optional<std::string> argument_descriptors(const TSNode& arguments, const UrlScope& scope,
@@ -1793,7 +1790,8 @@ HttpConsumerFileScope::~HttpConsumerFileScope() {
 // `http_wrapper` for a wrapper whose slots resolve_contracts can fill (its
 // callers supply the path and, when it is a parameter, the method; a base
 // parameter is only filled by a wrapper of this file forwarding into it), and
-// `http_call_args` for a call whose wrapper may take the path elsewhere.
+// `http_call_args` for a call whose wrapper takes its path or method from an
+// argument other than the first.
 void http_call_handler(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
                        std::vector<RawRelation>& out) {
   for (auto& call : analyze_client_call(node, context, 0)) {
