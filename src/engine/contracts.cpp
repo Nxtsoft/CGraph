@@ -31,6 +31,8 @@ constexpr std::string_view kHttpCallRelation = "http_call";
 constexpr std::string_view kHttpWrapperRelation = "http_wrapper";
 constexpr std::string_view kHttpCallArgsRelation = "http_call_args";
 constexpr std::string_view kUrlConstRelation = "url_const";
+constexpr std::string_view kLangGraphClientRelation = "langgraph_client";
+constexpr std::string_view kLangGraphCallRelation = "langgraph_call";
 constexpr std::string_view kMapsTableRelation = "maps_table";
 constexpr std::string_view kSqlTableKind = "sql_table";
 constexpr std::string_view kHandledBy = "handled_by";
@@ -571,14 +573,31 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   //    repo does not serve it. A call through a name that resolves to no
   //    wrapper is an ordinary function taking a path-like string, not a
   //    consumer, and is skipped without a tally.
+  //    A `langgraph_call` (`createLangGraphClient(token).runs.stream(...)` with
+  //    the factory imported) is a client call like `axios.post` once the
+  //    factory resolves, through the file's imports, to a function whose
+  //    `langgraph_client` fact says it returns an SDK `Client`; through any
+  //    other name it is neither an edge nor a count.
+  std::unordered_set<std::string> langgraph_factories;
   for (const auto& relation : raw_relations) {
-    if (relation.relation != kHttpCallRelation) {
+    if (relation.relation == kLangGraphClientRelation) {
+      langgraph_factories.insert(relation.source_id);
+    }
+  }
+  for (const auto& relation : raw_relations) {
+    const bool sdk_call = relation.relation == kLangGraphCallRelation;
+    if (relation.relation != kHttpCallRelation && !sdk_call) {
+      continue;
+    }
+    if (sdk_call &&
+        !langgraph_factories.contains(resolve_scoped_name(scopes, relation.source_file, make_id(relation.target_label), false))) {
       continue;
     }
     const auto [explicit_method, raw_call_path] = split_context(relation.context);
     std::string method = explicit_method;
     std::string prefix;
-    const bool primitive = relation.target_label == "fetch" || relation.target_label.find('.') != std::string::npos;
+    const bool primitive =
+        sdk_call || relation.target_label == "fetch" || relation.target_label.find('.') != std::string::npos;
     if (!primitive) {
       const auto callee = resolve_scoped_name(scopes, relation.source_file, make_id(relation.target_label), true);
       const auto wrapper = callee.empty() ? wrappers.end() : wrappers.find(callee);

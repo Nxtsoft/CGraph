@@ -5,6 +5,7 @@
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <functional>
@@ -1770,6 +1771,398 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
   return {};
 }
 
+// ---- LangGraph SDK clients (contracts.hpp: langgraph_client / langgraph_call)
+
+// The request each `Client` method of `@langchain/langgraph-sdk` sends, as
+// 1.11.1 spells it in dist/client/{assistants,threads,runs,crons,store}/index.js
+// (`this.fetch(\`/threads/${threadId}/runs\`, { method: "POST" })`; no method
+// is GET). Every interpolated id is `{}`. Methods whose path depends on an
+// argument are worked out in langgraph_request; `threads.stream` speaks the v2
+// protocol through a transport and is not listed.
+struct SdkRequest {
+  std::string_view group;
+  std::string_view method;
+  std::string_view verb;
+  std::string_view path;
+};
+constexpr std::array<SdkRequest, 46> kSdkRequests = {{
+    {"assistants", "get", "GET", "/assistants/{}"},
+    {"assistants", "getGraph", "GET", "/assistants/{}/graph"},
+    {"assistants", "getSchemas", "GET", "/assistants/{}/schemas"},
+    {"assistants", "create", "POST", "/assistants"},
+    {"assistants", "update", "PATCH", "/assistants/{}"},
+    {"assistants", "delete", "DELETE", "/assistants/{}"},
+    {"assistants", "search", "POST", "/assistants/search"},
+    {"assistants", "count", "POST", "/assistants/count"},
+    {"assistants", "getVersions", "POST", "/assistants/{}/versions"},
+    {"assistants", "setLatest", "POST", "/assistants/{}/latest"},
+    {"threads", "get", "GET", "/threads/{}"},
+    {"threads", "create", "POST", "/threads"},
+    {"threads", "copy", "POST", "/threads/{}/copy"},
+    {"threads", "update", "PATCH", "/threads/{}"},
+    {"threads", "delete", "DELETE", "/threads/{}"},
+    {"threads", "prune", "POST", "/threads/prune"},
+    {"threads", "search", "POST", "/threads/search"},
+    {"threads", "count", "POST", "/threads/count"},
+    {"threads", "updateState", "POST", "/threads/{}/state"},
+    {"threads", "patchState", "PATCH", "/threads/{}/state"},
+    {"threads", "getHistory", "POST", "/threads/{}/history"},
+    {"threads", "joinStream", "GET", "/threads/{}/stream"},
+    {"runs", "createBatch", "POST", "/runs/batch"},
+    {"runs", "list", "GET", "/threads/{}/runs"},
+    {"runs", "get", "GET", "/threads/{}/runs/{}"},
+    {"runs", "cancel", "POST", "/threads/{}/runs/{}/cancel"},
+    {"runs", "cancelMany", "POST", "/runs/cancel"},
+    {"runs", "join", "GET", "/threads/{}/runs/{}/join"},
+    {"runs", "delete", "DELETE", "/threads/{}/runs/{}"},
+    {"crons", "createForThread", "POST", "/threads/{}/runs/crons"},
+    {"crons", "create", "POST", "/runs/crons"},
+    {"crons", "update", "PATCH", "/runs/crons/{}"},
+    {"crons", "delete", "DELETE", "/runs/crons/{}"},
+    {"crons", "search", "POST", "/runs/crons/search"},
+    {"crons", "count", "POST", "/runs/crons/count"},
+    {"store", "putItem", "PUT", "/store/items"},
+    {"store", "getItem", "GET", "/store/items"},
+    {"store", "deleteItem", "DELETE", "/store/items"},
+    {"store", "searchItems", "POST", "/store/items/search"},
+    {"store", "listNamespaces", "POST", "/store/namespaces"},
+    // Branching on the thread id (langgraph_request reads the argument).
+    {"runs", "stream", "POST", "/threads/{}/runs/stream"},
+    {"runs", "wait", "POST", "/threads/{}/runs/wait"},
+    {"runs", "create", "POST", "/threads/{}/runs"},
+    {"runs", "joinStream", "GET", "/threads/{}/runs/{}/stream"},
+    // Branching on the checkpoint and the subgraph namespace.
+    {"threads", "getState", "GET", "/threads/{}/state"},
+    {"assistants", "getSubgraphs", "GET", "/assistants/{}/subgraphs"},
+}};
+
+[[nodiscard]] bool is_null_literal(const TSNode& node, std::string_view source) {
+  const std::string_view type = ts_node_type(node);
+  return type == "null" || type == "undefined" || (type == "identifier" && node_text(node, source) == "undefined");
+}
+
+// The argument at `index`, or null when the call passes fewer.
+[[nodiscard]] TSNode argument_at(const TSNode& arguments, std::uint32_t index) {
+  return index < ts_node_named_child_count(arguments) ? unwrap_expression(ts_node_named_child(arguments, index)) : TSNode{};
+}
+
+// The request `<client>.<group>.<method>(arguments)` sends: (verb, path), or
+// empty when the method is not an SDK request or its path hangs on an argument
+// this file cannot read. The SDK picks a stateless path when the thread id is
+// null: `runs.stream` and `runs.wait` test `threadId == null`, `runs.create`
+// tests `threadId === null` (so `undefined` there is `/threads/undefined/runs`),
+// and `runs.joinStream` tests `threadId != null`. A literal `null` or
+// `undefined` takes that branch; any other argument is a thread id.
+[[nodiscard]] std::optional<std::pair<std::string, std::string>> langgraph_request(std::string_view group,
+                                                                                   std::string_view method,
+                                                                                   const TSNode& arguments,
+                                                                                   std::string_view source) {
+  const auto found = std::ranges::find_if(kSdkRequests, [&](const SdkRequest& request) {
+    return request.group == group && request.method == method;
+  });
+  if (found == kSdkRequests.end()) {
+    return std::nullopt;
+  }
+  std::pair<std::string, std::string> request{std::string(found->verb), std::string(found->path)};
+  const TSNode first = argument_at(arguments, 0);
+  const bool stateless = !ts_node_is_null(first) && is_null_literal(first, source);
+  if (group == "runs" && (method == "stream" || method == "wait") && stateless) {
+    request.second = method == "stream" ? "/runs/stream" : "/runs/wait";
+  } else if (group == "runs" && method == "create" && stateless) {
+    if (std::string_view(ts_node_type(first)) != "null") {
+      return std::nullopt;  // `undefined`: a thread named "undefined", not a route
+    }
+    request.second = "/runs";
+  } else if (group == "runs" && method == "joinStream" && stateless) {
+    request.second = "/runs/{}/stream";
+  } else if (group == "threads" && method == "getState") {
+    // `getState(id, checkpoint)`: none is the current state, a string id GETs
+    // `/state/{}`, a checkpoint object POSTs `/state/checkpoint`.
+    const TSNode checkpoint = argument_at(arguments, 1);
+    if (ts_node_is_null(checkpoint) || is_null_literal(checkpoint, source)) {
+      return request;
+    }
+    if (is_string_value(checkpoint)) {
+      request.second = "/threads/{}/state/{}";
+    } else if (std::string_view(ts_node_type(checkpoint)) == "object") {
+      request = {"POST", "/threads/{}/state/checkpoint"};
+    } else {
+      return std::nullopt;
+    }
+  } else if (group == "assistants" && method == "getSubgraphs") {
+    // `getSubgraphs(id, { namespace })` reads one namespace's subgraphs.
+    const TSNode options = argument_at(arguments, 1);
+    if (ts_node_is_null(options) || is_null_literal(options, source)) {
+      return request;
+    }
+    if (std::string_view(ts_node_type(options)) != "object") {
+      return std::nullopt;
+    }
+    for (std::uint32_t index = 0; index < ts_node_named_child_count(options); ++index) {
+      const TSNode member = ts_node_named_child(options, index);
+      const std::string_view type = ts_node_type(member);
+      if (type == "spread_element") {
+        return std::nullopt;
+      }
+      if ((type == "shorthand_property_identifier" && node_text(member, source) == "namespace") ||
+          (type == "pair" && strip_string_quotes(field_text(member, "key", source)) == "namespace")) {
+        request.second = "/assistants/{}/subgraphs/{}";
+      }
+    }
+  }
+  return request;
+}
+
+// The local name this file gives the SDK's `Client` class (`import { Client }`
+// or `import { Client as LangGraphClient }` from `@langchain/langgraph-sdk` or
+// its `/client` entry), and a namespace import of either (`import * as lg`,
+// read as `lg.Client`). Empty when the file imports neither.
+struct SdkImports {
+  std::vector<std::string> classes;
+  std::vector<std::string> namespaces;
+};
+
+[[nodiscard]] SdkImports langgraph_sdk_imports(const TSNode& from, std::string_view source) {
+  SdkImports imports;
+  const TSNode program = program_of(from);
+  for (std::uint32_t index = 0; index < ts_node_named_child_count(program); ++index) {
+    const TSNode statement = ts_node_named_child(program, index);
+    if (std::string_view(ts_node_type(statement)) != "import_statement") {
+      continue;
+    }
+    const auto module = strip_string_quotes(field_text(statement, "source", source));
+    if (module != "@langchain/langgraph-sdk" && module != "@langchain/langgraph-sdk/client") {
+      continue;
+    }
+    visit_named_descendants(statement, false, [&](const TSNode& node) {
+      const std::string_view type = ts_node_type(node);
+      if (type == "import_specifier" && field_text(node, "name", source) == "Client") {
+        const auto alias = field_text(node, "alias", source);
+        imports.classes.push_back(alias.empty() ? std::string("Client") : alias);
+      } else if (type == "namespace_import" && ts_node_named_child_count(node) > 0) {
+        imports.namespaces.push_back(node_text(ts_node_named_child(node, 0), source));
+      }
+    });
+  }
+  return imports;
+}
+
+// True when a file-level `import` binds `name` (`import { createLangGraphClient }
+// from '@/lib/langgraph-client'`).
+[[nodiscard]] bool imports_name(const TSNode& from, std::string_view name, std::string_view source) {
+  const TSNode program = program_of(from);
+  bool found = false;
+  for (std::uint32_t index = 0; index < ts_node_named_child_count(program) && !found; ++index) {
+    const TSNode statement = ts_node_named_child(program, index);
+    if (std::string_view(ts_node_type(statement)) != "import_statement") {
+      continue;
+    }
+    visit_named_descendants(statement, false, [&](const TSNode& node) {
+      const std::string_view type = ts_node_type(node);
+      if (type == "import_specifier") {
+        const auto alias = field_text(node, "alias", source);
+        found = found || (alias.empty() ? field_text(node, "name", source) : alias) == name;
+      } else if (type == "import_clause" && ts_node_named_child_count(node) > 0) {
+        const TSNode first = ts_node_named_child(node, 0);
+        found = found || (std::string_view(ts_node_type(first)) == "identifier" && node_text(first, source) == name);
+      }
+    });
+  }
+  return found;
+}
+
+// True when a function around `use` takes `name` as a parameter before any
+// block declares it: then no module-level value of that name reaches `use`.
+[[nodiscard]] bool parameter_shadows(const TSNode& use, std::string_view name, std::string_view source) {
+  for (TSNode ancestor = ts_node_parent(use); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+    if (is_function_node(ts_node_type(ancestor)) && binds_parameter(ancestor, name, source)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+constexpr int kMaxSdkDepth = 3;
+
+// Who made the SDK client `value` evaluates to. `kHere` for `new Client(...)`
+// with `Client` imported from the SDK, a local or module constant holding one,
+// or a call to a function of this file whose every return is one; `kImported`
+// for a call to an imported function (`createLangGraphClient(token)`), whose
+// body resolve_contracts checks through its `langgraph_client` fact; `kNone`
+// for anything else, a value this file cannot pin down included.
+enum class SdkOrigin { kNone, kHere, kImported };
+
+struct SdkClient {
+  SdkOrigin origin = SdkOrigin::kNone;
+  std::string factory;  // kImported: the imported function's name
+};
+
+[[nodiscard]] SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::string_view source, int depth);
+
+// True when `function` returns an SDK client on every path that returns.
+[[nodiscard]] bool returns_sdk_client(const TSNode& function, const SdkImports& imports, std::string_view source,
+                                      int depth) {
+  std::vector<TSNode> returns;
+  function_return_values(function, returns);
+  return !returns.empty() && std::ranges::all_of(returns, [&](const TSNode& value) {
+    return !ts_node_is_null(value) && sdk_client_value(value, imports, source, depth + 1).origin == SdkOrigin::kHere;
+  });
+}
+
+// An identifier read through its one value: a block-scoped local set once, else
+// (unless a parameter shadows it) a module constant. Null otherwise.
+[[nodiscard]] TSNode single_value(const TSNode& identifier, std::string_view source) {
+  const auto name = node_text(identifier, source);
+  if (const auto values = local_values(identifier, name, source)) {
+    return values->size() == 1 ? values->front() : TSNode{};
+  }
+  if (parameter_shadows(identifier, name, source)) {
+    return TSNode{};
+  }
+  return module_const_value(identifier, name, source);
+}
+
+SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::string_view source, int depth) {
+  const TSNode value = unwrap_expression(node);
+  if (ts_node_is_null(value) || depth > kMaxSdkDepth) {
+    return {};
+  }
+  const std::string_view type = ts_node_type(value);
+  if (type == "new_expression") {
+    const TSNode constructor = unwrap_expression(ts_node_child_by_field_name(value, "constructor", 11));
+    if (ts_node_is_null(constructor)) {
+      return {};
+    }
+    const std::string_view constructor_type = ts_node_type(constructor);
+    const bool sdk =
+        (constructor_type == "identifier" && std::ranges::find(imports.classes, node_text(constructor, source)) != imports.classes.end()) ||
+        (constructor_type == "member_expression" && field_text(constructor, "property", source) == "Client" &&
+         std::ranges::find(imports.namespaces, field_text(constructor, "object", source)) != imports.namespaces.end());
+    return sdk ? SdkClient{.origin = SdkOrigin::kHere} : SdkClient{};
+  }
+  if (type == "identifier") {
+    const TSNode held = single_value(value, source);
+    return ts_node_is_null(held) ? SdkClient{} : sdk_client_value(held, imports, source, depth + 1);
+  }
+  if (type == "member_expression") {
+    // `this.client`, set once in its class.
+    const TSNode object = unwrap_expression(ts_node_child_by_field_name(value, "object", 6));
+    if (ts_node_is_null(object) || std::string_view(ts_node_type(object)) != "this") {
+      return {};
+    }
+    const TSNode body = enclosing_class_body(value);
+    const TSNode held = ts_node_is_null(body) ? TSNode{} : class_member_value(body, field_text(value, "property", source), source);
+    return ts_node_is_null(held) ? SdkClient{} : sdk_client_value(held, imports, source, depth + 1);
+  }
+  if (type != "call_expression") {
+    return {};
+  }
+  const TSNode callee = unwrap_expression(ts_node_child_by_field_name(value, "function", 8));
+  if (ts_node_is_null(callee) || std::string_view(ts_node_type(callee)) != "identifier") {
+    return {};
+  }
+  const auto name = node_text(callee, source);
+  if (local_binding(callee, name, source) || parameter_shadows(callee, name, source)) {
+    return {};  // a local or a parameter: not the module's function
+  }
+  if (const TSNode function = module_function(value, name, source); !ts_node_is_null(function)) {
+    return returns_sdk_client(function, imports, source, depth) ? SdkClient{.origin = SdkOrigin::kHere} : SdkClient{};
+  }
+  return imports_name(value, name, source) ? SdkClient{.origin = SdkOrigin::kImported, .factory = name} : SdkClient{};
+}
+
+// `client.runs.stream(threadId, 'luna', {...})` on a receiver that provably is
+// an SDK `Client`: the request it sends and who made the client.
+struct SdkCall {
+  SdkClient client;
+  std::string label;  // `client.runs.stream`
+  std::string verb;
+  std::string path;
+};
+
+[[nodiscard]] std::optional<SdkCall> langgraph_sdk_call(const TSNode& node, const ExtractionContext& context) {
+  if (std::string_view(ts_node_type(node)) != "call_expression") {
+    return std::nullopt;
+  }
+  const TSNode callee = unwrap_expression(ts_node_child_by_field_name(node, "function", 8));
+  const TSNode arguments = ts_node_child_by_field_name(node, "arguments", 9);
+  if (ts_node_is_null(callee) || ts_node_is_null(arguments) || std::string_view(ts_node_type(callee)) != "member_expression") {
+    return std::nullopt;
+  }
+  const TSNode group = unwrap_expression(ts_node_child_by_field_name(callee, "object", 6));
+  if (ts_node_is_null(group) || std::string_view(ts_node_type(group)) != "member_expression") {
+    return std::nullopt;
+  }
+  const auto method = field_text(callee, "property", context.source);
+  const auto group_name = field_text(group, "property", context.source);
+  auto request = langgraph_request(group_name, method, arguments, context.source);
+  if (!request) {
+    return std::nullopt;
+  }
+  const SdkImports imports = langgraph_sdk_imports(node, context.source);
+  const TSNode receiver = unwrap_expression(ts_node_child_by_field_name(group, "object", 6));
+  SdkClient client = sdk_client_value(receiver, imports, context.source, 0);
+  if (client.origin == SdkOrigin::kNone) {
+    return std::nullopt;
+  }
+  return SdkCall{.client = std::move(client),
+                 .label = node_text(receiver, context.source) + "." + group_name + "." + method,
+                 .verb = std::move(request->first),
+                 .path = std::move(request->second)};
+}
+
+// The name a function is declared under: `function f() {}`, or the `const f`
+// an arrow or function expression initialises. Empty for anything else.
+[[nodiscard]] std::string declared_name(const TSNode& function, std::string_view source) {
+  if (std::string_view(ts_node_type(function)) == "function_declaration") {
+    return field_text(function, "name", source);
+  }
+  const TSNode parent = ts_node_parent(function);
+  if (!ts_node_is_null(parent) && std::string_view(ts_node_type(parent)) == "variable_declarator") {
+    return field_text(parent, "name", source);
+  }
+  return {};
+}
+
+// `function createLangGraphClient(token) { return new Client({ ... }) }`: a
+// module function whose every return is an SDK client records a
+// `langgraph_client` fact, once, at the `new Client` it returns, so another
+// file's `createLangGraphClient(token).runs.stream(...)` resolves through it.
+void langgraph_factory_handler(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                               std::vector<RawRelation>& out) {
+  if (function_scope_id.empty() || std::string_view(ts_node_type(node)) != "new_expression") {
+    return;
+  }
+  const SdkImports imports = langgraph_sdk_imports(node, context.source);
+  if ((imports.classes.empty() && imports.namespaces.empty()) ||
+      sdk_client_value(node, imports, context.source, 0).origin != SdkOrigin::kHere) {
+    return;
+  }
+  const TSNode function = enclosing_function(node);
+  if (ts_node_is_null(function)) {
+    return;
+  }
+  // The scope the walk names must be this very function (an anonymous arrow
+  // inside one takes its parent's scope), declared at module level.
+  const auto name = declared_name(function, context.source);
+  if (name.empty() || make_id(context.relative_path + ":" + name) != function_scope_id ||
+      !ts_node_eq(module_function(node, name, context.source), function) ||
+      !returns_sdk_client(function, imports, context.source, 0)) {
+    return;
+  }
+  std::vector<TSNode> returns;
+  function_return_values(function, returns);
+  if (std::ranges::none_of(returns, [&](const TSNode& value) { return ts_node_eq(value, node); })) {
+    return;  // record the fact once, at a `new Client` the function returns itself
+  }
+  out.push_back(RawRelation{
+      .source_id = function_scope_id,
+      .target_label = "Client",
+      .relation = "langgraph_client",
+      .source_file = context.source_file,
+  });
+}
+
 }  // namespace
 
 struct HttpConsumerFileScope::Cache {
@@ -1794,6 +2187,20 @@ HttpConsumerFileScope::~HttpConsumerFileScope() {
 // argument other than the first.
 void http_call_handler(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
                        std::vector<RawRelation>& out) {
+  langgraph_factory_handler(node, context, function_scope_id, out);
+  // A call on a LangGraph SDK client sends the request its method spells; the
+  // generic reading below must not see `client.runs.get(...)` again.
+  if (auto sdk = langgraph_sdk_call(node, context)) {
+    const bool here = sdk->client.origin == SdkOrigin::kHere;
+    out.push_back(RawRelation{
+        .source_id = consumer_scope_id(node, context, function_scope_id),
+        .target_label = here ? std::move(sdk->label) : std::move(sdk->client.factory),
+        .relation = here ? "http_call" : "langgraph_call",
+        .context = sdk->verb + " " + sdk->path,
+        .source_file = context.source_file,
+    });
+    return;
+  }
   for (auto& call : analyze_client_call(node, context, 0)) {
     switch (call.kind) {
       case ClientCall::Kind::Wrapper: {
