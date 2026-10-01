@@ -48,7 +48,8 @@ export async function publish(projectId: string) {
         // URL constants: the env host holds no path; `base` holds `/api/v1`.
         "url_const|" + file + "|API_URL|",
         "url_const|" + file + "|base|/api/v1",
-        "http_wrapper|" + fn("apiFetch") + "|fetch| /api/v1",
+        // `{ ...options }`: callers' options at argument 1 override its method.
+        "http_wrapper|" + fn("apiFetch") + "|fetch|~1 /api/v1",
         "http_wrapper|" + fn("del") + "|fetch|DELETE ",
         // An imported base stays a placeholder for project-wide resolution.
         "http_wrapper|" + fn("put") + "|fetch|PUT ${IMPORTED_BASE}",
@@ -216,9 +217,10 @@ export async function setup(projectId: string) {
         // A same-file helper returning `''` or `?...` is the query string.
         "http_call|" + fn("viaLocals") + "|fetch| /project/{}/formulations/score",
         // The stripped leading slash makes the parameter the tail after `/`.
-        "http_wrapper|" + fn("apiRequest") + "|fetch| /api/backend/",
-        "http_call|" + fn("refreshMetadata") + "|apiRequest|POST v1/service-providers/{}/refresh-metadata",
-        // Its arguments too, in case `apiRequest` takes the path elsewhere.
+        "http_wrapper|" + fn("apiRequest") + "|fetch|~1 /api/backend/",
+        // A wrapper call spells no method of its own: its arguments carry the
+        // options, read at the index the wrapper records.
+        "http_call|" + fn("refreshMetadata") + "|apiRequest| v1/service-providers/{}/refresh-metadata",
         "http_call_args|" + fn("refreshMetadata") + "|apiRequest|Pv1/service-providers/{}/refresh-metadata\tOPOST",
         // The axios instance's baseURL prefixes its requests; the verb is the wrapper's method.
         "http_wrapper|" + fn("patch") + "|api.patch|PATCH /api/backend/",
@@ -392,10 +394,11 @@ export function positioned({ tenant }: Opts, path: string) {
     }
     const auto fn = [](std::string_view name) { return cgraph::make_id(std::string("lib/review.ts:") + std::string(name)); };
     const std::set<std::string> expected{
-        "http_wrapper|" + fn("request") + "|fetch|GET ",
+        // `{ method: 'GET', ...init }`: a caller's options at 1 override GET.
+        "http_wrapper|" + fn("request") + "|fetch|GET~1 ",
         "http_call|" + fn("create") + "|this.request|POST /api/v1/widgets",
         "http_call|" + fn("read") + "|this.request|GET /api/v1/widgets",
-        "http_wrapper|" + fn("authenticatedFetch") + "|fetch| ",
+        "http_wrapper|" + fn("authenticatedFetch") + "|fetch|~1 ",
         "http_wrapper|" + fn("authenticatedPatch") + "|authenticatedFetch|PATCH ",
         "http_call|" + fn("updateBackupCodes") + "|authenticatedPatch| /api/backend/v1/tenants/{}/settings/backup-codes",
         "http_call_args|" + fn("updateBackupCodes") + "|authenticatedPatch|P/api/backend/v1/tenants/{}/settings/backup-codes\t",

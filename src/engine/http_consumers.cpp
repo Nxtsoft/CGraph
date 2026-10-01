@@ -1051,6 +1051,19 @@ struct MethodSource {
   bool operator==(const MethodSource&) const = default;
 };
 
+// The verb a fact spells for a method: the fixed verb, or every choice joined
+// by `|` (`POST|DELETE`).
+[[nodiscard]] std::string join_verbs(const MethodSource& method) {
+  if (method.choices.empty()) {
+    return method.verb;
+  }
+  std::string joined;
+  for (const auto& choice : method.choices) {
+    joined += (joined.empty() ? "" : "|") + choice;
+  }
+  return joined;
+}
+
 constexpr int kMaxOptionsDepth = 3;
 
 // The parameter a local takes the rest of: `const { skipRetry, ...rest } =
@@ -1501,21 +1514,30 @@ struct ReceiverBase {
   for (std::uint32_t index = 0; index < count; ++index) {
     const TSNode argument = unwrap_expression(ts_node_named_child(arguments, index));
     const std::string_view type = ts_node_type(argument);
+    // A path is read as a client call reads its URL: a local holding it,
+    // `new URL(x)`, `x.toString()` and `x.href` included.
+    const TSNode url_node = peel_url_argument(argument, context.source);
+    const std::string_view url_type = ts_node_is_null(url_node) ? std::string_view{} : ts_node_type(url_node);
     std::string descriptor;
-    if (type == "string" || type == "template_string" || type == "binary_expression") {
+    if (url_type == "string" || url_type == "template_string" || url_type == "binary_expression" ||
+        url_type == "identifier" ||
+        (url_type == "new_expression" && field_text(url_node, "constructor", context.source) == "URL")) {
       UrlTemplate url;
-      collect_url_template(argument, context, scope, url, 0);
+      collect_url_template(url_node, context, scope, url, 0);
       url.finish(true);
       if (url.resolvable && !url.tail && url.base_index < 0 && !url.path.empty()) {
         descriptor = "P" + url.path;
         (index == 0 ? first_path : later_path) = true;
-      } else if (auto literal = literal_verb(argument, context.source); !literal.empty()) {
-        descriptor = "V" + literal;
+      } else if (type != "identifier") {
+        if (auto literal = literal_verb(argument, context.source); !literal.empty()) {
+          descriptor = "V" + literal;
+        }
       }
-    } else if (type == "object" || type == "identifier") {
+    }
+    if (descriptor.empty() && (type == "object" || type == "identifier")) {
       if (const auto method = options_method(argument, scope.parameters, context.source);
-          !method.unknown && method.parameter < 0 && method.options < 0 && method.choices.empty()) {
-        descriptor = "O" + method.verb;
+          !method.unknown && method.parameter < 0 && method.options < 0) {
+        descriptor = "O" + join_verbs(method);
       }
     }
     if (index > 0) {
@@ -1658,16 +1680,14 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
   if (!ts_node_is_null(receiver)) {
     base = receiver_base(receiver, context);
   }
-  MethodSource method = argument_count >= 2
+  // Which argument of a call to a wrapper holds its options is the wrapper's to
+  // say (its `http_wrapper` fact records the index): contracts read the method
+  // there from this call's `http_call_args`, never from the second argument.
+  MethodSource method = primitive && argument_count >= 2
                             ? options_method(ts_node_named_child(arguments, 1), scope.parameters, context.source)
                             : MethodSource{};
   if (!verb.empty()) {
     method.options = -1;  // `axios.post(url, data)`: the second argument is the body, the verb is fixed
-    method.unknown = false;
-  } else if (!primitive) {
-    // Which argument of a call to a wrapper holds its options is the wrapper's
-    // to say, and its `http_wrapper` fact does not record it: a second argument
-    // may be a body. Contracts read the method from the wrapper there.
     method.unknown = false;
   }
   for (const auto& value : values) {
@@ -1782,12 +1802,18 @@ void http_call_handler(const TSNode& node, const ExtractionContext& context, con
         if (function_scope_id.empty() || call.base >= 0) {
           break;
         }
-        std::string fact = call.method.verb;
+        std::string fact = join_verbs(call.method);
         if (call.method.parameter >= 0) {
           fact = "@" + std::to_string(call.method.parameter);
           if (auto fallback = parameter_default_verb(node, call.method.parameter, context.source); !fallback.empty()) {
             fact += "=" + fallback;  // `request(path, method = 'GET')`: a call leaving it out means GET
           }
+        }
+        if (call.method.unknown) {
+          fact += "?";  // `fetch(url, build(init))`: the wrapper's own method is unreadable
+        }
+        if (call.method.options >= 0) {
+          fact += "~" + std::to_string(call.method.options);  // `{ ...init }`: a caller's options at that index override
         }
         fact += " " + call.path;
         if (call.tail != 0) {

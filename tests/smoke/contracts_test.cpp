@@ -1149,6 +1149,88 @@ export async function unreadableMethod(h: H) { return authed(h, '/unreadable-met
   return 0;
 }
 
+// A wrapper whose path is its first parameter reads its callers' method where
+// it takes their options (#147): `apiFetch(path, authHeaders, init)` spreads
+// the third argument, so the second (headers) says nothing. A wrapper that
+// forwards no options sends its own method whatever a caller passes; one whose
+// own options are unreadable (`decorate(init)`) leaves every caller unresolved,
+// and one whose own method is unreadable but spreads the caller's options after
+// it takes a method only a caller spells; a
+// wrapper choosing between two verbs consumes both. A path held in a constant,
+// a local or `new URL(...)` reaches such a wrapper as it reaches `fetch`.
+int test_first_parameter_wrapper_options() {
+  const auto built = build({
+      {"/proj/q/src/api.ts", R"ts(
+const API = '/api/v1';
+export async function apiFetch<T>(path: string, authHeaders: Record<string, string>, init?: RequestInit) {
+  return fetch(`${API}${path}`, { ...init, headers: { ...authHeaders } });
+}
+export async function plain(path: string) { return fetch(`${API}${path}`); }
+export async function built(path: string, init?: RequestInit) { return fetch(`${API}${path}`, decorate(init)); }
+export async function mixed(path: string, init?: RequestInit) { return fetch(`${API}${path}`, { method: pick(), ...init }); }
+export async function toggle(path: string, on: boolean) {
+  return fetch(`${API}${path}`, { method: on ? 'POST' : 'DELETE' });
+}
+export async function jsonFetch(url: string, init?: RequestInit) { return fetch(url, { ...init }); }
+)ts"},
+      {"/proj/q/src/callers.ts", R"ts(
+import { apiFetch, plain, built, mixed, toggle, jsonFetch } from './api';
+const authHeaders = { Authorization: 'Bearer x' };
+const HOST = process.env.HOST;
+const LINKS_URL = `${HOST}/api/v1/links/`;
+export async function listInputs() { return apiFetch('/inputs', authHeaders); }
+export async function createInput() { return apiFetch('/inputs', authHeaders, { method: 'POST', body: '{}' }); }
+export async function topLevel(id: string) {
+  return apiFetch(`/composites/${id}/top-level`, authHeaders, { method: 'PATCH' });
+}
+export async function unreadable() { return apiFetch('/unreadable', authHeaders, makeInit()); }
+export async function ignored() { return plain('/plain', { method: 'POST' }); }
+export async function guessed() { return built('/built'); }
+export async function spelled() { return built('/spelled', { method: 'PUT' }); }
+export async function overridden() { return mixed('/mixed', { method: 'PUT' }); }
+export async function bare() { return mixed('/bare'); }
+export async function flip() { return toggle('/flags', true); }
+export async function viaConst() { return jsonFetch(LINKS_URL, { method: 'POST' }); }
+export async function viaUrl() {
+  const sessions = new URL(`${HOST}/api/v1/sessions`);
+  return jsonFetch(sessions.toString(), {});
+}
+export async function viaLocal() { const url = `${HOST}/api/v1/config`; return jsonFetch(url); }
+)ts"},
+  });
+  const auto& graph = built.graph;
+  const auto consumes = [&](std::string_view caller, std::string_view endpoint_id) {
+    return has_edge(graph, cgraph::make_id(std::string("/proj/q/src/callers.ts:") + std::string(caller)),
+                    endpoint_id, "CONSUMES");
+  };
+  if (!consumes("listInputs", "endpoint:GET /api/v1/inputs") ||
+      !consumes("createInput", "endpoint:POST /api/v1/inputs") ||
+      !consumes("topLevel", "endpoint:PATCH /api/v1/composites/{}/top-level") ||
+      !consumes("ignored", "endpoint:GET /api/v1/plain") || !consumes("overridden", "endpoint:PUT /api/v1/mixed") ||
+      !consumes("flip", "endpoint:POST /api/v1/flags") || !consumes("flip", "endpoint:DELETE /api/v1/flags") ||
+      !consumes("viaConst", "endpoint:POST /api/v1/links") || !consumes("viaUrl", "endpoint:GET /api/v1/sessions") ||
+      !consumes("viaLocal", "endpoint:GET /api/v1/config")) {
+    for (const auto& edge : graph.edges) {
+      if (edge.relation == "CONSUMES") std::cerr << "  consumes: " << edge.source << " -> " << edge.target << '\n';
+    }
+    return fail("first-parameter wrapper options");
+  }
+  for (const auto& node : graph.nodes) {
+    if (node.kind == "endpoint" &&
+        (node.label.find("unreadable") != std::string::npos || node.label.find("/built") != std::string::npos ||
+         node.label.find("/spelled") != std::string::npos || node.label.find("/bare") != std::string::npos ||
+         node.label == "GET /api/v1/composites/{}/top-level" || node.label == "POST /api/v1/plain")) {
+      return fail("a wrapper call's method was guessed: " + node.label);
+    }
+  }
+  if (built.stats.calls != 13 || built.stats.calls_unresolved != 4 || built.stats.consumes != 10) {
+    std::cerr << "  calls " << built.stats.calls << " unresolved " << built.stats.calls_unresolved << " consumes "
+              << built.stats.consumes << '\n';
+    return fail("first-parameter wrapper options tally");
+  }
+  return 0;
+}
+
 int main() {
   int failures = 0;
   failures += test_join_route_path();
@@ -1170,5 +1252,6 @@ int main() {
   failures += test_orm_table_links();
   failures += test_positional_and_relative_wrappers();
   failures += test_positional_wrapper_options();
+  failures += test_first_parameter_wrapper_options();
   return failures == 0 ? 0 : 1;
 }
