@@ -38,6 +38,11 @@
 //                  first parameter to a fixed prefix (`apiFetch(path)` calling
 //                  fetch(`${base}${path}`)), context = "<fixed METHOD or empty>
 //                  <prefix>". Calls to it are consumers of prefix + argument.
+//                  The method may be choices (`POST|DELETE`), end in `?` when
+//                  the wrapper's own options are unreadable, and end in
+//                  `~<index>` when a caller's options at that argument index
+//                  override it (`{ ...init }`); calls to such a wrapper are
+//                  read from their `http_call_args`.
 //   "maps_table"   source_id = a module-level ORM model variable, target_label =
 //                  the SQL table it declares (`pgTable('competitors', ...)`).
 //                  Resolves to a `maps_table` edge from the variable to the

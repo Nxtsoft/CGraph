@@ -478,14 +478,27 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   //    A wrapper whose path is another parameter (`request(method, path)`)
   //    spells it `<METHOD> <prefix> #<index>`, and one whose method is a
   //    parameter spells the method `@<index>` (`@<index>=<VERB>` when the
-  //    parameter defaults to a verb); calls to those are read from
-  //    their `http_call_args` facts (step 6b).
+  //    parameter defaults to a verb). A method may end in `?` (the wrapper's
+  //    own options are unreadable) and `~<index>` (a caller's options at that
+  //    index override it: `{ ...init }`), and may be choices (`POST|DELETE`).
+  //    Calls to any of those are read from their `http_call_args` facts (step 6b).
   struct Wrapper {
-    std::string method;  // fixed by the wrapper's own call (`method: 'POST'`), else empty
+    std::vector<std::string> methods;  // fixed by the wrapper's own call (`method: 'POST'`), else empty
     std::string prefix;
     int method_parameter = -1;
     std::string method_default;  // `method = 'GET'`: what a call leaving the method out sends
     std::size_t path_parameter = 0;
+    int options_parameter = -1;  // the parameter whose `method` overrides the wrapper's
+    bool unknown = false;
+  };
+  const auto split_verbs = [](const std::string& spelled) {
+    std::vector<std::string> verbs;
+    for (std::size_t start = 0; start < spelled.size();) {
+      const auto bar = spelled.find('|', start);
+      verbs.push_back(spelled.substr(start, bar == std::string::npos ? std::string::npos : bar - start));
+      start = bar == std::string::npos ? spelled.size() : bar + 1;
+    }
+    return verbs;
   };
   std::unordered_map<std::string, Wrapper> wrappers;
   for (const auto& relation : raw_relations) {
@@ -498,18 +511,27 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       wrapper.path_parameter = static_cast<std::size_t>(std::stoul(prefix.substr(mark + 2)));
       prefix.resize(mark);
     }
+    if (const auto mark = method.rfind('~'); mark != std::string::npos) {
+      wrapper.options_parameter = std::stoi(method.substr(mark + 1));
+      method.resize(mark);
+    }
+    if (method.ends_with('?')) {
+      wrapper.unknown = true;
+      method.pop_back();
+    }
     if (method.starts_with("@")) {
       const auto equals = method.find('=');
       wrapper.method_parameter = std::stoi(method.substr(1, equals == std::string::npos ? std::string::npos : equals - 1));
       wrapper.method_default = equals == std::string::npos ? std::string{} : method.substr(equals + 1);
       method.clear();
     }
-    wrapper.method = std::move(method);
+    wrapper.methods = split_verbs(method);
     wrapper.prefix = std::move(prefix);
     wrappers.emplace(relation.source_id, std::move(wrapper));
   }
   const auto positional = [](const Wrapper& wrapper) {
-    return wrapper.path_parameter != 0 || wrapper.method_parameter >= 0;
+    return wrapper.path_parameter != 0 || wrapper.method_parameter >= 0 || wrapper.options_parameter >= 0 ||
+           wrapper.unknown || wrapper.methods.size() > 1;
   };
   // A path without a leading slash (`v1/users`) is joined to a base URL by its
   // client; only a prefix ending in a slash (an axios baseURL, `${API}/${path}`)
@@ -563,10 +585,9 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       if (wrapper == wrappers.end() || positional(wrapper->second)) {
         continue;  // positional wrappers are read from http_call_args below
       }
+      // A wrapper here takes no options from its callers: its own method is sent.
       prefix = wrapper->second.prefix;
-      if (method.empty()) {
-        method = wrapper->second.method;
-      }
+      method = wrapper->second.methods.empty() ? std::string{} : wrapper->second.methods.front();
     } else if (method.empty() && relation.target_label != "fetch") {
       // `api.GET(...)`, `axios.post(...)`: the verb is the property.
       method = to_upper(relation.target_label.substr(relation.target_label.rfind('.') + 1));
@@ -605,9 +626,10 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
   }
 
-  // 6b. Calls to a wrapper that takes its path from a later parameter, or its
-  //     method from a parameter (`mlBackendRequest('POST', \`/project/${id}/setup\`)`):
-  //     the argument descriptors the extractor recorded fill those slots.
+  // 6b. Calls to a wrapper that takes its path from a later parameter, its
+  //     method from a parameter (`mlBackendRequest('POST', \`/project/${id}/setup\`)`)
+  //     or from the options it spreads, or whose own method is unreadable or a
+  //     choice: the argument descriptors the extractor recorded fill those slots.
   for (const auto& relation : raw_relations) {
     if (relation.relation != kHttpCallArgsRelation) {
       continue;
@@ -634,30 +656,40 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       }
       return arguments[index].substr(1);
     };
-    std::string method = shape.method;
+    // The wrapper's own method, from its parameter or fixed; then the caller's
+    // options at the index the wrapper spreads them from, whose `method`
+    // overrides it. Left out, or options with no `method`, keep the wrapper's,
+    // fetch's GET when it has none; a method nobody can read is counted, never
+    // guessed.
+    std::vector<std::string> methods = shape.methods;
+    bool unknown = shape.unknown;
     if (shape.method_parameter >= 0) {
       const auto index = static_cast<std::size_t>(shape.method_parameter);
       const auto verb = index >= arguments.size() ? std::optional<std::string>{shape.method_default} : argument(index, 'V');
-      method = verb ? *verb : std::string{};
-      if (method.empty()) {
-        ++tally.calls_unresolved;  // a method this call does not spell out
+      methods.clear();
+      if (verb && !verb->empty()) {
+        methods.push_back(*verb);
+      } else {
+        unknown = true;  // a method this call does not spell out
+      }
+    }
+    if (shape.options_parameter >= 0 && static_cast<std::size_t>(shape.options_parameter) < arguments.size()) {
+      const auto verb = argument(static_cast<std::size_t>(shape.options_parameter), 'O');
+      if (!verb) {
+        ++tally.calls_unresolved;
         continue;
       }
-    } else if (method.empty()) {
-      // The call's options right after the path: left out, or an object with
-      // no `method`, is fetch's GET; options the extractor could not read are
-      // counted, never guessed.
-      const auto index = shape.path_parameter + 1;
-      if (index < arguments.size()) {
-        const auto verb = argument(index, 'O');
-        if (!verb) {
-          ++tally.calls_unresolved;
-          continue;
-        }
-        method = verb->empty() ? "GET" : *verb;
-      } else {
-        method = "GET";
+      if (!verb->empty()) {
+        methods = split_verbs(*verb);
+        unknown = false;
       }
+    }
+    if (unknown) {
+      ++tally.calls_unresolved;
+      continue;
+    }
+    if (methods.empty()) {
+      methods.push_back("GET");
     }
     const auto raw_call_path = argument(shape.path_parameter, 'P');
     const auto expanded_prefix = expand(shape.prefix);
@@ -669,12 +701,14 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       continue;
     }
     const auto path = canonical_route_path(join_route_path(*expanded_prefix, *expanded_path));
-    const auto id = "endpoint:" + method + " " + path;
-    if (mint(id, method + " " + path, method, path, nullptr)) {
-      ++tally.endpoints_external;
-    }
-    if (add_edge(relation.source_id, id, kConsumes, "", {})) {
-      ++tally.consumes;
+    for (const auto& method : methods) {
+      const auto id = "endpoint:" + method + " " + path;
+      if (mint(id, method + " " + path, method, path, nullptr)) {
+        ++tally.endpoints_external;
+      }
+      if (add_edge(relation.source_id, id, kConsumes, "", {})) {
+        ++tally.consumes;
+      }
     }
   }
 
