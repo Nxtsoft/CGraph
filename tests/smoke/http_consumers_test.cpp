@@ -524,5 +524,82 @@ class UnreadableSpread {
     }
   }
 
+  // LangGraph SDK clients (@langchain/langgraph-sdk 1.11.1): a call on a
+  // receiver that provably is a `Client` sends the request its method spells.
+  // A client this file makes (`new Client`, a namespace import's `lg.Client`,
+  // a module constant, a class field, a same-file factory) is an `http_call`;
+  // one an imported function returns is a `langgraph_call` naming that
+  // function, and the function's own file records `langgraph_client`. A null
+  // thread id takes the stateless path; a checkpoint object POSTs. A parameter
+  // typed `Client`, a local reassigned later, a parameter shadowing a module
+  // client, another package's `Client` and the v2 `threads.stream` are not read.
+  {
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/chat.ts", .relative_path = "lib/chat.ts", .source = R"ts(
+import { Client } from '@langchain/langgraph-sdk';
+import * as lg from '@langchain/langgraph-sdk/client';
+import { createLangGraphClient } from '@/lib/langgraph-client';
+import { Client as Other } from './other';
+const shared = new Client({ apiUrl: 'http://localhost:2024' });
+export function makeClient(apiUrl: string) { return new Client({ apiUrl }); }
+export async function chat(threadId: string, rid: string, token: string, cp: unknown) {
+  const client = createLangGraphClient(token, 'ic');
+  const thread = await client.threads.create();
+  for await (const chunk of client.runs.stream(thread.thread_id, 'luna', { input: {} })) {}
+  await client.runs.wait(null, 'recap', {});
+  await client.runs.get(threadId, rid);
+  await client.threads.getState(threadId);
+  await client.threads.getState(threadId, { checkpoint_id: 'c' });
+  await client.threads.getState(threadId, cp);
+  await client.runs.create(undefined, 'luna');
+}
+export async function local(rid: string) {
+  const c = makeClient('http://localhost:2024');
+  await c.assistants.search({ limit: 100 });
+  await shared.store.putItem(['a'], 'k', {});
+  await new lg.Client().runs.joinStream(null, rid);
+}
+export async function notClients(client: Client, t: string, token: string) {
+  await client.runs.stream(t, 'luna', {});
+  const o = new Other();
+  await o.runs.stream(t, 'luna', {});
+  let late = null;
+  late = createLangGraphClient(token);
+  await late.threads.create();
+  await shared.threads.stream(t);
+  await shared.runs.unknown(t);
+}
+export async function shadowed(shared: Other) { return shared.threads.create(); }
+export class Service {
+  private client = new Client();
+  stop(t: string) { return this.client.runs.cancel(t, 'r'); }
+}
+)ts"});
+    std::set<std::string> facts;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation == "http_call" || relation.relation == "langgraph_call" ||
+          relation.relation == "langgraph_client") {
+        facts.insert(relation.relation + "|" + relation.source_id + "|" + relation.target_label + "|" + relation.context);
+      }
+    }
+    const auto fn = [](std::string_view name) { return cgraph::make_id(std::string("lib/chat.ts:") + std::string(name)); };
+    const std::set<std::string> expected{
+        "langgraph_client|" + fn("makeClient") + "|Client|",
+        "langgraph_call|" + fn("chat") + "|createLangGraphClient|POST /threads",
+        "langgraph_call|" + fn("chat") + "|createLangGraphClient|POST /threads/{}/runs/stream",
+        "langgraph_call|" + fn("chat") + "|createLangGraphClient|POST /runs/wait",
+        "langgraph_call|" + fn("chat") + "|createLangGraphClient|GET /threads/{}/runs/{}",
+        "langgraph_call|" + fn("chat") + "|createLangGraphClient|GET /threads/{}/state",
+        "langgraph_call|" + fn("chat") + "|createLangGraphClient|POST /threads/{}/state/checkpoint",
+        "http_call|" + fn("local") + "|c.assistants.search|POST /assistants/search",
+        "http_call|" + fn("local") + "|shared.store.putItem|PUT /store/items",
+        "http_call|" + fn("local") + "|new lg.Client().runs.joinStream|GET /runs/{}/stream",
+        "http_call|" + fn("stop") + "|this.client.runs.cancel|POST /threads/{}/runs/{}/cancel",
+    };
+    if (facts != expected) {
+      for (const auto& fact : facts) std::cerr << "langgraph fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
   return 0;
 }

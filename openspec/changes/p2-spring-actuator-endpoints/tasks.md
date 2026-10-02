@@ -8,7 +8,7 @@
 
 - [x] 2.1 `spring_actuator_routes`: exposure, access, base path, path mapping, ports, context path, discovery, health groups and probes, profile configurations and precedence.
 - [x] 2.2 `resolve_contracts` mints the derived `file_route` facts; `resolve_raw_relations` skips the new facts.
-- [x] 2.3 Index version `logic-12`.
+- [x] 2.3 Index version `logic-13` (#153 took `logic-12`).
 
 ## 3. Verification
 
