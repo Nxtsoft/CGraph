@@ -423,6 +423,13 @@ void kotlin_claims(TSNode root, Emitter& emitter) {
         if (!name.empty() && type_of(value) != "variable_declaration") {
           variables[name] = level(value);
         }
+      } else if (child_type == "assignment") {
+        // `data = load(data)`: the variable holds what was last stored in it.
+        const auto target = named_child(first_named_of_type(child, "directly_assignable_expression"), 0);
+        const auto value = named_child(child, named_count(child) - 1);
+        if (type_of(target) == "simple_identifier" && type_of(value) != "null_literal") {
+          variables[text_of(target, source)] = level(value);
+        }
       } else if (child_type == "indexing_expression" && level(named_child(child, 0)) == Payload::Parsed) {
         if (const auto key = string_value(named_child(first_named_of_type(child, "indexing_suffix"), 0), source)) {
           emitter.claim(false, emitter.scope_at(line_of(child)), *key);
@@ -832,6 +839,24 @@ struct JsFile {
          library == "jsonwebtoken.verify" || library == "jsonwebtoken.decode";
 }
 
+// True for a library call whose result wraps the payload: jose's
+// `jwtVerify(..)` (`{ payload, protectedHeader }`) and jsonwebtoken's `verify` /
+// `decode` with `complete: true` (`{ header, payload, signature }`).
+[[nodiscard]] bool js_wraps(TSNode call, const JsFile& file, std::string_view source) {
+  call = js_unwrap(call);
+  const auto library = js_library_call(call, file, source);
+  if (library == "jwtVerify") {
+    return true;
+  }
+  if (library != "jsonwebtoken.verify" && library != "jsonwebtoken.decode") {
+    return false;
+  }
+  return any_of(field_of(call, "arguments"), [&](TSNode node) {
+    return type_of(node) == "pair" && text_of(field_of(node, "key"), source) == "complete" &&
+           text_of(field_of(node, "value"), source) == "true";
+  });
+}
+
 [[nodiscard]] bool js_function_like(std::string_view type) {
   return type == "function_declaration" || type == "function_expression" || type == "arrow_function" ||
          type == "method_definition" || type == "function" || type == "generator_function_declaration";
@@ -943,11 +968,19 @@ class JsPayloadFlow {
                  ? Payload::Segment
                  : Payload::None;
     }
+    // `result.payload` of jose's `{ payload, protectedHeader }` or of
+    // jsonwebtoken's `{ header, payload, signature }` (`complete: true`).
+    if (type == "member_expression" && text_of(field_of(expression, "property"), source_) == "payload") {
+      const auto object = js_unwrap(field_of(expression, "object"));
+      return (type_of(object) == "identifier" && wrappers_.contains(text_of(object, source_))) || wraps(object)
+                 ? Payload::Parsed
+                 : Payload::None;
+    }
     if (type != "call_expression") {
       return Payload::None;
     }
     if (js_decodes(js_library_call(expression, file_, source_))) {
-      return Payload::Parsed;
+      return wraps(expression) ? Payload::None : Payload::Parsed;  // a wrapper is not the payload itself
     }
     const auto function = field_of(expression, "function");
     const auto arguments = field_of(expression, "arguments");
@@ -985,14 +1018,26 @@ class JsPayloadFlow {
     return Payload::None;
   }
 
-  // Records a declaration or assignment, in source order.
+  [[nodiscard]] bool wraps(TSNode call) const { return js_wraps(call, file_, source_); }
+
+  // Records a declaration or assignment, in source order. The variable holds
+  // what was last stored in it: a later non-payload value clears it (a bare
+  // `null` / `undefined` placeholder leaves it as it was).
   void bind(TSNode pattern, TSNode value) {
     const auto value_level = level(value);
     if (type_of(pattern) == "identifier") {
-      auto& slot = variables_[text_of(pattern, source_)];
-      slot = std::max(slot, value_level);
-    } else if (type_of(pattern) == "object_pattern" && value_level == Payload::Parsed &&
-               js_library_call(js_unwrap(value), file_, source_) == "jwtVerify") {
+      const auto name = text_of(pattern, source_);
+      const auto stored = js_unwrap(value);
+      if (type_of(stored) == "null" || type_of(stored) == "undefined") {
+        return;
+      }
+      variables_[name] = value_level;
+      if (wraps(stored)) {
+        wrappers_.insert(name);
+      } else {
+        wrappers_.erase(name);
+      }
+    } else if (type_of(pattern) == "object_pattern" && wraps(value)) {
       // jose: `const { payload } = await jwtVerify(token, key)`
       for (std::uint32_t index = 0; index < named_count(pattern); ++index) {
         const auto member = ts_node_named_child(pattern, index);
@@ -1022,6 +1067,7 @@ class JsPayloadFlow {
   const JsFile& file_;
   std::string_view source_;
   std::unordered_map<std::string, Payload> variables_;
+  std::unordered_set<std::string> wrappers_;  // variables holding a library wrapper (`r` in `r.payload`)
 };
 
 // The claims type a decoder function returns, from its own data path: a
@@ -1133,7 +1179,8 @@ void js_claims(TSNode root, Emitter& emitter) {
         return true;
       }
       // `jwt.verify(token, key) as T`: the cast types the library's payload.
-      if (type == "as_expression" && js_decodes(js_library_call(js_unwrap(named_child(node, 0)), file, source))) {
+      if (type == "as_expression" && js_decodes(js_library_call(js_unwrap(named_child(node, 0)), file, source)) &&
+          !js_wraps(named_child(node, 0), file, source)) {
         if (const auto name = js_single_type(named_child(node, 1), file, source); !name.empty()) {
           claims_types.insert(name);
         }
@@ -1227,6 +1274,16 @@ void js_claims(TSNode root, Emitter& emitter) {
   const std::function<void(TSNode)> reads = [&](TSNode node) {
     const auto type = type_of(node);
     const bool function_like = js_function_like(type);
+    // `for (const payload of rows)` and `catch (payload)` bind in their own block.
+    const bool block_binding = type == "for_in_statement" || type == "catch_clause";
+    if (block_binding) {
+      scopes.emplace_back();
+      std::vector<std::string> names;
+      js_declared_names(field_of(node, type == "catch_clause" ? "parameter" : "left"), source, names);
+      for (const auto& name : names) {
+        scopes.back()[name];
+      }
+    }
     if (function_like) {
       scopes.emplace_back();
       std::vector<std::string> parameters;
@@ -1273,6 +1330,9 @@ void js_claims(TSNode root, Emitter& emitter) {
       reads(ts_node_named_child(node, index));
     }
     if (function_like) {
+      scopes.pop_back();
+    }
+    if (block_binding) {
       scopes.pop_back();
     }
   };

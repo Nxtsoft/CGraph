@@ -627,6 +627,96 @@ fun notNimbus() = Other.Builder().claim("not_nimbus", 1).build()
   return 0;
 }
 
+// Review round 2, item 1: a variable holds what was last stored in it. A
+// payload overwritten by a database row is no longer the payload, so `User`
+// is no claims type; a `null` placeholder later filled with the payload is.
+int test_reassignment_clears_the_payload() {
+  const auto graph = build({{"api/load.ts", R"(
+export interface User { email_address: string; plan: string }
+export interface Late { tenant_id: string }
+export function load(token: string): User {
+  const parts = token.split('.');
+  let data = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+  data = db.users.get(data.sub);
+  return data;
+}
+export function late(token: string): Late {
+  const parts = token.split('.');
+  let data = null;
+  data = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+  return data;
+}
+)"},
+                            {"app/Load.kt", R"(package app
+fun overwritten(token: String, body: String): String? {
+    val segment = token.split('.').getOrNull(1) ?: return null
+    var obj = Json.parseToJsonElement(Base64.UrlSafe.decode(segment).decodeToString())
+    obj = Json.parseToJsonElement(body)
+    return obj.jsonObject["roles"]?.jsonPrimitive?.content
+}
+fun kept(token: String): String? {
+    val segment = token.split('.').getOrNull(1) ?: return null
+    var obj = Json.parseToJsonElement(Base64.UrlSafe.decode(segment).decodeToString())
+    return obj.jsonObject["session_id"]?.jsonPrimitive?.content
+}
+)"}});
+  if (all_claims(graph) != Names{"session_id", "tenant_id"}) {
+    return fail("an overwritten payload stayed the payload: " + show(all_claims(graph)));
+  }
+  return 0;
+}
+
+// Item 2: jose's `jwtVerify` and jsonwebtoken's `complete: true` return a
+// wrapper; only its `.payload` (or a destructured `payload`) is the payload.
+int test_library_wrappers_are_not_the_payload() {
+  const auto graph = build({{"api/wrap.ts", R"(
+import { jwtVerify } from 'jose';
+import jwt from 'jsonwebtoken';
+interface Wrapped { protectedHeader: string; payload: string }
+interface Inner { org_slug: string }
+export async function whole(t: string): Promise<Wrapped> {
+  const r = await jwtVerify(t, key);
+  return r;
+}
+export async function inner(t: string): Promise<Inner> {
+  const r = await jwtVerify(t, key);
+  return r.payload as Inner;
+}
+export function complete(t: string) {
+  return jwt.decode(t, { complete: true }) as Wrapped;
+}
+)"}});
+  if (all_claims(graph) != Names{"org_slug"}) {
+    return fail("a library wrapper was taken for the payload: " + show(all_claims(graph)));
+  }
+  return 0;
+}
+
+// Item 3: `for (const payload of rows)` and `catch (payload)` shadow an outer
+// decoded `payload` inside their blocks only.
+int test_loop_and_catch_bindings_shadow() {
+  const auto graph = build({{"web/lib/token.ts", R"(
+export interface DecodedToken { roles: string[]; tenant_id: string; user_id: string }
+export function decodeToken(token: string): DecodedToken | null {
+  const parts = token.split('.');
+  return JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8')) as DecodedToken;
+}
+)"},
+                            {"web/rows.ts", R"(
+import { decodeToken } from './lib/token';
+export function rows(token: string, list: Row[]) {
+  const payload = decodeToken(token);
+  for (const payload of list) { use(payload.tenant_id); }
+  try { run(); } catch (payload) { use(payload.user_id); }
+  return payload.roles;
+}
+)"}});
+  if (claims(graph, "web_rows_ts_rows", false) != Names{"roles"}) {
+    return fail("a loop or catch binding read as the decoded payload: " + show(claims(graph, "web_rows_ts_rows", false)));
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -645,6 +735,9 @@ int main() {
   failures += test_reads_respect_shadowing();
   failures += test_package_callees_emit_no_reads();
   failures += test_library_forms();
+  failures += test_reassignment_clears_the_payload();
+  failures += test_library_wrappers_are_not_the_payload();
+  failures += test_loop_and_catch_bindings_shadow();
   if (failures == 0) {
     std::cout << "claim_contracts_test: ok\n";
   }
