@@ -105,7 +105,9 @@ constexpr std::string_view kUses = "uses_contract";
 // A test source: `_test.go`, `*.test.ts`, `*.spec.ts`, `test_x.py`, `x_test.py`,
 // `FooTest.kt`, or anything under a `test` / `tests` / `__tests__` / `e2e`
 // directory. A handler there is a fake server standing in for another service
-// (`httptest.NewServer` reading `X-Tenant-ID`), not this repo serving it.
+// (`httptest.NewServer` reading `X-Tenant-ID`), not this repo serving it, and a
+// request there goes to the repo's own service under test (`MockMvc`) or to
+// such a fake, not across services.
 [[nodiscard]] bool is_test_source(std::string_view relative_path) {
   std::string path = lower(relative_path);
   std::ranges::replace(path, '\\', '/');
@@ -131,8 +133,11 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
   if (!name || !is_contract_header_name(*name)) {
     return;
   }
-  if (providing && (scope.empty() || is_test_source(context.relative_path))) {
-    return;  // a read outside any function, or a test's fake server: no handler provides it
+  if (is_test_source(context.relative_path)) {
+    return;  // a test's fake server, or a request a test sends its own service
+  }
+  if (providing && scope.empty()) {
+    return;  // a read outside any function: no handler provides it
   }
   out.push_back(RawRelation{
       .source_id = scope.empty() ? make_id(context.relative_path) : scope,

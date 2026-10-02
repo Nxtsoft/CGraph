@@ -20,7 +20,10 @@
 // Each walk is called by its language's extra_walk on every node, with the
 // innermost enclosing function as `function_scope_id`. A sender outside any
 // function is attributed to its file; a reader outside any function is not
-// recorded (no handler reads it).
+// recorded (no handler reads it). A test source (`*_test.go`, `*.test.ts`,
+// `*.spec.ts`, `test_*.py`, `*Test.kt`, or under `test/`, `tests/`,
+// `__tests__/`, `e2e/`) records nothing: its handlers are fakes standing in
+// for another service and its requests go to its own service under test.
 
 #include "cgraph/language_config.hpp"
 

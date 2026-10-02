@@ -106,16 +106,15 @@ export function resolveOrg(headers: Record<string, string>) {
                  });
   }
 
-  // A test file's fake server reading a header does not provide it; its
-  // requests still use it.
+  // A test file records nothing: its fake server does not provide the header,
+  // and its requests go to its own service or to such a fake.
   {
     const std::string file = "src/client.test.ts";
     const auto result = cgraph::extract_typescript({.source_file = file, .relative_path = file, .source = R"ts(
 function fakeServer(request: Request) { return request.headers.get('x-act-as-org'); }
 function reqWith() { return fetch(u, { headers: { 'X-Act-As-Org': 'org' } }); }
 )ts"});
-    ok &= expect("typescript test file", header_facts(result),
-                 {"uses|" + id(file, "reqWith") + "|header:X-Act-As-Org"});
+    ok &= expect("typescript test file", header_facts(result), {});
   }
 
   // Python: FastAPI `Header(alias=CONST)` one hop away, a `Header()`
