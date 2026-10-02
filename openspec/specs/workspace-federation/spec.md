@@ -19,7 +19,7 @@ A directory SHALL be a workspace exactly when it holds `cgraph.workspace.json`, 
 - **THEN** discovery returns `api` and `web`, in that order
 
 ### Requirement: Impact crosses a contract once, with the depth that remains
-A federated `impact` SHALL ask every member repository about the seed and treat those that have it as the owners, naming them in `repos`. Every `endpoint:` node reached (and the seed itself when it is one) SHALL be forwarded once to every member repository with `max_depth` reduced by the depth at which the contract was reached, and the returned witnesses SHALL be merged at that depth plus their own, each tagged with its `repo` and, when it came from across a contract, `bridged_through` naming it. The seed SHALL NOT be a witness of itself in any repository; witnesses SHALL be ordered by depth, then centrality, then repo, then label, and truncated to the caller's limit with `total` counting all of them; the contracts crossed SHALL be listed in `bridged`. A seed no repository has SHALL answer `found:false` with no witnesses rather than an empty success.
+A federated `impact` SHALL ask every member repository about the seed and treat those that have it as the owners, naming them in `repos`. Every contract node reached that crosses repositories (and the seed itself when it is one) SHALL be forwarded once to every member repository with `max_depth` reduced by the depth at which the contract was reached, and the returned witnesses SHALL be merged at that depth plus their own, each tagged with its `repo` and, when it came from across a contract, `bridged_through` naming it. A contract crosses repositories as `crossing_id` says: every `endpoint:` and `claim:` id, a `header:` id whose name is not a standard HTTP header (the IANA permanent field names and the common tracing and proxy headers), a `table:` or `label:` id in a named database, a member's `table:local:<name>` or `label:local:<name>` at `table:<database>:<name>` when the manifest declares it in that database (asked of the other members of that database under their own local spelling, and of no other repository), and an `env:` id only when the manifest's `env` declares it; an undeclared env id, a standard header and an undeclared repo-local table SHALL NOT cross. The seed SHALL NOT be a witness of itself in any repository; witnesses SHALL be ordered by depth, then centrality, then repo, then label, and truncated to the caller's limit with `total` counting all of them; the contracts crossed SHALL be listed in `bridged`, each with `contract` and its depth, an endpoint also under `endpoint`, and a declared env id with `provided_by` naming its service. A seed no repository has SHALL answer `found:false` with no witnesses rather than an empty success.
 
 #### Scenario: A handler's blast radius reaches the other repository's consumer
 - **GIVEN** repo `api` where the handler's dependents at depth 1 are its file and `endpoint:GET /api/v1/notebooks/starred-notes`, and repo `web` which does not have the handler but whose dependents of that endpoint are `notebooksApi` at 1 and `useStarred` at 2
@@ -30,12 +30,32 @@ A federated `impact` SHALL ask every member repository about the seed and treat 
 - **GIVEN** the same graphs and `max_depth` 1
 - **THEN** the endpoint is reached and no witness from the other repository is returned
 
+#### Scenario: Impact crosses at an application header, never at a standard one or an undeclared env name
+- **GIVEN** api's `readTenant` reaching `header:x-tenant-id`, `header:authorization` and `env:NODE_ENV`, and web holding all three
+- **THEN** `impact` from `readTenant` reaches web's `sendTenant` (depth 2, `bridged_through: header:x-tenant-id`, `bridged` entry with `contract` and no `endpoint` key) and never web's `fetchWithToken` or `isProduction`; `impact` from `sendTenant` with `dependencies` reaches `readTenant`
+
+#### Scenario: A table crosses inside its declared database only
+- **GIVEN** members api, ml and billing, `databases: [{"name": "turing", "repos": ["api", "ml"]}]`, and each holding `table:local:users`
+- **THEN** `impact` from api's `createUsers` reaches ml's `listUsers` with `bridged_through: table:turing:users` and never billing's `chargeUsers`; without the declaration nothing outside api is reached
+
+#### Scenario: A declared env variable names its provider
+- **GIVEN** `env: [{"name": "API_URL", "service": "api"}]` and ml's `callApi` reaching `env:API_URL`
+- **THEN** the `bridged` list has `{"contract": "env:API_URL", "provided_by": "api"}`
+
 ### Requirement: A path joins two repositories at a contract
-A federated `path` SHALL return the answer of any member repository that has both ends. Otherwise it SHALL take the endpoints the source reaches in its repository, nearest first and at most eight, and for each try a path from the source to that contract and from that contract to the target in another repository, returning the first pair concatenated at the contract (named once), with `bridged_through` the contract, `repos` the two repositories, and each path node tagged with the repository it is in. When no contract bridges the two, the result SHALL be an empty path rather than a fabricated one.
+A federated `path` SHALL return the answer of any member repository that has both ends. Otherwise it SHALL take the contracts the source reaches in its repository that cross repositories (as for `impact`), nearest first and at most eight, and for each try a path from the source to that contract and from that contract to the target in another repository, returning the first pair concatenated at the contract (named once), with `bridged_through` the contract, `repos` the two repositories, and each path node tagged with the repository it is in. When no contract bridges the two, the result SHALL be an empty path rather than a fabricated one; two repositories that share only a standard header or an undeclared env name SHALL get an empty path.
 
 #### Scenario: A handler reaches a hook in the other repository
 - **GIVEN** a source in `api` whose path to `endpoint:GET /api/v1/notebooks` exists there, and a target in `web` whose path from that endpoint exists there
 - **THEN** the returned path is source, endpoint, target, `bridged_through` is the endpoint, `repos` is `["api", "web"]`, and the first and last nodes carry `api` and `web`
+
+#### Scenario: A path joins two repositories at a header
+- **GIVEN** web's `sendTenant` with a path to `header:x-tenant-id` and api's path from it to `readTenant`
+- **THEN** the path is `[sendTenant, header:x-tenant-id, readTenant]` with `bridged_through: header:x-tenant-id`
+
+#### Scenario: NODE_ENV and Authorization join nothing
+- **GIVEN** web's `isProduction` reaching `env:NODE_ENV` and `header:authorization`, both of which have a path to api's `readTenant` in api, and no declaration
+- **THEN** the path from `isProduction` to `readTenant` is empty
 
 ### Requirement: Merged reads are tagged, and a repository that cannot answer fully is reported
 A federated `status` SHALL report each repository and totals counting only the reachable ones; `query` SHALL sum totals, merge hits ranked by centrality then label, truncate to the caller's limit and tag each hit with its `repo`; `explain` SHALL answer from the first repository that has the node, tagged with its `repo` and, when other repositories have the same node, `also_in` naming them, and SHALL otherwise return `found:false` with `repos_searched`; `update` SHALL reach every repository and report each. Every federated result SHALL carry `unreachable` listing each repository whose daemon could not be reached or that answered with an error, with its name, root and the error, and SHALL carry `building` naming each repository that answered from a graph it is still building, together with a `note` saying the answer is short until it finishes. Operations whose unit is one project (`report`, `context`, `remember`, `recall`, `shutdown`) SHALL be refused with `ok:false`, `code: "workspace_op_unsupported"` and a message naming each repository root to use instead.
@@ -112,5 +132,16 @@ A project root SHALL belong to the workspace whose manifest sits in the nearest 
 
 #### Scenario: A non-string manifest member is an error
 - **GIVEN** a `prefixes` entry `{"repo": 7}`, a `repos` entry `{"name": 5}`, or `"name": 3`
+- **THEN** `load_workspace` returns errors and no repos, and does not throw
+
+### Requirement: A workspace manifest declares shared databases and env providers
+`cgraph.workspace.json` SHALL accept an optional `databases` array of `{"name", "repos": [...]}` and an optional `env` array of `{"name", "service"}`, round-tripped by `workspace_manifest_json`. A database name SHALL have no `:` or whitespace and SHALL NOT be `local`; its `repos` SHALL be a non-empty list of member names. An entry that is malformed or non-string, a repo or service the manifest does not list, a repo in two databases, or a database or env name declared twice SHALL make the manifest unusable, reported in `errors`, never an exception.
+
+#### Scenario: Declarations load and round-trip
+- **GIVEN** `"databases": [{"name": "turing", "repos": ["api", "ml"]}]` and `"env": [{"name": "ML_BACKEND_URL", "service": "ml"}]`
+- **THEN** the workspace loads and its manifest JSON carries both unchanged
+
+#### Scenario: A bad declaration is an error
+- **GIVEN** a database naming a repo the manifest does not list, a repo in two databases, a name declared twice, the name `local`, a name with `:`, a non-string member, or an env naming an unknown service
 - **THEN** `load_workspace` returns errors and no repos, and does not throw
 
