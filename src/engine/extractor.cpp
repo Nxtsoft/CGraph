@@ -1,5 +1,6 @@
 #include "cgraph/extractor.hpp"
 
+#include "cgraph/claim_contracts.hpp"
 #include "cgraph/fingerprint.hpp"
 
 #include "cgraph/normalize.hpp"
@@ -486,6 +487,8 @@ ExtractionResult extract_with_config(
   // scope, so the function-scope seed is empty: top-level calls are dropped
   // until the walk enters a function body.
   walk_node(ts_tree_root_node(tree.get()), config, ctx, file_id, "file", /*function_scope_id=*/{}, result.fragment, result.raw_calls, result.raw_relations, /*depth=*/0);
+  // JWT claims need the finished fragment (field and function nodes name the facts' sources).
+  extract_claim_contracts(ts_tree_root_node(tree.get()), config.name, ctx, result.fragment, result.raw_relations);
   return result;
 }
 

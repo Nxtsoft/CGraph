@@ -1,5 +1,6 @@
 #include "cgraph/contracts.hpp"
 
+#include "cgraph/claim_contracts.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/normalize.hpp"
 #include "cgraph/spring_actuator.hpp"
@@ -132,6 +133,21 @@ struct MethodPath {
   return lower;
 }
 
+// The facts of `first` then `second`, by address: step 8 reads the extracted
+// facts and the claim reads resolved from them as one list.
+[[nodiscard]] std::vector<const RawRelation*> join_facts(std::span<const RawRelation> first,
+                                                         std::span<const RawRelation> second) {
+  std::vector<const RawRelation*> facts;
+  facts.reserve(first.size() + second.size());
+  for (const auto& relation : first) {
+    facts.push_back(&relation);
+  }
+  for (const auto& relation : second) {
+    facts.push_back(&relation);
+  }
+  return facts;
+}
+
 // `table` and `label` live in a database; the other kinds are global names.
 [[nodiscard]] bool database_scoped(std::string_view kind) { return kind == "table" || kind == "label"; }
 
@@ -179,12 +195,21 @@ bool is_database_local_contract(std::string_view id) {
   return database_scoped(kind) && id.substr(kind.size() + 1).starts_with(std::string(kLocalDatabase) + ":");
 }
 
+bool is_registered_jwt_claim(std::string_view name) {
+  static constexpr std::array<std::string_view, 7> kRegistered = {"aud", "exp", "iat", "iss", "jti", "nbf", "sub"};
+  return std::ranges::find(kRegistered, name) != kRegistered.end();
+}
+
 bool is_bridged_contract(std::string_view id) {
   const auto kind = contract_kind_of(id);
   if (kind.empty() || kind == "env" || is_database_local_contract(id)) {
     return false;  // an env variable bridges only where a declaration names its service
   }
-  return kind != "header" || !is_standard_http_header(id.substr(kind.size() + 1));
+  const auto name = id.substr(kind.size() + 1);
+  if (kind == "claim") {
+    return !is_registered_jwt_claim(name);
+  }
+  return kind != "header" || !is_standard_http_header(name);
 }
 
 bool is_http_verb(std::string_view verb) {
@@ -873,8 +898,12 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   //    in another repo's graph is the same id (a database-local table only
   //    once a workspace or seam declares the database).
   std::unordered_set<std::string> contract_nodes;  // ids minted this resolve
+  // Claim reads through a decoder another file defines (claim_contracts.hpp)
+  // become uses_contract facts here, once imports resolve.
+  const auto claim_reads = resolve_claim_reads(raw_relations, scopes);
   for (const bool providing : {true, false}) {
-    for (const auto& relation : raw_relations) {
+    for (const auto* fact : join_facts(raw_relations, claim_reads)) {
+      const auto& relation = *fact;
       if (relation.relation != (providing ? kProvidesContractRelation : kUsesContractRelation)) {
         continue;
       }

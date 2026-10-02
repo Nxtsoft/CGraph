@@ -1455,6 +1455,19 @@ int test_generic_contract_facts() {
       !cgraph::is_bridged_contract("claim:org_id")) {
     return fail("env ids and standard headers never bridge by themselves");
   }
+  // Every token carries exp and sub for its own envelope: an RFC 7519
+  // registered claim never bridges, an application claim does, and claim
+  // names are case-sensitive (`EXP` is not `exp`).
+  for (const auto* registered : {"claim:iss", "claim:sub", "claim:aud", "claim:exp", "claim:nbf", "claim:iat", "claim:jti"}) {
+    if (cgraph::is_bridged_contract(registered)) {
+      return fail(std::string("a registered claim bridges: ") + registered);
+    }
+  }
+  if (!cgraph::is_bridged_contract("claim:roles") || !cgraph::is_bridged_contract("claim:session_id") ||
+      !cgraph::is_bridged_contract("claim:EXP") || !cgraph::is_registered_jwt_claim("jti") ||
+      cgraph::is_registered_jwt_claim("scope")) {
+    return fail("application claims bridge, registered claims do not");
+  }
   return 0;
 }
 
