@@ -142,6 +142,18 @@ cgraph_enable_sanitizers(cgraph_javascript_extractor_test)
 
 add_test(NAME cgraph_javascript_extractor_test COMMAND cgraph_javascript_extractor_test)
 
+add_executable(cgraph_header_contracts_test
+  header_contracts_test.cpp)
+
+target_link_libraries(cgraph_header_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_header_contracts_test)
+cgraph_enable_sanitizers(cgraph_header_contracts_test)
+
+add_test(NAME cgraph_header_contracts_test COMMAND cgraph_header_contracts_test)
+
 add_executable(cgraph_http_consumers_test
   http_consumers_test.cpp)
 

@@ -1,5 +1,6 @@
 #include "cgraph/python_extractor.hpp"
 
+#include "cgraph/header_contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -554,7 +555,7 @@ void python_router_mount(const TSNode& call, const ExtractionContext& context, s
   }
 }
 
-void python_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope*/,
+void python_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope,
                        Fragment& fragment, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& raw_relations) {
   const std::string_view type = ts_node_type(node);
   if (type == "assignment") {
@@ -562,6 +563,7 @@ void python_extra_walk(const TSNode& node, const ExtractionContext& context, con
   } else if (type == "call") {
     python_router_mount(node, context, raw_relations);
   }
+  python_header_contracts(node, context, function_scope, raw_relations);
 }
 
 // `@router.get("/x")`, `@app.api_route("/x", methods=["GET", "POST"])` on a

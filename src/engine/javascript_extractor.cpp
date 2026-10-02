@@ -1,6 +1,7 @@
 #include "cgraph/javascript_extractor.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/header_contracts.hpp"
 #include "cgraph/http_consumers.hpp"
 #include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
@@ -863,6 +864,7 @@ void js_extra_walk(const TSNode& node, const ExtractionContext& context, const s
   route_mount_handler(node, context, raw_relations);
   url_const_handler(node, context, raw_relations);
   http_call_handler(node, context, function_scope_id, raw_relations);
+  js_header_contracts(node, context, function_scope_id, raw_relations);
 }
 
 // TS primitive/builtin type names that never become a `references` target.
