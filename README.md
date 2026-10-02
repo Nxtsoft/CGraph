@@ -306,13 +306,15 @@ graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do n
   in a Python, TypeScript/JavaScript, Kotlin or Java string uses it only when the string (adjacent
   literals and `+` chains joined) opens with an upper-case `SELECT` / `INSERT` / `UPDATE` /
   `DELETE` / `WITH` and the table follows an upper-case `FROM` / `JOIN` / `INSERT INTO` /
-  `UPDATE ... SET`: lower-case SQL, a name glued to an interpolation (`events_{year}`), JPQL in a JPA
-  `@Query` (without `nativeQuery = true`) and test files (`tests/`, `__tests__/`, `*.test.ts`,
+  `UPDATE ... SET` (leading `--` / `/* */` comments are skipped). `users{where_sql}`, `users$filter`
+  and `"SELECT * FROM users" + where` read `users`; a name ending in `_` before an interpolation or
+  `+`, or continued after one (`events_{year}`, `events_%s`, `t{y}_x`), is not read. Lower-case
+  SQL, JPQL in a JPA `@Query` (without `nativeQuery = true`) and test files (`tests/`, `__tests__/`, `*.test.ts`,
   `test_*.py`, `FooTest.kt`, ...) are not read. Spring Data Neo4j `@Node("User")` provides
   `label:User` and an outgoing `@Relationship(type = "HAS_ROLE")` on it `label:User.HAS_ROLE`; Cypher
   in `.cypher` files (`.cql` is not detected: Cassandra uses it too) and in strings opening with
-  `MATCH` / `MERGE` / `CREATE (` uses the labels, and a relationship only when its start node's label
-  is known.
+  `MATCH` / `OPTIONAL MATCH` / `MERGE` / `CREATE (` / `UNWIND` uses the labels, and a relationship
+  only when its start node's label is known.
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 
