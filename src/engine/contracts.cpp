@@ -148,6 +148,26 @@ struct MethodPath {
   return facts;
 }
 
+// JWT claims any issuer writes with the same meaning, whoever reads them: two
+// repos naming one are not evidence that they share a token, so a standard
+// claim never bridges repositories. The entries of the IANA "JSON Web Token
+// Claims" registry (https://www.iana.org/assignments/jwt/claims.csv, registry
+// last updated 2026-07-20, retrieved 2026-10-02) defined by RFC 7519 section
+// 4.1, OpenID Connect Core 1.0, OpenID Connect Front-Channel Logout 1.0 (`sid`),
+// RFC 7800 (`cnf`), RFC 8693 (`act`, `scope`, `client_id`, `may_act`) and
+// RFC 9449 (`htm`, `htu`, `ath`). Not listed: registry names whose values are
+// the application's own (`roles`, `groups`, `entitlements`, RFC 7643 / 9068)
+// and the domain profiles (SIP, EAT, 3GPP, OpenID Federation, ...). Sorted for
+// binary search.
+constexpr std::array<std::string_view, 45> kStandardJwtClaims = {
+    "_claim_names", "_claim_sources", "acr", "act", "address", "amr", "at_hash", "ath",
+    "aud", "auth_time", "azp", "birthdate", "c_hash", "client_id", "cnf", "email",
+    "email_verified", "exp", "family_name", "gender", "given_name", "htm", "htu", "iat",
+    "iss", "jti", "locale", "may_act", "middle_name", "name", "nbf", "nickname",
+    "nonce", "phone_number", "phone_number_verified", "picture", "preferred_username", "profile", "scope", "sid",
+    "sub", "sub_jwk", "updated_at", "website", "zoneinfo",
+};
+
 // `table` and `label` live in a database; the other kinds are global names.
 [[nodiscard]] bool database_scoped(std::string_view kind) { return kind == "table" || kind == "label"; }
 
@@ -195,10 +215,9 @@ bool is_database_local_contract(std::string_view id) {
   return database_scoped(kind) && id.substr(kind.size() + 1).starts_with(std::string(kLocalDatabase) + ":");
 }
 
-bool is_registered_jwt_claim(std::string_view name) {
-  static constexpr std::array<std::string_view, 7> kRegistered = {"aud", "exp", "iat", "iss", "jti", "nbf", "sub"};
-  return std::ranges::find(kRegistered, name) != kRegistered.end();
-}
+std::span<const std::string_view> standard_jwt_claims() { return kStandardJwtClaims; }
+
+bool is_standard_jwt_claim(std::string_view name) { return std::ranges::binary_search(kStandardJwtClaims, name); }
 
 bool is_bridged_contract(std::string_view id) {
   const auto kind = contract_kind_of(id);
@@ -207,7 +226,7 @@ bool is_bridged_contract(std::string_view id) {
   }
   const auto name = id.substr(kind.size() + 1);
   if (kind == "claim") {
-    return !is_registered_jwt_claim(name);
+    return !is_standard_jwt_claim(name);
   }
   return kind != "header" || !is_standard_http_header(name);
 }
@@ -901,8 +920,9 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // Claim reads through a decoder another file defines (claim_contracts.hpp)
   // become uses_contract facts here, once imports resolve.
   const auto claim_reads = resolve_claim_reads(raw_relations, scopes);
+  const auto facts = join_facts(raw_relations, claim_reads);
   for (const bool providing : {true, false}) {
-    for (const auto* fact : join_facts(raw_relations, claim_reads)) {
+    for (const auto* fact : facts) {
       const auto& relation = *fact;
       if (relation.relation != (providing ? kProvidesContractRelation : kUsesContractRelation)) {
         continue;

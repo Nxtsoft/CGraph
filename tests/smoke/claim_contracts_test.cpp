@@ -394,6 +394,239 @@ type Claims struct {
   return 0;
 }
 
+// Review round 1, item 1: a function that calls a JWT library somewhere but
+// returns something else is no decoder. `getCurrentUser` verifies a token and
+// returns a database user; `parse` returns `Result<Claims, AuthError>`. Neither
+// type's properties are claims, and an importer's `user.email` is no read.
+int test_typescript_library_in_body_is_no_decoder() {
+  const auto graph = build({{"api/auth.ts", R"(
+import { jwtVerify } from 'jose';
+import { jwtDecode } from 'jwt-decode';
+export interface AuthUser { email: string; orgId: string }
+export interface Claims { roles: string[] }
+export interface AuthError { code: string }
+type Result<T, E> = { ok: T } | { err: E };
+export async function getCurrentUser(token: string): Promise<AuthUser | null> {
+  const { payload } = await jwtVerify(token, key);
+  const user = await db.users.find(payload.sub);
+  return user;
+}
+export function parse(token: string): Result<Claims, AuthError> {
+  const decoded = jwtDecode(token);
+  return wrap(decoded);
+}
+)"},
+                            {"api/route.ts", R"(
+import { getCurrentUser } from './auth';
+export async function GET(token: string) {
+  const user = await getCurrentUser(token);
+  return user.email;
+}
+)"}});
+  if (!all_claims(graph).empty()) {
+    return fail("a library call in the body made a claims type: " + show(all_claims(graph)));
+  }
+  return 0;
+}
+
+// Item 3: the payload segment must flow through the base64 decode into the
+// returned JSON.parse. A signed cookie `value.sig` keeps its payload in [0];
+// a function that has every signal but on unrelated values is no decoder.
+int test_hand_decoders_follow_the_data_path() {
+  const auto graph = build({{"web/cookie.ts", R"(
+export interface Session { user_id: string; roles: string[] }
+export function readCookie(cookie: string): Session {
+  const [value] = cookie.split('.');
+  return JSON.parse(atob(value));
+}
+export function readSigned(cookie: string): Session | null {
+  const parts = cookie.split('.');
+  return JSON.parse(Buffer.from(parts[0], 'base64').toString('utf-8')) as Session;
+}
+export function scattered(token: string, body: string): Session {
+  const parts = token.split('.');
+  const segment = parts[1];
+  const unrelated = Buffer.from(body, 'base64').toString();
+  return JSON.parse(body) as Session;
+}
+)"},
+                            {"app/Scattered.kt", R"(package app
+fun scattered(token: String, body: String): String? {
+    val segment = token.split('.').getOrNull(1)
+    val bytes = Base64.UrlSafe.decode(body)
+    return Json.parseToJsonElement(body).jsonObject["roles"]?.jsonPrimitive?.content
+}
+)"}});
+  if (!all_claims(graph).empty()) {
+    return fail("signals off the payload's data path made claims: " + show(all_claims(graph)));
+  }
+  // The same shapes on the payload path are decoders.
+  const auto good = build({{"web/token.ts", R"(
+export interface Payload { tenant_id: string }
+export function viaDestructuring(token: string): Payload {
+  const [, payload] = token.split('.');
+  return JSON.parse(atob(payload));
+}
+)"}});
+  if (all_claims(good) != Names{"tenant_id"}) {
+    return fail("an array-destructured payload segment: " + show(all_claims(good)));
+  }
+  return 0;
+}
+
+// Item 4: every parameter and declaration is a binding, so an inner `payload`
+// shadows the outer decoded one.
+int test_reads_respect_shadowing() {
+  const auto graph = build({{"web/lib/token.ts", R"(
+export interface DecodedToken { roles: string[]; tenant_id: string }
+export function decodeToken(token: string): DecodedToken | null {
+  const parts = token.split('.');
+  return JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8')) as DecodedToken;
+}
+)"},
+                            {"web/page.ts", R"(
+import { decodeToken } from './lib/token';
+export function page(token: string, rows: Row[]) {
+  const payload = decodeToken(token);
+  const tenants = rows.map((payload) => payload.tenant_id);
+  return payload.roles;
+}
+)"}});
+  if (claims(graph, "web_page_ts_page", false) != Names{"roles"}) {
+    return fail("a shadowing parameter read as the decoded payload: " + show(claims(graph, "web_page_ts_page", false)));
+  }
+  return 0;
+}
+
+// Item 5: a value from an npm package's function is never a candidate read.
+int test_package_callees_emit_no_reads() {
+  const std::string source = R"(
+import { useRouter } from 'next/router';
+import { decodeToken } from './token';
+export function view() {
+  const router = useRouter();
+  const token = decodeToken(router.query.t);
+  return [router.pathname, token.roles];
+}
+)";
+  const cgraph::ExtractionContext context{.source_file = "web/view.ts", .relative_path = "web/view.ts", .source = source};
+  const auto result = cgraph::extract_typescript(context);
+  std::set<std::string> callees;
+  for (const auto& relation : result.raw_relations) {
+    if (relation.relation == "claim_read") {
+      callees.insert(relation.target_label);
+    }
+  }
+  if (callees != Names{"decodeToken"}) {
+    return fail("claim reads through a package callee: " + show(callees));
+  }
+  return 0;
+}
+
+// Item 6: one positive and one negative per library form.
+int test_library_forms() {
+  const auto graph = build({{"a/verify.ts", R"(
+import jwt from 'jsonwebtoken';
+interface VerifiedPayload { org_id: string }
+interface Serialized { not_verified: string }
+export function check(t: string) {
+  const ok = jwt.verify(t, key) as VerifiedPayload;
+  const no = jwt.sign(body, key) as Serialized;
+  return [ok, no];
+}
+)"},
+                            {"a/jose.ts", R"(
+import { jwtVerify, decodeJwt } from 'jose';
+import { fetchJson } from './http';
+interface JosePayload { workspace_id: string }
+interface Decoded { device_id: string }
+interface Fetched { not_jose: string }
+export async function run(t: string) {
+  const { payload } = await jwtVerify<JosePayload>(t, key);
+  const d = decodeJwt<Decoded>(t);
+  const f = await fetchJson<Fetched>('/x');
+  return [payload, d, f];
+}
+)"},
+                            {"a/local.ts", R"(
+import { decodeJwt } from './jwt-helpers';
+interface LocalOnly { not_library: string }
+export function run(t: string) { return decodeJwt<LocalOnly>(t); }
+)"},
+                            {"a/require.js", R"(
+const jwt = require('jsonwebtoken');
+const other = require('./signer');
+function issue(k) {
+  other.sign({ not_jsonwebtoken: 1 }, k);
+  return jwt.sign({ app_role: 'admin' }, k);
+}
+)"},
+                            {"p/jose_tokens.py", R"(from jose import jwt
+from mylib import jwt as notjwt
+
+def issue(key):
+    notjwt.encode({"not_jose": 1}, key)
+    return jwt.encode({"device_id": "d"}, key)
+)"},
+                            {"g/std.go", R"(package g
+
+import (
+	jwtgo "github.com/dgrijalva/jwt-go"
+	f3 "github.com/form3tech-oss/jwt-go"
+	other "example.com/claims"
+)
+
+type LegacyClaims struct {
+	Plan string `json:"plan"`
+	jwtgo.StandardClaims
+}
+
+type Form3Claims struct {
+	Region string `json:"region"`
+	*f3.StandardClaims
+}
+
+type NotJwt struct {
+	Shelf string `json:"shelf"`
+	other.RegisteredClaims
+}
+)"},
+                            {"g/parse.go", R"(package g
+
+import "github.com/golang-jwt/jwt/v5"
+
+type PointerClaims struct {
+	Team string `json:"team"`
+	*jwt.RegisteredClaims
+}
+
+type ParsedClaims struct {
+	Grade string `json:"grade"`
+}
+
+type Unparsed struct {
+	Unused string `json:"unused"`
+}
+
+func parse(tok string) {
+	claims := &ParsedClaims{}
+	jwt.ParseWithClaims(tok, claims, nil)
+	other := &Unparsed{}
+	use(other)
+}
+)"},
+                            {"k/Nimbus.kt", R"(package k
+fun nimbus(s: String) = JWTClaimsSet.Builder().claim("kotlin_nimbus", s).issuer("idp").build()
+fun notNimbus() = Other.Builder().claim("not_nimbus", 1).build()
+)"}});
+  const Names expected{"app_role", "device_id", "grade", "iss",  "kotlin_nimbus", "org_id",
+                       "plan",     "region",    "team",  "workspace_id"};
+  if (all_claims(graph) != expected) {
+    return fail("library forms: " + show(all_claims(graph)));
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -407,6 +640,11 @@ int main() {
   failures += test_kotlin_payload_reads();
   failures += test_python_encode();
   failures += test_cross_repo_ids();
+  failures += test_typescript_library_in_body_is_no_decoder();
+  failures += test_hand_decoders_follow_the_data_path();
+  failures += test_reads_respect_shadowing();
+  failures += test_package_callees_emit_no_reads();
+  failures += test_library_forms();
   if (failures == 0) {
     std::cout << "claim_contracts_test: ok\n";
   }

@@ -2,7 +2,9 @@
 
 #include "cgraph/normalize.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -43,8 +45,13 @@ constexpr std::string_view kRead = "claim_read";
   return ts_node_child_by_field_name(node, name, static_cast<std::uint32_t>(std::strlen(name)));
 }
 
+// ts_node_named_child_count, 0 for a null node (a field the grammar lacks).
+[[nodiscard]] std::uint32_t named_count(TSNode node) {
+  return ts_node_is_null(node) ? 0 : ts_node_named_child_count(node);
+}
+
 [[nodiscard]] TSNode named_child(TSNode node, std::uint32_t index) {
-  if (ts_node_is_null(node) || index >= ts_node_named_child_count(node)) {
+  if (ts_node_is_null(node) || index >= named_count(node)) {
     return TSNode{};
   }
   return ts_node_named_child(node, index);
@@ -54,7 +61,7 @@ constexpr std::string_view kRead = "claim_read";
   if (ts_node_is_null(node)) {
     return TSNode{};
   }
-  for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
+  for (std::uint32_t index = 0; index < named_count(node); ++index) {
     const auto child = ts_node_named_child(node, index);
     if (type_of(child) == type) {
       return child;
@@ -70,7 +77,7 @@ void walk(TSNode node, const std::function<bool(TSNode)>& visit) {
   if (ts_node_is_null(node) || !visit(node)) {
     return;
   }
-  for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
+  for (std::uint32_t index = 0; index < named_count(node); ++index) {
     walk(ts_node_named_child(node, index), visit);
   }
 }
@@ -96,7 +103,7 @@ void walk(TSNode node, const std::function<bool(TSNode)>& visit) {
     return std::nullopt;
   }
   std::optional<std::string> value;
-  for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
+  for (std::uint32_t index = 0; index < named_count(node); ++index) {
     const auto child = ts_node_named_child(node, index);
     const auto child_type = type_of(child);
     if (child_type == "string_start" || child_type == "string_end") {
@@ -145,54 +152,55 @@ void walk(TSNode node, const std::function<bool(TSNode)>& visit) {
 
 class Emitter {
  public:
+  // Function spans and fields are indexed once per file; scope_at and
+  // field_at run once per emitted fact.
   Emitter(const ExtractionContext& context, const Fragment& fragment, std::vector<RawRelation>& out)
-      : context_(context), fragment_(fragment), out_(out) {}
+      : context_(context), out_(out) {
+    for (const auto& node : fragment.nodes) {
+      if (node.kind == "file" && file_id_.empty()) {
+        file_id_ = node.id;
+      }
+      if (!node.source_location) {
+        continue;
+      }
+      if (node.kind == "function") {
+        functions_.push_back({node.source_location->start_line, node.source_location->end_line, &node});
+      } else if (node.kind == "field") {
+        fields_.emplace(std::pair{node.source_location->start_line, unquote(node.label)}, node.id);
+      }
+    }
+    std::ranges::sort(functions_, {}, &Span::start);
+  }
 
   [[nodiscard]] std::string_view source() const { return context_.source; }
 
   // The innermost function node around `line`, else the file node.
   [[nodiscard]] std::string scope_at(std::uint32_t line) const {
-    const Node* best = nullptr;
-    for (const auto& node : fragment_.nodes) {
-      if (node.kind != "function" || !node.source_location || node.source_location->start_line > line ||
-          node.source_location->end_line < line) {
-        continue;
+    const Span* best = nullptr;
+    for (const auto& span : functions_) {
+      if (span.start > line) {
+        break;  // sorted by start: no later span contains the line
       }
-      if (best == nullptr || node.source_location->end_line - node.source_location->start_line <
-                                 best->source_location->end_line - best->source_location->start_line) {
-        best = &node;
+      if (span.end >= line && (best == nullptr || span.end - span.start < best->end - best->start)) {
+        best = &span;
       }
     }
-    if (best != nullptr) {
-      return best->id;
-    }
-    for (const auto& node : fragment_.nodes) {
-      if (node.kind == "file") {
-        return node.id;
-      }
-    }
-    return {};
+    return best != nullptr ? best->node->id : file_id_;
   }
 
   // The `field` node the member handler made for a declared member named
   // `name` (quotes ignored) on `line`; empty when there is none.
   [[nodiscard]] std::string field_at(std::uint32_t line, std::string_view name) const {
-    for (const auto& node : fragment_.nodes) {
-      if (node.kind == "field" && node.source_location && node.source_location->start_line == line &&
-          unquote(node.label) == name) {
-        return node.id;
-      }
-    }
-    return {};
+    const auto found = fields_.find(std::pair{line, std::string(name)});
+    return found == fields_.end() ? std::string{} : found->second;
   }
 
   // The function node named `name` declared between `first_line` and `last_line`.
   [[nodiscard]] std::string function_named(std::string_view name, std::uint32_t first_line,
                                            std::uint32_t last_line) const {
-    for (const auto& node : fragment_.nodes) {
-      if (node.kind == "function" && node.label == name && node.source_location &&
-          node.source_location->start_line >= first_line && node.source_location->start_line <= last_line) {
-        return node.id;
+    for (const auto& span : functions_) {
+      if (span.node->label == name && span.start >= first_line && span.start <= last_line) {
+        return span.node->id;
       }
     }
     return {};
@@ -223,11 +231,22 @@ class Emitter {
   }
 
  private:
+  struct Span {
+    std::uint32_t start = 0;
+    std::uint32_t end = 0;
+    const Node* node = nullptr;
+  };
   const ExtractionContext& context_;
-  const Fragment& fragment_;
   std::vector<RawRelation>& out_;
+  std::string file_id_;
+  std::vector<Span> functions_;
+  std::map<std::pair<std::uint32_t, std::string>, std::string> fields_;
   std::set<std::tuple<std::string, std::string, std::string, std::string>> seen_;
 };
+
+// How far an expression is along a hand-written JWT payload decode:
+// `token.split('.')`, its segment 1, base64-decoded, parsed as JSON.
+enum class Payload : std::uint8_t { None, Split, Segment, Decoded, Parsed };
 
 // --- Kotlin ------------------------------------------------------------------
 
@@ -248,7 +267,7 @@ struct KotlinCall {
   result.suffix = first_named_of_type(call, "call_suffix");
   if (type_of(result.callee) == "navigation_expression") {
     result.receiver = named_child(result.callee, 0);
-    const auto count = ts_node_named_child_count(result.callee);
+    const auto count = named_count(result.callee);
     const auto suffix = named_child(result.callee, count - 1);
     result.method = text_of(first_named_of_type(suffix, "simple_identifier"), source);
   } else if (type_of(result.callee) == "simple_identifier") {
@@ -288,7 +307,7 @@ struct KotlinCall {
   if (type_of(argument) != "value_argument") {
     return TSNode{};
   }
-  return named_child(argument, ts_node_named_child_count(argument) - 1);
+  return named_child(argument, named_count(argument) - 1);
 }
 
 // Bare `claim("x", v)` calls inside a builder's `apply { }` lambda, not
@@ -337,45 +356,80 @@ void kotlin_claims(TSNode root, Emitter& emitter) {
     if (type != "function_declaration") {
       return true;
     }
-    // A hand-written payload decode: split on '.', take the second segment,
-    // a Base64 decode, and `.jsonObject["x"]` straight on
-    // `Json.parseToJsonElement(..)`, all in this one function.
-    bool splits = false;
-    bool payload = false;  // the second segment: `.getOrNull(1)`, `[1]`
-    bool base64 = false;
-    std::vector<std::pair<TSNode, std::string>> reads;
+    // A hand-written payload decode, followed along its data path in this
+    // function: `token.split('.')`, its segment 1 (`.getOrNull(1)`, `[1]`), a
+    // `Base64...decode(segment)`, `Json.parseToJsonElement(decoded..)`, then
+    // `.jsonObject["x"]` on that parsed payload.
+    std::unordered_map<std::string, Payload> variables;
+    const std::function<Payload(TSNode)> level = [&](TSNode expression) -> Payload {
+      const auto expression_type = type_of(expression);
+      if (expression_type == "parenthesized_expression" || expression_type == "elvis_expression") {
+        return level(named_child(expression, 0));
+      }
+      if (expression_type == "simple_identifier") {
+        const auto found = variables.find(text_of(expression, source));
+        return found == variables.end() ? Payload::None : found->second;
+      }
+      if (expression_type == "indexing_expression") {
+        return level(named_child(expression, 0)) == Payload::Split &&
+                       text_of(named_child(first_named_of_type(expression, "indexing_suffix"), 0), source) == "1"
+                   ? Payload::Segment
+                   : Payload::None;
+      }
+      if (expression_type == "navigation_expression") {
+        const auto suffix = named_child(expression, named_count(expression) - 1);
+        return text_of(first_named_of_type(suffix, "simple_identifier"), source) == "jsonObject" &&
+                       level(named_child(expression, 0)) == Payload::Parsed
+                   ? Payload::Parsed
+                   : Payload::None;
+      }
+      const auto call = kotlin_call(expression, source);
+      if (!call.ok) {
+        return Payload::None;
+      }
+      const auto argument = kotlin_argument(call.suffix, 0);
+      const auto receiver = ts_node_is_null(call.receiver) ? Payload::None : level(call.receiver);
+      if (call.method == "split") {
+        return text_of(argument, source) == "'.'" || string_value(argument, source) == "." ? Payload::Split
+                                                                                          : Payload::None;
+      }
+      if (call.method == "getOrNull" || call.method == "get" || call.method == "elementAt") {
+        return receiver == Payload::Split && text_of(argument, source) == "1" ? Payload::Segment : Payload::None;
+      }
+      if (call.method == "replace" || call.method == "padEnd" || call.method == "trim") {
+        return receiver == Payload::Segment ? Payload::Segment : Payload::None;
+      }
+      if (call.method == "decode" && text_of(call.callee, source).starts_with("Base64")) {
+        return level(argument) >= Payload::Segment ? Payload::Decoded : Payload::None;
+      }
+      if (call.method == "decodeToString" || call.method == "toString") {
+        return receiver == Payload::Decoded ? Payload::Decoded : Payload::None;
+      }
+      if (call.method == "String" && ts_node_is_null(call.receiver)) {
+        return level(argument) == Payload::Decoded ? Payload::Decoded : Payload::None;
+      }
+      if (call.method == "parseToJsonElement") {
+        return level(argument) >= Payload::Decoded ? Payload::Parsed : Payload::None;
+      }
+      return Payload::None;
+    };
     walk(node, [&](TSNode child) {
       const auto child_type = type_of(child);
-      if (child_type == "call_expression") {
-        const auto call = kotlin_call(child, source);
-        if (call.method == "split") {
-          const auto argument = kotlin_argument(call.suffix, 0);
-          splits = splits || text_of(argument, source) == "'.'" || string_value(argument, source) == ".";
-        } else if (call.method == "decode" && text_of(call.callee, source).starts_with("Base64")) {
-          base64 = true;
-        } else if (call.method == "getOrNull" || call.method == "get" || call.method == "elementAt") {
-          payload = payload || text_of(kotlin_argument(call.suffix, 0), source) == "1";
+      if (child_type == "property_declaration") {
+        const auto name = text_of(first_named_of_type(first_named_of_type(child, "variable_declaration"),
+                                                      "simple_identifier"),
+                                  source);
+        const auto value = named_child(child, named_count(child) - 1);
+        if (!name.empty() && type_of(value) != "variable_declaration") {
+          variables[name] = level(value);
         }
-      } else if (child_type == "indexing_expression") {
-        payload = payload || text_of(named_child(first_named_of_type(child, "indexing_suffix"), 0), source) == "1";
-        const auto object = named_child(child, 0);
-        if (type_of(object) == "navigation_expression") {
-          const auto suffix = named_child(object, ts_node_named_child_count(object) - 1);
-          const auto parsed = kotlin_call(named_child(object, 0), source);
-          const auto key = string_value(named_child(first_named_of_type(child, "indexing_suffix"), 0), source);
-          if (text_of(first_named_of_type(suffix, "simple_identifier"), source) == "jsonObject" &&
-              parsed.method == "parseToJsonElement" && key) {
-            reads.emplace_back(child, *key);
-          }
+      } else if (child_type == "indexing_expression" && level(named_child(child, 0)) == Payload::Parsed) {
+        if (const auto key = string_value(named_child(first_named_of_type(child, "indexing_suffix"), 0), source)) {
+          emitter.claim(false, emitter.scope_at(line_of(child)), *key);
         }
       }
       return true;
     });
-    if (splits && payload && base64) {
-      for (const auto& [read, name] : reads) {
-        emitter.claim(false, emitter.scope_at(line_of(read)), name);
-      }
-    }
     return true;
   });
 }
@@ -493,7 +547,10 @@ void go_claims(TSNode root, Emitter& emitter) {
       if (type_of(field) != "field_declaration") {
         return true;
       }
-      const auto embedded = field_of(field, "type");
+      auto embedded = field_of(field, "type");
+      if (type_of(embedded) == "pointer_type") {
+        embedded = named_child(embedded, 0);  // `*jwt.RegisteredClaims`
+      }
       if (ts_node_is_null(field_of(field, "name")) && type_of(embedded) == "qualified_type" &&
           jwt_packages.contains(text_of(field_of(embedded, "package"), source))) {
         const auto library_type = text_of(field_of(embedded, "name"), source);
@@ -528,6 +585,32 @@ void go_claims(TSNode root, Emitter& emitter) {
         const auto literal = type_of(claims) == "unary_expression" ? field_of(claims, "operand") : claims;
         if (type_of(literal) == "composite_literal") {
           claims_types.insert(go_bare_type(text_of(field_of(literal, "type"), source)));
+        } else if (type_of(literal) == "identifier") {
+          // `claims := &Claims{}` (or `var claims Claims`) earlier in the same function.
+          auto function = ts_node_parent(node);
+          while (!ts_node_is_null(function) && type_of(function) != "function_declaration" &&
+                 type_of(function) != "method_declaration" && type_of(function) != "func_literal") {
+            function = ts_node_parent(function);
+          }
+          const auto variable = text_of(literal, source);
+          walk(function, [&](TSNode child) {
+            if (type_of(child) == "short_var_declaration") {
+              const auto left = field_of(child, "left");
+              const auto right = field_of(child, "right");
+              for (std::uint32_t index = 0; index < named_count(left); ++index) {
+                auto value = named_child(right, index);
+                if (type_of(value) == "unary_expression") {
+                  value = field_of(value, "operand");
+                }
+                if (text_of(named_child(left, index), source) == variable && type_of(value) == "composite_literal") {
+                  claims_types.insert(go_bare_type(text_of(field_of(value, "type"), source)));
+                }
+              }
+            } else if (type_of(child) == "var_spec" && text_of(field_of(child, "name"), source) == variable) {
+              claims_types.insert(go_bare_type(text_of(field_of(child, "type"), source)));
+            }
+            return true;
+          });
         }
       }
       return true;
@@ -557,7 +640,7 @@ void go_claims(TSNode root, Emitter& emitter) {
         const auto left = field_of(child, "left");
         const auto right = field_of(child, "right");
         const auto first = text_of(named_child(left, 0), source);
-        if (ts_node_named_child_count(right) == 1 && selector_call(named_child(right, 0), "strings", "Split") &&
+        if (named_count(right) == 1 && selector_call(named_child(right, 0), "strings", "Split") &&
             string_value(named_child(field_of(named_child(right, 0), "arguments"), 1), source) == ".") {
           split_vars.insert(first);
         } else if (any_of(right, [&](TSNode part) {
@@ -567,7 +650,7 @@ void go_claims(TSNode root, Emitter& emitter) {
                    })) {
           payload_vars.insert(first);
         }
-        for (std::uint32_t index = 0; index < ts_node_named_child_count(left); ++index) {
+        for (std::uint32_t index = 0; index < named_count(left); ++index) {
           auto value = named_child(right, index);
           if (type_of(value) == "unary_expression") {
             value = field_of(value, "operand");
@@ -637,48 +720,66 @@ void go_claims(TSNode root, Emitter& emitter) {
 
 // --- TypeScript / JavaScript -------------------------------------------------
 
-struct JwtImports {
-  std::unordered_set<std::string> jsonwebtoken;  // module objects: `jwt` in jwt.sign
+// What one pass over a JS/TS file learns: the JWT libraries it imports, the
+// names it imports from its own code (a relative or aliased module), and its
+// interfaces and object type aliases.
+struct JsFile {
+  std::unordered_set<std::string> jsonwebtoken;            // module objects: `jwt` in jwt.sign
   std::unordered_map<std::string, std::string> functions;  // local name -> library function
-  std::unordered_set<std::string> imported;      // every imported local name
+  std::unordered_set<std::string> local_imports;           // imported from `./x`, `@/x`, `~/x`, `#x`
+  std::unordered_map<std::string, TSNode> types;           // same-file interface / object type alias
 };
 
-[[nodiscard]] JwtImports js_imports(TSNode root, std::string_view source) {
-  JwtImports imports;
+// A module specifier that names the project's own code rather than a package.
+[[nodiscard]] bool js_local_module(std::string_view module) {
+  return module.starts_with('.') || module.starts_with('/') || module.starts_with("@/") || module.starts_with('~') ||
+         module.starts_with('#');
+}
+
+[[nodiscard]] JsFile js_scan(TSNode root, std::string_view source) {
+  JsFile file;
   walk(root, [&](TSNode node) {
     const auto type = type_of(node);
+    if (type == "interface_declaration" ||
+        (type == "type_alias_declaration" && type_of(field_of(node, "value")) == "object_type")) {
+      file.types.emplace(text_of(field_of(node, "name"), source), node);
+      return false;
+    }
     if (type == "import_statement") {
       const auto module = string_value(field_of(node, "source"), source).value_or("");
+      const bool local = js_local_module(module);
       walk(first_named_of_type(node, "import_clause"), [&](TSNode part) {
         const auto part_type = type_of(part);
         if (part_type == "import_clause") {
           const auto default_import = first_named_of_type(part, "identifier");
           if (!ts_node_is_null(default_import)) {
-            const auto local = text_of(default_import, source);
-            imports.imported.insert(local);
-            if (module == "jsonwebtoken") {
-              imports.jsonwebtoken.insert(local);
+            const auto name = text_of(default_import, source);
+            if (local) {
+              file.local_imports.insert(name);
+            } else if (module == "jsonwebtoken") {
+              file.jsonwebtoken.insert(name);
             } else if (module == "jwt-decode") {
-              imports.functions[local] = "jwtDecode";
+              file.functions[name] = "jwtDecode";
             }
           }
           return true;
         }
         if (part_type == "namespace_import") {
           if (module == "jsonwebtoken") {
-            imports.jsonwebtoken.insert(text_of(first_named_of_type(part, "identifier"), source));
+            file.jsonwebtoken.insert(text_of(first_named_of_type(part, "identifier"), source));
           }
           return false;
         }
         if (part_type == "import_specifier") {
           const auto name = text_of(field_of(part, "name"), source);
           const auto alias = text_of(field_of(part, "alias"), source);
-          const auto local = alias.empty() ? name : alias;
-          imports.imported.insert(local);
-          if ((module == "jsonwebtoken" && (name == "sign" || name == "verify" || name == "decode")) ||
-              (module == "jose" && (name == "SignJWT" || name == "decodeJwt" || name == "jwtVerify")) ||
-              (module == "jwt-decode" && name == "jwtDecode")) {
-            imports.functions[local] = module == "jsonwebtoken" ? "jsonwebtoken." + name : name;
+          const auto local_name = alias.empty() ? name : alias;
+          if (local) {
+            file.local_imports.insert(local_name);
+          } else if ((module == "jsonwebtoken" && (name == "sign" || name == "verify" || name == "decode")) ||
+                     (module == "jose" && (name == "SignJWT" || name == "decodeJwt" || name == "jwtVerify")) ||
+                     (module == "jwt-decode" && name == "jwtDecode")) {
+            file.functions[local_name] = module == "jsonwebtoken" ? "jsonwebtoken." + name : name;
           }
           return false;
         }
@@ -692,12 +793,12 @@ struct JwtImports {
       if (type_of(value) == "call_expression" && text_of(field_of(value, "function"), source) == "require" &&
           string_value(named_child(field_of(value, "arguments"), 0), source) == "jsonwebtoken" &&
           type_of(field_of(node, "name")) == "identifier") {
-        imports.jsonwebtoken.insert(text_of(field_of(node, "name"), source));
+        file.jsonwebtoken.insert(text_of(field_of(node, "name"), source));
       }
     }
     return true;
   });
-  return imports;
+  return file;
 }
 
 [[nodiscard]] TSNode js_unwrap(TSNode node) {
@@ -709,17 +810,19 @@ struct JwtImports {
 }
 
 // The library function a call goes to (`jwtDecode`, `jsonwebtoken.verify`, ...), empty otherwise.
-[[nodiscard]] std::string js_library_call(TSNode call, const JwtImports& imports, std::string_view source) {
+[[nodiscard]] std::string js_library_call(TSNode call, const JsFile& file, std::string_view source) {
   if (type_of(call) != "call_expression" && type_of(call) != "new_expression") {
     return {};
   }
-  const auto function = type_of(call) == "new_expression" ? field_of(call, "constructor") : field_of(call, "function");
-  if (type_of(function) == "identifier") {
-    const auto found = imports.functions.find(text_of(function, source));
-    return found == imports.functions.end() ? std::string{} : found->second;
+  auto function = type_of(call) == "new_expression" ? field_of(call, "constructor") : field_of(call, "function");
+  if (type_of(function) == "await_expression") {
+    function = named_child(function, 0);  // `await jwtVerify<T>(..)` parses as a call of `await jwtVerify`
   }
-  if (type_of(function) == "member_expression" &&
-      imports.jsonwebtoken.contains(text_of(field_of(function, "object"), source))) {
+  if (type_of(function) == "identifier") {
+    const auto found = file.functions.find(text_of(function, source));
+    return found == file.functions.end() ? std::string{} : found->second;
+  }
+  if (type_of(function) == "member_expression" && file.jsonwebtoken.contains(text_of(field_of(function, "object"), source))) {
     return "jsonwebtoken." + text_of(field_of(function, "property"), source);
   }
   return {};
@@ -730,12 +833,17 @@ struct JwtImports {
          library == "jsonwebtoken.verify" || library == "jsonwebtoken.decode";
 }
 
+[[nodiscard]] bool js_function_like(std::string_view type) {
+  return type == "function_declaration" || type == "function_expression" || type == "arrow_function" ||
+         type == "method_definition" || type == "function" || type == "generator_function_declaration";
+}
+
 // The keys of an object literal (`{ roles, 'tenant_id': t }`).
 void js_object_keys(TSNode object, const std::string& scope, Emitter& emitter) {
   if (type_of(object) != "object") {
     return;
   }
-  for (std::uint32_t index = 0; index < ts_node_named_child_count(object); ++index) {
+  for (std::uint32_t index = 0; index < named_count(object); ++index) {
     const auto member = ts_node_named_child(object, index);
     if (type_of(member) == "shorthand_property_identifier") {
       emitter.claim(true, scope, text_of(member, emitter.source()));
@@ -750,15 +858,39 @@ void js_object_keys(TSNode object, const std::string& scope, Emitter& emitter) {
   }
 }
 
-// The type names in a type annotation that name a same-file claims-shaped type.
-void js_type_names(TSNode node, std::string_view source, const std::unordered_map<std::string, TSNode>& types,
-                   std::set<std::string>& names) {
-  walk(node, [&](TSNode child) {
-    if (type_of(child) == "type_identifier" && types.contains(text_of(child, source))) {
-      names.insert(text_of(child, source));
+// The one same-file type a type names: `T`, or `T` inside `Promise<T>` and
+// `T | null | undefined`. Empty for anything else (`Result<T, E>`, `A | B`).
+[[nodiscard]] std::string js_single_type(TSNode node, const JsFile& file, std::string_view source) {
+  while (type_of(node) == "type_annotation" || type_of(node) == "parenthesized_type") {
+    node = named_child(node, 0);
+  }
+  const auto type = type_of(node);
+  if (type == "type_identifier") {
+    const auto name = text_of(node, source);
+    return file.types.contains(name) ? name : std::string{};
+  }
+  if (type == "generic_type" && text_of(field_of(node, "name"), source) == "Promise") {
+    const auto arguments = field_of(node, "type_arguments");
+    return named_count(arguments) == 1 ? js_single_type(named_child(arguments, 0), file, source)
+                                                     : std::string{};
+  }
+  if (type == "union_type") {
+    std::string single;
+    for (std::uint32_t index = 0; index < named_count(node); ++index) {
+      const auto member = ts_node_named_child(node, index);
+      const auto text = text_of(member, source);
+      if (text == "null" || text == "undefined") {
+        continue;
+      }
+      const auto name = js_single_type(member, file, source);
+      if (name.empty() || !single.empty()) {
+        return {};
+      }
+      single = name;
     }
-    return true;
-  });
+    return single;
+  }
+  return {};
 }
 
 // The declared properties of an interface or object type alias.
@@ -766,7 +898,7 @@ void js_type_names(TSNode node, std::string_view source, const std::unordered_ma
   std::vector<std::pair<TSNode, std::string>> properties;
   const auto body = type_of(declaration) == "interface_declaration" ? field_of(declaration, "body")
                                                                      : field_of(declaration, "value");
-  for (std::uint32_t index = 0; index < ts_node_named_child_count(body); ++index) {
+  for (std::uint32_t index = 0; index < named_count(body); ++index) {
     const auto member = ts_node_named_child(body, index);
     if (type_of(member) != "property_signature") {
       continue;
@@ -781,134 +913,286 @@ void js_type_names(TSNode node, std::string_view source, const std::unordered_ma
   return properties;
 }
 
-void js_claims(TSNode root, Emitter& emitter) {
-  const auto source = emitter.source();
-  const auto imports = js_imports(root, source);
+// Follows a function body's data path towards a decoded JWT payload. A
+// library decode (`jwtDecode(t)`, `jwt.verify(..)`, jose's `{ payload }`) is
+// the payload; by hand it is `t.split('.')`, its `[1]`, a base64 decode of
+// that (`Buffer.from(x, 'base64')`, `atob(x)`, a helper named `*base64*`),
+// then `JSON.parse` of the decoded string.
+class JsPayloadFlow {
+ public:
+  JsPayloadFlow(const JsFile& file, std::string_view source) : file_(file), source_(source) {}
 
-  std::unordered_map<std::string, TSNode> types;  // same-file interface / object type alias
-  walk(root, [&](TSNode node) {
+  [[nodiscard]] Payload level(TSNode expression) const {
+    expression = js_unwrap(expression);
+    const auto type = type_of(expression);
+    if (type == "as_expression" || type == "satisfies_expression") {
+      return level(named_child(expression, 0));
+    }
+    if (type == "identifier") {
+      const auto found = variables_.find(text_of(expression, source_));
+      return found == variables_.end() ? Payload::None : found->second;
+    }
+    if (type == "subscript_expression") {
+      return level(field_of(expression, "object")) == Payload::Split &&
+                     text_of(field_of(expression, "index"), source_) == "1"
+                 ? Payload::Segment
+                 : Payload::None;
+    }
+    if (type == "binary_expression" && text_of(field_of(expression, "operator"), source_) == "+") {
+      return level(field_of(expression, "left")) == Payload::Segment ||
+                     level(field_of(expression, "right")) == Payload::Segment
+                 ? Payload::Segment
+                 : Payload::None;
+    }
+    if (type != "call_expression") {
+      return Payload::None;
+    }
+    if (js_decodes(js_library_call(expression, file_, source_))) {
+      return Payload::Parsed;
+    }
+    const auto function = field_of(expression, "function");
+    const auto arguments = field_of(expression, "arguments");
+    const auto first = named_child(arguments, 0);
+    const auto function_text = text_of(function, source_);
+    if (function_text == "JSON.parse") {
+      return level(first) >= Payload::Decoded ? Payload::Parsed : Payload::None;
+    }
+    if (function_text == "Buffer.from") {
+      const auto encoding = string_value(named_child(arguments, 1), source_);
+      return (encoding == "base64" || encoding == "base64url") && level(first) >= Payload::Segment ? Payload::Decoded
+                                                                                                 : Payload::None;
+    }
+    if (type_of(function) == "identifier") {
+      std::string lowered = function_text;
+      std::ranges::transform(lowered, lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+      return (function_text == "atob" || lowered.find("base64") != std::string::npos) && level(first) >= Payload::Segment
+                 ? Payload::Decoded
+                 : Payload::None;
+    }
+    if (type_of(function) != "member_expression") {
+      return Payload::None;
+    }
+    const auto method = text_of(field_of(function, "property"), source_);
+    const auto receiver = level(field_of(function, "object"));
+    if (method == "split") {
+      return string_value(first, source_) == "." ? Payload::Split : Payload::None;
+    }
+    if (method == "replace" || method == "replaceAll" || method == "padEnd" || method == "trim") {
+      return receiver == Payload::Segment ? Payload::Segment : Payload::None;
+    }
+    if (method == "toString") {
+      return receiver == Payload::Decoded ? Payload::Decoded : Payload::None;
+    }
+    return Payload::None;
+  }
+
+  // Records a declaration or assignment, in source order.
+  void bind(TSNode pattern, TSNode value) {
+    const auto value_level = level(value);
+    if (type_of(pattern) == "identifier") {
+      auto& slot = variables_[text_of(pattern, source_)];
+      slot = std::max(slot, value_level);
+    } else if (type_of(pattern) == "object_pattern" && value_level == Payload::Parsed &&
+               js_library_call(js_unwrap(value), file_, source_) == "jwtVerify") {
+      // jose: `const { payload } = await jwtVerify(token, key)`
+      for (std::uint32_t index = 0; index < named_count(pattern); ++index) {
+        const auto member = ts_node_named_child(pattern, index);
+        if (type_of(member) == "shorthand_property_identifier_pattern" && text_of(member, source_) == "payload") {
+          variables_["payload"] = Payload::Parsed;
+        } else if (type_of(member) == "pair_pattern" && text_of(field_of(member, "key"), source_) == "payload" &&
+                   type_of(field_of(member, "value")) == "identifier") {
+          variables_[text_of(field_of(member, "value"), source_)] = Payload::Parsed;
+        }
+      }
+    } else if (type_of(pattern) == "array_pattern" && value_level == Payload::Split) {
+      // const [header, payload, signature] = token.split('.'), or `[, payload]`:
+      // the element after the first comma.
+      std::uint32_t commas = 0;
+      for (std::uint32_t index = 0; index < ts_node_child_count(pattern); ++index) {
+        const auto element = ts_node_child(pattern, index);
+        if (type_of(element) == ",") {
+          ++commas;
+        } else if (commas == 1 && type_of(element) == "identifier") {
+          variables_[text_of(element, source_)] = Payload::Segment;
+        }
+      }
+    }
+  }
+
+ private:
+  const JsFile& file_;
+  std::string_view source_;
+  std::unordered_map<std::string, Payload> variables_;
+};
+
+// The claims type a decoder function returns, from its own data path: a
+// returned `x as T` where x is the decoded payload names T; a returned payload
+// with no cast names the declared return type when that is one same-file type.
+// Empty when nothing returned is the payload.
+[[nodiscard]] std::set<std::string> js_decoder_types(TSNode function, const JsFile& file, std::string_view source) {
+  JsPayloadFlow flow(file, source);
+  std::set<std::string> types;
+  const auto returned = [&](TSNode value) {
+    value = js_unwrap(value);
+    if (type_of(value) == "as_expression") {
+      if (flow.level(named_child(value, 0)) == Payload::Parsed) {
+        if (const auto name = js_single_type(named_child(value, 1), file, source); !name.empty()) {
+          types.insert(name);
+        }
+      }
+      return;
+    }
+    if (flow.level(value) == Payload::Parsed) {
+      if (const auto name = js_single_type(field_of(function, "return_type"), file, source); !name.empty()) {
+        types.insert(name);
+      }
+    }
+  };
+  const auto body = field_of(function, "body");
+  if (type_of(body) != "statement_block") {
+    returned(body);  // `(t: string): T => jwtDecode(t)`
+    return types;
+  }
+  walk(body, [&](TSNode node) {
     const auto type = type_of(node);
-    if (type == "interface_declaration" ||
-        (type == "type_alias_declaration" && type_of(field_of(node, "value")) == "object_type")) {
-      types.emplace(text_of(field_of(node, "name"), source), node);
+    if (js_function_like(type)) {
+      return false;  // a nested function's returns are its own
+    }
+    if (type == "variable_declarator") {
+      flow.bind(field_of(node, "name"), field_of(node, "value"));
+    } else if (type == "assignment_expression") {
+      flow.bind(field_of(node, "left"), field_of(node, "right"));
+    } else if (type == "return_statement") {
+      returned(named_child(node, 0));
     }
     return true;
   });
+  return types;
+}
+
+// Every identifier a parameter list or binding pattern declares.
+void js_declared_names(TSNode pattern, std::string_view source, std::vector<std::string>& names) {
+  walk(pattern, [&](TSNode node) {
+    const auto type = type_of(node);
+    if (type == "identifier" || type == "shorthand_property_identifier_pattern") {
+      names.push_back(text_of(node, source));
+      return false;
+    }
+    if (type == "type_annotation" || type == "default_value") {
+      return false;  // `x: T = init` declares only x
+    }
+    if (type == "pair_pattern") {
+      js_declared_names(field_of(node, "value"), source, names);
+      return false;
+    }
+    return true;
+  });
+}
+
+void js_claims(TSNode root, Emitter& emitter) {
+  const auto source = emitter.source();
+  const auto file = js_scan(root, source);
+  // Providers and decoders need a JWT library or a hand-written decode.
+  const bool may_decode = source.find("jsonwebtoken") != std::string_view::npos ||
+                          source.find("jose") != std::string_view::npos ||
+                          source.find("jwt-decode") != std::string_view::npos ||
+                          source.find("JSON.parse") != std::string_view::npos;
 
   std::set<std::string> claims_types;
-  // Decoder function name -> the claims types it returns.
-  std::map<std::string, std::pair<std::string, std::set<std::string>>> decoders;  // name -> (node id, types)
-
-  walk(root, [&](TSNode node) {
-    const auto type = type_of(node);
-    // Providers.
-    if (type == "call_expression" || type == "new_expression") {
-      const auto library = js_library_call(node, imports, source);
-      const auto scope = library.empty() ? std::string{} : emitter.scope_at(line_of(node));
-      if (library == "jsonwebtoken.sign" || library == "SignJWT") {
-        js_object_keys(named_child(field_of(node, "arguments"), 0), scope, emitter);
-      }
-      // `jwtDecode<T>(..)` and kin type the payload as T.
-      if (js_decodes(library)) {
-        js_type_names(field_of(node, "type_arguments"), source, types,
-                      claims_types);
-      }
-      // `new SignJWT({..}).setSubject(..)`: the registered setters on its chain.
-      if (type == "call_expression" && type_of(field_of(node, "function")) == "member_expression") {
-        const auto member = field_of(node, "function");
-        const auto registered = registered_claim_of_setter(text_of(field_of(member, "property"), source));
-        auto chain = field_of(member, "object");
-        while (!registered.empty() && type_of(chain) == "call_expression" &&
-               type_of(field_of(chain, "function")) == "member_expression") {
-          chain = field_of(field_of(chain, "function"), "object");
+  // Decoder function name -> (node id, the claims types it returns).
+  std::map<std::string, std::pair<std::string, std::set<std::string>>> decoders;
+  if (may_decode) {
+    walk(root, [&](TSNode node) {
+      const auto type = type_of(node);
+      if (type == "call_expression" || type == "new_expression") {
+        const auto library = js_library_call(node, file, source);
+        if (library == "jsonwebtoken.sign" || library == "SignJWT") {
+          js_object_keys(named_child(field_of(node, "arguments"), 0), emitter.scope_at(line_of(node)), emitter);
         }
-        if (!registered.empty() && js_library_call(chain, imports, source) == "SignJWT") {
-          emitter.claim(true, emitter.scope_at(line_of(node)), registered);
+        // `jwtDecode<T>(..)`, `decodeJwt<T>(..)`, `jwtVerify<T>(..)` type the payload as T.
+        if (js_decodes(library)) {
+          const auto arguments = field_of(node, "type_arguments");
+          if (named_count(arguments) == 1) {
+            if (const auto name = js_single_type(named_child(arguments, 0), file, source); !name.empty()) {
+              claims_types.insert(name);
+            }
+          }
         }
+        // `new SignJWT({..}).setSubject(..)`: the registered setters on its chain.
+        if (type == "call_expression" && type_of(field_of(node, "function")) == "member_expression") {
+          const auto member = field_of(node, "function");
+          const auto registered = registered_claim_of_setter(text_of(field_of(member, "property"), source));
+          auto chain = field_of(member, "object");
+          while (!registered.empty() && type_of(chain) == "call_expression" &&
+                 type_of(field_of(chain, "function")) == "member_expression") {
+            chain = field_of(field_of(chain, "function"), "object");
+          }
+          if (!registered.empty() && js_library_call(chain, file, source) == "SignJWT") {
+            emitter.claim(true, emitter.scope_at(line_of(node)), registered);
+          }
+        }
+        return true;
       }
-      return true;
-    }
-    // `jwt.verify(token, key) as T`.
-    if (type == "as_expression" && js_decodes(js_library_call(js_unwrap(named_child(node, 0)), imports, source))) {
-      js_type_names(named_child(node, 1), source, types, claims_types);
-      return true;
-    }
-    // A function that returns a claims type and provably decodes a token.
-    TSNode function{};
-    std::string name;
-    std::uint32_t first_line = 0;
-    if (type == "function_declaration") {
-      function = node;
-      name = text_of(field_of(node, "name"), source);
-      first_line = line_of(node);
-    } else if (type == "variable_declarator" && type_of(field_of(node, "name")) == "identifier" &&
-               (type_of(field_of(node, "value")) == "arrow_function" ||
-                type_of(field_of(node, "value")) == "function_expression")) {
-      function = field_of(node, "value");
-      name = text_of(field_of(node, "name"), source);
-      first_line = line_of(node);
-    }
-    if (ts_node_is_null(function)) {
-      return true;
-    }
-    std::set<std::string> returned;
-    js_type_names(field_of(function, "return_type"), source, types, returned);
-    if (returned.empty()) {
-      return true;
-    }
-    const auto body = field_of(function, "body");
-    const bool library = any_of(body, [&](TSNode child) { return js_decodes(js_library_call(child, imports, source)); });
-    bool splits = false;
-    bool payload = false;  // `parts[1]`: the payload segment, not the header
-    bool parses = false;
-    bool base64 = false;
-    walk(body, [&](TSNode child) {
-      if (type_of(child) == "subscript_expression") {
-        payload = payload || text_of(field_of(child, "index"), source) == "1";
-      } else if (type_of(child) == "call_expression") {
-        const auto callee = field_of(child, "function");
-        const auto callee_text = text_of(callee, source);
-        if (type_of(callee) == "member_expression" && text_of(field_of(callee, "property"), source) == "split") {
-          splits = splits || string_value(named_child(field_of(child, "arguments"), 0), source) == ".";
+      // `jwt.verify(token, key) as T`: the cast types the library's payload.
+      if (type == "as_expression" && js_decodes(js_library_call(js_unwrap(named_child(node, 0)), file, source))) {
+        if (const auto name = js_single_type(named_child(node, 1), file, source); !name.empty()) {
+          claims_types.insert(name);
         }
-        parses = parses || callee_text == "JSON.parse";
-        base64 = base64 || callee_text == "atob";
-      } else if (const auto value = string_value(child, source); value == "base64" || value == "base64url") {
-        base64 = true;
+        return true;
+      }
+      // A function that returns the decoded payload.
+      TSNode function{};
+      std::string name;
+      std::uint32_t first_line = 0;
+      if (type == "function_declaration") {
+        function = node;
+        name = text_of(field_of(node, "name"), source);
+        first_line = line_of(node);
+      } else if (type == "variable_declarator" && type_of(field_of(node, "name")) == "identifier" &&
+                 (type_of(field_of(node, "value")) == "arrow_function" ||
+                  type_of(field_of(node, "value")) == "function_expression")) {
+        function = field_of(node, "value");
+        name = text_of(field_of(node, "name"), source);
+        first_line = line_of(node);
+      }
+      if (ts_node_is_null(function)) {
+        return true;
+      }
+      const auto returned = js_decoder_types(function, file, source);
+      if (returned.empty()) {
+        return true;
+      }
+      claims_types.insert(returned.begin(), returned.end());
+      if (const auto id = emitter.function_named(name, first_line, line_of(function)); !id.empty()) {
+        decoders[name] = {id, returned};
       }
       return true;
     });
-    if (!library && !(splits && payload && parses && base64)) {
-      return true;
-    }
-    claims_types.insert(returned.begin(), returned.end());
-    if (!name.empty()) {
-      const auto id = emitter.function_named(name, first_line, line_of(function));
-      if (!id.empty()) {
-        decoders[name] = {id, returned};
-      }
-    }
-    return true;
-  });
+  }
 
   // Every property of a claims type is a claim this repo reads.
   for (const auto& claims_type : claims_types) {
-    for (const auto& [member, claim] : js_properties(types.at(claims_type), source)) {
+    for (const auto& [member, claim] : js_properties(file.types.at(claims_type), source)) {
       emitter.claim(false, emitter.field_at(line_of(member), claim), claim);
     }
   }
   for (const auto& [name, decoder] : decoders) {
     for (const auto& claims_type : decoder.second) {
-      for (const auto& property : js_properties(types.at(claims_type), source)) {
+      for (const auto& property : js_properties(file.types.at(claims_type), source)) {
         emitter.emit(kDecoder, decoder.first, {}, property.second);
       }
     }
   }
 
   // Reads through a decoder: `const v = decodeToken(t)` (also behind await,
-  // `?:`, `??`, `||`, and one alias `let w = v`), then `v.x` / `v?.x`. The
-  // callee must be an imported name or a same-file decoder; resolution keeps
-  // only reads whose callee is a decoder whose type declares `x`.
+  // `?:`, `??`, `||`, and aliases `let w = v`), then `v.x` / `v?.x`. Only a
+  // callee imported from the project's own code or a same-file decoder can be
+  // one; resolution keeps only reads whose callee is a decoder whose type
+  // declares `x`. Every parameter and declaration is a binding, so an inner
+  // `payload` shadows an outer decoded one.
+  if (file.local_imports.empty() && decoders.empty()) {
+    return;
+  }
   std::vector<std::unordered_map<std::string, std::set<std::string>>> scopes(1);
   const auto lookup = [&](const std::string& variable) -> const std::set<std::string>* {
     for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
@@ -923,7 +1207,7 @@ void js_claims(TSNode root, Emitter& emitter) {
     const auto type = type_of(value);
     if (type == "call_expression" && type_of(field_of(value, "function")) == "identifier") {
       const auto callee = text_of(field_of(value, "function"), source);
-      if (imports.imported.contains(callee) || decoders.contains(callee)) {
+      if (file.local_imports.contains(callee) || decoders.contains(callee)) {
         out.insert(callee);
       }
     } else if (type == "identifier") {
@@ -943,16 +1227,28 @@ void js_claims(TSNode root, Emitter& emitter) {
   };
   const std::function<void(TSNode)> reads = [&](TSNode node) {
     const auto type = type_of(node);
-    const bool function_like = type == "function_declaration" || type == "function_expression" ||
-                               type == "arrow_function" || type == "method_definition" || type == "function";
+    const bool function_like = js_function_like(type);
     if (function_like) {
       scopes.emplace_back();
+      std::vector<std::string> parameters;
+      js_declared_names(field_of(node, "parameters"), source, parameters);
+      js_declared_names(field_of(node, "parameter"), source, parameters);  // `x => ...`
+      for (const auto& parameter : parameters) {
+        scopes.back()[parameter];
+      }
     }
-    if (type == "variable_declarator" && type_of(field_of(node, "name")) == "identifier") {
-      std::set<std::string> found;
-      callees(field_of(node, "value"), found);
-      if (!found.empty()) {
-        scopes.back()[text_of(field_of(node, "name"), source)] = std::move(found);
+    if (type == "variable_declarator") {
+      const auto pattern = field_of(node, "name");
+      if (type_of(pattern) == "identifier") {
+        std::set<std::string> found;
+        callees(field_of(node, "value"), found);
+        scopes.back()[text_of(pattern, source)] = std::move(found);
+      } else {
+        std::vector<std::string> names;
+        js_declared_names(pattern, source, names);
+        for (const auto& name : names) {
+          scopes.back()[name].clear();
+        }
       }
     } else if (type == "assignment_expression" && type_of(field_of(node, "left")) == "identifier") {
       const auto variable = text_of(field_of(node, "left"), source);
@@ -966,7 +1262,7 @@ void js_claims(TSNode root, Emitter& emitter) {
       }
     } else if (type == "member_expression" && type_of(field_of(node, "object")) == "identifier" &&
                type_of(field_of(node, "property")) == "property_identifier") {
-      if (const auto* known = lookup(text_of(field_of(node, "object"), source))) {
+      if (const auto* known = lookup(text_of(field_of(node, "object"), source)); known != nullptr && !known->empty()) {
         const auto property = text_of(field_of(node, "property"), source);
         const auto scope = emitter.scope_at(line_of(node));
         for (const auto& callee : *known) {
@@ -974,7 +1270,7 @@ void js_claims(TSNode root, Emitter& emitter) {
         }
       }
     }
-    for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
+    for (std::uint32_t index = 0; index < named_count(node); ++index) {
       reads(ts_node_named_child(node, index));
     }
     if (function_like) {
@@ -1027,7 +1323,7 @@ void python_claims(TSNode root, Emitter& emitter) {
       return true;
     }
     const auto scope = emitter.scope_at(line_of(node));
-    for (std::uint32_t index = 0; index < ts_node_named_child_count(payload); ++index) {
+    for (std::uint32_t index = 0; index < named_count(payload); ++index) {
       const auto pair = ts_node_named_child(payload, index);
       if (type_of(pair) == "pair") {
         if (const auto name = string_value(field_of(pair, "key"), source)) {

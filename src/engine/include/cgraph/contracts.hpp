@@ -88,10 +88,10 @@
 // repos use one database (contract_declarations.hpp), which spells it
 // `table:<declared database>:<name>` at the crossing. An env variable likewise
 // crosses only where a declaration names the service it addresses, and a
-// standard HTTP header (`authorization`, `content-type`) or a registered JWT
-// claim (`exp`, `sub`) never does: every service uses those for its own
-// reasons. Claim facts come only from provably-JWT code (claim_contracts.hpp). is_bridged_contract says which ids
-// cross repositories as they are.
+// standard HTTP header (`authorization`, `content-type`) or a standard JWT
+// claim (`exp`, `email`) never does: every service uses those for its own
+// reasons. Claim facts come only from provably-JWT code (claim_contracts.hpp).
+// is_bridged_contract says which ids cross repositories as they are.
 //
 // Extractors normalize names before emitting a fact: an unquoted SQL
 // identifier is folded to lower case, as Postgres does (`Users` is `users`),
@@ -160,12 +160,12 @@ inline constexpr std::string_view kLocalDatabase = "local";
 [[nodiscard]] std::string_view contract_kind_of(std::string_view id);
 
 // True for an id that is the same contract in every repository's graph by
-// itself: every endpoint, a claim outside the registered set below, a header
+// itself: every endpoint, a claim outside the standard set below, a header
 // outside the standard set below, and a table or label in a named database. A
-// `table:local:` / `label:local:` id, every `env:` id, a registered claim and
+// `table:local:` / `label:local:` id, every `env:` id, a standard claim and
 // a standard header are not: a table or env variable crosses only where a
 // declaration says so (contract_declarations.hpp crossing_id, which every
-// cross-repo matcher uses), a registered claim or standard header never.
+// cross-repo matcher uses), a standard claim or header never.
 [[nodiscard]] bool is_bridged_contract(std::string_view id);
 
 // True for a lowercased header name every service uses for its own reasons
@@ -176,11 +176,15 @@ inline constexpr std::string_view kLocalDatabase = "local";
 // by prefix and not listed).
 [[nodiscard]] std::span<const std::string_view> standard_http_headers();
 
-// True for an RFC 7519 section 4.1 registered claim name (`iss`, `sub`, `aud`,
-// `exp`, `nbf`, `iat`, `jti`): every token carries them for its own envelope,
-// whoever issued it, so two repos naming one are not evidence that they share
-// a token, and a registered claim never bridges repositories.
-[[nodiscard]] bool is_registered_jwt_claim(std::string_view name);
+// True for a claim name any issuer writes with the same meaning (the IANA JWT
+// Claims registry's RFC 7519, OpenID Connect, RFC 7800, RFC 8693 and RFC 9449
+// names: `exp`, `sub`, `email`, `scope`, `client_id`, ...): two repos naming
+// one are not evidence that they share a token, so a standard claim never
+// bridges repositories. Application claims (`roles`, `tenant_id`,
+// `session_id`) do. Case-sensitive, as claim names are.
+[[nodiscard]] bool is_standard_jwt_claim(std::string_view name);
+// The sorted table behind is_standard_jwt_claim.
+[[nodiscard]] std::span<const std::string_view> standard_jwt_claims();
 
 // True for a `table:local:` or `label:local:` id.
 [[nodiscard]] bool is_database_local_contract(std::string_view id);
