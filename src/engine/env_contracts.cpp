@@ -15,7 +15,6 @@ namespace {
 using js_syntax::field_text;
 using js_syntax::is_function_node;
 using js_syntax::is_module_level_declaration;
-using js_syntax::node_text;
 using js_syntax::unwrap_expression;
 
 constexpr std::string_view kUsesContract = "uses_contract";
@@ -24,8 +23,17 @@ constexpr std::string_view kUsesContract = "uses_contract";
 // followed through (and any cycle among them).
 constexpr int kMaxBindingHops = 4;
 
+// A field of `node`; null for a null node too, so lookups chain safely.
 [[nodiscard]] TSNode field(const TSNode& node, std::string_view name) {
+  if (ts_node_is_null(node)) {
+    return TSNode{};
+  }
   return ts_node_child_by_field_name(node, name.data(), static_cast<std::uint32_t>(name.size()));
+}
+
+// The source text of `node`; empty for a null node (a missing field).
+[[nodiscard]] std::string node_text(const TSNode& node, std::string_view source) {
+  return ts_node_is_null(node) ? std::string{} : js_syntax::node_text(node, source);
 }
 
 [[nodiscard]] std::string_view type_of(const TSNode& node) {
@@ -356,6 +364,9 @@ void value_annotation_reads(const TSNode& node, const ExtractionContext& context
 }
 
 [[nodiscard]] TSNode named_child_of_type(const TSNode& node, std::string_view type) {
+  if (ts_node_is_null(node)) {
+    return TSNode{};
+  }
   for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
     if (const TSNode child = ts_node_named_child(node, index); type_of(child) == type) {
       return child;

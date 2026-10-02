@@ -220,7 +220,7 @@ class Keys(
 class Cfg {
   @Value("${JWT_SECRET}") private String secret;
   String region() { return System.getenv("AWS_REGION"); }
-  String other() { return Other.getenv("NOT_SYSTEM"); }
+  String other() { helper(); return Other.getenv("NOT_SYSTEM"); }
 }
 )java"});
     const std::set<std::string> expected{
