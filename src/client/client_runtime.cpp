@@ -1,6 +1,7 @@
 #include "cgraph/client_runtime.hpp"
 
 #include "cgraph/change_context.hpp"
+#include "cgraph/contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include "cgraph/daemon_endpoint.hpp"
@@ -398,9 +399,9 @@ nlohmann::json cross_service_for_file(const ClientRequest& base, const std::file
     for (const auto& problem : scope->enclosing.workspace.errors) summary.push_back("workspace manifest unusable: " + problem);
     return out;
   }
-  // The file's own endpoints, walking only its own structure (never imports):
-  // a route it declares is `contains` at depth 1; one its functions or class
-  // methods call is reached through CONSUMES. The home repo is asked through
+  // The file's own contracts, walking only its own structure (never imports):
+  // a route (or table, header, ...) it declares is `contains` at depth 1; one
+  // its functions or class methods call or use is reached through CONSUMES. The home repo is asked through
   // the same ask as the others, so one wait covers the whole lookup.
   const auto home = std::ranges::find(scope->enclosing.workspace.repos, scope->enclosing.home, &WorkspaceRepo::name);
   std::string ask_error;
@@ -423,7 +424,7 @@ nlohmann::json cross_service_for_file(const ClientRequest& base, const std::file
   for (const auto& node : found.value("nodes", nlohmann::json::array())) {
     const auto id = node.value("id", std::string{});
     const auto via = node.value("via", std::string{});
-    if (!id.starts_with("endpoint:")) continue;
+    if (cgraph::contract_kind_of(id).empty()) continue;
     if (via == "contains" && node.value("depth", 0) == 1) {
       auto& contract = contracts[id];
       contract.roles.insert("serves");
@@ -437,7 +438,9 @@ nlohmann::json cross_service_for_file(const ClientRequest& base, const std::file
   const CrossServiceAsk ask{.enclosing = &scope->enclosing, .ask = scope->ask};
   auto section = cross_service_section(ask, contracts, max_contracts);
   for (const auto& row : section["rows"]) {
-    const auto contract = row.value("contract", std::string{}).substr(std::string_view("endpoint:").size());
+    // An endpoint reads as `GET /path`; any other contract keeps its kind (`header:x-org-id`).
+    auto contract = row.value("contract", std::string{});
+    if (cgraph::contract_kind_of(contract) == "endpoint") contract = contract.substr(std::string_view("endpoint:").size());
     const bool consumer = row.value("relation", std::string{}) == "consumer";
     summary.push_back(relative + (consumer ? " serves " : " calls ") + contract + (consumer ? ", called from " : ", served by ") +
                       row.value("repo", std::string{}) + " " + row.value("path", std::string{}) + ":" +
@@ -445,7 +448,7 @@ nlohmann::json cross_service_for_file(const ClientRequest& base, const std::file
   }
   out["crossings"] = section["rows"].size();
   if (const auto omitted = section.value("contracts_omitted", std::size_t{0}); omitted > 0) {
-    summary.push_back(std::to_string(omitted) + " more endpoint(s) in this file were not checked (limit " +
+    summary.push_back(std::to_string(omitted) + " more contract(s) in this file were not checked (limit " +
                       std::to_string(max_contracts) + "); run graph_change_context on the diff for all of them");
   }
   for (const auto& gap : section["unreachable"]) {

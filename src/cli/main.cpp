@@ -78,9 +78,11 @@ void print_usage() {
       "        write cgraph.workspace.json (repos discovered one level down when none are named)\n"
       "  cgraph workspace status [--root PATH] [--daemon PATH]\n"
       "        each repo's daemon, node/edge counts and workspace totals\n"
-      "  cgraph seam discover --graph NAME=graph.json [--graph ...] [--prefix NAME:/from=/to ...] --out DROPDIR\n"
-      "        write a seam fragment from the endpoints each graph serves (handled_by) and consumes (CONSUMES); no spec\n"
-      "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] [--prefix NAME:/from=/to ...] --out DIR\n"
+      "  cgraph seam discover --graph NAME=graph.json [--graph ...] [--prefix NAME:/from=/to ...]\n"
+      "        [--database DB=NAME,NAME ...] [--env VAR=NAME ...] --out DROPDIR\n"
+      "        write a seam fragment from the contracts each graph serves (handled_by) and consumes (CONSUMES); no spec\n"
+      "  cgraph seam fuse --seam SEAM.json --graph NAME=graph.json [--graph ...] [--prefix NAME:/from=/to ...]\n"
+      "        [--database DB=NAME,NAME ...] [--env VAR=NAME ...] --out DIR\n"
       "        merge a seam fragment + service graphs into a clustered graph.json + graph.html view\n"
       "  cgraph seam query --graph FUSED.json <query|path|explain|impact|context> [PARAMS_JSON]\n"
       "        run a read op against a fused seam graph (cross-service); read-only\n"
@@ -545,10 +547,36 @@ int run_workspace_status(int argc, char** argv) {
   return result.response->value("ok", false) ? 0 : 1;
 }
 
-// cgraph seam discover --graph NAME=path [--graph ...] [--prefix NAME:/from=/to ...] --out DROPDIR
+// `--database DB=repoA,repoB` / `--env VAR=service` for a seam command: the
+// declarations a workspace manifest makes (contract_declarations.hpp). True when
+// `arg` was one of them; `error` is set when its value is malformed.
+bool parse_contract_declaration_flag(const std::string& arg, int& index, int argc, char** argv,
+                                     std::vector<cgraph::ContractDatabase>& databases,
+                                     std::vector<cgraph::EnvProvider>& env, std::string& error) {
+  if ((arg != "--database" && arg != "--env") || index + 1 >= argc) {
+    return false;
+  }
+  const std::string_view value = argv[++index];
+  if (arg == "--database") {
+    if (auto database = cgraph::parse_database_flag(value, error)) {
+      databases.push_back(std::move(*database));
+    }
+  } else if (auto provider = cgraph::parse_env_flag(value, error)) {
+    env.push_back(std::move(*provider));
+  }
+  if (!error.empty()) {
+    error = arg + ": " + error;
+  }
+  return true;
+}
+
+// cgraph seam discover --graph NAME=path [--graph ...] [--prefix NAME:/from=/to ...]
+//   [--database DB=NAME,NAME ...] [--env VAR=NAME ...] --out DROPDIR
 int run_seam_discover(int argc, char** argv) {
   std::filesystem::path out_dir;
   std::vector<cgraph::EndpointPrefix> prefixes;
+  std::vector<cgraph::ContractDatabase> databases;
+  std::vector<cgraph::EnvProvider> env;
   std::vector<std::pair<std::string, std::filesystem::path>> graph_specs;
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -570,6 +598,11 @@ int run_seam_discover(int argc, char** argv) {
         return 2;
       }
       prefixes.push_back(std::move(*prefix));
+    } else if (std::string error; parse_contract_declaration_flag(arg, index, argc, argv, databases, env, error)) {
+      if (!error.empty()) {
+        std::cerr << "seam discover: " << error << '\n';
+        return 2;
+      }
     } else {
       std::cerr << "seam discover: unexpected argument '" << arg << "'\n";
       return 2;
@@ -590,8 +623,14 @@ int run_seam_discover(int argc, char** argv) {
       }
       return 2;
     }
+    if (const auto problems = cgraph::contract_declaration_errors(databases, env, names); !problems.empty()) {
+      for (const auto& error : problems) {
+        std::cerr << "seam discover: " << error << '\n';
+      }
+      return 2;
+    }
   }
-  const auto result = cgraph::discover_seam(graph_specs, prefixes);
+  const auto result = cgraph::discover_seam(graph_specs, prefixes, databases, env);
   if (!result.ok) {
     for (const auto& error : result.errors) {
       std::cerr << "seam discover: ERROR: " << error << '\n';
@@ -609,11 +648,14 @@ int run_seam_discover(int argc, char** argv) {
   return 0;
 }
 
-// cgraph seam fuse --seam SEAM --graph NAME=path [--graph ...] [--prefix NAME:/from=/to ...] --out DIR
+// cgraph seam fuse --seam SEAM --graph NAME=path [--graph ...] [--prefix NAME:/from=/to ...]
+//   [--database DB=NAME,NAME ...] [--env VAR=NAME ...] --out DIR
 int run_seam_fuse(int argc, char** argv) {
   std::filesystem::path seam_path;
   std::filesystem::path out_dir;
   std::vector<cgraph::EndpointPrefix> prefixes;
+  std::vector<cgraph::ContractDatabase> databases;
+  std::vector<cgraph::EnvProvider> env;
   std::vector<std::pair<std::string, std::filesystem::path>> graph_specs;
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -637,6 +679,11 @@ int run_seam_fuse(int argc, char** argv) {
         return 2;
       }
       prefixes.push_back(std::move(*prefix));
+    } else if (std::string error; parse_contract_declaration_flag(arg, index, argc, argv, databases, env, error)) {
+      if (!error.empty()) {
+        std::cerr << "seam fuse: " << error << '\n';
+        return 2;
+      }
     } else {
       std::cerr << "seam fuse: unexpected argument '" << arg << "'\n";
       return 2;
@@ -654,6 +701,12 @@ int run_seam_fuse(int argc, char** argv) {
     if (const auto unknown = cgraph::unknown_prefix_repos(prefixes, names); !unknown.empty()) {
       for (const auto& error : unknown) {
         std::cerr << "seam fuse: --prefix " << error << '\n';
+      }
+      return 2;
+    }
+    if (const auto problems = cgraph::contract_declaration_errors(databases, env, names); !problems.empty()) {
+      for (const auto& error : problems) {
+        std::cerr << "seam fuse: " << error << '\n';
       }
       return 2;
     }
@@ -697,7 +750,7 @@ int run_seam_fuse(int argc, char** argv) {
     services.emplace_back(name, cgraph::parse_node_link_graph(graph_json));
   }
 
-  const auto fused = cgraph::fuse_seam(seam, services, prefixes);
+  const auto fused = cgraph::fuse_seam(seam, services, prefixes, databases);
   if (!fused.ok) {
     for (const auto& error : fused.errors) {
       std::cerr << "seam fuse: ERROR: " << error << '\n';

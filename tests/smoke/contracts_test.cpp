@@ -5,6 +5,7 @@
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/non_grammar_extractors.hpp"
 #include "cgraph/normalize.hpp"
+#include "cgraph/operation_stats.hpp"
 #include "cgraph/python_extractor.hpp"
 
 #include <iostream>
@@ -1321,6 +1322,128 @@ export function subgraphs(id: string, ns?: string) {
   return 0;
 }
 
+const cgraph::Node* node_of(const cgraph::GraphSnapshot& graph, std::string_view id) {
+  for (const auto& node : graph.nodes) {
+    if (node.id == id) {
+      return &node;
+    }
+  }
+  return nullptr;
+}
+
+std::string property_of(const cgraph::Node& node, const std::string& key) {
+  const auto value = node.properties.find(key);
+  return value == node.properties.end() ? std::string{"<none>"} : value->second;
+}
+
+// Contracts other than endpoints, from raw `provides_contract` /
+// `uses_contract` facts (no extractor emits them yet): one raw-id node per
+// contract, `handled_by` to each provider, `CONSUMES` from each user,
+// `contains` from a provider's file, `served: false` when only used, header
+// names case-folded with the provider's spelling as label, a table with no
+// database `local`, and every malformed fact counted, never minted.
+int test_generic_contract_facts() {
+  auto built = build({
+      {"/proj/c/api/migrate.ts", "export function createUsers() { return 1; }\n"},
+      {"/proj/c/api/server.ts", "export function readTenant(req: any) { return req; }\n"},
+      {"/proj/c/web/client.ts",
+       "export function listUsers() { return 1; }\nexport function sendTenant() { return 2; }\n"},
+  });
+  auto& graph = built.graph;
+  const auto create_users = cgraph::make_id("/proj/c/api/migrate.ts:createUsers");
+  const auto read_tenant = cgraph::make_id("/proj/c/api/server.ts:readTenant");
+  const auto list_users = cgraph::make_id("/proj/c/web/client.ts:listUsers");
+  const auto send_tenant = cgraph::make_id("/proj/c/web/client.ts:sendTenant");
+  for (const auto& id : {create_users, read_tenant, list_users, send_tenant}) {
+    if (node_of(graph, id) == nullptr) {
+      return fail("fixture function missing: " + id);
+    }
+  }
+  const auto fact = [](std::string relation, std::string source, std::string context, std::string database = {},
+                       std::string file = "/proj/c/web/client.ts") {
+    return cgraph::RawRelation{.source_id = std::move(source), .target_label = std::move(database),
+                               .relation = std::move(relation), .context = std::move(context),
+                               .source_file = std::move(file)};
+  };
+  // Users come first in the list: a provider's spelling still wins the label.
+  const std::vector<cgraph::RawRelation> facts{
+      fact("uses_contract", list_users, "table:users"),
+      fact("uses_contract", send_tenant, "header:x-tenant-id"),
+      fact("provides_contract", create_users, "table:users", "", "/proj/c/api/migrate.ts"),
+      fact("provides_contract", read_tenant, "header:X-Tenant-Id", "", "/proj/c/api/server.ts"),
+      fact("uses_contract", list_users, "table:orders", "turing"),
+      fact("uses_contract", list_users, "label:HAS_ROLE"),
+      fact("uses_contract", send_tenant, "claim:org_id"),
+      fact("uses_contract", send_tenant, "env:ML_BACKEND_URL"),
+      // Malformed: unknown kind, no kind, empty name, a database with `:`, a source no node names.
+      fact("uses_contract", send_tenant, "queue:jobs"),
+      fact("uses_contract", send_tenant, "users"),
+      fact("uses_contract", send_tenant, "claim:"),
+      fact("uses_contract", list_users, "table:users", "a:b"),
+      fact("uses_contract", "nobody", "header:x-tenant-id"),
+  };
+  cgraph::resolve_contracts(graph, facts, &built.stats);
+
+  const auto* users = node_of(graph, "table:local:users");
+  if (users == nullptr || users->kind != "table" || users->label != "users" || property_of(*users, "database") != "local" ||
+      property_of(*users, "name") != "users" || users->properties.contains("served") ||
+      users->source_file != "/proj/c/api/migrate.ts") {
+    return fail("a table with no database is table:local:<name>, kind table, anchored at its provider");
+  }
+  if (!has_edge(graph, "table:local:users", create_users, "handled_by") ||
+      !has_edge(graph, list_users, "table:local:users", "CONSUMES") ||
+      !has_edge(graph, cgraph::make_id("/proj/c/api/migrate.ts"), "table:local:users", "contains")) {
+    return fail("a table contract is handled_by its provider, CONSUMED by its user, contained by the provider's file");
+  }
+  const auto* tenant = node_of(graph, "header:x-tenant-id");
+  if (tenant == nullptr || tenant->kind != "header" || tenant->label != "X-Tenant-Id" ||
+      !has_edge(graph, "header:x-tenant-id", read_tenant, "handled_by") ||
+      !has_edge(graph, send_tenant, "header:x-tenant-id", "CONSUMES") || node_of(graph, "header:X-Tenant-Id") != nullptr) {
+    return fail("a header is case-folded in its id and labelled as its provider spells it");
+  }
+  const auto* orders = node_of(graph, "table:turing:orders");
+  if (orders == nullptr || property_of(*orders, "database") != "turing" || property_of(*orders, "served") != "false") {
+    return fail("a table in a named database carries it; one only used is served:false");
+  }
+  for (const auto* id : {"label:local:HAS_ROLE", "claim:org_id", "env:ML_BACKEND_URL"}) {
+    const auto* used = node_of(graph, id);
+    if (used == nullptr || property_of(*used, "served") != "false" || !used->source_file.empty()) {
+      return fail(std::string("a contract only used here is minted served:false with no anchor: ") + id);
+    }
+  }
+  if (node_of(graph, "label:local:HAS_ROLE")->kind != "label" || node_of(graph, "env:ML_BACKEND_URL")->label != "ML_BACKEND_URL") {
+    return fail("graph labels have kind label; env keeps its spelling");
+  }
+  for (const auto& node : graph.nodes) {
+    if (node.id.starts_with("queue:") || node.id == "claim:" || node.id.find("a:b") != std::string::npos) {
+      return fail("a malformed contract fact minted " + node.id);
+    }
+  }
+  for (const auto& edge : graph.edges) {
+    if (edge.relation == "uses_contract" || edge.relation == "provides_contract") {
+      return fail("a contract fact leaked into the graph");
+    }
+  }
+  // Read through the stats JSON, as stats.json and `status` report it.
+  const auto tally = cgraph::contract_resolution_json(built.stats);
+  if (tally.value("contract_facts", 0) != 13 || tally.value("contract_facts_unresolved", 0) != 5 ||
+      tally.value("contracts_provided", 0) != 2 || tally.value("contracts_external", 0) != 4 ||
+      tally.value("contract_consumes", 0) != 6) {
+    std::cerr << "  " << tally.dump() << '\n';
+    return fail("contract tallies");
+  }
+  // Two repos' graphs name a shared header with the same id, and two repos'
+  // undeclared tables with the same repo-local id that is_bridged_contract
+  // refuses: those join only once a database is declared.
+  if (!cgraph::is_bridged_contract("header:x-tenant-id") || !cgraph::is_bridged_contract("table:turing:orders") ||
+      cgraph::is_bridged_contract("table:local:users") || cgraph::is_bridged_contract("label:local:HAS_ROLE") ||
+      !cgraph::is_bridged_contract("endpoint:GET /users") || cgraph::is_bridged_contract("src_db_client_ts") ||
+      cgraph::is_bridged_contract("service:api")) {
+    return fail("is_bridged_contract");
+  }
+  return 0;
+}
+
 int main() {
   int failures = 0;
   failures += test_join_route_path();
@@ -1344,5 +1467,6 @@ int main() {
   failures += test_positional_wrapper_options();
   failures += test_first_parameter_wrapper_options();
   failures += test_langgraph_sdk_clients();
+  failures += test_generic_contract_facts();
   return failures == 0 ? 0 : 1;
 }

@@ -1,9 +1,11 @@
 #include "cgraph/change_context.hpp"
+#include "cgraph/contracts.hpp"
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/mcp_server.hpp"
 #include "cgraph/pipeline.hpp"
 #include "cgraph/snapshot_source_reader.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -40,9 +42,105 @@ void write(const fs::path& path, const std::string& text) {
   fs::create_directories(path.parent_path());
   std::ofstream(path, std::ios::binary) << text;
 }
+
+// Contracts other than endpoints, from raw facts through resolve_contracts: a
+// change to the server code reading a header serves it, a change to the client
+// sending it uses it; a change to a migration serves its table. The
+// cross_service section asks a repo-local table only of the members of the
+// home repo's declared database, under their own spelling, never of an
+// outsider; a header of every member; a used env variable answers with its
+// declared service. With no database declared, a repo-local table is listed
+// `local` and asked of nobody.
+void test_contract_crossings() {
+  cgraph::GraphSnapshot graph;
+  for (const auto* name : {"readTenant", "createUsers", "sendTenant"}) {
+    cgraph::Node node{.id = std::string("app_") + name, .label = name, .source_file = "/app/src/app.ts", .kind = "function"};
+    graph.nodes.push_back(std::move(node));
+  }
+  const std::vector<cgraph::RawRelation> facts{
+      {.source_id = "app_readTenant", .relation = "provides_contract", .context = "header:X-Tenant-Id", .source_file = "/app/src/app.ts"},
+      {.source_id = "app_createUsers", .relation = "provides_contract", .context = "table:users", .source_file = "/app/src/app.ts"},
+      {.source_id = "app_sendTenant", .relation = "uses_contract", .context = "header:x-org-id", .source_file = "/app/src/app.ts"},
+      {.source_id = "app_sendTenant", .relation = "uses_contract", .context = "env:ML_URL", .source_file = "/app/src/app.ts"},
+  };
+  cgraph::resolve_contracts(graph, facts);
+  const auto touched_by = [&](const std::string& seed) {
+    const std::vector<std::string> seeds{seed};
+    cgraph::CrossServiceContracts touched;
+    cgraph::touch_contracts(graph, cgraph::trace_impact(graph, seeds, "dependents", "", 3), touched);
+    return touched;
+  };
+  const auto server = touched_by("app_readTenant");
+  require(server.contains("header:x-tenant-id") && server.at("header:x-tenant-id").roles.contains("serves") &&
+              server.at("header:x-tenant-id").rank == 1,
+          "a change to the code reading a header serves it");
+  const auto migration = touched_by("app_createUsers");
+  require(migration.contains("table:local:users") && migration.at("table:local:users").roles.contains("serves"),
+          "a change to a migration serves its table");
+  const auto client = touched_by("app_sendTenant");
+  require(client.contains("header:x-org-id") && client.at("header:x-org-id").roles.contains("consumes") &&
+              client.at("header:x-org-id").rank == 1 && client.contains("env:ML_URL"),
+          "a change to the code sending a header uses it");
+
+  const auto ws = output / "contract-crossings";
+  for (const auto* repo : {"api", "ml", "web", "billing"}) fs::create_directories(ws / repo);
+  write(ws / "cgraph.workspace.json",
+        R"({"repos": [{"name": "api", "root": "./api"}, {"name": "ml", "root": "./ml"}, {"name": "web", "root": "./web"},
+                      {"name": "billing", "root": "./billing"}],
+            "databases": [{"name": "turing", "repos": ["api", "ml"]}],
+            "env": [{"name": "ML_URL", "service": "ml"}]})");
+  cgraph::EnclosingWorkspace enclosing{.workspace = cgraph::load_workspace(ws), .home = "api", .home_root = ws / "api"};
+  require(enclosing.workspace.ok(), "the crossings manifest loads");
+  std::vector<std::string> asked;
+  const auto impact_of = [](std::vector<Json> nodes) {
+    return Json{{"ok", true}, {"result", {{"found", true}, {"nodes", std::move(nodes)}}}};
+  };
+  const cgraph::CrossServiceAsk scope{
+      .enclosing = &enclosing,
+      .ask = [&](const cgraph::WorkspaceRepo& repo, const std::string& op, const Json& params,
+                 std::string&) -> std::optional<Json> {
+        const auto id = params.value("id", std::string{});
+        asked.push_back(repo.name + ":" + op + ":" + id);
+        if (repo.name == "ml" && id == "table:local:users")
+          return impact_of({{{"id", "ml_listUsers"}, {"label", "listUsers"}, {"kind", "function"}, {"line", 4}}});
+        if (repo.name == "billing" && id == "table:local:users")
+          return impact_of({{{"id", "billing_chargeUsers"}, {"label", "chargeUsers"}, {"kind", "function"}}});
+        if (repo.name == "web" && id == "header:x-tenant-id")
+          return impact_of({{{"id", "web_sendTenant"}, {"label", "sendTenant"}, {"kind", "function"}},
+                            {{"id", "header:x-tenant-id"}, {"label", "x-tenant-id"}, {"kind", "header"}}});
+        return impact_of({});
+      }};
+  cgraph::CrossServiceContracts touched;
+  touched["table:local:users"].roles.insert("serves");
+  touched["header:x-tenant-id"].roles.insert("serves");
+  touched["env:ML_URL"].roles.insert("consumes");
+  const auto section = cgraph::cross_service_section(scope, touched);
+  bool ml_row = false, web_row = false, env_row = false;
+  for (const auto& row : section["rows"]) {
+    const auto id = row.value("id", std::string{});
+    require(id != "billing_chargeUsers", "a member outside the database was reached through a repo-local table");
+    require(cgraph::contract_kind_of(id).empty(), "a contract node became a row: " + id);
+    ml_row = ml_row || (id == "ml_listUsers" && row["contract"] == "table:local:users" && row["relation"] == "consumer");
+    web_row = web_row || (id == "web_sendTenant" && row["contract"] == "header:x-tenant-id");
+    env_row = env_row || (row["contract"] == "env:ML_URL" && row["repo"] == "ml" && row["kind"] == "service" &&
+                          row["relation"] == "provider");
+  }
+  require(ml_row && web_row && env_row, "cross_service rows across a database, a header and an env: " + section.dump());
+  for (const auto& call : asked) require(!call.starts_with("billing:impact:table"), "an outsider was asked for a local table");
+  require(std::ranges::find(asked, std::string("ml:impact:table:local:users")) != asked.end(),
+          "a database member is asked under its own spelling");
+
+  // billing declares no database: its table is its own.
+  enclosing.home = "billing";
+  asked.clear();
+  const auto alone = cgraph::cross_service_section(scope, {{"table:local:users", {.roles = {"serves"}}}});
+  require(alone["rows"].empty() && asked.empty() && alone["contracts"][0].value("local", false),
+          "an undeclared repo-local table is listed local and asked of nobody: " + alone.dump());
+}
 }
 int main() {
   try {
+    test_contract_crossings();
     fs::create_directories(output);
     auto deletion = cgraph::change_context(parameters("deletion"));
     write(output / "deletion.json", deletion.dump(2));

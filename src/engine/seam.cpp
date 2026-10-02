@@ -1,7 +1,9 @@
 #include "cgraph/seam.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/endpoint_prefixes.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -207,7 +209,7 @@ bool fail(SeamResult& result, std::string message) {
 
 SeamFuseResult fuse_seam(const Fragment& seam,
                          const std::vector<std::pair<std::string, GraphSnapshot>>& services,
-                         std::span<const EndpointPrefix> prefixes) {
+                         std::span<const EndpointPrefix> prefixes, std::span<const ContractDatabase> databases) {
   SeamFuseResult result;
   result.ok = true;
 
@@ -235,11 +237,16 @@ SeamFuseResult fuse_seam(const Fragment& seam,
 
   // Node ids are project-relative, so two services can both own `src_db_client_ts`.
   // Scope every service-local id by its service; contract ids are shared on
-  // purpose, since that is where a provider and its consumers meet.
+  // purpose, since that is where a provider and its consumers meet. A
+  // `table:local:` id is a service's own unless a declared database spells it
+  // as that database's, the spelling discover_seam joined it at.
   auto shared_id = [](std::string_view id) {
-    return id.starts_with("endpoint:") || id.starts_with("service:") || id.starts_with("schema:");
+    return is_bridged_contract(id) || id.starts_with("service:") || id.starts_with("schema:");
   };
   auto scoped = [&](const std::string& service, const std::string& id) {
+    if (auto declared = declared_contract_id(databases, service, id)) {
+      return std::move(*declared);
+    }
     return shared_id(id) || service.empty() ? id : service + "::" + id;
   };
 
@@ -598,7 +605,8 @@ Node code_ref_shadow(const std::string& graph_name, const SeamNode& node) {
 }  // namespace
 
 SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesystem::path>>& graphs,
-                         std::span<const EndpointPrefix> prefixes) {
+                         std::span<const EndpointPrefix> prefixes, std::span<const ContractDatabase> databases,
+                         std::span<const EnvProvider> env) {
   SeamResult result;
   result.ok = true;
   if (graphs.empty()) {
@@ -645,6 +653,8 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
   };
   // Consumed endpoints each prefix mapped, in prefix order, for the log.
   std::vector<std::size_t> mapped_per_prefix(prefixes.size(), 0);
+  // Repo-local tables and labels each declared database joined, for the log.
+  std::vector<std::size_t> mapped_per_database(databases.size(), 0);
 
   for (const auto& [name, graph] : loaded) {
     Node service;
@@ -689,7 +699,10 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
       }
     }
     for (const auto& node : graph.nodes()) {
-      if (node.kind != "endpoint") {
+      // Every contract that is the same id in every graph joins here; a
+      // repo-local table or label only under a database its repo declares.
+      const auto declared = declared_contract_id(databases, name, node.id);
+      if (!declared && !is_bridged_contract(node.id)) {
         continue;
       }
       const bool served = handled.contains(node.id);
@@ -699,13 +712,20 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         continue;
       }
       Node endpoint;
-      endpoint.id = node.id;
+      endpoint.id = declared.value_or(node.id);
       endpoint.label = node.label;
-      endpoint.kind = "endpoint";
-      for (const auto* key : {"method", "path"}) {
+      endpoint.kind = node.kind;
+      for (const auto* key : {"method", "path", "name", "database"}) {
         if (const auto value = node.properties.find(key); value != node.properties.end()) {
           endpoint.properties[key] = value->second;
         }
+      }
+      if (declared) {
+        const auto database = std::ranges::find_if(databases, [&](const ContractDatabase& entry) {
+          return std::ranges::find(entry.repos, name) != entry.repos.end();
+        });
+        endpoint.properties["database"] = database->name;
+        ++mapped_per_database[static_cast<std::size_t>(database - databases.begin())];
       }
       // A call this service only consumes, through its own proxy prefix, joins
       // at the path the proxy forwards to. Its own spelling stays on the edge.
@@ -736,7 +756,9 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         if ((served || documented) && nodes[existing->second].properties.contains("served")) {
           nodes[existing->second].label = endpoint.label;
           nodes[existing->second].properties.erase("served");
-          nodes[existing->second].properties["path"] = endpoint.properties["path"];
+          if (const auto path = endpoint.properties.find("path"); path != endpoint.properties.end()) {
+            nodes[existing->second].properties["path"] = path->second;
+          }
         }
       } else {
         if (!served && !documented) {
@@ -774,6 +796,34 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
     }
   }
 
+  // An env variable is provided by the service the declarations say it
+  // addresses, which holds no node of it.
+  for (auto& node : nodes) {
+    const auto provider = env_provider_of(env, node.id);
+    if (!provider || !std::ranges::any_of(loaded, [&](const auto& graph) { return graph.first == *provider; })) {
+      continue;
+    }
+    node.properties.erase("served");
+    served_by[node.id].insert(*provider);
+    add_edge(node.id, service_id(*provider), "SERVED_BY");
+  }
+
+  // Contracts other than endpoints, counted on their own line so the
+  // endpoint lines read as they always have.
+  std::size_t other_matched = 0;
+  std::size_t other_used_only = 0;
+  std::size_t other_provided_only = 0;
+  for (const auto& node : nodes) {
+    if (node.kind == "endpoint" || node.kind == "service" || node.kind == "code-ref") {
+      continue;
+    }
+    const bool provided = served_by.contains(node.id);
+    const bool used = consumed_by.contains(node.id);
+    other_matched += provided && used ? 1 : 0;
+    other_used_only += used && !provided ? 1 : 0;
+    other_provided_only += provided && !used ? 1 : 0;
+  }
+
   std::size_t matched = 0;
   std::size_t consumer_only = 0;
   std::size_t provider_only = 0;
@@ -803,15 +853,16 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
       ++served_not_documented;
     }
   }
+  const auto is_endpoint = [](const std::string& id) { return contract_kind_of(id) == "endpoint"; };
   for (const auto& [name, graph] : loaded) {
     std::size_t serves = 0;
     std::size_t consumes = 0;
     std::size_t documents = 0;
     for (const auto& [endpoint, services] : served_by) {
-      serves += services.contains(name) ? 1 : 0;
+      serves += is_endpoint(endpoint) && services.contains(name) ? 1 : 0;
     }
     for (const auto& [endpoint, services] : consumed_by) {
-      consumes += services.contains(name) ? 1 : 0;
+      consumes += is_endpoint(endpoint) && services.contains(name) ? 1 : 0;
     }
     for (const auto& [endpoint, services] : documented_by) {
       documents += services.contains(name) ? 1 : 0;
@@ -828,6 +879,21 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
                                     prefixes[slot].to + ": " + std::to_string(mapped_per_prefix[slot]) +
                                     " consumed endpoints joined at the proxied path");
   }
+  if (other_matched + other_used_only + other_provided_only > 0) {
+    result.resolution_log.push_back("other contracts (tables, graph labels, headers, claims, env): matched " +
+                                    std::to_string(other_matched) + "; " + std::to_string(other_used_only) +
+                                    " used with no provider among these graphs; " +
+                                    std::to_string(other_provided_only) + " provided with no user");
+  }
+  for (std::size_t slot = 0; slot < databases.size(); ++slot) {
+    std::string members;
+    for (const auto& repo : databases[slot].repos) {
+      members += (members.empty() ? "" : ",") + repo;
+    }
+    result.resolution_log.push_back("database " + databases[slot].name + " (" + members + "): " +
+                                    std::to_string(mapped_per_database[slot]) +
+                                    " repo-local tables and labels joined at the database's id");
+  }
   if (!documented_by.empty()) {
     // Contract drift: what the documents say against what the code serves.
     result.resolution_log.push_back("drift: " + std::to_string(documented_not_served) +
@@ -835,7 +901,8 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
                                     std::to_string(served_not_documented) + " served but in no document; " +
                                     std::to_string(documented_only) + " only documented (neither served nor consumed)");
   }
-  if (matched == 0 && consumer_only == 0 && provider_only == 0 && documented_only == 0) {
+  if (matched == 0 && consumer_only == 0 && provider_only == 0 && documented_only == 0 &&
+      other_matched + other_used_only + other_provided_only == 0) {
     result.resolution_log.push_back("no endpoint nodes: build the graphs with a cgraph that discovers contracts");
   }
   result.fragment.nodes = std::move(nodes);

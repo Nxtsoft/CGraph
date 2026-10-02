@@ -17,6 +17,20 @@ bool approx(double a, double b, double eps = 1e-6) { return std::fabs(a - b) < e
 int main() {
   using namespace cgraph;
 
+  // --- contract tallies survive the stats.json round trip a fast-loading
+  // daemon restores them through, the generic contract counts included ---
+  {
+    const nlohmann::json saved{{"routes", 1},         {"consumes", 2},           {"contract_facts", 13},
+                               {"contract_facts_unresolved", 5}, {"contracts_provided", 2},
+                               {"contracts_external", 4},        {"contract_consumes", 6}};
+    const auto restored = contract_resolution_json(contract_resolution_from_json(saved));
+    for (const auto& [key, value] : saved.items()) {
+      if (restored.value(key, -1) != value.get<int>()) {
+        return 1;
+      }
+    }
+  }
+
   // --- modeled cache saving = files_cache_hit x mean(per-file extract time) ---
   // 8 files extracted in 80ms -> 10ms/file; 5 reused -> 50ms modeled saving.
   {

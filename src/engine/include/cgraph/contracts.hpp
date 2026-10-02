@@ -10,8 +10,8 @@
 #include <string_view>
 
 // Contract discovery (CGR-13): the wire contracts a repo provides and consumes,
-// found in its own source rather than typed into a seam spec. This covers HTTP
-// endpoints. Extraction records raw facts as RawRelation entries:
+// found in its own source rather than typed into a seam spec: HTTP
+// endpoints, tables, graph labels, headers, JWT claims and env names. Extraction records raw facts as RawRelation entries:
 //
 //   "route"        source_id = the inline handler's function node, target_label =
 //                  the module-level identifier of the router chain it is
@@ -55,6 +55,39 @@
 //                  the SQL table it declares (`pgTable('competitors', ...)`).
 //                  Resolves to a `maps_table` edge from the variable to the
 //                  migration's `sql_table:<name>` node when one exists.
+//   "provides_contract" / "uses_contract"
+//                  Contracts other than HTTP endpoints. source_id = the code
+//                  that provides the contract (a migration creating a table, a
+//                  handler reading a header, a token builder writing a claim)
+//                  or uses it (a query, a client setting the header, a decoder
+//                  reading the claim), context = "<kind>:<name>" with kind one
+//                  of `table`, `label` (a graph database node label or
+//                  relationship type), `header`, `claim`, `env`, and name as the
+//                  code spells it. For `table` and `label` target_label is the
+//                  database the extractor knows the name lives in, empty when
+//                  it knows none (the usual case: code rarely proves which
+//                  database a connection reaches); it is ignored for the other
+//                  kinds. resolve_contracts mints one node per contract id
+//                  (contract_id below): kind = the contract kind, label = the
+//                  name as a provider spells it (a user's spelling when no
+//                  provider is in this repo, with `served: false`), properties
+//                  `name` and, for tables and labels, `database`; `handled_by`
+//                  from the contract to each provider, `CONSUMES` from each
+//                  user to the contract, `contains` from a provider's file.
+//
+// Contract ids are raw (never make_id'd) so that, like endpoints, the same
+// contract in two repos' graphs is the same id:
+//
+//   table:<database>:<name>   label:<database>:<name>
+//   header:<name lowercased>  claim:<name>  env:<name>
+//
+// A table or label with no known database is `table:local:<name>`: local to
+// its repo, never the same node as another repo's `table:local:<name>` (two
+// services each with their own `users` table must not join). It joins another
+// repo only where a workspace manifest or a seam command declares that both
+// repos use one database (contract_declarations.hpp), which spells it
+// `table:<declared database>:<name>` at the crossing. is_bridged_contract says
+// which ids cross repositories as they are.
 //
 // A chain's own prefix (`new Elysia({ prefix: '/notebooks' })`,
 // `new Hono().basePath('/v1')`) is the `route_prefix` property on its variable
@@ -98,6 +131,32 @@ namespace cgraph {
 // slots `@modal` are dropped, `[id]` becomes `:id`, `[...slug]` and
 // `[[...slug]]` become `*`. Empty when the file is not a route file.
 [[nodiscard]] std::optional<std::string> next_route_path(std::string_view source_file);
+
+// The scope of a table or label whose database nobody declared.
+inline constexpr std::string_view kLocalDatabase = "local";
+
+// The contract kinds a `provides_contract` / `uses_contract` fact may name.
+[[nodiscard]] bool is_contract_kind(std::string_view kind);
+
+// The id a contract of `kind` named `name` has (see the forms above). `database`
+// is used for `table` and `label` only; empty means kLocalDatabase. nullopt for
+// an unknown kind, an empty name, or a database spelled with a `:`.
+[[nodiscard]] std::optional<std::string> contract_id(std::string_view kind, std::string_view name,
+                                                     std::string_view database = {});
+
+// The kind of a contract id (`endpoint`, `table`, `label`, `header`, `claim`,
+// `env`), empty when `id` is no contract id.
+[[nodiscard]] std::string_view contract_kind_of(std::string_view id);
+
+// True for an id that is the same contract in every repository's graph, the
+// one predicate every cross-repo matcher (seam discover and fuse, workspace
+// impact and path, change context's cross_service) uses: every endpoint,
+// header, claim and env id, and a table or label in a named database. A
+// `table:local:` / `label:local:` id is not: it crosses only once declared.
+[[nodiscard]] bool is_bridged_contract(std::string_view id);
+
+// True for a `table:local:` or `label:local:` id.
+[[nodiscard]] bool is_database_local_contract(std::string_view id);
 
 // Mints endpoint nodes and their edges from the contract facts in
 // raw_relations. Runs after resolve_imports (mount targets, chains and wrapper

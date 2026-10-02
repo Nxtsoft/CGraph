@@ -39,6 +39,9 @@ constexpr std::string_view kSqlTableKind = "sql_table";
 constexpr std::string_view kHandledBy = "handled_by";
 constexpr std::string_view kConsumes = "CONSUMES";
 constexpr std::string_view kRoutePrefix = "route_prefix";
+constexpr std::string_view kProvidesContractRelation = "provides_contract";
+constexpr std::string_view kUsesContractRelation = "uses_contract";
+constexpr std::array<std::string_view, 5> kContractKinds = {"table", "label", "header", "claim", "env"};
 // A chain mounted under many parents serves its routes at every mount path.
 // Real code mounts a router once or twice; past this the mount graph is not a
 // router tree but something the walk should not keep unrolling.
@@ -75,7 +78,56 @@ struct MethodPath {
   return MethodPath{.method = context.substr(0, space), .path = context.substr(space + 1)};
 }
 
+[[nodiscard]] std::string to_lower(std::string_view text) {
+  std::string lower(text);
+  for (auto& ch : lower) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return lower;
+}
+
+// `table` and `label` live in a database; the other kinds are global names.
+[[nodiscard]] bool database_scoped(std::string_view kind) { return kind == "table" || kind == "label"; }
+
 }  // namespace
+
+bool is_contract_kind(std::string_view kind) {
+  return std::ranges::find(kContractKinds, kind) != kContractKinds.end();
+}
+
+std::optional<std::string> contract_id(std::string_view kind, std::string_view name, std::string_view database) {
+  if (!is_contract_kind(kind) || name.empty()) {
+    return std::nullopt;
+  }
+  if (database_scoped(kind)) {
+    if (database.find(':') != std::string_view::npos) {
+      return std::nullopt;
+    }
+    const auto scope = database.empty() ? kLocalDatabase : database;
+    return std::string(kind) + ":" + std::string(scope) + ":" + std::string(name);
+  }
+  // HTTP header names are case-insensitive (RFC 9110 5.1): `X-Tenant-Id` read by
+  // the server and `x-tenant-id` sent by a client are one header.
+  return std::string(kind) + ":" + (kind == "header" ? to_lower(name) : std::string(name));
+}
+
+std::string_view contract_kind_of(std::string_view id) {
+  const auto colon = id.find(':');
+  if (colon == std::string_view::npos || colon + 1 >= id.size()) {
+    return {};
+  }
+  const auto kind = id.substr(0, colon);
+  return kind == kEndpointKind || is_contract_kind(kind) ? kind : std::string_view{};
+}
+
+bool is_database_local_contract(std::string_view id) {
+  const auto kind = contract_kind_of(id);
+  return database_scoped(kind) && id.substr(kind.size() + 1).starts_with(std::string(kLocalDatabase) + ":");
+}
+
+bool is_bridged_contract(std::string_view id) {
+  return !contract_kind_of(id).empty() && !is_database_local_contract(id);
+}
 
 bool is_http_verb(std::string_view verb) {
   return std::ranges::find(kHttpVerbs, verb) != kHttpVerbs.end();
@@ -753,6 +805,61 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     const auto table = by_id.find(make_id("sql_table:" + relation.target_label));
     if (table != by_id.end() && table->second->kind == kSqlTableKind) {
       add_edge(relation.source_id, table->first, kMapsTableRelation, "", {});
+    }
+  }
+
+  // 8. Contracts other than endpoints: tables, graph labels, headers, claims
+  //    and env names. Providers first, so a contract's label is a provider's
+  //    spelling; a contract only used here is minted with the user's spelling
+  //    and `served: false`. The nodes carry no make_id'd id: the same contract
+  //    in another repo's graph is the same id (a database-local table only
+  //    once a workspace or seam declares the database).
+  std::unordered_set<std::string> contract_nodes;  // ids minted this resolve
+  for (const bool providing : {true, false}) {
+    for (const auto& relation : raw_relations) {
+      if (relation.relation != (providing ? kProvidesContractRelation : kUsesContractRelation)) {
+        continue;
+      }
+      ++tally.contract_facts;
+      const auto colon = relation.context.find(':');
+      const auto kind = colon == std::string::npos ? std::string{} : relation.context.substr(0, colon);
+      const auto name = colon == std::string::npos ? std::string{} : relation.context.substr(colon + 1);
+      const auto source = by_id.find(relation.source_id);
+      const auto id = contract_id(kind, name, database_scoped(kind) ? relation.target_label : std::string{});
+      if (!id || source == by_id.end()) {
+        ++tally.contract_facts_unresolved;  // malformed context, unknown kind, or no node at the code
+        continue;
+      }
+      if (!by_id.contains(*id) && contract_nodes.insert(*id).second) {
+        Node contract{
+            .id = *id,
+            .label = name,
+            .kind = kind,
+            .confidence = Confidence::Extracted,
+        };
+        contract.properties.emplace("name", name);
+        if (database_scoped(kind)) {
+          contract.properties.emplace(
+              "database", relation.target_label.empty() ? std::string(kLocalDatabase) : relation.target_label);
+        }
+        if (providing) {
+          contract.source_file = source->second->source_file;
+          contract.source_location = source->second->source_location;
+          ++tally.contracts_provided;
+        } else {
+          contract.properties.emplace("served", "false");
+          ++tally.contracts_external;
+        }
+        new_nodes.push_back(std::move(contract));
+      }
+      if (providing) {
+        if (const auto file_id = file_of(*source->second)) {
+          add_edge(*file_id, *id, "contains", "", {});
+        }
+        add_edge(*id, relation.source_id, kHandledBy, "", {});
+      } else if (add_edge(relation.source_id, *id, kConsumes, "", {})) {
+        ++tally.contract_consumes;
+      }
     }
   }
 

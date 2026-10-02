@@ -113,6 +113,12 @@ struct ContractResolution {
   std::size_t consumes = 0;            // CONSUMES edges added
   std::size_t endpoints_external = 0;  // endpoint nodes minted for consumed routes this repo does not serve
   std::size_t endpoints_documented = 0;  // endpoint nodes a contract document (OpenAPI, proto, GraphQL) declares
+  // Contracts other than endpoints (`provides_contract` / `uses_contract`).
+  std::size_t contract_facts = 0;             // provides/uses facts seen
+  std::size_t contract_facts_unresolved = 0;  // unknown kind, malformed name, or code no node names
+  std::size_t contracts_provided = 0;         // table/label/header/claim/env nodes this repo provides
+  std::size_t contracts_external = 0;         // such nodes this repo only uses (`served: false`)
+  std::size_t contract_consumes = 0;          // CONSUMES edges added to them
 };
 
 struct BuildStats {

@@ -1,5 +1,6 @@
 #include "cgraph/dedup.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -252,6 +253,11 @@ void semantic_dedup_impl(
     // node per distinct path, so endpoints never participate in dedup.
     if (node.kind == "endpoint" || node.kind == "schema") {
       continue;  // a contract schema's identity is its exact name too (`Note` beside `Notes`)
+    }
+    // Tables, graph labels, headers, claims and env names are contracts named
+    // exactly too (`user_roles` beside `user_role`, `X-Org-Id` beside `X-Org-Ids`).
+    if (is_contract_kind(node.kind)) {
+      continue;
     }
 
     // Pass 1: exact-label merge, restricted to one source file AND one

@@ -1,5 +1,6 @@
 #include "cgraph/seam.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/export_json.hpp"
 #include "cgraph/fragment_json.hpp"
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -492,6 +494,130 @@ int test_proxy_prefix(const fs::path& root) {
   return 0;
 }
 
+// One repo's graph built the way the pipeline builds it: function nodes, then
+// resolve_contracts over raw `provides_contract` / `uses_contract` facts
+// (relation, function, "<kind>:<name>", database), written as node-link JSON.
+fs::path contract_graph(const fs::path& root, const std::string& repo,
+                        const std::vector<std::tuple<std::string, std::string, std::string, std::string>>& facts) {
+  cgraph::GraphSnapshot graph;
+  const auto file = repo + "/src/app.ts";
+  graph.nodes.push_back({.id = repo + "_src_app_ts", .label = "app.ts", .source_file = file, .kind = "file"});
+  std::vector<cgraph::RawRelation> relations;
+  std::uint32_t line = 1;
+  for (const auto& [relation, function, context, database] : facts) {
+    const auto id = repo + "_" + function;
+    if (find_in(graph, id) == nullptr) {
+      cgraph::Node node{.id = id, .label = function, .source_file = file, .kind = "function"};
+      node.source_location = cgraph::SourceLocation{.start_line = line, .end_line = line + 2};
+      line += 3;
+      graph.nodes.push_back(std::move(node));
+      graph.edges.push_back({.source = repo + "_src_app_ts", .target = id, .relation = "contains"});
+    }
+    relations.push_back(
+        {.source_id = id, .target_label = database, .relation = relation, .context = context, .source_file = file});
+  }
+  cgraph::resolve_contracts(graph, relations);
+  const auto path = root / (repo + "-contracts.json");
+  write_json(path, cgraph::to_node_link_json(graph));
+  return path;
+}
+
+// Contracts other than endpoints join across graphs at their raw ids: a header
+// read by api and sent by ml (case differs) is one contract. A table no
+// database is declared for stays repo-local and joins nobody; once api and ml
+// declare database `turing`, theirs join at `table:turing:users` while
+// billing's own `users` table still joins nothing. A declared env variable is
+// served by its service. Fuse shares the bridged ids and scopes the rest.
+int test_generic_contracts(const fs::path& root) {
+  const auto api = contract_graph(root, "api",
+                                  {{"provides_contract", "createUsers", "table:users", ""},
+                                   {"provides_contract", "readTenant", "header:X-Tenant-Id", ""}});
+  const auto ml = contract_graph(root, "ml",
+                                 {{"uses_contract", "listUsers", "table:users", ""},
+                                  {"uses_contract", "sendTenant", "header:x-tenant-id", ""},
+                                  {"uses_contract", "sendTenant", "env:API_URL", ""}});
+  const auto billing = contract_graph(root, "billing", {{"uses_contract", "chargeUsers", "table:users", ""}});
+  const std::vector<std::pair<std::string, fs::path>> graphs{{"api", api}, {"ml", ml}, {"billing", billing}};
+
+  const auto plain = cgraph::discover_seam(graphs);
+  const auto* header = find_node(plain.fragment, "header:x-tenant-id");
+  if (!plain.ok || header == nullptr || header->kind != "header" || header->label != "X-Tenant-Id" ||
+      header->properties.contains("served") || !has_edge(plain.fragment, "header:x-tenant-id", "api_readTenant", "HANDLED_BY") ||
+      !has_edge(plain.fragment, "header:x-tenant-id", "ml_sendTenant", "CONSUMED_AT") ||
+      !has_edge(plain.fragment, "header:x-tenant-id", "service:api", "SERVED_BY") ||
+      !has_edge(plain.fragment, "service:ml", "header:x-tenant-id", "CONSUMES")) {
+    std::cerr << "discover: a header read by one repo and sent by another did not join\n";
+    return 1;
+  }
+  for (const auto& node : plain.fragment.nodes) {
+    if (node.id.starts_with("table:")) {
+      std::cerr << "discover: an undeclared repo-local table entered the seam: " << node.id << '\n';
+      return 1;
+    }
+  }
+  const auto other_line = std::ranges::any_of(plain.resolution_log, [](const std::string& line) {
+    return line.starts_with("other contracts (tables, graph labels, headers, claims, env): matched 1;");
+  });
+  if (!other_line) {
+    std::cerr << "discover: other contracts are not logged\n";
+    return 1;
+  }
+
+  const std::vector<cgraph::ContractDatabase> databases{{.name = "turing", .repos = {"api", "ml"}}};
+  const std::vector<cgraph::EnvProvider> env{{.name = "API_URL", .service = "api"}};
+  const auto declared = cgraph::discover_seam(graphs, {}, databases, env);
+  const auto* users = find_node(declared.fragment, "table:turing:users");
+  if (!declared.ok || users == nullptr || users->kind != "table" || users->properties.contains("served") ||
+      users->properties.at("database") != "turing" ||
+      !has_edge(declared.fragment, "table:turing:users", "api_createUsers", "HANDLED_BY") ||
+      !has_edge(declared.fragment, "table:turing:users", "ml_listUsers", "CONSUMED_AT") ||
+      has_edge(declared.fragment, "table:turing:users", "billing_chargeUsers", "CONSUMED_AT") ||
+      find_node(declared.fragment, "table:local:users") != nullptr) {
+    std::cerr << "discover: members of a declared database did not join at its id, or an outsider did\n";
+    return 1;
+  }
+  if (!has_edge(declared.fragment, "env:API_URL", "service:api", "SERVED_BY") ||
+      !has_edge(declared.fragment, "env:API_URL", "ml_sendTenant", "CONSUMED_AT") ||
+      find_node(declared.fragment, "env:API_URL")->properties.contains("served")) {
+    std::cerr << "discover: a declared env variable is not served by its service\n";
+    return 1;
+  }
+  const bool database_line = std::ranges::any_of(declared.resolution_log, [](const std::string& line) {
+    return line == "database turing (api,ml): 2 repo-local tables and labels joined at the database's id";
+  });
+  if (!database_line) {
+    std::cerr << "discover: the database count is not logged\n";
+    return 1;
+  }
+
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const std::vector<std::pair<std::string, cgraph::GraphSnapshot>> services{
+      {"api", snapshot(api)}, {"ml", snapshot(ml)}, {"billing", snapshot(billing)}};
+  const auto fused_plain = cgraph::fuse_seam(plain.fragment, services);
+  if (!fused_plain.ok || !has_snapshot_edge(fused_plain.graph, "ml::ml_sendTenant", "header:x-tenant-id", "CONSUMES") ||
+      !has_snapshot_edge(fused_plain.graph, "header:x-tenant-id", "api::api_readTenant", "handled_by") ||
+      find_in(fused_plain.graph, "ml::header:x-tenant-id") != nullptr || find_in(fused_plain.graph, "table:local:users") != nullptr ||
+      find_in(fused_plain.graph, "ml::table:local:users") == nullptr || find_in(fused_plain.graph, "api::table:local:users") == nullptr) {
+    std::cerr << "fuse: a header is not shared, or an undeclared table is not scoped to its service\n";
+    return 1;
+  }
+  const auto fused = cgraph::fuse_seam(declared.fragment, services, {}, databases);
+  if (!fused.ok || !has_snapshot_edge(fused.graph, "ml::ml_listUsers", "table:turing:users", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "table:turing:users", "api::api_createUsers", "handled_by") ||
+      !has_snapshot_edge(fused.graph, "billing::billing_chargeUsers", "billing::table:local:users", "CONSUMES") ||
+      find_in(fused.graph, "ml::table:local:users") != nullptr) {
+    for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
+    std::cerr << "fuse: a declared member's table is not the database's shared id\n";
+    return 1;
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-seam-test";
   fs::remove_all(root);
@@ -725,6 +851,9 @@ int main() {
     return 1;
   }
   if (test_proxy_prefix(root) != 0) {
+    return 1;
+  }
+  if (test_generic_contracts(root) != 0) {
     return 1;
   }
 
