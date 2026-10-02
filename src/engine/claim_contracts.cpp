@@ -547,10 +547,9 @@ void go_claims(TSNode root, Emitter& emitter) {
       if (type_of(field) != "field_declaration") {
         return true;
       }
-      auto embedded = field_of(field, "type");
-      if (type_of(embedded) == "pointer_type") {
-        embedded = named_child(embedded, 0);  // `*jwt.RegisteredClaims`
-      }
+      // `jwt.RegisteredClaims` and `*jwt.RegisteredClaims` alike: the grammar
+      // keeps an embedded field's `*` as a bare token beside its qualified_type.
+      const auto embedded = field_of(field, "type");
       if (ts_node_is_null(field_of(field, "name")) && type_of(embedded) == "qualified_type" &&
           jwt_packages.contains(text_of(field_of(embedded, "package"), source))) {
         const auto library_type = text_of(field_of(embedded, "name"), source);
