@@ -1,5 +1,6 @@
 #include "cgraph/python_extractor.hpp"
 
+#include "cgraph/env_contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -554,8 +555,9 @@ void python_router_mount(const TSNode& call, const ExtractionContext& context, s
   }
 }
 
-void python_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& /*function_scope*/,
+void python_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope,
                        Fragment& fragment, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& raw_relations) {
+  python_env_reads(node, context, function_scope, raw_relations);
   const std::string_view type = ts_node_type(node);
   if (type == "assignment") {
     python_router_variable(node, context, fragment);

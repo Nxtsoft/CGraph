@@ -110,6 +110,21 @@ void append_spring_actuator_facts(const ExtractionContext& context, ExtractionRe
 
 [[nodiscard]] ExtractionResult extract_spring_application_config(const ExtractionContext& context);
 
+// The text of a YAML line before its `#` comment (at the start or after
+// whitespace, outside a quoted scalar).
+[[nodiscard]] std::string_view strip_yaml_comment(std::string_view line);
+
+// The first `${...}` placeholder at or after `from` in a config value: `open`
+// is npos when there is none, `close` (the first `}` after it) npos when it is
+// never closed, `inner` the text between them (`NAME` or `NAME:default`; a
+// nested default leaves the inner placeholder unclosed in it).
+struct SpringPlaceholder {
+  std::size_t open = std::string_view::npos;
+  std::size_t close = std::string_view::npos;
+  std::string_view inner;
+};
+[[nodiscard]] SpringPlaceholder find_spring_placeholder(std::string_view value, std::size_t from = 0);
+
 // The `file_route` facts the `actuator_app` and `actuator_config` facts imply,
 // deterministic in order: modules by directory, the base configuration first.
 [[nodiscard]] std::vector<RawRelation> spring_actuator_routes(std::span<const RawRelation> raw_relations);

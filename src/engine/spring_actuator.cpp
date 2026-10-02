@@ -79,17 +79,18 @@ constexpr std::string_view kResources = "src/main/resources";
 [[nodiscard]] std::optional<std::string> resolve_placeholders(std::string_view value) {
   std::string out;
   for (std::size_t index = 0; index < value.size();) {
-    const auto open = value.find("${", index);
+    const auto placeholder = find_spring_placeholder(value, index);
+    const auto open = placeholder.open;
     if (open == std::string_view::npos) {
       out.append(value.substr(index));
       break;
     }
     out.append(value.substr(index, open - index));
-    const auto close = value.find('}', open);
+    const auto close = placeholder.close;
     if (close == std::string_view::npos) {
       return std::nullopt;
     }
-    const auto inner = value.substr(open + 2, close - open - 2);
+    const auto inner = placeholder.inner;
     const auto colon = inner.find(':');
     if (colon == std::string_view::npos || inner.find("${") != std::string_view::npos) {
       return std::nullopt;
@@ -148,27 +149,6 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
   entry.known = entry.known && known;
 }
 
-// The text of a line before a `#` comment (YAML: at the start or after
-// whitespace, outside quotes).
-[[nodiscard]] std::string_view strip_yaml_comment(std::string_view line) {
-  char quote = 0;
-  for (std::size_t index = 0; index < line.size(); ++index) {
-    const char ch = line[index];
-    if (quote != 0) {
-      if (ch == quote) {
-        quote = 0;
-      }
-      continue;
-    }
-    if ((ch == '"' || ch == '\'') && (index == 0 || line[index - 1] == ' ' || line[index - 1] == ':' ||
-                                      line[index - 1] == '[' || line[index - 1] == ',' || line[index - 1] == '-')) {
-      quote = ch;
-    } else if (ch == '#' && (index == 0 || line[index - 1] == ' ' || line[index - 1] == '\t')) {
-      return line.substr(0, index);
-    }
-  }
-  return line;
-}
 
 // How deep flow sequences nest before the value is not modeled.
 constexpr int kMaxFlowDepth = 8;
@@ -1012,6 +992,41 @@ struct Route {
 }
 
 }  // namespace
+
+// The text of a line before a `#` comment (YAML: at the start or after
+// whitespace, outside quotes).
+std::string_view strip_yaml_comment(std::string_view line) {
+  char quote = 0;
+  for (std::size_t index = 0; index < line.size(); ++index) {
+    const char ch = line[index];
+    if (quote != 0) {
+      if (ch == quote) {
+        quote = 0;
+      }
+      continue;
+    }
+    if ((ch == '"' || ch == '\'') && (index == 0 || line[index - 1] == ' ' || line[index - 1] == ':' ||
+                                      line[index - 1] == '[' || line[index - 1] == ',' || line[index - 1] == '-')) {
+      quote = ch;
+    } else if (ch == '#' && (index == 0 || line[index - 1] == ' ' || line[index - 1] == '\t')) {
+      return line.substr(0, index);
+    }
+  }
+  return line;
+}
+
+SpringPlaceholder find_spring_placeholder(std::string_view value, std::size_t from) {
+  const auto open = value.find("${", from);
+  if (open == std::string_view::npos) {
+    return {};
+  }
+  const auto close = value.find('}', open);
+  return SpringPlaceholder{
+      .open = open,
+      .close = close,
+      .inner = close == std::string_view::npos ? std::string_view{} : value.substr(open + 2, close - open - 2),
+  };
+}
 
 bool is_spring_application_config(const std::filesystem::path& path) {
   const auto name = path.filename().generic_string();

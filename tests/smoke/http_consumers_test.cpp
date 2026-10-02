@@ -601,5 +601,29 @@ export class Service {
     }
   }
 
+  // A call at module level hangs on the variable it initialises only when that
+  // variable is a node (an object value); an awaited or `||` value makes no
+  // node, so the call hangs on the file rather than on an id nothing names.
+  {
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/top.ts", .relative_path = "lib/top.ts", .source = R"ts(
+export const data = await fetch('/api/v1/top-level');
+export const api = { list: () => fetch('/api/v1/listed') };
+)ts"});
+    std::set<std::string> facts;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation == "http_call") {
+        facts.insert(relation.source_id + "|" + relation.context);
+      }
+    }
+    const std::set<std::string> expected{
+        cgraph::make_id("lib/top.ts") + "| /api/v1/top-level",
+        cgraph::make_id("lib/top.ts:api") + "| /api/v1/listed",
+    };
+    if (facts != expected) {
+      for (const auto& fact : facts) std::cerr << "module-level fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
   return 0;
 }

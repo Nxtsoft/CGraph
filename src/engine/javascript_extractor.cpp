@@ -1,6 +1,7 @@
 #include "cgraph/javascript_extractor.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/env_contracts.hpp"
 #include "cgraph/http_consumers.hpp"
 #include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
@@ -132,6 +133,26 @@ void parameter_names(const TSNode& function, std::string_view source, std::vecto
     return !ts_node_is_null(grandparent) && std::string_view(ts_node_type(grandparent)) == "program";
   }
   return false;
+}
+
+std::string reading_scope_id(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                             const Fragment& fragment) {
+  if (!function_scope_id.empty()) {
+    return function_scope_id;
+  }
+  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
+    if (std::string_view(ts_node_type(ancestor)) != "variable_declarator") {
+      continue;
+    }
+    const TSNode declaration = ts_node_parent(ancestor);
+    if (ts_node_is_null(declaration) || !is_module_level_declaration(declaration)) {
+      continue;
+    }
+    auto id = make_id(context.relative_path + ":" + field_text(ancestor, "name", context.source));
+    const bool noded = std::ranges::any_of(fragment.nodes, [&](const Node& candidate) { return candidate.id == id; });
+    return noded ? id : make_id(context.relative_path);
+  }
+  return make_id(context.relative_path);
 }
 
 }  // namespace js_syntax
@@ -860,9 +881,10 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
 void js_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
                    Fragment& fragment, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& raw_relations) {
   module_const_handler(node, context, fragment, raw_relations);
+  javascript_env_reads(node, context, function_scope_id, fragment, raw_relations);
   route_mount_handler(node, context, raw_relations);
   url_const_handler(node, context, raw_relations);
-  http_call_handler(node, context, function_scope_id, raw_relations);
+  http_call_handler(node, context, function_scope_id, fragment, raw_relations);
 }
 
 // TS primitive/builtin type names that never become a `references` target.
