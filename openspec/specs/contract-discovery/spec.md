@@ -350,7 +350,7 @@ A build file (`build.gradle.kts`, `build.gradle`, `pom.xml`) that applies the Sp
 - **THEN** semantic dedup merges none of them
 
 ### Requirement: One rule says which contract ids cross repositories
-`is_bridged_contract(id)` SHALL be true for every `endpoint:` and `claim:` id, for a `header:` id whose name is not a standard HTTP header, and for a `table:` or `label:` id in a named database; it SHALL be false for `table:local:` and `label:local:` ids, for every `env:` id, for a standard header and for every non-contract id. The standard headers SHALL be a sorted static table of the permanent entries of the IANA HTTP Field Name Registry (lowercased, `*` dropped, retrieval date recorded) plus `x-request-id`, `x-real-ip`, `x-correlation-id`, `traceparent`, `tracestate`, `baggage`, and every `x-forwarded-*` name. `crossing_id` (with the declared databases and env) SHALL give the id a repo's contract crosses at: a member's repo-local table at its database's id, a declared env id as itself, a bridged id as itself, else none; `contract_spellings` SHALL give every id a repo may hold a crossing under. Seam discovery and fuse, workspace `impact` and `path`, and change context's `cross_service` SHALL use these in place of any `endpoint:` prefix test. Proxy prefixes remain endpoint-only.
+`is_bridged_contract(id)` SHALL be true for every `endpoint:` id, for a `claim:` id whose name is not a standard JWT claim (`is_standard_jwt_claim`: a sorted static table of the IANA JSON Web Token Claims registry entries defined by RFC 7519 section 4.1, OpenID Connect Core 1.0, OpenID Connect Front-Channel Logout 1.0, RFC 7800, RFC 8693 and RFC 9449, retrieval date recorded; case-sensitive), for a `header:` id whose name is not a standard HTTP header, and for a `table:` or `label:` id in a named database; it SHALL be false for `table:local:` and `label:local:` ids, for every `env:` id, for a standard claim, for a standard header and for every non-contract id. The standard headers SHALL be a sorted static table of the permanent entries of the IANA HTTP Field Name Registry (lowercased, `*` dropped, retrieval date recorded) plus `x-request-id`, `x-real-ip`, `x-correlation-id`, `traceparent`, `tracestate`, `baggage`, and every `x-forwarded-*` name. `crossing_id` (with the declared databases and env) SHALL give the id a repo's contract crosses at: a member's repo-local table at its database's id, a declared env id as itself, a bridged id as itself, else none; `contract_spellings` SHALL give every id a repo may hold a crossing under. Seam discovery and fuse, workspace `impact` and `path`, and change context's `cross_service` SHALL use these in place of any `endpoint:` prefix test. Proxy prefixes remain endpoint-only.
 
 #### Scenario: Repo-local tables, env names and standard headers do not cross by themselves
 - **THEN** `is_bridged_contract` is false for `table:local:users`, `env:NODE_ENV`, `header:authorization`, `header:x-forwarded-for` and `header:traceparent`, and true for `table:turing:orders`, `header:x-tenant-id` and `claim:org_id`
@@ -358,4 +358,130 @@ A build file (`build.gradle.kts`, `build.gradle`, `pom.xml`) that applies the Sp
 #### Scenario: Declarations make a repo-local table and an env name cross
 - **GIVEN** database `turing` of api and ml, and `API_URL` declared for api
 - **THEN** `crossing_id` gives ml's `table:local:users` as `table:turing:users`, `env:API_URL` as itself, and nothing for `env:NODE_ENV`; ml's spellings of `table:turing:users` are `table:turing:users` and `table:local:users`, web's only `table:turing:users`
+
+#### Scenario: Standard JWT claims never cross
+- **THEN** `is_bridged_contract` is false for `claim:iss`, `claim:sub`, `claim:aud`, `claim:exp`, `claim:nbf`, `claim:iat`, `claim:jti`, `claim:email`, `claim:name`, `claim:preferred_username`, `claim:scope`, `claim:client_id`, `claim:azp`, `claim:nonce` and `claim:sid`, and true for `claim:roles`, `claim:session_id`, `claim:tenant_id`, `claim:permissions` and `claim:EXP`
+
+### Requirement: Environment variable reads become env contract uses
+Extraction SHALL record a `uses_contract` fact with context `env:<NAME>` (the name as written) for every read of an environment variable whose name the code spells as a literal, from the reading symbol: the enclosing function, else the module-level variable whose initializer holds the read when the extractor made a node for it, else the file; at most one fact per reading symbol and name. Reads SHALL be: in JavaScript and TypeScript `process.env.X`, `process.env['X']`, `import.meta.env.X`, `Bun.env.X` and `const { X } = process.env` (renamed and defaulted keys included), and `e.X` or `const { X } = e` for an upper snake case `X` where `e` is a `const` bound to an env object, to a call taking an env object as an argument, or to a call of a same-file function whose every return is such a `const`; in Python `os.environ["X"]`, `os.environ.get("X")` and `os.getenv("X")`; in Go `os.Getenv("X")` and `os.LookupEnv("X")`; in Kotlin and Java `System.getenv("X")` and `@Value` placeholders `${X}` / `${X:default}`; in Spring application config files `${X}` / `${X:default}` placeholders outside comments, from the file's node. In placeholders and typed env objects only upper snake case names (`[A-Z][A-Z0-9_]*`) SHALL count. Assignments, compound assignments, increments and deletions of a variable SHALL NOT be reads, nor SHALL a computed name, nor a member of a name that any binding nearer than the env `const` shadows (a `let` or `var`, a parameter, a for-head, a `catch` parameter, a class, an import, a destructured `const`). Spring YAML comments and placeholders SHALL be read by the Spring config reader's own comment and placeholder rules. Extraction SHALL record no provider for an env variable: a declaration names it.
+
+#### Scenario: Typed config reads through a schema-decoded env
+- **GIVEN** `function loadConfig() { const env = Value.Decode(envSchema, process.env); return env }`, `const env = loadConfig()` and `export const config = { ml: { url: env.ML_BACKEND_BASE_URL, mode: env.mode } }`
+- **THEN** `config` uses `env:ML_BACKEND_BASE_URL` and nothing uses `env:mode`
+
+#### Scenario: A nearer binding shadows a typed env const
+- **GIVEN** a module-level `const env = loadConfig()` that is an env object, and functions reading `env.X` where `env` is rebound by `let env = p.cfg`, `for (const env of list)`, `catch (env)`, a hoisted `var env`, `const { env } = p` or a local `class env`
+- **THEN** none of those reads is a fact, and a function reading the module `env.MODULE_READ` uses `env:MODULE_READ`
+
+#### Scenario: Direct, destructured and subscript reads, and writes
+- **GIVEN** a function with `const { REDIS_URL, PORT: port } = process.env`, `process.env['DATABASE_URL']`, `process.env.DATABASE_URL`, `process.env.WRITTEN = '1'`, `delete process.env.DELETED` and `process.env[key]`
+- **THEN** the function uses `env:REDIS_URL`, `env:PORT` and `env:DATABASE_URL` once each, and nothing uses `env:WRITTEN` or `env:DELETED`
+
+#### Scenario: A module constant without a node reads from the file
+- **GIVEN** `const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'` at module level
+- **THEN** the file uses `env:NEXT_PUBLIC_API_URL`
+
+#### Scenario: Other languages
+- **GIVEN** Python `os.environ["OPENAI_API_KEY"]` and `os.environ["WRITTEN"] = "1"`, Go `os.Getenv("PASSLESS_CONTRACT_BASE_URL")` and `os.Getenv(EnvClientID)`, Kotlin `System.getenv("SPRING_PROFILES_ACTIVE")` and `@Value("\${sentra.saml.allowed-domains:}")`, Spring YAML `base-url: ${SAML_IDP_BASE_URL:https://x}  # was ${OLD_URL}` and `message: Can't reach ${API_URL} # was ${OLD_URL}`
+- **THEN** facts exist for `OPENAI_API_KEY`, `PASSLESS_CONTRACT_BASE_URL`, `SPRING_PROFILES_ACTIVE`, `SAML_IDP_BASE_URL` and `API_URL` only
+
+#### Scenario: Only a declaration makes an env read cross repositories
+- **GIVEN** turing-webapp reading `NEXT_PUBLIC_API_URL` and a seam declaring `--env NEXT_PUBLIC_API_URL=turing-api`
+- **THEN** `env:NEXT_PUBLIC_API_URL` is `SERVED_BY service:turing-api` and consumed by turing-webapp; without the declaration no `env:` node enters the seam
+
+### Requirement: A repository's schema provides table and graph-label contracts
+Extraction SHALL emit `provides_contract` facts naming no database for: every table a `.sql` file creates (`table:<name>`, from its `sql_table` node); a Spring Data Neo4j `@Node` class in Kotlin or Java (`label:<value>` for each string value, the class's simple name when there is none); and an outgoing `@Relationship` (no `direction`, or `OUTGOING`) on a member of that class, `label:<first label>.<type>`. An `INCOMING` or `UNDIRECTED` relationship SHALL provide nothing. `resolve_contracts` SHALL make a Drizzle model (`maps_table`) a provider of `table:<name>` when an `sql_table` node of that name exists in the graph.
+
+#### Scenario: A migration and its Drizzle model both provide the table
+- **GIVEN** `CREATE TABLE projects` in a `.sql` file and `export const projects = pgTable('projects', ...)`
+- **THEN** `table:local:projects` is `handled_by` both the `sql_table` node and the `projects` variable
+
+#### Scenario: Neo4j entities provide labels and start-qualified relationship types
+- **GIVEN** `@Node("User")` with `@Relationship(type = "HAS_ROLE")` and an `INCOMING` `HAS_SESSION`, `@Node("Client")` with `@Relationship(type = "HAS_ROLE")`, and a Java `@Node` class `Role` with `@Relationship("COMPOSED_OF")`
+- **THEN** the contracts are `label:local:User`, `User.HAS_ROLE`, `Client`, `Client.HAS_ROLE`, `Role` and `Role.COMPOSED_OF`, and nothing for `HAS_SESSION`
+
+### Requirement: Code that reads another schema uses its tables and labels
+Extraction SHALL emit `uses_contract` facts naming no database, hung off the innermost enclosing function (else module-level variable, else class, else file) node:
+- for each table after an upper-case `FROM`, `JOIN`, `INSERT INTO` or `UPDATE <table> [alias] SET` in a Python, JavaScript / TypeScript, Kotlin or Java string literal, adjacent-literal concatenation or `+` chain whose text opens with an upper-case `SELECT`, `INSERT`, `UPDATE`, `DELETE` or `WITH`; interpolations and non-literal operands SHALL be opaque; a name ending in `_` before one, or continued by more name after an interpolation (`measurements_{year}`, `events_%s`, `"FROM events_" + y`, `t{y}_x`), SHALL name no table, while a complete name before one (`users{where_sql}`, `users$filter`, `"FROM users" + where`) SHALL; leading `--` / `/* */` comments before the verb SHALL be skipped; unquoted names folded to lower case, quoted names kept, schema qualifiers dropped; CTE names, subqueries, set-returning functions, names inside function-call parentheses, `IS DISTINCT FROM` operands, bind parameters, `<alias>.<path>` after an alias an earlier table reference bound (JPQL `JOIN u.roles`) and `information_schema` / `pg_catalog` / `pg_*` names SHALL name no table, CTE names including `WITH x(a, b) AS (` and `AS [NOT] MATERIALIZED (`; a string in a JPA `@Query` without `nativeQuery = true` or a `@NamedQuery` SHALL NOT be read as SQL (it may still be read as Cypher);
+- for each node label and each start-qualified relationship type (`<start label>.<TYPE>`) in Cypher: a `.cypher` file, or a string literal opening with an upper-case `MATCH`, `OPTIONAL MATCH`, `MERGE`, `CREATE (` or `UNWIND`; comments and string contents SHALL be ignored, a relationship SHALL be named only when its start node's label is known inline or from a variable bound in the same `;`-separated statement, and an undirected pattern SHALL name no relationship;
+- in JavaScript / TypeScript, `orm_table_use` from a function passing an identifier to a Drizzle query builder (`from`, `update`, `insert`, `delete`, `join`, `innerJoin`, `leftJoin`, `rightJoin`, `fullJoin`).
+
+Test files (a `test`, `tests`, `__tests__`, `__mocks__`, `spec`, `specs`, `testdata`, `fixtures`, `testFixtures`, `integrationTest`, `e2e` or `cypress` directory, `*.test.*`, `*.spec.*`, Python `test_*.py` / `*_test.py` / `conftest.py`, Kotlin / Java stems ending `Test`, `Tests` or `IT` after a lower-case letter or digit) SHALL NOT be read for strings, `@Node` entities or query-builder uses; `.sql` files and Drizzle models are read everywhere. `resolve_contracts` SHALL make a Drizzle model whose table no `sql_table` node holds a user of `table:<name>`, and every `orm_table_use` whose identifier resolves (through the file's imports, then its own variables) to such a model a user of it.
+
+#### Scenario: SQL built across adjacent Python literals
+- **GIVEN** a module-level helper returning `(f"SELECT {cols} " "FROM measurements m " f"{clause}" "WHERE ...")` and a method calling `text("SELECT p.id " "FROM projects p " ...)`
+- **THEN** the helper uses `table:local:measurements` and the method uses `table:local:projects`, while `"Pick a project from the list"` and a test file's `"SELECT id FROM users"` use nothing
+
+#### Scenario: JPQL and glued names are no tables
+- **GIVEN** Kotlin `@Query("SELECT u FROM User u JOIN u.roles r")`, `@Query(value = "SELECT * FROM app_users", nativeQuery = true)`, Python `f"SELECT * FROM measurements_{year}"` and `"SELECT * FROM events_%s" % x`, and `"SELECT * " + "FROM shipments s ..."` in Python, JavaScript, Kotlin and Java
+- **THEN** only `app_users` and the `+`-chained tables are used; nothing uses `user`, `roles`, `measurements_` or `events_`
+
+#### Scenario: A mirrored Drizzle schema is a consumer
+- **GIVEN** a repo with no `.sql` files declaring `pgTable("compiq_jobs")` and `pgTable("compiq_reports")`, and functions calling `db.update(compiqJobs)` and `.from(compiqJobs).innerJoin(compiqReports, ...)` through an import
+- **THEN** `table:local:compiq_jobs` has no provider and is used by the model and both functions; `table:local:compiq_reports` by its model and the joining function; `Array.from(items)` uses nothing
+
+#### Scenario: Cypher uses a relationship of its start label only
+- **GIVEN** a `.cypher` script with a commented-out `MERGE (u:Ghost ...)` and a live `MATCH (u:User ...) MATCH (r:Role ...) MERGE (u)-[:HAS_ROLE]->(r)`, and a `@Query("MATCH (u:User)-[:HAS_ROLE]->(r:Role) ...")`
+- **THEN** both use `label:local:User`, `label:local:Role` and `label:local:User.HAS_ROLE`, nothing uses `Ghost` or `Client.HAS_ROLE`
+
+### Requirement: HTTP headers a client sends and a server reads become header contracts
+The JavaScript/TypeScript, Python, Kotlin and Go extractors SHALL record `uses_contract` with context `header:<name>` where code sends a request header and `provides_contract` with context `header:<name>` where a server handler reads one, the name as the code spells it (`resolve_contracts` folds case). The source SHALL be the innermost enclosing function; a sender outside any function SHALL be attributed to the module-level variable whose initializer holds it when the JavaScript extractor made a node for that variable (`js_syntax::reading_scope_id`), else to its file, and a reader outside any function SHALL record nothing. A name SHALL be recorded only when it is header-shaped (letters, digits and `-`, at least one `-`, no leading or trailing `-`) and not a standard HTTP header (`is_standard_http_header`), and only in a header context. A holder is a request's headers when it is the value of a `headers` option or keyword, or when its name is exactly `headers` / `header`, ends in `Headers` / `Header` at a camelCase boundary, or ends in `_headers` / `_header`; a name that only contains the word (`headerStyles`) SHALL NOT be one.
+- senders: a key of an object/dict/map literal that is a request's headers (a `headers` option or keyword, a holder variable, a holder function's return value or arrow body, an argument at a same-file function's holder parameter, `new Headers({...})`, Go `http.Header{...}`, a `Header:` keyed element, an object spread into such an object), a subscript write or `set`/`append` on a holder or on `X.headers`, `X.headers = {...}`, Go `X.Header.Set/Add`, Kotlin Ktor `header(name, v)` and `headers { append(name, v) }`, and builder `.header` / `.addHeader` / `.setHeader`;
+- readers: `X.headers.get(name)` / `.has(name)` / `X.headers[name]` / `headers.get(name)`, next/headers `headers().get(name)`, Hono / Express `req.header(name)` / `req.get(name)`, Python `X.headers.get(name)` / `X.headers[name]`, FastAPI `Header(alias=...)` parameters and a `Header()` parameter's name with `_` read as `-` unless `convert_underscores=False`, Spring `@RequestHeader(name)` / `(name = ...)` / `(value = ...)`, `request.getHeader(name)`, Ktor `call.request.header(name)`, Go `X.Header.Get/Values(name)` and gin `c.GetHeader(name)`.
+
+Code about a response SHALL record nothing: a word naming `res`, `resp` or `response`, containing `response`, or ending in `Res` / `Resp` at a camelCase boundary (`nextResponse.headers.set`, `agentRes.headers.get`, `ResponseEntity.status(...).header(...)`, `response.addHeader`, `new Response(body, { headers })`, `JSONResponse(headers=...)`), Elysia's `set.headers`, and Go's ResponseWriter `w.Header().Set`. For a Kotlin call chain only the root identifier and the member and callee names count, never argument text (`.uri(responseUrl).header(...)` builds a request). A name MAY be a constant one hop away in the same file (a module `const`, a Python module assignment made once, a Kotlin `val` outside functions, a Go `const`/`var`) unless a parameter or local of an enclosing scope shadows it; imported constants and interpolated strings SHALL NOT be read. A test source (`*_test.go`, `*.test.ts`, `*.spec.ts`, `test_*.py`, `*_test.py`, `conftest.py`, a JVM `FooTest` / `FooTests` class file, or under `test`, `tests`, `__tests__`, `e2e`, `__mocks__`, `mocks` or `testutil`, or `scripts/mock-*`) SHALL record no header fact: its handlers are fake servers standing in for another service, and its requests go to its own service under test or to such a fake. A read the framework binds to a request itself SHALL be marked bound (`target_label` `bound`): Spring `@RequestHeader`, FastAPI `Header()`, Ktor `call.request.header` where `call` is the route's implicit ApplicationCall (no parameter or local of the function is named `call`) or a parameter typed `ApplicationCall`, gin `c.GetHeader` where `c` is a `*gin.Context` parameter (`GetHeader` on anything else SHALL record nothing), and `r.Header.Get` in a `func(http.ResponseWriter, *http.Request)`.
+
+#### Scenario: A TypeScript client and a Kotlin controller share a header
+- **GIVEN** `headers["X-Act-As-Org"] = org` in `backendAuthHeaders` and `@RequestHeader("X-Tenant-ID", required = false)` on `token`
+- **THEN** `backendAuthHeaders` uses `header:X-Act-As-Org` and `token` provides `header:X-Tenant-ID`, bound, and a repo sending `x-tenant-id` meets `token` at the one id `header:x-tenant-id`
+
+#### Scenario: One constant hop, not through a shadow
+- **GIVEN** `const BACKEND_HEADER = 'x-ml-backend'` and `headers.get(BACKEND_HEADER)` in `pickBackend`, Python `WEBAPP_ENV_HEADER = "X-Webapp-Env"` with `Header(default=None, alias=WEBAPP_ENV_HEADER)` on `get_session`, and a function whose parameter or local is also named like a module constant it reads
+- **THEN** `pickBackend` provides `header:x-ml-backend`, `get_session` provides `header:X-Webapp-Env`, and the shadowed read records nothing
+
+#### Scenario: Standard headers, responses and ordinary keys are not contracts
+- **GIVEN** `Authorization`, `Content-Type`, `X-Request-ID` and `user-agent` in request headers, `ResponseEntity.status(400).header("X-Error-Reason", ...)`, `nextResponse.headers.set('x-tenant-id', ...)`, `agentRes.headers.get('x-agent-tag')`, `set.headers['x-elysia-tag'] = ...`, `w.Header().Set("X-Served-By", ...)`, `{ 'X-Not-A-Header': 1 }` held in `plain`, and `{ 'font-size': 1 }` held in `headerStyles`
+- **THEN** none of them records a fact
+
+#### Scenario: A test source records no header fact
+- **GIVEN** `request.headers.get('x-act-as-org')` and a request sending `X-Act-As-Org` in `client.test.ts`, the same read under `__mocks__/`, `mocks/` and `scripts/mock-server.ts`, a `conftest.py`, `TokenControllerTests.kt` and a Go handler under `testutil/`
+- **THEN** none records a fact, while `LatestController.kt` (not a test class) still provides its `@RequestHeader`
+
+### Requirement: A header read nothing reaches provides nothing
+`resolve_contracts` SHALL mint a header's `handled_by` from a `provides_contract header:` fact only when the fact is bound (`target_label` `bound`) or something reaches the reading function: it is the target of a `CALLS`, `imports` or `references` edge, or the handler of an endpoint (`handled_by` from an `endpoint:` node), and the edge's source does not sit in a test source (its path relative to the directory all file nodes share, by the same test-source rule as extraction). Any other such fact SHALL provide nothing and be counted in `route_resolution` as `contract_reads_unreached`, through both stats JSON functions.
+
+#### Scenario: A never-called reader does not provide
+- **GIVEN** `applyActAsOverride` reading `x-act-as-org` and imported by a routes file, `getUserContextFromHeaders` reading `x-tenant-id` and imported and called only by `proxy.test.ts`, and a Kotlin `@RequestHeader("X-Bound-Tag")` parameter on a function nothing calls
+- **THEN** `header:x-act-as-org` is `handled_by` `applyActAsOverride`, no `header:x-tenant-id` node is minted, `header:x-bound-tag` is provided, and `contract_reads_unreached` is 1
+
+### Requirement: JWT claim facts come only from provably-JWT code
+Extraction SHALL emit a `claim:<name>` fact only from code that is provably about a JSON Web Token, never from a claim-like name alone (`session_id`, `roles`, `email` are ordinary field and map-key names). Providers (`provides_contract`, source the enclosing function): `.claim("x", v)` with a literal name on a call chain rooted at jjwt's `Jwts.builder()` or Nimbus's `JWTClaimsSet.Builder()` (Kotlin and Java), a bare `claim("x", v)` inside an `apply { }` / `run { }` lambda on such a chain (not inside a nested `apply` / `run` / `with`), the registered-claim setters on such a chain (`subject` / `setSubject` -> `sub`, `issuer` -> `iss`, `audience` -> `aud`, `expiration` / `expirationTime` -> `exp`, `notBefore` / `notBeforeTime` -> `nbf`, `issuedAt` / `issueTime` -> `iat`, `id` / `jwtID` -> `jti`), the literal keys of the payload object of `sign({..})` from `jsonwebtoken` and `new SignJWT({..})` from `jose` plus `SignJWT`'s setters, and the string keys of the dict passed to `jwt.encode({..})` where `jwt` is imported as PyJWT's or python-jose's module. Users (`uses_contract`): the `json:"x"` tags (not `-`) of a Go struct that embeds golang-jwt's `RegisteredClaims` / `StandardClaims`, is the composite-literal claims argument of that package's `ParseWithClaims`, or is the `json.Unmarshal` target of bytes derived from segment `[1]` of a `strings.Split(token, ".")` in a file that base64-decodes, embedded by value or pointer, and the claims argument of `ParseWithClaims` as a composite literal or a same-function variable declared with one (source the field node); the properties of a same-file TypeScript interface or object type alias that a library call types the payload as (the single type argument of `jwtDecode<T>` (`jwt-decode`), `decodeJwt<T>` / `jwtVerify<T>` (`jose`), or `as T` on a `jsonwebtoken` `verify` / `decode` call), or that a function returns as the decoded payload: a returned `x as T` where `x` is the payload names T, and a returned payload with no cast names the declared return type only when that is one same-file type (`T`, `Promise<T>`, `T | null`; never `Result<T, E>`); the payload is a library decode's result (jose's `{ payload }`) or a hand-written decode whose data path runs from `t.split('.')` through its segment `[1]` (an index or the second element of an array pattern), a base64 decode of that segment (`Buffer.from(x, 'base64' | 'base64url')`, `atob(x)`, a function named `*base64*`), to the `JSON.parse` that is returned (source the field node); a property read `v.x` in any file where `v` holds a call to such a decoder function (through `await`, `?:`, `??`, `||` and identifier aliases in enclosing scopes, every parameter and declaration shadowing outer ones), the callee is imported from the project's own code (a module specifier starting `.`, `/`, `@/`, `~` or `#`) or is a same-file decoder, it resolves through the reading file's imports or its own declarations to the decoder, and the decoder's type declares `x` (source the reading function); and Kotlin `.jsonObject["x"]` on a value whose data path runs from `split('.')` through segment 1 (`getOrNull(1)`, `get(1)`, `[1]`), a `Base64...decode(..)` of it and `Json.parseToJsonElement(..)` of the decoded bytes (source the function). The intermediate `claim_decoder` / `claim_read` relations SHALL never become code-graph edges.
+
+#### Scenario: A jjwt builder writes its claims
+- **GIVEN** `Jwts.builder().subject(u).expiration(e).claim("roles", r).claim("tenant_id", t).apply { sessionId?.let { claim("session_id", it) }; bindingClaims.forEach { (k, v) -> claim(k, v) }; kid?.let { header().add("kid", it) } }` in `generateAccessToken`, and `builder.claim("not_a_jwt_claim", 1)` on another object
+- **THEN** `generateAccessToken` provides exactly `sub`, `exp`, `roles`, `tenant_id` and `session_id`, and no other claim is minted
+
+#### Scenario: A Go struct decoded from the payload segment is a claims type
+- **GIVEN** `Decode` splitting a token on ".", unmarshalling `decodeSegment(parts[0])` into `t.Header` and `decodeSegment(parts[1])` into `t.Claims`, a `decodeSegment` that calls `base64.RawURLEncoding.DecodeString`, and a plain `UserInfo` struct with `json:"roles"`
+- **THEN** the `Claims` fields' tags (`sub`, `tenant_id`, `session_id`) are used claims and neither `alg` nor `roles` is a claim
+
+#### Scenario: A TypeScript read through an imported decoder
+- **GIVEN** `decodeToken(token): DecodedToken | null` that splits on '.', takes `parts[1]`, base64-decodes and `JSON.parse`s, and `proxy` in another file doing `const decoded = decodeToken(t); let effectiveDecoded = decoded; ... effectiveDecoded.roles` and `effectiveDecoded.notAClaim`
+- **THEN** `proxy` consumes `claim:roles` and nothing else, `DecodedToken`'s properties are used claims, and an untyped `decodeJwt(token): any` and a header decoder reading `parts[0]` yield none
+
+#### Scenario: A Kotlin hand-written payload read
+- **GIVEN** `sessionIdClaim` doing `accessToken.split('.').getOrNull(1)`, `Base64.UrlSafe...decode(payload)` and `Json.parseToJsonElement(..).jsonObject["session_id"]`, and `bodyRoles` indexing `jsonObject["roles"]` on a response body
+- **THEN** `sessionIdClaim` uses `claim:session_id` and `roles` is not a claim
+
+#### Scenario: A library call in a function that returns something else is no decoder
+- **GIVEN** `getCurrentUser(token): Promise<AuthUser | null>` that calls `jwtVerify` and returns a database user, and `parse(token): Result<Claims, AuthError>` that calls `jwtDecode` and returns `wrap(decoded)`
+- **THEN** no claim is minted and an importer's `user.email` is no read
+
+#### Scenario: Decode signals off the payload's data path are no decoder
+- **GIVEN** `JSON.parse(atob(value))` where `const [value] = cookie.split('.')`, a `Buffer.from(parts[0], 'base64')` decode, and a function that splits a token but base64-decodes and parses an unrelated body
+- **THEN** no claim is minted, while `const [, payload] = token.split('.'); return JSON.parse(atob(payload))` with return type `Payload` makes `Payload`'s properties claims
+
+#### Scenario: An inner binding shadows a decoded variable
+- **GIVEN** `const payload = decodeToken(t)` and `rows.map((payload) => payload.tenant_id)` in the same function, then `payload.roles`
+- **THEN** the function consumes `claim:roles` only
 
