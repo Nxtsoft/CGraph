@@ -12,3 +12,10 @@
 
 - [x] 3.1 Eight probe repos: no node or edge lost or changed; only `env` nodes and `CONSUMES` edges added; 40 sampled facts hand-checked.
 - [x] 3.2 Seam + scorer with `--env NEXT_PUBLIC_API_URL=turing-api --env ML_BACKEND_BASE_URL=ml-backend --env AUTH0_AUDIENCE=turing-api --env BACKEND_URL=idp`: T36, T37, T40, M38 link; no previous link lost; without declarations no env node enters the seam.
+
+## 4. Review round 1
+
+- [x] 4.1 Any nearer binding (let/var/parameter/for-head/catch/class/import/destructured const) shadows a typed env `const`.
+- [x] 4.2 Spring YAML comments and placeholders through `spring_actuator`'s exported `strip_yaml_comment` and `find_spring_placeholder`.
+- [x] 4.3 One `js_syntax::reading_scope_id` for HTTP and env facts.
+- [x] 4.4 The test reports every language before exiting; a plain JavaScript case.
