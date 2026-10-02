@@ -54,8 +54,11 @@ constexpr std::string_view kUses = "uses_contract";
   return word.size() > suffix.size() && word.ends_with(suffix) && is_lower_or_digit(word[word.size() - suffix.size() - 1]);
 }
 
+// A field of `node`; null for a null node (a return outside any function has
+// no enclosing function to name).
 [[nodiscard]] TSNode field(const TSNode& node, std::string_view name) {
-  return ts_node_child_by_field_name(node, name.data(), static_cast<std::uint32_t>(name.size()));
+  return ts_node_is_null(node) ? TSNode{}
+                               : ts_node_child_by_field_name(node, name.data(), static_cast<std::uint32_t>(name.size()));
 }
 
 // Named children that are not comments.
@@ -212,6 +215,11 @@ thread_local JsFileIndex* current_js_index = nullptr;
   return node;
 }
 
+// js_syntax::is_function_node, plus a generator expression (`function* () {}`).
+[[nodiscard]] bool js_is_function(std::string_view type) {
+  return js_syntax::is_function_node(type) || type == "generator_function";
+}
+
 // `'X-A'`, `"X-A"`, or a template literal with no substitution.
 [[nodiscard]] std::optional<std::string> js_string(const TSNode& node, std::string_view source) {
   const auto type = type_of(node);
@@ -278,7 +286,7 @@ void build_js_index(const TSNode& program, std::string_view source, JsFileIndex&
     if (type == "program") {
       return false;
     }
-    if (js_syntax::is_function_node(type)) {
+    if (js_is_function(type)) {
       std::vector<std::string> parameters;
       js_syntax::parameter_names(scope, source, parameters);
       if (std::ranges::find(parameters, name) != parameters.end()) {
@@ -332,6 +340,9 @@ void build_js_index(const TSNode& program, std::string_view source, JsFileIndex&
 }
 
 [[nodiscard]] std::string js_function_name(const TSNode& function, std::string_view source) {
+  if (ts_node_is_null(function)) {
+    return {};
+  }
   if (const TSNode name = field(function, "name"); !ts_node_is_null(name)) {
     return text_of(name, source);
   }
@@ -347,7 +358,7 @@ void build_js_index(const TSNode& program, std::string_view source, JsFileIndex&
 
 [[nodiscard]] TSNode js_enclosing_function(const TSNode& node) {
   for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
-    if (js_syntax::is_function_node(type_of(parent))) {
+    if (js_is_function(type_of(parent))) {
       return parent;
     }
   }
@@ -451,8 +462,8 @@ void build_js_index(const TSNode& program, std::string_view source, JsFileIndex&
     const auto& parameter = function->second[position];
     return holds_headers(parameter) && !mentions_response(parameter);
   }
-  if (type == "return_statement" || (js_syntax::is_function_node(type) && ts_node_eq(field(parent, "body"), child))) {
-    const TSNode function = js_syntax::is_function_node(type) ? parent : js_enclosing_function(parent);
+  if (type == "return_statement" || (js_is_function(type) && ts_node_eq(field(parent, "body"), child))) {
+    const TSNode function = js_is_function(type) ? parent : js_enclosing_function(parent);
     const auto name = js_function_name(function, source);
     return holds_headers(name) && !mentions_response(name);
   }

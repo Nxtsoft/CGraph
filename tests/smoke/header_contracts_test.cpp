@@ -275,6 +275,8 @@ export async function agentProxy() { const agentRes = await fetch(u); return age
 export const elysia = ({ set }: any) => { set.headers['x-elysia-tag'] = 'v'; };
 export function shadowParam(TAG: string) { return request.headers.get(TAG); }
 export function shadowLocal() { const TAG = other(); return request.headers.get(TAG); }
+// A generator expression is a function too: its return is not at module level.
+export const live = gen(function* () { return { 'X-Gen-Tag': 1 }; });
 export function noise() {
   const tableHeaders = { 'Created At': 1, name: 2 };
   const headerStyles = { 'font-size': 1 };
