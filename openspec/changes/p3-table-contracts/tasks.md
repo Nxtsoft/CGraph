@@ -3,7 +3,7 @@
 - [x] 1.1 `data_contracts.cpp`: SQL text tables, Cypher text labels, test-path rule.
 - [x] 1.2 String literals and concatenations in Python, JavaScript / TypeScript, Kotlin, Java; facts hang off the innermost function, else module variable, else class, else file.
 - [x] 1.3 Spring Data Neo4j `@Node` / outgoing `@Relationship` providers.
-- [x] 1.4 `.cypher` / `.cql` detected as `Cypher`, extracted to a file node and its labels.
+- [x] 1.4 `.cypher` detected as `Cypher` (`.cql` not: Cassandra), extracted to a file node and its labels.
 - [x] 1.5 `extract_sql` provides every table it creates.
 
 ## 2. Resolution

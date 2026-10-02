@@ -299,6 +299,20 @@ graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do n
   repositories share one, so a table with no known database is `table:local:<name>`, local to its
   repository, until `--database turing=turing-api,ml-backend` says both use database `turing`;
   their tables then meet at `table:turing:<name>` and no other repository's do.
+  What produces them (`src/engine/data_contracts.cpp`): a table a `.sql` file creates and a Drizzle
+  `pgTable` / `mysqlTable` / `sqliteTable` model of it provide `table:`; a Drizzle model of a table
+  no `.sql` file in the repository creates is a mirrored schema and uses it, as does every function
+  passing that model to `db.update(...)`, `.from(...)`, `.innerJoin(...)` and the like. A table named
+  in a Python, TypeScript/JavaScript, Kotlin or Java string uses it only when the string (adjacent
+  literals and `+` chains joined) opens with an upper-case `SELECT` / `INSERT` / `UPDATE` /
+  `DELETE` / `WITH` and the table follows an upper-case `FROM` / `JOIN` / `INSERT INTO` /
+  `UPDATE ... SET`: lower-case SQL, a name glued to an interpolation (`events_{year}`), JPQL in a JPA
+  `@Query` (without `nativeQuery = true`) and test files (`tests/`, `__tests__/`, `*.test.ts`,
+  `test_*.py`, `FooTest.kt`, ...) are not read. Spring Data Neo4j `@Node("User")` provides
+  `label:User` and an outgoing `@Relationship(type = "HAS_ROLE")` on it `label:User.HAS_ROLE`; Cypher
+  in `.cypher` files (`.cql` is not detected: Cassandra uses it too) and in strings opening with
+  `MATCH` / `MERGE` / `CREATE (` uses the labels, and a relationship only when its start node's label
+  is known.
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 

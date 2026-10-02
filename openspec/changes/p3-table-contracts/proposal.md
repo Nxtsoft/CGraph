@@ -8,7 +8,7 @@ The Phase 3.0 foundation (`p3-contract-foundation`) mints `table:` and `label:` 
 
 - New `src/engine/data_contracts.cpp` (+ `data_contracts.hpp`, `tests/smoke/data_contracts_test.cpp`) emits the facts. Every fact names no database, so every contract is `table:local:` / `label:local:` until declared.
 - **Providers.** A `sql_table` a `.sql` file creates (`extract_sql`); a Drizzle model (`pgTable` / `mysqlTable` / `sqliteTable`) whose table the repo's own `.sql` files create; a Spring Data Neo4j `@Node` class (`label:<label>`, the class name when `@Node` has no value); an outgoing `@Relationship(type = "T")` on a member of that class (`label:<label>.T`).
-- **Users.** A Drizzle model whose table no `.sql` file in the repo creates (a mirrored schema), and each function handing that model to a Drizzle query builder (`.from` / `.update` / `.insert` / `.delete` / `.join` / `.innerJoin` / `.leftJoin` / `.rightJoin` / `.fullJoin`); a table after upper-case `FROM` / `JOIN` / `INSERT INTO` / `UPDATE ... SET` in a string literal (or an adjacent-literal or `+` concatenation, interpolations opaque) that opens with an upper-case `SELECT` / `INSERT` / `UPDATE` / `DELETE` / `WITH`, in Python, JavaScript / TypeScript, Kotlin and Java; labels and source-qualified relationship types in `.cypher` / `.cql` files (newly detected, language `cypher`) and in string literals opening with an upper-case `MATCH` / `OPTIONAL MATCH` / `MERGE` / `CREATE (` / `UNWIND`.
+- **Users.** A Drizzle model whose table no `.sql` file in the repo creates (a mirrored schema), and each function handing that model to a Drizzle query builder (`.from` / `.update` / `.insert` / `.delete` / `.join` / `.innerJoin` / `.leftJoin` / `.rightJoin` / `.fullJoin`); a table after upper-case `FROM` / `JOIN` / `INSERT INTO` / `UPDATE ... SET` in a string literal (or an adjacent-literal or `+` concatenation, interpolations opaque) that opens with an upper-case `SELECT` / `INSERT` / `UPDATE` / `DELETE` / `WITH`, in Python, JavaScript / TypeScript, Kotlin and Java; labels and source-qualified relationship types in `.cypher` files (newly detected, language `cypher`) and in string literals opening with an upper-case `MATCH` / `OPTIONAL MATCH` / `MERGE` / `CREATE (` / `UNWIND`.
 - Hook-ins only: `extract_with_config` calls `extract_code_data_contracts` after its walk; `extract_sql` returns `sql_table_contract_facts`; `extract_non_grammar_language` dispatches `Cypher`; `resolve_contracts` step 8 also reads `orm_table_contract_facts` (the provider-or-user decision needs the whole graph); `graph_builder` skips the new `orm_table_use` raw relation.
 - Index version `logic-15`.
 
@@ -26,11 +26,13 @@ The Phase 3.0 foundation (`p3-contract-foundation`) mints `table:` and `label:` 
 
 ## Non-goals
 
-- DynamoDB table names (above); SQLAlchemy `__tablename__` and other ORMs' models; comma joins; lower-case SQL; label predicates in `WHERE u:Admin`.
+- DynamoDB table names (above): a key-value store contract needs its own kind and declaration. SQLAlchemy `__tablename__` and other ORMs' models; comma joins; lower-case SQL; label predicates in `WHERE u:Admin`; JPQL entity names (a JPA `@Query` is skipped unless `nativeQuery = true`).
+- **A repository with no `.sql` migrations** (drizzle-kit `push`, TypeScript migrations) makes every Drizzle model a mirror: all its models use their tables and none provides. A fixture or seed `.sql` file that creates a mirrored table's name flips that model to a provider. Both follow from "the repo's own `.sql` files create it"; reading drizzle-kit config is a later change.
+- `.cql` files: Cassandra's CQL shares the extension and detection reads no content, so only `.cypher` is detected.
 - Declarations stay manual (`--database`, manifest `databases`).
 
 ## Impact
 
 - New: `src/engine/data_contracts.cpp`, `src/engine/include/cgraph/data_contracts.hpp`, `tests/smoke/data_contracts_test.cpp`.
 - Hooks: `extractor.cpp`, `non_grammar_extractors.cpp`, `contracts.cpp` (step 8), `graph_builder.cpp`, `detect.cpp` / `detect.hpp` (`Cypher`), `index_persistence.cpp`.
-- Graphs gain `table` / `label` nodes and `handled_by` / `CONSUMES` / `contains` edges, and `.cypher` / `.cql` file nodes; no existing node or edge is removed or changed (layout, community and centrality-derived properties move as the graph grows).
+- Graphs gain `table` / `label` nodes and `handled_by` / `CONSUMES` / `contains` edges, and `.cypher` file nodes; no existing node or edge is removed or changed (layout, community and centrality-derived properties move as the graph grows).
