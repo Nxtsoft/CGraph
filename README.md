@@ -294,7 +294,16 @@ graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do n
 
 - **Claims and non-standard headers** (`x-tenant-id`) join like endpoints, by id. A standard HTTP
   header (`authorization`, `content-type`, any IANA permanent field name, `x-request-id`,
-  `x-forwarded-*`, `traceparent`) never joins: every service uses those for its own reasons.
+  `x-forwarded-*`, `traceparent`) never joins: every service uses those for its own reasons. Nor
+  does a registered JWT claim (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`): every token
+  carries them. A claim is recorded only where the code is provably about a JWT: `.claim("roles", r)`
+  on a jjwt `Jwts.builder()` or Nimbus `JWTClaimsSet.Builder()` chain, the payload keys of
+  `jsonwebtoken` `sign`, jose `SignJWT` and PyJWT `jwt.encode`; the `json:"x"` tags of a Go struct
+  that embeds golang-jwt's `RegisteredClaims`, goes to `ParseWithClaims`, or is unmarshalled from a
+  token's payload segment; the properties of a TypeScript type a decoder returns (`jwtDecode<T>`, or a
+  function that splits, base64-decodes and `JSON.parse`s segment 1), and `v.roles` read off such a
+  decoder's result in any file; Kotlin `jsonObject["x"]` on a hand-decoded payload. A field merely
+  named `roles` or `session_id` is not a claim.
 - **Tables and graph labels** join only within a declared database. Nothing in code says which
   repositories share one, so a table with no known database is `table:local:<name>`, local to its
   repository, until `--database turing=turing-api,ml-backend` says both use database `turing`;
