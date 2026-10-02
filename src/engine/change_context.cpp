@@ -1,5 +1,6 @@
 #include "cgraph/change_context.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/detect.hpp"
 #include "cgraph/file_cache.hpp"
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <regex>
 #include <set>
 #include <stdexcept>
@@ -348,10 +350,10 @@ Json uncertainty(const PipelineResult& pipeline) {
           {"warnings", pipeline.warnings}, {"call_resolution", stats.at("call_resolution")}};
 }
 
-// The endpoints a change touches, each with the roles it plays for them and a
-// rank: 0 for an endpoint the change edits, removes or adds, 1 for one whose
-// handler it reaches or that changed code calls, 2 for one a direct caller of
-// changed code calls. Asking and trimming both go in rank order.
+// The contracts a change touches, each with the roles it plays for them and a
+// rank: 0 for a contract the change edits, removes or adds, 1 for one whose
+// provider it reaches or that changed code uses, 2 for one a direct caller of
+// changed code uses. Asking and trimming both go in rank order.
 using TouchedContracts = CrossServiceContracts;
 
 void touch(TouchedContracts& touched, const std::string& id, const std::string& role, int rank) {
@@ -360,12 +362,12 @@ void touch(TouchedContracts& touched, const std::string& id, const std::string& 
   entry.rank = std::min(entry.rank, rank);
 }
 
-// Endpoints a graph serves: those with a handler or a declaring file.
-std::set<std::string> served_endpoints(const GraphSnapshot& graph) {
+// Contracts a graph serves: those with a provider or a declaring file.
+std::set<std::string> served_contracts(const GraphSnapshot& graph) {
   std::set<std::string> served;
   for (const auto& edge : graph.edges) {
-    if (edge.relation == "handled_by" && edge.source.starts_with("endpoint:")) served.insert(edge.source);
-    if (edge.relation == "contains" && edge.target.starts_with("endpoint:")) served.insert(edge.target);
+    if (edge.relation == "handled_by" && !contract_kind_of(edge.source).empty()) served.insert(edge.source);
+    if (edge.relation == "contains" && !contract_kind_of(edge.target).empty()) served.insert(edge.target);
   }
   return served;
 }
@@ -383,52 +385,82 @@ Json cross_service_rows(const CrossServiceAsk& scope, const TouchedContracts& to
     section["errors"] = enclosing.workspace.errors;
     return section;
   }
-  std::vector<std::pair<std::string, const CrossServiceContract*>> ordered;
-  for (const auto& [id, entry] : touched) ordered.emplace_back(id, &entry);
-  std::ranges::stable_sort(ordered, [](const auto& a, const auto& b) { return a.second->rank < b.second->rank; });
+  const auto& workspace = enclosing.workspace;
+  // Only a contract that crosses repositories (crossing_id) is asked about or
+  // counted against `max_contracts`; a repo-local one is listed `local` after
+  // them, so two dozen local tables never crowd out a real endpoint.
+  struct Ordered {
+    std::string id;
+    const CrossServiceContract* entry;
+    std::optional<std::string> crossing;
+  };
+  std::vector<Ordered> ordered, local;
+  for (const auto& [id, entry] : touched) {
+    auto crossing = crossing_id(workspace.databases, workspace.env, enclosing.home, id);
+    (crossing ? ordered : local).push_back(Ordered{.id = id, .entry = &entry, .crossing = std::move(crossing)});
+  }
+  std::ranges::stable_sort(ordered, [](const auto& a, const auto& b) { return a.entry->rank < b.entry->rank; });
   if (ordered.size() > max_contracts) {
     section["contracts_omitted"] = ordered.size() - max_contracts;
     ordered.resize(max_contracts);
   }
   std::set<std::string> unreachable, building;
-  for (const auto& [contract, entry] : ordered) {
+  for (const auto& [contract, entry, crossing] : ordered) {
     Json listed{{"id", contract}, {"roles", Json(entry->roles)}, {"rank", entry->rank}};
     if (entry->outside_diff) listed["outside_diff"] = true;
+    if (*crossing != contract) listed["shared_id"] = *crossing;
     section["contracts"].push_back(std::move(listed));
     const bool served = entry->roles.contains("serves") || entry->roles.contains("removed") || entry->roles.contains("added");
     const bool called = entry->roles.contains("consumes");
+    // An env variable's provider is the member declared to address it, which
+    // holds no node of it.
+    if (const auto provider = env_provider_of(workspace.env, contract); called && provider && *provider != enclosing.home) {
+      section["rows"].push_back({{"contract", contract}, {"rank", entry->rank}, {"relation", "provider"},
+          {"repo", *provider}, {"id", "service:" + *provider}, {"label", *provider}, {"kind", "service"},
+          {"path", ""}, {"line", 0}});
+    }
     for (const bool consumers : {true, false}) {
       if ((consumers && !served) || (!consumers && !called)) continue;
-      for (const auto& repo : enclosing.workspace.repos) {
-        if (repo.name == enclosing.home || unreachable.contains(repo.name)) continue;
-        std::string error;
-        // Direct callers of what this change serves (CONSUMES), and the handler
-        // behind what it calls (handled_by): the code another team would touch.
-        const Json params{{"id", contract}, {"direction", consumers ? "dependents" : "dependencies"},
-                          {"relation", consumers ? "CONSUMES" : "handled_by"}, {"max_depth", 1}};
-        const auto envelope = scope.ask(repo, "impact", params, error);
-        if (!envelope || !envelope->value("ok", false)) {
-          unreachable.insert(repo.name);
-          section["unreachable"].push_back({{"repo", repo.name},
-              {"error", envelope ? envelope->value("error", std::string{"request failed"}) : error}});
-          continue;
-        }
-        const auto& answer = envelope->at("result");
-        if (answer.value("graph_state", std::string{}) == "building" && building.insert(repo.name).second)
-          section["building"].push_back(repo.name);
-        for (const auto& node : answer.value("nodes", Json::array())) {
-          const auto id = node.value("id", std::string{});
-          if (id.starts_with("endpoint:")) continue;
-          const auto file = node.value("source_file", std::string{});
-          section["rows"].push_back({{"contract", contract}, {"rank", entry->rank},
-              {"relation", consumers ? "consumer" : "provider"},
-              {"repo", repo.name}, {"id", id}, {"label", node.value("label", std::string{})},
-              {"kind", node.value("kind", std::string{})},
-              {"path", file.empty() ? "" : fs::path(file).lexically_relative(repo.root).generic_string()},
-              {"line", node.value("line", 0)}});
+      for (const auto& repo : workspace.repos) {
+        if (repo.name == enclosing.home) continue;
+        // Every spelling the member may hold the contract under: the crossing
+        // id, and its own `table:local:` id inside the same database.
+        for (const auto& id : contract_spellings(workspace.databases, workspace.env, repo.name, *crossing)) {
+          if (unreachable.contains(repo.name)) break;
+          std::string error;
+          // Direct callers of what this change serves (CONSUMES), and the handler
+          // behind what it calls (handled_by): the code another team would touch.
+          const Json params{{"id", id}, {"direction", consumers ? "dependents" : "dependencies"},
+                            {"relation", consumers ? "CONSUMES" : "handled_by"}, {"max_depth", 1}};
+          const auto envelope = scope.ask(repo, "impact", params, error);
+          if (!envelope || !envelope->value("ok", false)) {
+            unreachable.insert(repo.name);
+            section["unreachable"].push_back({{"repo", repo.name},
+                {"error", envelope ? envelope->value("error", std::string{"request failed"}) : error}});
+            break;
+          }
+          const auto& answer = envelope->at("result");
+          if (answer.value("graph_state", std::string{}) == "building" && building.insert(repo.name).second)
+            section["building"].push_back(repo.name);
+          for (const auto& node : answer.value("nodes", Json::array())) {
+            const auto node_id = node.value("id", std::string{});
+            if (!contract_kind_of(node_id).empty()) continue;
+            const auto file = node.value("source_file", std::string{});
+            section["rows"].push_back({{"contract", contract}, {"rank", entry->rank},
+                {"relation", consumers ? "consumer" : "provider"},
+                {"repo", repo.name}, {"id", node_id}, {"label", node.value("label", std::string{})},
+                {"kind", node.value("kind", std::string{})},
+                {"path", file.empty() ? "" : fs::path(file).lexically_relative(repo.root).generic_string()},
+                {"line", node.value("line", 0)}});
+          }
         }
       }
     }
+  }
+  for (const auto& [contract, entry, crossing] : local) {
+    Json listed{{"id", contract}, {"roles", Json(entry->roles)}, {"rank", entry->rank}, {"local", true}};
+    if (entry->outside_diff) listed["outside_diff"] = true;
+    section["contracts"].push_back(std::move(listed));
   }
   auto& rows = section["rows"];
   std::stable_sort(rows.begin(), rows.end(), [](const Json& a, const Json& b) {
@@ -441,6 +473,44 @@ Json cross_service_rows(const CrossServiceAsk& scope, const TouchedContracts& to
 }
 
 }  // namespace
+
+void touch_contracts(const GraphSnapshot& graph, const std::unordered_map<std::string, ImpactReach>& reached,
+                     CrossServiceContracts& touched) {
+  // A contract the change serves: one it changed, one whose provider it
+  // reached (the last step is handled_by), or one a changed file contains.
+  // Not every endpoint reachable through the app's router mounts: a router
+  // chain spans its whole file, and its importers reach every mounted route.
+  for (const auto& [id, reach] : reached) {
+    if (contract_kind_of(id).empty()) continue;
+    if (reach.depth == 0) touch(touched, id, "serves", 0);
+    else if (reach.via == "handled_by" || (reach.depth == 1 && reach.via == "contains")) touch(touched, id, "serves", 1);
+  }
+  // A contract the change uses: CONSUMES from changed code, or from a
+  // function that calls a changed helper directly (its request may change).
+  // Callers further out use other contracts for their own reasons.
+  for (const auto& edge : graph.edges) {
+    if (edge.relation != "CONSUMES" || contract_kind_of(edge.target).empty()) continue;
+    const auto reach = reached.find(edge.source);
+    if (reach == reached.end()) continue;
+    if (reach->second.depth == 0) touch(touched, edge.target, "consumes", 1);
+    else if (reach->second.depth == 1 && reach->second.via == "CALLS") touch(touched, edge.target, "consumes", 2);
+  }
+}
+
+std::string cross_service_summary(const std::string& file, const Json& row) {
+  auto contract = row.value("contract", std::string{});
+  const bool consumer = row.value("relation", std::string{}) == "consumer";
+  const auto where = row.value("repo", std::string{}) + " " + row.value("path", std::string{}) + ":" +
+                     std::to_string(row.value("line", 0)) + " (" + row.value("label", std::string{}) + ")";
+  if (contract_kind_of(contract) == "endpoint") {
+    contract = contract.substr(std::string_view("endpoint:").size());
+    return file + (consumer ? " serves " : " calls ") + contract + (consumer ? ", called from " : ", served by ") + where;
+  }
+  if (row.value("kind", std::string{}) == "service") {  // a declared env provider: a service, no code location
+    return file + " uses " + contract + ", provided by the service " + row.value("repo", std::string{});
+  }
+  return file + (consumer ? " provides " : " uses ") + contract + (consumer ? ", used by " : ", provided by ") + where;
+}
 
 Json cross_service_section(const CrossServiceAsk& scope, const CrossServiceContracts& contracts,
                            std::size_t max_contracts) {
@@ -574,25 +644,7 @@ Json change_context(const Json& parameters, const CrossServiceAsk* cross_service
     const auto reached = trace_impact(pipeline.graph, seeds, "dependents", "", max_depth);
     std::unordered_map<std::string, const Node*> by_id;
     for (const auto& node : pipeline.graph.nodes) by_id.emplace(node.id, &node);
-    // An endpoint the change serves: one it changed, one whose handler it
-    // reached (the last step is handled_by), or one a changed file contains.
-    // Not every endpoint reachable through the app's router mounts: a router
-    // chain spans its whole file, and its importers reach every mounted route.
-    for (const auto& [id, reach] : reached) {
-      if (!id.starts_with("endpoint:")) continue;
-      if (reach.depth == 0) touch(touched, id, "serves", 0);
-      else if (reach.via == "handled_by" || (reach.depth == 1 && reach.via == "contains")) touch(touched, id, "serves", 1);
-    }
-    // An endpoint the change calls: CONSUMES from changed code, or from a
-    // function that calls a changed helper directly (its request may change).
-    // Callers further out call other endpoints for their own reasons.
-    for (const auto& edge : pipeline.graph.edges) {
-      if (edge.relation != "CONSUMES" || !edge.target.starts_with("endpoint:")) continue;
-      const auto reach = reached.find(edge.source);
-      if (reach == reached.end()) continue;
-      if (reach->second.depth == 0) touch(touched, edge.target, "consumes", 1);
-      else if (reach->second.depth == 1 && reach->second.via == "CALLS") touch(touched, edge.target, "consumes", 2);
-    }
+    touch_contracts(pipeline.graph, reached, touched);
     const auto brief = [&](const std::string& id) {
       const auto& node = *by_id.at(id);
       Json item{{"id", id}, {"label", node.label}, {"kind", node.kind},
@@ -656,7 +708,7 @@ Json change_context(const Json& parameters, const CrossServiceAsk* cross_service
       touch(touched, id, role, complete ? 0 : 3);
       if (!complete && !known) touched[id].outside_diff = true;
     };
-    const auto before = served_endpoints(base.graph), after = served_endpoints(target.graph);
+    const auto before = served_contracts(base.graph), after = served_contracts(target.graph);
     for (const auto& id : before) if (!after.contains(id)) mark(id, "removed");
     for (const auto& id : after) if (!before.contains(id)) mark(id, "added");
   }

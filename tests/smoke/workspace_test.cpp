@@ -250,7 +250,8 @@ int test_impact_bridges_the_contract(const fs::path& root) {
     return fail("the endpoint and the owning repo's own witnesses are kept");
   }
   // The bridge is reported, and the crossing witnesses name the contract.
-  if (result["bridged"].size() != 1 || result["bridged"][0]["endpoint"] != endpoint || result["bridged"][0]["depth"] != 1) {
+  if (result["bridged"].size() != 1 || result["bridged"][0]["endpoint"] != endpoint || result["bridged"][0]["depth"] != 1 ||
+      result["bridged"][0].value("contract", std::string{}) != endpoint) {
     return fail("the contract the traversal crossed is named");
   }
   for (const auto& hit : result["nodes"]) {
@@ -686,6 +687,198 @@ int test_proxied_call_does_not_join_a_third_member_at_a_members_own_route(const 
   return 0;
 }
 
+// A manifest's `databases` and `env` load, round-trip, and every malformed or
+// conflicting declaration is a manifest error, never an exception.
+int test_manifest_databases_and_env(const fs::path& root) {
+  const auto ws = root / "ws-databases";
+  for (const auto* repo : {"api", "ml", "web"}) {
+    fs::create_directories(ws / repo);
+  }
+  const std::string repos = R"("repos": [{"name": "api", "root": "../api"}, {"name": "ml", "root": "../ml"}, {"name": "web", "root": "../web"}])";
+  write_file(ws / "ok" / std::string(cgraph::kWorkspaceFile),
+             "{" + repos + R"(, "databases": [{"name": "turing", "repos": ["api", "ml"]}],
+                 "env": [{"name": "ML_BACKEND_URL", "service": "ml"}]})");
+  const auto loaded = cgraph::load_workspace(ws / "ok");
+  const auto manifest = cgraph::workspace_manifest_json(loaded);
+  if (!loaded.ok() || manifest.value("databases", json{}) != json::parse(R"([{"name": "turing", "repos": ["api", "ml"]}])") ||
+      manifest.value("env", json{}) != json::parse(R"([{"name": "ML_BACKEND_URL", "service": "ml"}])")) {
+    std::cerr << manifest.dump() << '\n';
+    return fail("a manifest's databases and env load and round-trip");
+  }
+  const std::map<std::string, std::string> invalid{
+      {"stranger", R"(, "databases": [{"name": "turing", "repos": ["api", "billing"]}])"},
+      {"two-databases", R"(, "databases": [{"name": "a", "repos": ["api"]}, {"name": "b", "repos": ["api", "ml"]}])"},
+      {"twice", R"(, "databases": [{"name": "a", "repos": ["api"]}, {"name": "a", "repos": ["ml"]}])"},
+      {"local", R"(, "databases": [{"name": "local", "repos": ["api"]}])"},
+      {"colon", R"(, "databases": [{"name": "a:b", "repos": ["api"]}])"},
+      {"typed-db", R"(, "databases": [{"name": 3, "repos": "api"}])"},
+      {"not-array", R"(, "databases": {"name": "turing"})"},
+      {"env-stranger", R"(, "env": [{"name": "X", "service": "billing"}])"},
+      {"env-typed", R"(, "env": [{"name": "X", "service": ["ml"]}])"},
+      {"env-twice", R"(, "env": [{"name": "X", "service": "ml"}, {"name": "X", "service": "api"}])"},
+  };
+  for (const auto& [name, extra] : invalid) {
+    write_file(ws / name / std::string(cgraph::kWorkspaceFile), "{" + repos + extra + "}");
+    try {
+      const auto bad = cgraph::load_workspace(ws / name);
+      if (bad.ok() || !bad.repos.empty() || bad.errors.empty()) {
+        return fail("a malformed or conflicting declaration is a manifest error: " + name);
+      }
+    } catch (const std::exception& error) {
+      return fail("a malformed declaration threw instead of reporting an error: " + name + ": " + error.what());
+    }
+  }
+  return 0;
+}
+
+json contract_brief(const std::string& id, int depth, bool served) {
+  json brief{{"id", id}, {"label", id}, {"kind", id.substr(0, id.find(':'))}, {"depth", depth}};
+  if (served) {
+    brief["source_file"] = "/src/provider.ts";
+  }
+  return brief;
+}
+
+// A header is the same id in every repo: impact from the server code that
+// reads it reaches the client that sends it, and back, and path joins there.
+// No declaration is needed. A reached env variable names its declared
+// provider in `bridged`.
+int test_impact_and_path_cross_a_header(const fs::path& root) {
+  const auto workspace = workspace_of(root, {{"api", root / "api"}, {"web", root / "web"}});
+  const std::string header = "header:x-tenant-id";
+  FakeRepos repos;
+  repos.answers["api"]["impact:api::readTenant"] = impact_ok(
+      {contract_brief(header, 1, true), contract_brief("header:authorization", 1, true), contract_brief("env:NODE_ENV", 1, false)});
+  repos.answers["web"]["impact:" + header] = impact_ok({node("web::sendTenant", 1)});
+  // web also sends Authorization and reads NODE_ENV, as every service does.
+  repos.answers["web"]["impact:header:authorization"] = impact_ok({node("web::fetchWithToken", 1)});
+  repos.answers["web"]["impact:env:NODE_ENV"] = impact_ok({node("web::isProduction", 1)});
+  const auto response = cgraph::federate_workspace_request(
+      workspace, "impact", json{{"id", "api::readTenant"}, {"direction", "dependents"}, {"max_depth", 3}}, repos.ask());
+  bool crossed = false;
+  for (const auto& hit : response["result"]["nodes"]) {
+    crossed = crossed || (hit["id"] == "web::sendTenant" && hit.value("repo", std::string{}) == "web" &&
+                          hit.value("bridged_through", std::string{}) == header && hit["depth"] == 2);
+  }
+  const auto bridged = response["result"].value("bridged", json::array());
+  if (!crossed || bridged.size() != 1 || bridged[0].value("contract", std::string{}) != header || bridged[0].contains("endpoint")) {
+    std::cerr << response.dump(2) << '\n';
+    return fail("impact crosses from the server reading a header to the client sending it");
+  }
+  for (const auto& hit : response["result"]["nodes"]) {
+    if (hit["id"] == "web::fetchWithToken" || hit["id"] == "web::isProduction") {
+      std::cerr << response.dump(2) << '\n';
+      return fail("impact crossed at a standard header or an undeclared env variable");
+    }
+  }
+  repos.answers["web"]["impact:web::sendTenant"] = impact_ok({contract_brief(header, 1, false)});
+  repos.answers["api"]["impact:" + header] = impact_ok({node("api::readTenant", 1)});
+  const auto reverse = cgraph::federate_workspace_request(
+      workspace, "impact", json{{"id", "web::sendTenant"}, {"direction", "dependencies"}, {"max_depth", 3}}, repos.ask());
+  bool back = false;
+  for (const auto& hit : reverse["result"]["nodes"]) {
+    back = back || (hit["id"] == "api::readTenant" && hit.value("repo", std::string{}) == "api");
+  }
+  if (!back) {
+    std::cerr << reverse.dump(2) << '\n';
+    return fail("impact crosses from the client sending a header to the server reading it");
+  }
+  const auto empty_path = json{{"ok", true}, {"result", {{"path", json::array()}, {"path_nodes", json::array()}}}};
+  repos.answers["web"]["path"] = empty_path;
+  repos.answers["api"]["path"] = empty_path;
+  repos.answers["web"]["path:web::sendTenant->" + header] =
+      json{{"ok", true}, {"result", {{"path", {"web::sendTenant", header}},
+                                     {"path_nodes", {{{"id", "web::sendTenant"}}, {{"id", header}}}}}}};
+  repos.answers["api"]["path:" + header + "->api::readTenant"] =
+      json{{"ok", true}, {"result", {{"path", {header, "api::readTenant"}},
+                                     {"path_nodes", {{{"id", header}}, {{"id", "api::readTenant"}}}}}}};
+  const auto path = cgraph::federate_workspace_request(
+      workspace, "path", json{{"source", "web::sendTenant"}, {"target", "api::readTenant"}}, repos.ask());
+  if (path["result"]["path"] != json::array({"web::sendTenant", header, "api::readTenant"}) ||
+      path["result"]["bridged_through"] != header) {
+    std::cerr << path.dump(2) << '\n';
+    return fail("path joins two repos at a header");
+  }
+  // Two unrelated repos that both read NODE_ENV or send Authorization share no path.
+  repos.answers["web"]["impact:web::isProduction"] =
+      impact_ok({contract_brief("env:NODE_ENV", 1, false), contract_brief("header:authorization", 1, false)});
+  repos.answers["api"]["impact:env:NODE_ENV"] = impact_ok({node("api::readTenant", 1)});
+  repos.answers["web"]["path:web::isProduction->env:NODE_ENV"] =
+      json{{"ok", true}, {"result", {{"path", {"web::isProduction", "env:NODE_ENV"}},
+                                     {"path_nodes", {{{"id", "web::isProduction"}}, {{"id", "env:NODE_ENV"}}}}}}};
+  repos.answers["web"]["path:web::isProduction->header:authorization"] =
+      json{{"ok", true}, {"result", {{"path", {"web::isProduction", "header:authorization"}},
+                                     {"path_nodes", {{{"id", "web::isProduction"}}, {{"id", "header:authorization"}}}}}}};
+  repos.answers["api"]["path:env:NODE_ENV->api::readTenant"] =
+      json{{"ok", true}, {"result", {{"path", {"env:NODE_ENV", "api::readTenant"}},
+                                     {"path_nodes", {{{"id", "env:NODE_ENV"}}, {{"id", "api::readTenant"}}}}}}};
+  repos.answers["api"]["path:header:authorization->api::readTenant"] =
+      json{{"ok", true}, {"result", {{"path", {"header:authorization", "api::readTenant"}},
+                                     {"path_nodes", {{{"id", "header:authorization"}}, {{"id", "api::readTenant"}}}}}}};
+  const auto unrelated = cgraph::federate_workspace_request(
+      workspace, "path", json{{"source", "web::isProduction"}, {"target", "api::readTenant"}}, repos.ask());
+  if (!unrelated["result"]["path"].empty()) {
+    std::cerr << unrelated.dump(2) << '\n';
+    return fail("path bridged two repos through NODE_ENV or Authorization");
+  }
+  return 0;
+}
+
+// Tables cross only between members declaring one database: api's and ml's
+// `table:local:users` meet at `table:turing:users`; billing's own `users`
+// table is never reached; with no declaration nothing crosses. A reached env
+// variable names the service the manifest says provides it.
+int test_impact_crosses_a_declared_database(const fs::path& root) {
+  const auto ws = root / "ws-db-impact";
+  for (const auto* repo : {"api", "ml", "billing"}) {
+    fs::create_directories(ws / repo);
+  }
+  write_file(ws / std::string(cgraph::kWorkspaceFile),
+             R"({"repos": [{"name": "api", "root": "./api"}, {"name": "ml", "root": "./ml"}, {"name": "billing", "root": "./billing"}],
+                 "databases": [{"name": "turing", "repos": ["api", "ml"]}],
+                 "env": [{"name": "API_URL", "service": "api"}]})");
+  const auto workspace = cgraph::load_workspace(ws);
+  if (!workspace.ok()) {
+    return fail("the database manifest loads: " + workspace.errors.front());
+  }
+  const std::string local = "table:local:users";
+  FakeRepos repos;
+  repos.answers["api"]["impact:api::createUsers"] = impact_ok({contract_brief(local, 1, true)});
+  repos.answers["ml"]["impact:" + local] = impact_ok({node("ml::listUsers", 1)});
+  repos.answers["billing"]["impact:" + local] = impact_ok({node("billing::chargeUsers", 1)});
+  const json params{{"id", "api::createUsers"}, {"direction", "dependents"}, {"max_depth", 3}};
+  const auto response = cgraph::federate_workspace_request(workspace, "impact", params, repos.ask());
+  std::map<std::string, json> reached;
+  for (const auto& hit : response["result"]["nodes"]) {
+    reached[hit["id"]] = hit;
+  }
+  if (reached.count("ml::listUsers") == 0 || reached["ml::listUsers"].value("bridged_through", std::string{}) != "table:turing:users" ||
+      reached.count("billing::chargeUsers") != 0) {
+    std::cerr << response.dump(2) << '\n';
+    return fail("a table crosses to a member of its declared database, and only to one");
+  }
+  // No declaration: the same answers never cross.
+  const auto undeclared = cgraph::federate_workspace_request(
+      workspace_of(ws, {{"api", ws / "api"}, {"ml", ws / "ml"}, {"billing", ws / "billing"}}), "impact", params, repos.ask());
+  for (const auto& hit : undeclared["result"]["nodes"]) {
+    if (hit.value("repo", std::string{}) != "api") {
+      std::cerr << undeclared.dump(2) << '\n';
+      return fail("an undeclared repo-local table crossed repositories");
+    }
+  }
+  // An env variable ml reads names api, the service the manifest declares.
+  repos.answers["ml"]["impact:ml::callApi"] = impact_ok({contract_brief("env:API_URL", 1, false)});
+  const auto env = cgraph::federate_workspace_request(
+      workspace, "impact", json{{"id", "ml::callApi"}, {"direction", "dependencies"}, {"max_depth", 3}}, repos.ask());
+  const auto bridged = env["result"].value("bridged", json::array());
+  if (bridged.size() != 1 || bridged[0].value("contract", std::string{}) != "env:API_URL" ||
+      bridged[0].value("provided_by", std::string{}) != "api") {
+    std::cerr << env.dump(2) << '\n';
+    return fail("a reached env variable names its declared provider");
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-workspace-test";
   fs::remove_all(root);
@@ -703,6 +896,9 @@ int main() {
   failures += test_impact_and_path_cross_a_proxy_prefix(root);
   failures += test_impact_does_not_proxy_onto_a_members_own_route(root);
   failures += test_proxied_call_does_not_join_a_third_member_at_a_members_own_route(root);
+  failures += test_manifest_databases_and_env(root);
+  failures += test_impact_and_path_cross_a_header(root);
+  failures += test_impact_crosses_a_declared_database(root);
 
   fs::remove_all(root);
   return failures == 0 ? 0 : 1;

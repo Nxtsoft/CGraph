@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cgraph/contract_declarations.hpp"
 #include "cgraph/endpoint_prefixes.hpp"
 
 #include <nlohmann/json.hpp>
@@ -28,9 +29,11 @@
 // Cross-repo reach comes from the contract nodes of CGR-13: an `endpoint:` id is
 // canonical and repo-free, so the same node exists in the graph of the service
 // that serves it and of every service that calls it. `impact` therefore runs in
-// each repo, and where a traversal reaches an endpoint it is forwarded once, with
+// each repo, and where a traversal reaches a contract it is forwarded once, with
 // the remaining depth, to the other repos -- one hop per contract, never a join
-// over copied graphs.
+// over copied graphs. Every id is_bridged_contract accepts (contracts.hpp:
+// endpoints, headers, claims, env names, tables and graph labels in a named
+// database) crosses this way.
 //
 // A repo whose daemon cannot be reached is reported in `unreachable`, never
 // silently dropped: a partial answer that looks total is worse than a loud gap.
@@ -45,6 +48,17 @@
 // `endpoint:GET /api/backend/v1/users/{}` (and back), but only through an endpoint
 // web consumes and does not serve itself (endpoint_prefixes.hpp). Each repo's own
 // graph keeps its own spelling.
+//
+// Repos that share a database, and the service an env variable addresses, are
+// declared too (contract_declarations.hpp):
+//
+//   "databases": [ { "name": "turing", "repos": ["api", "ml"] } ],
+//   "env": [ { "name": "ML_BACKEND_URL", "service": "ml" } ]
+//
+// `impact` and `path` then cross from api's `table:local:users` to ml's
+// `table:local:users` at `table:turing:users`, and never to a repo outside the
+// database. A reached `env:ML_BACKEND_URL` is reported in `bridged` with
+// `provided_by: "ml"`.
 namespace cgraph {
 
 inline constexpr std::string_view kWorkspaceFile = "cgraph.workspace.json";
@@ -59,6 +73,8 @@ struct Workspace {
   std::string name;
   std::vector<WorkspaceRepo> repos;
   std::vector<EndpointPrefix> prefixes;  // proxy prefixes between members, manifest order
+  std::vector<ContractDatabase> databases;  // members sharing a database, manifest order
+  std::vector<EnvProvider> env;             // env variables and the member each addresses
   std::vector<std::string> errors;  // non-empty when the manifest is unusable
 
   [[nodiscard]] bool ok() const { return errors.empty(); }
@@ -83,7 +99,9 @@ struct EnclosingWorkspace {
 
 // Reads and validates `root/cgraph.workspace.json`. A missing file, malformed
 // JSON, an empty repo list, a duplicate name, a repo root that does not exist,
-// or a `prefixes` entry that is malformed or names no member repo is an error; the returned Workspace then carries `errors` and no repos.
+// or a `prefixes`, `databases` or `env` entry that is malformed or names no member
+// repo (or a repo declared in two databases) is an error; the returned Workspace
+// then carries `errors` and no repos.
 [[nodiscard]] Workspace load_workspace(const std::filesystem::path& root);
 
 // The manifest text for a workspace (what `workspace init` writes): repo roots

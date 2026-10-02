@@ -344,6 +344,34 @@ int test_resolve_relations() {
   return 0;
 }
 
+// `provides_contract` / `uses_contract` facts are resolve_contracts' input:
+// resolve_raw_relations never turns one into a code-graph edge, even when the
+// database a table fact names (its target_label) is also a type the file
+// imports, and even when its source is a real node.
+int test_contract_facts_are_not_edges() {
+  const auto a_file = cgraph::make_id("/p/a.ts");
+  const auto query = cgraph::make_id("/p/a.ts:listUsers");
+  const auto db_class = cgraph::make_id("/p/db.ts:turing");
+  cgraph::GraphSnapshot graph;
+  graph.nodes.push_back({.id = a_file, .label = "a.ts", .source_file = "/p/a.ts", .kind = "file"});
+  graph.nodes.push_back({.id = query, .label = "listUsers", .source_file = "/p/a.ts", .kind = "function"});
+  graph.nodes.push_back({.id = db_class, .label = "turing", .source_file = "/p/db.ts", .kind = "class"});
+  graph.edges.push_back({.source = a_file, .target = db_class, .relation = "imports"});
+  const cgraph::RawRelation relations[] = {
+      {.source_id = query, .target_label = "turing", .relation = "uses_contract", .context = "table:users", .source_file = "/p/a.ts", .allow_same_file = true},
+      {.source_id = query, .target_label = "turing", .relation = "provides_contract", .context = "label:User", .source_file = "/p/a.ts", .allow_same_file = true},
+  };
+  const auto before = graph.edges.size();
+  cgraph::resolve_raw_relations(graph, relations);
+  if (graph.edges.size() != before) {
+    for (const auto& edge : graph.edges) {
+      std::fprintf(stderr, "  edge %s -%s-> %s\n", edge.source.c_str(), edge.relation.c_str(), edge.target.c_str());
+    }
+    return 1;
+  }
+  return 0;
+}
+
 // C/C++ `#include` is textual, so a reference resolves through the whole
 // include chain: app.cpp -> engine.hpp -> types.hpp reaches `Node`. The walk is
 // nearest-unique: a declaration in a nearer header shadows a farther one, two
@@ -911,6 +939,10 @@ int check_shared_stub_alias_binds_both_names() {
 }  // namespace
 
 int main() {
+  if (test_contract_facts_are_not_edges() != 0) {
+    std::fprintf(stderr, "FAIL test_contract_facts_are_not_edges\n");
+    return 1;
+  }
   if (test_qualified_scope() != 0) {
     std::fprintf(stderr, "FAIL test_qualified_scope\n");
     return 1;

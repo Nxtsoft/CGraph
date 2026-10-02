@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cgraph/contract_declarations.hpp"
 #include "cgraph/endpoint_prefixes.hpp"
 #include "cgraph/types.hpp"
 
@@ -59,9 +60,21 @@ struct SeamResult {
 // serves nor documents, under `from`, joins as `to` + the rest. Its CONSUMED_AT
 // edge carries `via` = the consumer's own path, and the log counts the mapped
 // endpoints per prefix.
+//
+// Every other contract that crosses repositories (crossing_id,
+// contract_declarations.hpp: tables and graph labels in a named database,
+// non-standard headers, claims, declared env names) joins the same way, with
+// the same four edges and its own kind. `databases` spell a declared member's
+// `table:local:<name>` / `label:local:<name>` as `table:<database>:<name>` so
+// members of one database meet; an undeclared repo-local table or label, an
+// undeclared env name and a standard header are left out of the seam. `env`
+// makes the declared service the provider of `env:<NAME>` (`SERVED_BY`). The
+// endpoint log lines are unchanged; other contracts get their own lines, only
+// when there are any.
 [[nodiscard]] SeamResult discover_seam(
     const std::vector<std::pair<std::string, std::filesystem::path>>& graphs,
-    std::span<const EndpointPrefix> prefixes = {});
+    std::span<const EndpointPrefix> prefixes = {}, std::span<const ContractDatabase> databases = {},
+    std::span<const EnvProvider> env = {});
 
 // Result of fusing a seam fragment with its service graphs into one view graph.
 struct SeamFuseResult {
@@ -81,9 +94,20 @@ struct SeamFuseResult {
 // (`served: false`) under a `from` of its own is redirected to the `to` spelling,
 // the one the seam discovered with the same prefixes, and the placeholder node it
 // leaves unused is not rendered.
+//
+// Contract ids crossing_id gives (contract_declarations.hpp) are shared across
+// services; every other id, a `table:local:` or undeclared `env:` one
+// included, is scoped to its service. With `databases`, a declared member's
+// `table:local:<name>` becomes the seam's `table:<database>:<name>` (its
+// `database` property too); with `env`, a declared `env:<NAME>` is shared.
+// The declarations must be the ones discover joined the seam under: a seam
+// contract whose `HANDLED_BY` / `CONSUMED_AT` service holds it under none of
+// the ids these declarations give (contract_spellings) fails loud, naming the
+// missing `--env` / `--database`, rather than splitting the join.
 [[nodiscard]] SeamFuseResult fuse_seam(
     const Fragment& seam,
     const std::vector<std::pair<std::string, GraphSnapshot>>& services,
-    std::span<const EndpointPrefix> prefixes = {});
+    std::span<const EndpointPrefix> prefixes = {}, std::span<const ContractDatabase> databases = {},
+    std::span<const EnvProvider> env = {});
 
 }  // namespace cgraph

@@ -15,6 +15,7 @@ add_library(cgraph_engine STATIC
   cpp_extractor.cpp
   detect.cpp
   endpoint_prefixes.cpp
+  contract_declarations.cpp
   engine.cpp
   enrich_drainer.cpp
   extractor.cpp

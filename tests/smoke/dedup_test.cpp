@@ -1,6 +1,9 @@
 #include "cgraph/dedup.hpp"
 
 #include <iostream>
+#include <string>
+#include <utility>
+#include <vector>
 
 int main() {
   if (cgraph::shannon_entropy("aaaaaa") >= 2.5) {
@@ -89,6 +92,24 @@ int main() {
                                        .source_location = cgraph::SourceLocation{.start_line = 12, .end_line = 12},
                                        .kind = "schema",
                                        .properties = {{"community", "3"}}});
+  }
+  // Tables, graph labels, headers, claims and env names are contracts named
+  // exactly: one migration providing `formulation_values` beside
+  // `formulation_value` anchors both at the same lines.
+  for (const auto& [kind, names] : std::vector<std::pair<std::string, std::vector<std::string>>>{
+           {"table", {"formulation_values", "formulation_value", "formulation_valuez"}},
+           {"label", {"HAS_ORGANIZATION_ROLE", "HAS_ORGANIZATION_ROLES", "HAD_ORGANIZATION_ROLE"}},
+           {"header", {"x-organization-tenant-id", "x-organization-tenant-ids", "x-organisation-tenant-id"}},
+           {"claim", {"organization_roles", "organization_role", "organisation_roles"}},
+           {"env", {"ML_BACKEND_BASE_URL", "ML_BACKEND_BASE_URLS", "ML_BACKENDS_BASE_URL"}}}) {
+    for (const auto& name : names) {
+      guard.nodes.push_back(cgraph::Node{.id = kind + ":" + name,
+                                         .label = name,
+                                         .source_file = "migrations/001.sql",
+                                         .source_location = cgraph::SourceLocation{.start_line = 7, .end_line = 30},
+                                         .kind = kind,
+                                         .properties = {{"community", "3"}}});
+    }
   }
   guard.nodes.push_back(cgraph::Node{.id = "mb", .label = "MessageBubbleProps", .source_file = "mb.tsx", .kind = "type"});
   guard.nodes.push_back(cgraph::Node{.id = "mf", .label = "MessageBubble", .source_file = "mb.tsx", .kind = "function"});
@@ -242,6 +263,14 @@ int main() {
   }
   if (endpoint_nodes != 3) {
     std::cerr << "sibling endpoints were merged: " << endpoint_nodes << " of 3 survive\n";
+    return 1;
+  }
+  std::size_t contract_nodes = 0;
+  for (const auto& node : guard.nodes) {
+    contract_nodes += node.id.find(':') != std::string::npos && node.kind != "endpoint" && node.kind != "schema" ? 1 : 0;
+  }
+  if (contract_nodes != 15) {
+    std::cerr << "near-identical contract names were merged: " << contract_nodes << " of 15 survive\n";
     return 1;
   }
   std::size_t schema_nodes = 0;

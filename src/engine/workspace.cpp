@@ -1,5 +1,7 @@
 #include "cgraph/workspace.hpp"
 
+#include "cgraph/contracts.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -14,7 +16,6 @@
 namespace cgraph {
 namespace {
 
-constexpr std::string_view kEndpointPrefix = "endpoint:";
 // Candidate contracts tried when bridging a `path` across two repos. The
 // endpoints a source reaches are ordered by distance, so the nearest few are the
 // ones a real call goes through; without a cap a hub function would ask its repo
@@ -33,10 +34,6 @@ constexpr std::size_t kDefaultImpactLimit = 50;
     response["code"] = std::move(code);
   }
   return response;
-}
-
-[[nodiscard]] bool is_endpoint_id(const std::string& id) {
-  return id.starts_with(kEndpointPrefix);
 }
 
 // The `result` object of a repo's answer, or nullptr when the repo failed.
@@ -129,11 +126,11 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
 
 // ---- proxy prefixes ----------------------------------------------------------
 
-// True when `id` is an endpoint `repo` consumes but does not serve or document:
+// True when `id` is a contract `repo` consumes but does not serve or document:
 // a placeholder with no source anchor. Only such an endpoint is reached through
 // the repo's proxy; one the repo serves itself is its own route.
 [[nodiscard]] bool is_placeholder(const nlohmann::json& brief) {
-  return is_endpoint_id(brief.value("id", std::string{})) && !brief.contains("source_file");
+  return !contract_kind_of(brief.value("id", std::string{})).empty() && !brief.contains("source_file");
 }
 
 [[nodiscard]] bool placeholder_in(const WorkspaceRepo& repo, const std::string& id, const RepoAsk& ask) {
@@ -179,28 +176,38 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
   return proxied;
 }
 
-// The id every repo shares for an endpoint `repo` reached: the proxied spelling
-// when the repo only consumes it under one of its prefixes and may cross there,
-// else the id itself.
-[[nodiscard]] std::string shared_contract(const Workspace& workspace, const WorkspaceRepo& repo,
-                                          const nlohmann::json& brief, const RepoAsk& ask) {
-  auto id = brief.value("id", std::string{});
+// The id every repo shares for a contract `repo` reached, or nullopt when it
+// crosses nowhere (crossing_id, contract_declarations.hpp: a repo-local table
+// only under a declared database, an env variable only when declared); an
+// endpoint the repo only consumes under one of its prefixes is the proxied
+// spelling when it may cross there.
+[[nodiscard]] std::optional<std::string> shared_contract(const Workspace& workspace, const WorkspaceRepo& repo,
+                                                         const nlohmann::json& brief, const RepoAsk& ask) {
+  const auto id = brief.value("id", std::string{});
+  auto shared = crossing_id(workspace.databases, workspace.env, repo.name, id);
+  if (!shared || *shared != id) {
+    return shared;
+  }
   if (is_placeholder(brief)) {
     if (auto proxied = proxied_contract(workspace, repo, id, ask)) {
-      return std::move(*proxied);
+      return proxied;
     }
   }
-  return id;
+  return shared;
 }
 
-// The ids to ask `repo` for when crossing at `contract`: the contract itself and
-// every consumer spelling of it through the repo's proxy that the repo really
-// consumes without serving. As in seam discovery, a proxied call never crosses
-// at an endpoint only `repo` itself serves: the proxy forwards to the other
-// repos, never to its own routes.
+// The ids to ask `repo` for when crossing at `contract`: the contract itself,
+// its repo-local spelling when `repo` is declared in the contract's database,
+// and every consumer spelling of it through the repo's proxy that the repo
+// really consumes without serving. As in seam discovery, a proxied call never
+// crosses at an endpoint only `repo` itself serves: the proxy forwards to the
+// other repos, never to its own routes.
 [[nodiscard]] std::vector<std::string> spellings_in(const Workspace& workspace, const WorkspaceRepo& repo,
                                                     const std::string& contract, const RepoAsk& ask) {
-  std::vector<std::string> ids{contract};
+  auto ids = contract_spellings(workspace.databases, workspace.env, repo.name, contract);
+  if (ids.size() != 1) {
+    return ids;  // crosses nowhere, or a database member's own spelling: no proxy applies
+  }
   auto spellings = consumer_spellings(workspace.prefixes, repo.name, contract);
   if (spellings.empty() || !proxy_crosses_in(workspace, repo, contract, ask)) {
     return ids;
@@ -384,14 +391,15 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   std::vector<Witness> witnesses;
   std::unordered_map<std::string, std::size_t> index;
   auto owners = nlohmann::json::array();
-  // endpoint id -> the shallowest depth any repo reached it at.
+  // shared contract id -> the shallowest depth any repo reached it at.
   std::map<std::string, int> contracts;
-  // endpoint id -> repos that reached it only through their own proxy prefix.
-  // The proxy forwards to the other repos, so the contract is not asked back
-  // of the repo it was proxied from.
+  // contract id -> repos that reached it only under their own spelling of it:
+  // through their proxy prefix (the proxy forwards to the other repos) or as
+  // their `table:local:` id of a declared database (their own traversal
+  // already covered it). The contract is not asked back of those repos.
   std::map<std::string, std::set<std::string>> proxied_from;
   std::map<std::string, std::set<std::string>> reached_in;
-  if (is_endpoint_id(seed)) {
+  if (crossing_id(workspace.databases, workspace.env, {}, seed) == seed) {
     contracts.emplace(seed, 0);
     // A seed spelled the way a repo calls it through its proxy is also the
     // proxied contract.
@@ -415,14 +423,14 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
     }
     absorb(witnesses, index, *nodes, answer.repo->name, 0, {});
     for (const auto& node : *nodes) {
-      if (!is_endpoint_id(node.value("id", std::string{}))) {
+      const auto id = shared_contract(workspace, *answer.repo, node, ask);
+      if (!id) {
         continue;
       }
-      const auto id = shared_contract(workspace, *answer.repo, node, ask);
-      (id == node.value("id", std::string{}) ? reached_in : proxied_from)[id].insert(answer.repo->name);
+      (*id == node.value("id", std::string{}) ? reached_in : proxied_from)[*id].insert(answer.repo->name);
       const auto depth = node.value("depth", 0);
-      if (const auto slot = contracts.find(id); slot == contracts.end() || depth < slot->second) {
-        contracts[id] = depth;
+      if (const auto slot = contracts.find(*id); slot == contracts.end() || depth < slot->second) {
+        contracts[*id] = depth;
       }
     }
   }
@@ -475,8 +483,18 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
         crossed = crossed || witnesses.size() > before;
       }
     }
-    if (crossed) {
-      bridged.push_back({{"endpoint", endpoint}, {"depth", depth}});
+    // An env variable's provider is the service the manifest says it
+    // addresses, which holds no node of it: named, not traversed.
+    const auto provider = env_provider_of(workspace.env, endpoint);
+    if (crossed || provider) {
+      nlohmann::json entry{{"contract", endpoint}, {"depth", depth}};
+      if (contract_kind_of(endpoint) == "endpoint") {
+        entry["endpoint"] = endpoint;  // the key callers read before other contracts crossed
+      }
+      if (provider) {
+        entry["provided_by"] = *provider;
+      }
+      bridged.push_back(std::move(entry));
     }
   }
 
@@ -532,14 +550,15 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   return path != result.end() && path->is_array() && !path->empty();
 }
 
-// An endpoint a path can cross at: its id in the repo that reached it, and the
-// id the other repos share for it (different only through a proxy prefix).
+// A contract a path can cross at: its id in the repo that reached it, and the
+// id the other repos share for it (different through a proxy prefix or a
+// declared database).
 struct Crossing {
   std::string local;
   std::string shared;
 };
 
-// The endpoints reachable from `id` in `repo`, nearest first, from one impact
+// The contracts reachable from `id` in `repo`, nearest first, from one impact
 // call. These are the contracts a cross-repo path can cross at.
 [[nodiscard]] std::vector<Crossing> reachable_contracts(const Workspace& workspace,
     const WorkspaceRepo& repo, const std::string& id, const std::string& direction, int max_depth, const RepoAsk& ask) {
@@ -556,9 +575,9 @@ struct Crossing {
   std::vector<std::tuple<int, std::string, std::string>> found;
   if (const auto nodes = result->find("nodes"); nodes != result->end() && nodes->is_array()) {
     for (const auto& node : *nodes) {
-      const auto node_id = node.value("id", std::string{});
-      if (is_endpoint_id(node_id)) {
-        found.emplace_back(node.value("depth", 0), node_id, shared_contract(workspace, repo, node, ask));
+      auto shared = shared_contract(workspace, repo, node, ask);
+      if (shared) {
+        found.emplace_back(node.value("depth", 0), node.value("id", std::string{}), std::move(*shared));
       }
     }
   }
@@ -825,16 +844,27 @@ Workspace load_workspace(const std::filesystem::path& root) {
   if (workspace.repos.empty() && workspace.errors.empty()) {
     workspace.errors.push_back("workspace manifest lists no usable repos");
   }
+  const std::vector<std::string> members(names.begin(), names.end());
   if (const auto prefixes = manifest.find("prefixes"); prefixes != manifest.end()) {
     workspace.prefixes = parse_endpoint_prefixes(*prefixes, workspace.errors);
-    const std::vector<std::string> members(names.begin(), names.end());
     for (auto& unknown : unknown_prefix_repos(workspace.prefixes, members)) {
       workspace.errors.push_back(std::move(unknown));
     }
   }
+  if (const auto databases = manifest.find("databases"); databases != manifest.end()) {
+    workspace.databases = parse_contract_databases(*databases, workspace.errors);
+  }
+  if (const auto env = manifest.find("env"); env != manifest.end()) {
+    workspace.env = parse_env_providers(*env, workspace.errors);
+  }
+  for (auto& problem : contract_declaration_errors(workspace.databases, workspace.env, members)) {
+    workspace.errors.push_back(std::move(problem));
+  }
   if (!workspace.errors.empty()) {
     workspace.repos.clear();
     workspace.prefixes.clear();
+    workspace.databases.clear();
+    workspace.env.clear();
   }
   return workspace;
 }
@@ -853,6 +883,12 @@ nlohmann::json workspace_manifest_json(const Workspace& workspace) {
   nlohmann::json manifest{{"name", workspace.name}, {"repos", std::move(repos)}};
   if (!workspace.prefixes.empty()) {
     manifest["prefixes"] = endpoint_prefixes_json(workspace.prefixes);
+  }
+  if (!workspace.databases.empty()) {
+    manifest["databases"] = contract_databases_json(workspace.databases);
+  }
+  if (!workspace.env.empty()) {
+    manifest["env"] = env_providers_json(workspace.env);
   }
   return manifest;
 }

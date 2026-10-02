@@ -1046,3 +1046,15 @@ cgraph_set_warnings(cgraph_endpoint_prefixes_test)
 cgraph_enable_sanitizers(cgraph_endpoint_prefixes_test)
 
 add_test(NAME cgraph_endpoint_prefixes_test COMMAND cgraph_endpoint_prefixes_test)
+
+add_executable(cgraph_contract_declarations_test
+  contract_declarations_test.cpp)
+
+target_link_libraries(cgraph_contract_declarations_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_contract_declarations_test)
+cgraph_enable_sanitizers(cgraph_contract_declarations_test)
+
+add_test(NAME cgraph_contract_declarations_test COMMAND cgraph_contract_declarations_test)
