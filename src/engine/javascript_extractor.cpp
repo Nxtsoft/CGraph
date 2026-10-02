@@ -1,6 +1,7 @@
 #include "cgraph/javascript_extractor.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/env_contracts.hpp"
 #include "cgraph/http_consumers.hpp"
 #include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
@@ -860,6 +861,7 @@ void module_const_handler(const TSNode& node, const ExtractionContext& context, 
 void js_extra_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
                    Fragment& fragment, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& raw_relations) {
   module_const_handler(node, context, fragment, raw_relations);
+  javascript_env_reads(node, context, function_scope_id, fragment, raw_relations);
   route_mount_handler(node, context, raw_relations);
   url_const_handler(node, context, raw_relations);
   http_call_handler(node, context, function_scope_id, raw_relations);

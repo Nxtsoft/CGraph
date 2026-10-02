@@ -154,6 +154,18 @@ cgraph_enable_sanitizers(cgraph_http_consumers_test)
 
 add_test(NAME cgraph_http_consumers_test COMMAND cgraph_http_consumers_test)
 
+add_executable(cgraph_env_contracts_test
+  env_contracts_test.cpp)
+
+target_link_libraries(cgraph_env_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_env_contracts_test)
+cgraph_enable_sanitizers(cgraph_env_contracts_test)
+
+add_test(NAME cgraph_env_contracts_test COMMAND cgraph_env_contracts_test)
+
 add_executable(cgraph_cpp_extractor_test
   cpp_extractor_test.cpp)
 
