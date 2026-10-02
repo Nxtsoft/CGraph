@@ -22,3 +22,9 @@
 - [x] 3.6 Header holders by exact name or suffix; constant hop respects shadowing (JavaScript, Python).
 - [x] 3.7 Five more standard headers.
 - [x] 3.8 Indexing time, base vs new, three runs.
+
+## 4. Review round 2 and merge with main
+
+- [x] 4.1 `reached` ignores edges from test sources (`is_test_source_path`, exported); `contracts_test` fixture adds `proxy.test.ts` importing and calling the unused reader.
+- [x] 4.2 gin `GetHeader` is bound only on a `*gin.Context` parameter, else no fact; Ktor `call` is bound only when nothing else binds `call` or it is typed `ApplicationCall`.
+- [x] 4.3 Merge origin/main (#161 env): both sides' extractor hooks kept; JS module-level senders use `js_syntax::reading_scope_id`; index version `logic-17`.

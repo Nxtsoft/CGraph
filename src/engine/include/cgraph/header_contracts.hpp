@@ -22,8 +22,10 @@
 //
 // A read the framework binds to a request itself is marked kBoundHeaderRead
 // (contracts.hpp): Spring `@RequestHeader`, FastAPI `Header()`, Ktor
-// `call.request.header`, gin `c.GetHeader`, and `r.Header.Get` inside a
-// `func(http.ResponseWriter, *http.Request)`. Any other read provides only
+// `call.request.header` when `call` is the route's implicit ApplicationCall
+// or a parameter typed so, gin `c.GetHeader` when `c` is a `*gin.Context`
+// parameter (GetHeader on anything else records nothing), and `r.Header.Get`
+// inside a `func(http.ResponseWriter, *http.Request)`. Any other read provides only
 // when resolve_contracts finds something reaching its function. Standard HTTP headers (is_standard_http_header:
 // `authorization`, `content-type`, `x-request-id`, `x-forwarded-*`) are never
 // recorded: they never bridge repositories and every handler reads them.
@@ -64,6 +66,14 @@ class HeaderContractsFileScope {
   struct Index;
   std::unique_ptr<Index> index_;
 };
+
+// True for a test source by its path relative to the project root:
+// `*_test.go`, `*.test.ts`, `*.spec.ts`, `test_*.py`, `*_test.py`,
+// `conftest.py`, a JVM `FooTest` / `FooTests` class file, or under `test`,
+// `tests`, `__tests__`, `e2e`, `__mocks__`, `mocks`, `testutil`, or a
+// `scripts/mock-*` file. resolve_contracts uses it too: a test's call does
+// not make a header read reached.
+[[nodiscard]] bool is_test_source_path(std::string_view relative_path);
 
 // True for a name a header contract is recorded under: token characters
 // (letters, digits, `-`), at least one dash, not a standard header.

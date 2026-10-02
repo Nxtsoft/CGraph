@@ -342,6 +342,15 @@ class Client {
         val req = Request.Builder().setHeader("X-Set-Header-Tag", v).build()
         webClient.post().uri(responseUrl).header("X-Uri-Tag", v).retrieve()
     }
+
+    fun helper(call: Envelope) = call.request.header("X-Helper-Tag")
+
+    fun local() {
+        val call = envelope()
+        call.request.header("X-Local-Tag")
+    }
+
+    fun typed(call: ApplicationCall) = call.request.header("X-Typed-Tag")
 }
 )kt"});
     ok &= expect("kotlin branches", result ? header_facts(*result) : std::set<std::string>{},
@@ -349,12 +358,17 @@ class Client {
                      "provides|" + id(file, "read") + "|header:X-Value-Tag|bound",
                      "uses|" + id(file, "build") + "|header:X-Set-Header-Tag",
                      "uses|" + id(file, "build") + "|header:X-Uri-Tag",
+                     // `call` is Ktor's ApplicationCall only when nothing else binds it.
+                     "provides|" + id(file, "helper") + "|header:X-Helper-Tag",
+                     "provides|" + id(file, "local") + "|header:X-Local-Tag",
+                     "provides|" + id(file, "typed") + "|header:X-Typed-Tag|bound",
                  });
   }
 
   // Go, every other branch: `.Header.Add`, a `Header:` keyed element, a map
   // held in a `*headers` variable, a `var` constant, `.Header.Values` outside
-  // a net/http handler (not bound: something must call it).
+  // a net/http handler (not bound: something must call it). Not a fact:
+  // `GetHeader` on anything but a `*gin.Context` parameter.
   {
     const std::string file = "internal/api/branches.go";
     const auto result = cgraph::extract_configured_language(
@@ -372,6 +386,10 @@ func (c *Client) send2(req *http.Request) {
 
 func values(r *http.Request) []string {
 	return r.Header.Values(tagHeaderName)
+}
+
+func other(x *Client) {
+	_ = x.GetHeader("X-Other-Tag")
 }
 )go"});
     ok &= expect("go branches", result ? header_facts(*result) : std::set<std::string>{},

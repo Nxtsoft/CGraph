@@ -1,6 +1,7 @@
 #include "cgraph/contracts.hpp"
 
 #include "cgraph/graph_builder.hpp"
+#include "cgraph/header_contracts.hpp"
 #include "cgraph/normalize.hpp"
 #include "cgraph/spring_actuator.hpp"
 
@@ -883,11 +884,38 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // or a route's handler (`handled_by` from an endpoint, minted above). A header
   // read in a function nothing reaches serves no request (a helper no caller
   // uses), unless the framework binds the read itself (kBoundHeaderRead).
+  // A test's call or import does not count: `proxy.test.ts` importing an
+  // otherwise unused reader exercises it, no request reaches it.
+  // Paths read relative to the directory every file node shares, the
+  // project root (node source files are absolute).
+  std::string project_root;
+  bool first_file = true;
+  for (const auto& node : graph.nodes) {
+    if (node.kind != "file" || node.source_file.empty()) {
+      continue;
+    }
+    if (first_file) {
+      project_root = node.source_file;
+      first_file = false;
+    } else {
+      const auto mismatch = std::ranges::mismatch(project_root, node.source_file);
+      project_root.resize(static_cast<std::size_t>(mismatch.in1 - project_root.begin()));
+    }
+  }
+  project_root.resize(project_root.rfind('/') == std::string::npos ? 0 : project_root.rfind('/') + 1);
+  const auto from_test = [&](const std::string& id) {
+    const auto source = by_id.find(id);
+    if (source == by_id.end() || !source->second->source_file.starts_with(project_root)) {
+      return false;
+    }
+    return is_test_source_path(std::string_view(source->second->source_file).substr(project_root.size()));
+  };
   std::unordered_set<std::string> reached;  // copies: new_edges grows below
   for (const auto* edges : {&graph.edges, &new_edges}) {
     for (const auto& edge : *edges) {
-      if (edge.relation == "CALLS" || edge.relation == "imports" || edge.relation == "references" ||
-          edge.relation == kHandledBy) {
+      if ((edge.relation == "CALLS" || edge.relation == "imports" || edge.relation == "references" ||
+           edge.relation == kHandledBy) &&
+          !from_test(edge.source)) {
         reached.insert(edge.target);
       }
     }

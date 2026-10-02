@@ -1470,6 +1470,8 @@ int test_unreached_header_reads() {
       {"/proj/h/api/admin-auth.ts", "export function applyActAsOverride(request: Request) { return request.headers.get('x-act-as-org'); }\n"},
       {"/proj/h/api/routes.ts", "import { applyActAsOverride } from './admin-auth';\nexport const handle = (r: Request) => applyActAsOverride(r);\n"},
       {"/proj/h/web/proxy.ts", "export function getUserContextFromHeaders(request: Request) { return request.headers.get('x-tenant-id'); }\n"},
+      // A test importing and calling the reader exercises it; no request reaches it.
+      {"/proj/h/web/proxy.test.ts", "import { getUserContextFromHeaders } from './proxy';\nexport function check(r: Request) { return getUserContextFromHeaders(r); }\n"},
       {"/proj/h/api/Token.kt", "class Token { fun token(@RequestHeader(\"X-Bound-Tag\") tag: String): String = tag }\n"},
   });
   auto& graph = built.graph;

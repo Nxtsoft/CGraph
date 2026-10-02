@@ -137,7 +137,9 @@ constexpr std::string_view kUses = "uses_contract";
 // another service (`httptest.NewServer` reading `X-Tenant-ID`), not this repo
 // serving it, and a request there goes to the repo's own service under test
 // (`MockMvc`) or to such a fake, not across services.
-[[nodiscard]] bool is_test_source(std::string_view relative_path) {
+}  // namespace
+
+bool is_test_source_path(std::string_view relative_path) {
   std::string path(relative_path);
   std::ranges::replace(path, '\\', '/');
   const auto slash = path.rfind('/');
@@ -166,6 +168,8 @@ constexpr std::string_view kUses = "uses_contract";
   return false;
 }
 
+namespace {
+
 // Records one header fact. `bound` marks a read the framework binds to a
 // request itself (contracts.hpp kBoundHeaderRead): it provides even when no
 // code calls the reading function.
@@ -174,7 +178,7 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
   if (!name || !is_contract_header_name(*name)) {
     return;
   }
-  if (is_test_source(context.relative_path)) {
+  if (is_test_source_path(context.relative_path)) {
     return;  // a test's fake server, or a request a test sends its own service
   }
   if (providing && scope.empty()) {
@@ -895,6 +899,40 @@ void kt_chain_words(TSNode node, std::string_view source, std::vector<std::strin
   }
 }
 
+// True when `call` in `node`'s function is Ktor's ApplicationCall: no
+// parameter or local of the enclosing function is named `call` (it is the
+// route lambda's implicit `call`), or the parameter named so is typed
+// `ApplicationCall` (`fun handle(call: ApplicationCall)`).
+[[nodiscard]] bool kt_call_is_application_call(const TSNode& node, std::string_view source) {
+  TSNode function = ts_node_parent(node);
+  while (!ts_node_is_null(function) && type_of(function) != "function_declaration") {
+    function = ts_node_parent(function);
+  }
+  if (ts_node_is_null(function)) {
+    return true;
+  }
+  for (const auto& parameter : named_children(first_named_of_type(function, "function_value_parameters"))) {
+    if (type_of(parameter) == "parameter" &&
+        text_of(first_named_of_type(parameter, "simple_identifier"), source) == "call") {
+      return text_of(parameter, source).find("ApplicationCall") != std::string::npos;
+    }
+  }
+  std::vector<TSNode> pending{first_named_of_type(function, "function_body")};
+  while (!pending.empty()) {
+    const TSNode current = pending.back();
+    pending.pop_back();
+    if (type_of(current) == "property_declaration" &&
+        text_of(first_named_of_type(first_named_of_type(current, "variable_declaration"), "simple_identifier"),
+                source) == "call") {
+      return false;
+    }
+    for (const auto& child : named_children(current)) {
+      pending.push_back(child);
+    }
+  }
+  return true;
+}
+
 // The call whose trailing lambda `node` sits in, or null.
 [[nodiscard]] TSNode kt_lambda_call(const TSNode& node) {
   for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
@@ -986,7 +1024,7 @@ void kotlin_header_contracts(const TSNode& node, const ExtractionContext& contex
              lower(words.back()).ends_with("request")) {
     // Ktor binds `call` (the ApplicationCall) to the handler: `call.request.header`.
     emit(out, context, true, function_scope_id, kt_name(arguments[0].value, source),
-         /*bound=*/words.front() == "call");
+         /*bound=*/words.front() == "call" && kt_call_is_application_call(node, source));
   }
 }
 
@@ -1049,6 +1087,20 @@ namespace {
     }
   }
   return TSNode{};
+}
+
+// The declared type of `name` among the parameters of the function `node`
+// sits in (`*gin.Context` for `c` in `func(c *gin.Context)`), else empty.
+[[nodiscard]] std::string go_parameter_type(const TSNode& node, const std::string& name, std::string_view source) {
+  for (const auto& parameter : named_children(field(go_enclosing_function(node), "parameters"))) {
+    for (std::uint32_t index = 0; index < ts_node_named_child_count(parameter); ++index) {
+      const TSNode child = ts_node_named_child(parameter, index);
+      if (type_of(child) == "identifier" && text_of(child, source) == name) {
+        return text_of(field(parameter, "type"), source);
+      }
+    }
+  }
+  return {};
 }
 
 // True inside a net/http handler, `func(w http.ResponseWriter, r *http.Request)`:
@@ -1148,8 +1200,13 @@ void go_header_contracts(const TSNode& node, const ExtractionContext& context, c
   }
   const TSNode operand = field(callee, "operand");
   const auto arguments = named_children(field(node, "arguments"));
-  if (method == "GetHeader" && arguments.size() == 1) {  // gin binds `c` to the handler
-    emit(out, context, true, function_scope_id, go_name(arguments[0], source), /*bound=*/true);
+  if (method == "GetHeader") {
+    // gin binds the handler's `c *gin.Context`; another type's GetHeader may
+    // read anything.
+    if (arguments.size() == 1 && type_of(operand) == "identifier" &&
+        go_parameter_type(node, text_of(operand, source), source) == "*gin.Context") {
+      emit(out, context, true, function_scope_id, go_name(arguments[0], source), /*bound=*/true);
+    }
     return;
   }
   // `req.Header.Set(...)`: the Header field of a request. A ResponseWriter's

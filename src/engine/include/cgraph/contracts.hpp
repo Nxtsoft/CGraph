@@ -71,7 +71,8 @@
 //                  request itself, else empty; it is ignored otherwise.
 //                  A header provider that is not bound provides only when
 //                  something reaches its function: a CALLS, imports or
-//                  references edge, or a route's `handled_by`. A read in a
+//                  references edge, or a route's `handled_by`, from code
+//                  outside test sources (is_test_source_path). A read in a
 //                  helper no code calls serves no request (route_resolution
 //                  counts it as contract_reads_unreached). resolve_contracts mints one node per contract id
 //                  (contract_id below): kind = the contract kind, label = the
@@ -153,7 +154,8 @@ inline constexpr std::string_view kLocalDatabase = "local";
 // The `target_label` of a `provides_contract header:` fact whose read the
 // framework binds to a request without any call in the code: a Spring
 // `@RequestHeader` parameter, a FastAPI `Header()` parameter, Ktor's
-// `call.request.header`, gin's `c.GetHeader`, or `r.Header.Get` in a Go
+// `call.request.header` on the route's ApplicationCall, gin's `c.GetHeader` on
+// a `*gin.Context` parameter, or `r.Header.Get` in a Go
 // `func(http.ResponseWriter, *http.Request)` handler.
 inline constexpr std::string_view kBoundHeaderRead = "bound";
 
