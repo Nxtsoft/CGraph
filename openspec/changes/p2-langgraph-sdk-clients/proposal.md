@@ -14,4 +14,4 @@ Gap T15 of the cross-service plan (`~/.agents/artifacts/2026-09-29/cgraph-multis
 
 - A parameter typed `Client` (`function f(client: Client)`, turing-webapp `lib/hooks/use-luna-stream.ts` helpers) is not read as a client: a type says nothing about where the value came from. Neither is a `let` reassigned after its declaration (`let client = null; ... client = createLangGraphClient(token, 'ic')` in `lib/hooks/use-ic-stream.ts`).
 - `threads.stream` (the v2 protocol, `POST /threads/{}/stream/events` and `/commands` through a transport adapter) and the `~ui` client are not mapped.
-- Paths are the SDK's, whether or not the Agent Server serves them (`GET /threads/{}/stream`, `PATCH /threads/{}/state`, the `crons` routes): a call the server does not serve mints an unserved endpoint, as any client call does.
+- Paths are the SDK's, whether or not the Agent Server serves them (`GET /threads/{}/stream`, `PATCH /threads/{}/state`, `POST /threads/prune`, `POST /runs/cancel`, the `crons` routes): a call the server does not serve mints an unserved endpoint, as any client call does.

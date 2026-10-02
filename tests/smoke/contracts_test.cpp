@@ -1268,6 +1268,18 @@ export async function notSdk(token: string, t: string) {
   await x.runs.stream(t, 'luna', {});
 }
 )ts"},
+      {"/proj/w/lib/module-clients.ts", R"ts(
+import { Client } from '@langchain/langgraph-sdk';
+let shared = new Client();
+export function reset(other: Client) { shared = other; }
+export function useShared() { return shared.threads.get('x'); }
+const fixed = new Client();
+export function subgraphs(id: string, ns?: string) {
+  fixed.assistants.getSubgraphs(id, { namespace: 'child' });
+  fixed.assistants.getSubgraphs(id, { namespace: '' });
+  return fixed.assistants.getSubgraphs(id, { namespace: ns });
+}
+)ts"},
   });
   const auto& graph = built.graph;
   const auto send = cgraph::make_id("/proj/w/lib/use-stream.ts:send");
@@ -1284,7 +1296,24 @@ export async function notSdk(token: string, t: string) {
       return fail("a client no SDK factory made consumed " + edge.target);
     }
   }
-  if (built.stats.calls != 3 || built.stats.calls_unresolved != 0 || built.stats.consumes != 3) {
+  // A module `let` may be reassigned (`reset`): not read as a client. The SDK
+  // tests `namespace` for truth: a non-empty literal is the namespaced route, an
+  // empty one the plain route, a value it cannot read records nothing.
+  const auto subgraphs = cgraph::make_id("/proj/w/lib/module-clients.ts:subgraphs");
+  if (!has_edge(graph, subgraphs, "endpoint:GET /assistants/{}/subgraphs/{}", "CONSUMES") ||
+      !has_edge(graph, subgraphs, "endpoint:GET /assistants/{}/subgraphs", "CONSUMES")) {
+    return fail("langgraph getSubgraphs namespace");
+  }
+  for (const auto& edge : graph.edges) {
+    if (edge.source == cgraph::make_id("/proj/w/lib/module-clients.ts:useShared") && edge.relation == "CONSUMES") {
+      return fail("a reassigned module let was read as a client: " + edge.target);
+    }
+    // Contract facts are resolve_contracts' input, never code-graph edges.
+    if (edge.relation == "langgraph_call" || edge.relation == "langgraph_client" || edge.relation == "http_call_args") {
+      return fail("a contract fact leaked into the graph: " + edge.relation + " " + edge.source + " -> " + edge.target);
+    }
+  }
+  if (built.stats.calls != 5 || built.stats.calls_unresolved != 0 || built.stats.consumes != 5) {
     std::cerr << "  calls " << built.stats.calls << " unresolved " << built.stats.calls_unresolved << " consumes "
               << built.stats.consumes << '\n';
     return fail("langgraph sdk client tally");

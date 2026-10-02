@@ -1904,9 +1904,20 @@ constexpr std::array<SdkRequest, 46> kSdkRequests = {{
       if (type == "spread_element") {
         return std::nullopt;
       }
-      if ((type == "shorthand_property_identifier" && node_text(member, source) == "namespace") ||
-          (type == "pair" && strip_string_quotes(field_text(member, "key", source)) == "namespace")) {
-        request.second = "/assistants/{}/subgraphs/{}";
+      // The SDK tests `options?.namespace` for truth: a non-empty literal picks
+      // the namespaced route, an empty one the plain route, anything else is
+      // unreadable.
+      if (type == "shorthand_property_identifier" && node_text(member, source) == "namespace") {
+        return std::nullopt;
+      }
+      if (type == "pair" && strip_string_quotes(field_text(member, "key", source)) == "namespace") {
+        const TSNode value = unwrap_expression(ts_node_child_by_field_name(member, "value", 5));
+        if (ts_node_is_null(value) || !is_string_value(value)) {
+          return std::nullopt;
+        }
+        if (!strip_string_quotes(node_text(value, source)).empty()) {
+          request.second = "/assistants/{}/subgraphs/{}";
+        }
       }
     }
   }
@@ -2010,7 +2021,8 @@ struct SdkClient {
 }
 
 // An identifier read through its one value: a block-scoped local set once, else
-// (unless a parameter shadows it) a module constant. Null otherwise.
+// (unless a parameter shadows it) a module `const`. A module `let` or `var` may
+// be reassigned anywhere in the file, so it is not read. Null otherwise.
 [[nodiscard]] TSNode single_value(const TSNode& identifier, std::string_view source) {
   const auto name = node_text(identifier, source);
   if (const auto values = local_values(identifier, name, source)) {
@@ -2019,7 +2031,14 @@ struct SdkClient {
   if (parameter_shadows(identifier, name, source)) {
     return TSNode{};
   }
-  return module_const_value(identifier, name, source);
+  const TSNode value = module_const_value(identifier, name, source);
+  for (TSNode at = value; !ts_node_is_null(at); at = ts_node_parent(at)) {
+    const std::string_view type = ts_node_type(at);
+    if (type == "lexical_declaration" || type == "variable_declaration") {
+      return std::string_view(ts_node_type(ts_node_child(at, 0))) == "const" ? value : TSNode{};
+    }
+  }
+  return TSNode{};
 }
 
 SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::string_view source, int depth) {
