@@ -401,13 +401,13 @@ Changing a route's path or mount counts as removing the old route, so its caller
 Download the current Linux x64 release and build your first graph:
 
 ```sh
-mkdir -p "$HOME/.local/lib/cgraph/bin-v0.7.3" "$HOME/.local/bin"
-curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.7.3/cgraph-linux-x64.tar.gz \
-  -o "$HOME/.local/lib/cgraph/bin-v0.7.3/cgraph.tar.gz"
-tar -xzf "$HOME/.local/lib/cgraph/bin-v0.7.3/cgraph.tar.gz" \
-  -C "$HOME/.local/lib/cgraph/bin-v0.7.3"
+mkdir -p "$HOME/.local/lib/cgraph/bin-v0.8.0" "$HOME/.local/bin"
+curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.0/cgraph-linux-x64.tar.gz \
+  -o "$HOME/.local/lib/cgraph/bin-v0.8.0/cgraph.tar.gz"
+tar -xzf "$HOME/.local/lib/cgraph/bin-v0.8.0/cgraph.tar.gz" \
+  -C "$HOME/.local/lib/cgraph/bin-v0.8.0"
 for name in cgraph graphd cgraph-client cgraph-mcp; do
-  ln -sf "$HOME/.local/lib/cgraph/bin-v0.7.3/$name" "$HOME/.local/bin/$name"
+  ln -sf "$HOME/.local/lib/cgraph/bin-v0.8.0/$name" "$HOME/.local/bin/$name"
 done
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -419,15 +419,15 @@ Open `cgraph-out/graph.html` in a browser (`open cgraph-out/graph.html` on macOS
 
 ## Install & Setup
 
-Release `bin-v0.7.3` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
+Release `bin-v0.8.0` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
 
 | Platform | Architecture | Archive |
 | --- | --- | --- |
-| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.7.3/cgraph-linux-x64.tar.gz) |
-| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.7.3/cgraph-linux-arm64.tar.gz) |
-| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.7.3/cgraph-macos-arm64.tar.gz) |
+| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.0/cgraph-linux-x64.tar.gz) |
+| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.0/cgraph-linux-arm64.tar.gz) |
+| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.0/cgraph-macos-arm64.tar.gz) |
 
-Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.7.3` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
+Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.8.0` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
 
 ### Build from source
 
@@ -523,8 +523,8 @@ Claude Code sets `CLAUDE_PROJECT_DIR` per session, so a single registration work
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.7.3/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.7.3/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.8.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.8.0/graphd
 ```
 
 Or commit a project-scoped `.mcp.json` at the repo root to share it with collaborators:
@@ -533,8 +533,8 @@ Or commit a project-scoped `.mcp.json` at the repo root to share it with collabo
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/home/you/.local/lib/cgraph/bin-v0.7.3/cgraph-mcp",
-      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.7.3/graphd"]
+      "command": "/home/you/.local/lib/cgraph/bin-v0.8.0/cgraph-mcp",
+      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.8.0/graphd"]
     }
   }
 }
@@ -548,16 +548,16 @@ Codex does not set `CLAUDE_PROJECT_DIR`, so the server falls back to the working
 
 ```sh
 codex mcp add cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.7.3/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.7.3/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.8.0/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.8.0/graphd
 ```
 
 …or edit `~/.codex/config.toml` directly (add `"--root", "/abs/path/to/your/project"` to `args` to pin a project regardless of working directory):
 
 ```toml
 [mcp_servers.cgraph]
-command = "/home/you/.local/lib/cgraph/bin-v0.7.3/cgraph-mcp"
-args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.7.3/graphd"]
+command = "/home/you/.local/lib/cgraph/bin-v0.8.0/cgraph-mcp"
+args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.8.0/graphd"]
 ```
 
 Restart Codex and run `/mcp` in the TUI to confirm.
