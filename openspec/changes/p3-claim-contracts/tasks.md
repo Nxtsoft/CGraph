@@ -10,7 +10,7 @@
 
 - [x] 2.1 `resolve_claim_reads` in step 8 of `resolve_contracts`.
 - [x] 2.2 `is_standard_jwt_claim` (IANA registry, issuer-generic names); `is_bridged_contract` false for standard claims.
-- [x] 2.3 Index version `logic-15`.
+- [x] 2.3 Index version `logic-18` (after env 15, tables 16, headers 17).
 
 ## 3. Verification
 
