@@ -1,5 +1,7 @@
 #include "cgraph/detect.hpp"
 
+#include "cgraph/configured_extractors.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -71,6 +73,12 @@ int main() {
     return 1;
   }
   if (cgraph::detect_language("migration.sql") != DetectedLanguage::Sql) {
+    return 1;
+  }
+  if (cgraph::detect_language("scripts/cypher/setup.cypher") != DetectedLanguage::Cypher ||
+      cgraph::detect_language("schema.cql") != DetectedLanguage::Cypher ||
+      cgraph::language_name(DetectedLanguage::Cypher) != "cypher" ||
+      !cgraph::has_registered_extractor(DetectedLanguage::Cypher)) {
     return 1;
   }
 

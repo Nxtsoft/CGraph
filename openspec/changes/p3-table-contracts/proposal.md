@@ -1,0 +1,36 @@
+# Tables and graph labels become contracts (Phase 3.1)
+
+## Why
+
+The Phase 3.0 foundation (`p3-contract-foundation`) mints `table:` and `label:` contract nodes from `provides_contract` / `uses_contract` facts and crosses them between repositories that a declaration puts in one database, but no extractor emitted those facts. The probe ground truth has eight database edges this track targets: ml-backend reading turing-api's tables through raw SQL strings (T28-T31), turing-agents writing turing-api's `compiq_jobs` / `compiq_reports` through a mirrored Drizzle schema (T32, T33), and idp-front-end's Cypher scripts using idp's Spring Data Neo4j `User` label and `HAS_ROLE` relationship (M39, M40).
+
+## What Changes
+
+- New `src/engine/data_contracts.cpp` (+ `data_contracts.hpp`, `tests/smoke/data_contracts_test.cpp`) emits the facts. Every fact names no database, so every contract is `table:local:` / `label:local:` until declared.
+- **Providers.** A `sql_table` a `.sql` file creates (`extract_sql`); a Drizzle model (`pgTable` / `mysqlTable` / `sqliteTable`) whose table the repo's own `.sql` files create; a Spring Data Neo4j `@Node` class (`label:<label>`, the class name when `@Node` has no value); an outgoing `@Relationship(type = "T")` on a member of that class (`label:<label>.T`).
+- **Users.** A Drizzle model whose table no `.sql` file in the repo creates (a mirrored schema), and each function handing that model to a Drizzle query builder (`.from` / `.update` / `.insert` / `.delete` / `.join` / `.innerJoin` / `.leftJoin` / `.rightJoin` / `.fullJoin`); a table after upper-case `FROM` / `JOIN` / `INSERT INTO` / `UPDATE ... SET` in a string literal (or an adjacent-literal or `+` concatenation, interpolations opaque) that opens with an upper-case `SELECT` / `INSERT` / `UPDATE` / `DELETE` / `WITH`, in Python, JavaScript / TypeScript, Kotlin and Java; labels and source-qualified relationship types in `.cypher` / `.cql` files (newly detected, language `cypher`) and in string literals opening with an upper-case `MATCH` / `OPTIONAL MATCH` / `MERGE` / `CREATE (` / `UNWIND`.
+- Hook-ins only: `extract_with_config` calls `extract_code_data_contracts` after its walk; `extract_sql` returns `sql_table_contract_facts`; `extract_non_grammar_language` dispatches `Cypher`; `resolve_contracts` step 8 also reads `orm_table_contract_facts` (the provider-or-user decision needs the whole graph); `graph_builder` skips the new `orm_table_use` raw relation.
+- Index version `logic-15`.
+
+## Design choices
+
+- **Relationship ids carry their start label.** `HAS_ROLE` is declared by four idp entities (User, Group, Tenant, Client). A bare `label:<db>:HAS_ROLE` would join every `(x)-[:HAS_ROLE]->` to all four. The id is `label:<db>:<StartLabel>.<TYPE>`: an outgoing `@Relationship` on `@Node("User")` provides `User.HAS_ROLE`, and a Cypher pattern names it only when its start node's label is known in the same statement (`(u:User)` inline, or a variable bound with a label anywhere in the statement; `;` ends the scope). An INCOMING or UNDIRECTED `@Relationship` starts at the other entity, whose label the class does not know, so it provides nothing; an undirected or unknown-start Cypher pattern uses nothing. Node labels and relationship types share the `label:` kind; the `.` cannot occur in a label, so the two never collide.
+- **Owner or mirror is decided at resolve time.** Whether the repo's own `.sql` files create a table is a whole-repo fact, so the model's fact is derived in `resolve_contracts` (the same lookup step 7's `maps_table` uses). In a mirror repo the functions passing the model to a query builder are users too (resolved through the file's imports like a router name), so a change to `compiq_jobs` reaches `updateJobStatus`, not only the schema file. In the owner repo the model is the provider and its own query sites are reached in-repo through the graph.
+- **What reads as SQL / Cypher.** Upper-case statement keywords at the start of the literal: prose such as "Select a project from the list", "Only SELECT queries are allowed" and lower-case SQL are not read (a missed edge is acceptable, a wrong join is not). Inside function-call parentheses `FROM` names no table (`EXTRACT(YEAR FROM d)`); `IS DISTINCT FROM`, CTE names, subqueries, set-returning functions (`FROM unnest(...)`), bind parameters, interpolations and `information_schema` / `pg_catalog` / `pg_*` are skipped. Comma joins (`FROM a, b`) name only the first table. Cypher comments (`//`, `/* */`) and string contents are blanked before parsing, so idp-front-end's commented-out `MERGE (u:User {` creates nothing.
+- **Test files are not read for strings.** turing-agents' `text_to_sql_agent` tests feed `SELECT id FROM users` to a SQL generator; that is not a contract. A path with a `test`, `tests`, `__tests__`, `spec`, `specs`, `testdata` or `fixtures` directory, `*.test.*`, `*.spec.*`, Python `test_*.py` / `*_test.py` / `conftest.py`, and Kotlin/Java `*Test` / `*Tests` / `*IT` is skipped for SQL and Cypher text (and `.cypher` files under those paths). Providers (migrations, models, entities) are read everywhere.
+- **DynamoDB (T34, T35) is skipped.** Its tables are not Postgres tables: putting `turing-agents-dev` into the `table:` namespace would join a Postgres table of that name in the same declared database, and T34's consumer (turing-webapp) is in no database with turing-api. The foundation has no kind for it; a key-value store contract needs its own kind and declaration.
+
+## Contract that tests verify
+
+`data_contracts_test.cpp`: SQL text (ml-backend's interpolated projection, INSERT/UPDATE/DELETE, `ON CONFLICT DO UPDATE` and `FOR UPDATE`, case folding and schema drop, CTE / subquery / `unnest` / `EXTRACT(... FROM ...)` / `IS DISTINCT FROM`, catalogs, placeholders, prose and lower-case text); Cypher text (commented block, binding, statement scope, incoming arrow, alternatives and `*1..2`, non-Cypher strings); test paths; a migration + Drizzle model providing and a Python helper / method using through the real extractors and `resolve_contracts`; a mirrored Drizzle schema used by its model and its query-builder functions but not `Array.from`; `@Node` / `@Relationship` (INCOMING skipped, `@Node` alone) used by a `.cypher` script and a `@Query` string, `Client.HAS_ROLE` not used by `(u:User)-[:HAS_ROLE]`. `index_persistence_test.cpp` `logic-15`.
+
+## Non-goals
+
+- DynamoDB table names (above); SQLAlchemy `__tablename__` and other ORMs' models; comma joins; lower-case SQL; label predicates in `WHERE u:Admin`.
+- Declarations stay manual (`--database`, manifest `databases`).
+
+## Impact
+
+- New: `src/engine/data_contracts.cpp`, `src/engine/include/cgraph/data_contracts.hpp`, `tests/smoke/data_contracts_test.cpp`.
+- Hooks: `extractor.cpp`, `non_grammar_extractors.cpp`, `contracts.cpp` (step 8), `graph_builder.cpp`, `detect.cpp` / `detect.hpp` (`Cypher`), `index_persistence.cpp`.
+- Graphs gain `table` / `label` nodes and `handled_by` / `CONSUMES` / `contains` edges, and `.cypher` / `.cql` file nodes; no existing node or edge is removed or changed (layout, community and centrality-derived properties move as the graph grows).
