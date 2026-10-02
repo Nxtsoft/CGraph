@@ -52,6 +52,13 @@ void touch_contracts(const GraphSnapshot& graph, const std::unordered_map<std::s
 [[nodiscard]] nlohmann::json cross_service_section(const CrossServiceAsk& scope, const CrossServiceContracts& contracts,
                                                    std::size_t max_contracts = 24);
 
+// One `cross_service` row as a sentence about `file`: an endpoint is served and
+// called (`src/routes.ts serves GET /api/v1/stats, called from web
+// src/stats.ts:3 (loadStats)`), any other contract provided and used
+// (`src/db.ts provides table:turing:users, used by ml ...`); a declared env
+// provider row names the service.
+[[nodiscard]] std::string cross_service_summary(const std::string& file, const nlohmann::json& row);
+
 // Builds two isolated in-memory source snapshots and validates a supplied unified
 // diff. Never edits either root or publishes into a resident daemon. Exceptions
 // reject the whole operation; callers must not emit a partial success response.

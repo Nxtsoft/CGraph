@@ -210,18 +210,46 @@ nlohmann::json env_providers_json(std::span<const EnvProvider> env) {
   return array;
 }
 
+const ContractDatabase* declared_database(std::span<const ContractDatabase> databases, std::string_view repo) {
+  const auto found = std::ranges::find_if(databases, [&](const ContractDatabase& database) {
+    return std::ranges::find(database.repos, repo) != database.repos.end();
+  });
+  return found == databases.end() ? nullptr : &*found;
+}
+
 std::optional<std::string> declared_contract_id(std::span<const ContractDatabase> databases, std::string_view repo,
                                                 std::string_view id) {
   const auto parts = split_scoped(id);
-  if (!parts || parts->database != kLocalDatabase) {
+  const auto* database = parts && parts->database == kLocalDatabase ? declared_database(databases, repo) : nullptr;
+  if (database == nullptr) {
     return std::nullopt;
   }
-  for (const auto& database : databases) {
-    if (std::ranges::find(database.repos, repo) != database.repos.end()) {
-      return std::string(parts->kind) + ":" + database.name + ":" + std::string(parts->name);
-    }
+  return std::string(parts->kind) + ":" + database->name + ":" + std::string(parts->name);
+}
+
+std::optional<std::string> crossing_id(std::span<const ContractDatabase> databases, std::span<const EnvProvider> env,
+                                       std::string_view repo, std::string_view id) {
+  if (auto declared = declared_contract_id(databases, repo, id)) {
+    return declared;
+  }
+  if (is_bridged_contract(id) || env_provider_of(env, id)) {
+    return std::string(id);
   }
   return std::nullopt;
+}
+
+std::vector<std::string> contract_spellings(std::span<const ContractDatabase> databases,
+                                            std::span<const EnvProvider> env, std::string_view repo,
+                                            std::string_view crossing) {
+  std::vector<std::string> ids;
+  if (!is_bridged_contract(crossing) && !env_provider_of(env, crossing)) {
+    return ids;
+  }
+  ids.emplace_back(crossing);
+  if (auto local = local_contract_spelling(databases, repo, crossing)) {
+    ids.push_back(std::move(*local));
+  }
+  return ids;
 }
 
 std::optional<std::string> local_contract_spelling(std::span<const ContractDatabase> databases, std::string_view repo,

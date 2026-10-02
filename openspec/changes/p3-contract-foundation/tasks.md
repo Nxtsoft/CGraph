@@ -24,3 +24,11 @@
 - [x] 4.2 Fail-before / pass-after with the `src` diff reverse-applied.
 - [x] 4.3 Probe identity: eight graphs, seam discover and fuse for both systems, against bin-v0.7.2.
 - [x] 4.4 Scorer baseline with T12 / M34 / M35 scored as HTTP.
+
+## 5. Review round 1 (PR #158)
+
+- [x] 5.1 `env:` ids cross only when declared; standard HTTP headers (IANA permanent field names, retrieved 2026-10-01, plus common tracing and proxy headers) never cross; `seam fuse` uses `--env`.
+- [x] 5.2 One crossing rule (`crossing_id`, `contract_spellings`) shared by seam, workspace and change context; a home table that names its database reaches members under their local spelling and the reverse.
+- [x] 5.3 Change context partitions repo-local contracts out before the 24-contract cap.
+- [x] 5.4 `trace_impact` serves every contract kind from its file, so a changed file touches its tables and headers.
+- [x] 5.5 The three endpoint-only requirements are MODIFIED with every existing scenario; fused declared tables carry their database; `contract_id` refuses a database `local`; extractor normalization documented; per-kind summary wording; `declared_database` reused.

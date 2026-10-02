@@ -86,8 +86,17 @@
 // services each with their own `users` table must not join). It joins another
 // repo only where a workspace manifest or a seam command declares that both
 // repos use one database (contract_declarations.hpp), which spells it
-// `table:<declared database>:<name>` at the crossing. is_bridged_contract says
-// which ids cross repositories as they are.
+// `table:<declared database>:<name>` at the crossing. An env variable likewise
+// crosses only where a declaration names the service it addresses, and a
+// standard HTTP header (`authorization`, `content-type`) never does: every
+// service uses those for its own reasons. is_bridged_contract says which ids
+// cross repositories as they are.
+//
+// Extractors normalize names before emitting a fact: an unquoted SQL
+// identifier is folded to lower case, as Postgres does (`Users` is `users`),
+// and a schema qualifier is dropped (`public.users` is `users`); a quoted
+// identifier keeps its spelling. An extractor never passes `local` as a
+// database (contract_id refuses it).
 //
 // A chain's own prefix (`new Elysia({ prefix: '/notebooks' })`,
 // `new Hono().basePath('/v1')`) is the `route_prefix` property on its variable
@@ -140,7 +149,8 @@ inline constexpr std::string_view kLocalDatabase = "local";
 
 // The id a contract of `kind` named `name` has (see the forms above). `database`
 // is used for `table` and `label` only; empty means kLocalDatabase. nullopt for
-// an unknown kind, an empty name, or a database spelled with a `:`.
+// an unknown kind, an empty name, or a database spelled with a `:` or spelled
+// `local`.
 [[nodiscard]] std::optional<std::string> contract_id(std::string_view kind, std::string_view name,
                                                      std::string_view database = {});
 
@@ -148,12 +158,21 @@ inline constexpr std::string_view kLocalDatabase = "local";
 // `env`), empty when `id` is no contract id.
 [[nodiscard]] std::string_view contract_kind_of(std::string_view id);
 
-// True for an id that is the same contract in every repository's graph, the
-// one predicate every cross-repo matcher (seam discover and fuse, workspace
-// impact and path, change context's cross_service) uses: every endpoint,
-// header, claim and env id, and a table or label in a named database. A
-// `table:local:` / `label:local:` id is not: it crosses only once declared.
+// True for an id that is the same contract in every repository's graph by
+// itself: every endpoint and claim, a header outside the standard set below,
+// and a table or label in a named database. A `table:local:` / `label:local:`
+// id, every `env:` id and a standard header are not: a table or env variable
+// crosses only where a declaration says so (contract_declarations.hpp
+// crossing_id, which every cross-repo matcher uses), a standard header never.
 [[nodiscard]] bool is_bridged_contract(std::string_view id);
+
+// True for a lowercased header name every service uses for its own reasons
+// (IANA permanent registrations, common tracing and proxy headers): it never
+// bridges repositories.
+[[nodiscard]] bool is_standard_http_header(std::string_view name);
+// The sorted table behind is_standard_http_header (`x-forwarded-*` is matched
+// by prefix and not listed).
+[[nodiscard]] std::span<const std::string_view> standard_http_headers();
 
 // True for a `table:local:` or `label:local:` id.
 [[nodiscard]] bool is_database_local_contract(std::string_view id);

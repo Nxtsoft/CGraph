@@ -1,5 +1,6 @@
 #include "cgraph/daemon_ops.hpp"
 
+#include "cgraph/contracts.hpp"
 #include "cgraph/engine.hpp"
 
 #include "cgraph/file_cache.hpp"
@@ -2301,16 +2302,16 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
     std::string_view direction, const std::set<std::string, std::less<>>& relations, int max_depth) {
   struct Link { std::string to; const Edge* edge; };
-  // An endpoint is served by the file that contains it: changing the handler
-  // file changes the endpoint, so a dependents walk that reaches the file goes
-  // on to its endpoints. A seam `service` node is a hub every endpoint of that
+  // A contract (an endpoint, a table, a header, ...) is served by the file that
+  // contains it: changing the handler or migration file changes the contract,
+  // so a dependents walk that reaches the file goes on to its contracts. A seam `service` node is a hub every endpoint of that
   // service hangs off: reached, it is reported but not walked through, or one
   // stray consumer edge floods every endpoint and every consumer.
   std::unordered_set<std::string_view> endpoints;
   std::unordered_set<std::string_view> hubs;
   std::unordered_set<std::string_view> callables;
   for (const auto& node : graph.nodes) {
-    if (node.kind == "endpoint") endpoints.insert(node.id);
+    if (!contract_kind_of(node.id).empty()) endpoints.insert(node.id);
     else if (node.kind == "service") hubs.insert(node.id);
     else if (node.kind == "function" || node.kind == "class") callables.insert(node.id);
   }

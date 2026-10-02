@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <regex>
 #include <set>
 #include <stdexcept>
@@ -384,27 +385,30 @@ Json cross_service_rows(const CrossServiceAsk& scope, const TouchedContracts& to
     section["errors"] = enclosing.workspace.errors;
     return section;
   }
-  std::vector<std::pair<std::string, const CrossServiceContract*>> ordered;
-  for (const auto& [id, entry] : touched) ordered.emplace_back(id, &entry);
-  std::ranges::stable_sort(ordered, [](const auto& a, const auto& b) { return a.second->rank < b.second->rank; });
+  const auto& workspace = enclosing.workspace;
+  // Only a contract that crosses repositories (crossing_id) is asked about or
+  // counted against `max_contracts`; a repo-local one is listed `local` after
+  // them, so two dozen local tables never crowd out a real endpoint.
+  struct Ordered {
+    std::string id;
+    const CrossServiceContract* entry;
+    std::optional<std::string> crossing;
+  };
+  std::vector<Ordered> ordered, local;
+  for (const auto& [id, entry] : touched) {
+    auto crossing = crossing_id(workspace.databases, workspace.env, enclosing.home, id);
+    (crossing ? ordered : local).push_back(Ordered{.id = id, .entry = &entry, .crossing = std::move(crossing)});
+  }
+  std::ranges::stable_sort(ordered, [](const auto& a, const auto& b) { return a.entry->rank < b.entry->rank; });
   if (ordered.size() > max_contracts) {
     section["contracts_omitted"] = ordered.size() - max_contracts;
     ordered.resize(max_contracts);
   }
   std::set<std::string> unreachable, building;
-  const auto& workspace = enclosing.workspace;
-  for (const auto& [contract, entry] : ordered) {
+  for (const auto& [contract, entry, crossing] : ordered) {
     Json listed{{"id", contract}, {"roles", Json(entry->roles)}, {"rank", entry->rank}};
     if (entry->outside_diff) listed["outside_diff"] = true;
-    // The id the other members share: a repo-local table or label only under
-    // the home repo's declared database, else nobody else's.
-    const auto shared = declared_contract_id(workspace.databases, enclosing.home, contract);
-    if (!shared && !is_bridged_contract(contract)) {
-      listed["local"] = true;
-      section["contracts"].push_back(std::move(listed));
-      continue;
-    }
-    if (shared) listed["shared_id"] = *shared;
+    if (*crossing != contract) listed["shared_id"] = *crossing;
     section["contracts"].push_back(std::move(listed));
     const bool served = entry->roles.contains("serves") || entry->roles.contains("removed") || entry->roles.contains("added");
     const bool called = entry->roles.contains("consumes");
@@ -418,39 +422,45 @@ Json cross_service_rows(const CrossServiceAsk& scope, const TouchedContracts& to
     for (const bool consumers : {true, false}) {
       if ((consumers && !served) || (!consumers && !called)) continue;
       for (const auto& repo : workspace.repos) {
-        if (repo.name == enclosing.home || unreachable.contains(repo.name)) continue;
-        // A member outside the home repo's database never shares its tables.
-        const auto id = shared ? local_contract_spelling(workspace.databases, repo.name, *shared)
-                               : std::optional<std::string>{contract};
-        if (!id) continue;
-        std::string error;
-        // Direct callers of what this change serves (CONSUMES), and the handler
-        // behind what it calls (handled_by): the code another team would touch.
-        const Json params{{"id", *id}, {"direction", consumers ? "dependents" : "dependencies"},
-                          {"relation", consumers ? "CONSUMES" : "handled_by"}, {"max_depth", 1}};
-        const auto envelope = scope.ask(repo, "impact", params, error);
-        if (!envelope || !envelope->value("ok", false)) {
-          unreachable.insert(repo.name);
-          section["unreachable"].push_back({{"repo", repo.name},
-              {"error", envelope ? envelope->value("error", std::string{"request failed"}) : error}});
-          continue;
-        }
-        const auto& answer = envelope->at("result");
-        if (answer.value("graph_state", std::string{}) == "building" && building.insert(repo.name).second)
-          section["building"].push_back(repo.name);
-        for (const auto& node : answer.value("nodes", Json::array())) {
-          const auto id = node.value("id", std::string{});
-          if (!contract_kind_of(id).empty()) continue;
-          const auto file = node.value("source_file", std::string{});
-          section["rows"].push_back({{"contract", contract}, {"rank", entry->rank},
-              {"relation", consumers ? "consumer" : "provider"},
-              {"repo", repo.name}, {"id", id}, {"label", node.value("label", std::string{})},
-              {"kind", node.value("kind", std::string{})},
-              {"path", file.empty() ? "" : fs::path(file).lexically_relative(repo.root).generic_string()},
-              {"line", node.value("line", 0)}});
+        if (repo.name == enclosing.home) continue;
+        // Every spelling the member may hold the contract under: the crossing
+        // id, and its own `table:local:` id inside the same database.
+        for (const auto& id : contract_spellings(workspace.databases, workspace.env, repo.name, *crossing)) {
+          if (unreachable.contains(repo.name)) break;
+          std::string error;
+          // Direct callers of what this change serves (CONSUMES), and the handler
+          // behind what it calls (handled_by): the code another team would touch.
+          const Json params{{"id", id}, {"direction", consumers ? "dependents" : "dependencies"},
+                            {"relation", consumers ? "CONSUMES" : "handled_by"}, {"max_depth", 1}};
+          const auto envelope = scope.ask(repo, "impact", params, error);
+          if (!envelope || !envelope->value("ok", false)) {
+            unreachable.insert(repo.name);
+            section["unreachable"].push_back({{"repo", repo.name},
+                {"error", envelope ? envelope->value("error", std::string{"request failed"}) : error}});
+            break;
+          }
+          const auto& answer = envelope->at("result");
+          if (answer.value("graph_state", std::string{}) == "building" && building.insert(repo.name).second)
+            section["building"].push_back(repo.name);
+          for (const auto& node : answer.value("nodes", Json::array())) {
+            const auto node_id = node.value("id", std::string{});
+            if (!contract_kind_of(node_id).empty()) continue;
+            const auto file = node.value("source_file", std::string{});
+            section["rows"].push_back({{"contract", contract}, {"rank", entry->rank},
+                {"relation", consumers ? "consumer" : "provider"},
+                {"repo", repo.name}, {"id", node_id}, {"label", node.value("label", std::string{})},
+                {"kind", node.value("kind", std::string{})},
+                {"path", file.empty() ? "" : fs::path(file).lexically_relative(repo.root).generic_string()},
+                {"line", node.value("line", 0)}});
+          }
         }
       }
     }
+  }
+  for (const auto& [contract, entry, crossing] : local) {
+    Json listed{{"id", contract}, {"roles", Json(entry->roles)}, {"rank", entry->rank}, {"local", true}};
+    if (entry->outside_diff) listed["outside_diff"] = true;
+    section["contracts"].push_back(std::move(listed));
   }
   auto& rows = section["rows"];
   std::stable_sort(rows.begin(), rows.end(), [](const Json& a, const Json& b) {
@@ -485,6 +495,21 @@ void touch_contracts(const GraphSnapshot& graph, const std::unordered_map<std::s
     if (reach->second.depth == 0) touch(touched, edge.target, "consumes", 1);
     else if (reach->second.depth == 1 && reach->second.via == "CALLS") touch(touched, edge.target, "consumes", 2);
   }
+}
+
+std::string cross_service_summary(const std::string& file, const Json& row) {
+  auto contract = row.value("contract", std::string{});
+  const bool consumer = row.value("relation", std::string{}) == "consumer";
+  const auto where = row.value("repo", std::string{}) + " " + row.value("path", std::string{}) + ":" +
+                     std::to_string(row.value("line", 0)) + " (" + row.value("label", std::string{}) + ")";
+  if (contract_kind_of(contract) == "endpoint") {
+    contract = contract.substr(std::string_view("endpoint:").size());
+    return file + (consumer ? " serves " : " calls ") + contract + (consumer ? ", called from " : ", served by ") + where;
+  }
+  if (row.value("kind", std::string{}) == "service") {  // a declared env provider: a service, no code location
+    return file + " uses " + contract + ", provided by the service " + row.value("repo", std::string{});
+  }
+  return file + (consumer ? " provides " : " uses ") + contract + (consumer ? ", used by " : ", provided by ") + where;
 }
 
 Json cross_service_section(const CrossServiceAsk& scope, const CrossServiceContracts& contracts,

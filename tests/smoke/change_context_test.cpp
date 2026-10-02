@@ -57,7 +57,13 @@ void test_contract_crossings() {
     cgraph::Node node{.id = std::string("app_") + name, .label = name, .source_file = "/app/src/app.ts", .kind = "function"};
     graph.nodes.push_back(std::move(node));
   }
+  // A migration file whose one function creates `orders`: a change seeded at
+  // the file (not the function) reaches the table through `contains`.
+  graph.nodes.push_back(cgraph::Node{.id = "db_orders_ts", .label = "orders.ts", .source_file = "/app/db/orders.ts", .kind = "file"});
+  graph.nodes.push_back(cgraph::Node{.id = "db_createOrders", .label = "createOrders", .source_file = "/app/db/orders.ts", .kind = "function"});
+  graph.edges.push_back({.source = "db_orders_ts", .target = "db_createOrders", .relation = "contains"});
   const std::vector<cgraph::RawRelation> facts{
+      {.source_id = "db_createOrders", .relation = "provides_contract", .context = "table:orders", .source_file = "/app/db/orders.ts"},
       {.source_id = "app_readTenant", .relation = "provides_contract", .context = "header:X-Tenant-Id", .source_file = "/app/src/app.ts"},
       {.source_id = "app_createUsers", .relation = "provides_contract", .context = "table:users", .source_file = "/app/src/app.ts"},
       {.source_id = "app_sendTenant", .relation = "uses_contract", .context = "header:x-org-id", .source_file = "/app/src/app.ts"},
@@ -81,6 +87,10 @@ void test_contract_crossings() {
   require(client.contains("header:x-org-id") && client.at("header:x-org-id").roles.contains("consumes") &&
               client.at("header:x-org-id").rank == 1 && client.contains("env:ML_URL"),
           "a change to the code sending a header uses it");
+  const auto file = touched_by("db_orders_ts");
+  require(file.contains("table:local:orders") && file.at("table:local:orders").roles.contains("serves") &&
+              file.at("table:local:orders").rank == 1,
+          "a change seeded at a migration file serves the table it contains");
 
   const auto ws = output / "contract-crossings";
   for (const auto* repo : {"api", "ml", "web", "billing"}) fs::create_directories(ws / repo);
@@ -105,6 +115,12 @@ void test_contract_crossings() {
           return impact_of({{{"id", "ml_listUsers"}, {"label", "listUsers"}, {"kind", "function"}, {"line", 4}}});
         if (repo.name == "billing" && id == "table:local:users")
           return impact_of({{{"id", "billing_chargeUsers"}, {"label", "chargeUsers"}, {"kind", "function"}}});
+        if (repo.name == "ml" && id == "table:local:audit")
+          return impact_of({{{"id", "ml_writeAudit"}, {"label", "writeAudit"}, {"kind", "function"}}});
+        if (repo.name == "web" && id == "table:turing:users")
+          return impact_of({{{"id", "web_reportUsers"}, {"label", "reportUsers"}, {"kind", "function"}}});
+        if (repo.name == "web" && id == "endpoint:GET /api/v1/stats")
+          return impact_of({{{"id", "web_loadStats"}, {"label", "loadStats"}, {"kind", "function"}}});
         if (repo.name == "web" && id == "header:x-tenant-id")
           return impact_of({{{"id", "web_sendTenant"}, {"label", "sendTenant"}, {"kind", "function"}},
                             {{"id", "header:x-tenant-id"}, {"label", "x-tenant-id"}, {"kind", "header"}}});
@@ -114,8 +130,11 @@ void test_contract_crossings() {
   touched["table:local:users"].roles.insert("serves");
   touched["header:x-tenant-id"].roles.insert("serves");
   touched["env:ML_URL"].roles.insert("consumes");
+  // The home repo's own extractor named the database: members still answer
+  // under their local spelling, and a non-member under the named one.
+  touched["table:turing:audit"].roles.insert("serves");
   const auto section = cgraph::cross_service_section(scope, touched);
-  bool ml_row = false, web_row = false, env_row = false;
+  bool ml_row = false, web_row = false, env_row = false, audit_row = false, named_row = false;
   for (const auto& row : section["rows"]) {
     const auto id = row.value("id", std::string{});
     require(id != "billing_chargeUsers", "a member outside the database was reached through a repo-local table");
@@ -125,8 +144,14 @@ void test_contract_crossings() {
     env_row = env_row || (row["contract"] == "env:ML_URL" && row["repo"] == "ml" && row["kind"] == "service" &&
                           row["relation"] == "provider");
   }
+  for (const auto& row : section["rows"]) {
+    audit_row = audit_row || (row["id"] == "ml_writeAudit" && row["contract"] == "table:turing:audit");
+    named_row = named_row || (row["id"] == "web_reportUsers" && row["contract"] == "table:local:users");
+  }
+  require(audit_row, "a member answers a home table that names its database under its own local spelling: " + section.dump());
+  require(named_row, "a non-member holding the database's named spelling answers a home local table: " + section.dump());
   require(ml_row && web_row && env_row, "cross_service rows across a database, a header and an env: " + section.dump());
-  for (const auto& call : asked) require(!call.starts_with("billing:impact:table"), "an outsider was asked for a local table");
+  for (const auto& call : asked) require(!call.starts_with("billing:impact:table:local:"), "an outsider was asked under its own local spelling");
   require(std::ranges::find(asked, std::string("ml:impact:table:local:users")) != asked.end(),
           "a database member is asked under its own spelling");
 
@@ -136,6 +161,37 @@ void test_contract_crossings() {
   const auto alone = cgraph::cross_service_section(scope, {{"table:local:users", {.roles = {"serves"}}}});
   require(alone["rows"].empty() && asked.empty() && alone["contracts"][0].value("local", false),
           "an undeclared repo-local table is listed local and asked of nobody: " + alone.dump());
+
+  // Two dozen repo-local tables never crowd a real endpoint out of the cap.
+  cgraph::CrossServiceContracts crowded;
+  for (int i = 0; i < 25; ++i) {
+    auto& entry = crowded["table:local:t" + std::to_string(i)];
+    entry.roles.insert("serves");
+    entry.rank = 0;
+  }
+  crowded["endpoint:GET /api/v1/stats"] = {.roles = {"serves"}, .rank = 1};
+  const auto capped = cgraph::cross_service_section(scope, crowded, 24);
+  bool stats_row = false;
+  for (const auto& row : capped["rows"]) stats_row = stats_row || row["id"] == "web_loadStats";
+  require(stats_row && !capped.contains("contracts_omitted"),
+          "repo-local contracts crowded an endpoint out of max_contracts: " + capped.dump());
+
+  // The summary reads per kind.
+  const Json endpoint_row{{"contract", "endpoint:GET /api/v1/stats"}, {"relation", "consumer"}, {"repo", "web"},
+                          {"path", "src/stats.ts"}, {"line", 3}, {"label", "loadStats"}, {"kind", "function"}};
+  const Json table_row{{"contract", "table:turing:users"}, {"relation", "consumer"}, {"repo", "ml"},
+                       {"path", "ops/db.py"}, {"line", 9}, {"label", "listUsers"}, {"kind", "function"}};
+  const Json header_row{{"contract", "header:x-org-id"}, {"relation", "provider"}, {"repo", "api"},
+                        {"path", "src/auth.ts"}, {"line", 4}, {"label", "readOrg"}, {"kind", "function"}};
+  require(cgraph::cross_service_summary("src/routes.ts", endpoint_row) ==
+              "src/routes.ts serves GET /api/v1/stats, called from web src/stats.ts:3 (loadStats)",
+          "endpoint summary");
+  require(cgraph::cross_service_summary("db/schema.sql", table_row) ==
+              "db/schema.sql provides table:turing:users, used by ml ops/db.py:9 (listUsers)",
+          "table summary: " + cgraph::cross_service_summary("db/schema.sql", table_row));
+  require(cgraph::cross_service_summary("src/client.ts", header_row) ==
+              "src/client.ts uses header:x-org-id, provided by api src/auth.ts:4 (readOrg)",
+          "header summary");
 }
 }
 int main() {

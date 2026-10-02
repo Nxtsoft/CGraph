@@ -747,8 +747,12 @@ int test_impact_and_path_cross_a_header(const fs::path& root) {
   const auto workspace = workspace_of(root, {{"api", root / "api"}, {"web", root / "web"}});
   const std::string header = "header:x-tenant-id";
   FakeRepos repos;
-  repos.answers["api"]["impact:api::readTenant"] = impact_ok({contract_brief(header, 1, true)});
+  repos.answers["api"]["impact:api::readTenant"] = impact_ok(
+      {contract_brief(header, 1, true), contract_brief("header:authorization", 1, true), contract_brief("env:NODE_ENV", 1, false)});
   repos.answers["web"]["impact:" + header] = impact_ok({node("web::sendTenant", 1)});
+  // web also sends Authorization and reads NODE_ENV, as every service does.
+  repos.answers["web"]["impact:header:authorization"] = impact_ok({node("web::fetchWithToken", 1)});
+  repos.answers["web"]["impact:env:NODE_ENV"] = impact_ok({node("web::isProduction", 1)});
   const auto response = cgraph::federate_workspace_request(
       workspace, "impact", json{{"id", "api::readTenant"}, {"direction", "dependents"}, {"max_depth", 3}}, repos.ask());
   bool crossed = false;
@@ -760,6 +764,12 @@ int test_impact_and_path_cross_a_header(const fs::path& root) {
   if (!crossed || bridged.size() != 1 || bridged[0].value("contract", std::string{}) != header || bridged[0].contains("endpoint")) {
     std::cerr << response.dump(2) << '\n';
     return fail("impact crosses from the server reading a header to the client sending it");
+  }
+  for (const auto& hit : response["result"]["nodes"]) {
+    if (hit["id"] == "web::fetchWithToken" || hit["id"] == "web::isProduction") {
+      std::cerr << response.dump(2) << '\n';
+      return fail("impact crossed at a standard header or an undeclared env variable");
+    }
   }
   repos.answers["web"]["impact:web::sendTenant"] = impact_ok({contract_brief(header, 1, false)});
   repos.answers["api"]["impact:" + header] = impact_ok({node("api::readTenant", 1)});
@@ -788,6 +798,28 @@ int test_impact_and_path_cross_a_header(const fs::path& root) {
       path["result"]["bridged_through"] != header) {
     std::cerr << path.dump(2) << '\n';
     return fail("path joins two repos at a header");
+  }
+  // Two unrelated repos that both read NODE_ENV or send Authorization share no path.
+  repos.answers["web"]["impact:web::isProduction"] =
+      impact_ok({contract_brief("env:NODE_ENV", 1, false), contract_brief("header:authorization", 1, false)});
+  repos.answers["api"]["impact:env:NODE_ENV"] = impact_ok({node("api::readTenant", 1)});
+  repos.answers["web"]["path:web::isProduction->env:NODE_ENV"] =
+      json{{"ok", true}, {"result", {{"path", {"web::isProduction", "env:NODE_ENV"}},
+                                     {"path_nodes", {{{"id", "web::isProduction"}}, {{"id", "env:NODE_ENV"}}}}}}};
+  repos.answers["web"]["path:web::isProduction->header:authorization"] =
+      json{{"ok", true}, {"result", {{"path", {"web::isProduction", "header:authorization"}},
+                                     {"path_nodes", {{{"id", "web::isProduction"}}, {{"id", "header:authorization"}}}}}}};
+  repos.answers["api"]["path:env:NODE_ENV->api::readTenant"] =
+      json{{"ok", true}, {"result", {{"path", {"env:NODE_ENV", "api::readTenant"}},
+                                     {"path_nodes", {{{"id", "env:NODE_ENV"}}, {{"id", "api::readTenant"}}}}}}};
+  repos.answers["api"]["path:header:authorization->api::readTenant"] =
+      json{{"ok", true}, {"result", {{"path", {"header:authorization", "api::readTenant"}},
+                                     {"path_nodes", {{{"id", "header:authorization"}}, {{"id", "api::readTenant"}}}}}}};
+  const auto unrelated = cgraph::federate_workspace_request(
+      workspace, "path", json{{"source", "web::isProduction"}, {"target", "api::readTenant"}}, repos.ask());
+  if (!unrelated["result"]["path"].empty()) {
+    std::cerr << unrelated.dump(2) << '\n';
+    return fail("path bridged two repos through NODE_ENV or Authorization");
   }
   return 0;
 }

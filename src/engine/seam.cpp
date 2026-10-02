@@ -209,7 +209,8 @@ bool fail(SeamResult& result, std::string message) {
 
 SeamFuseResult fuse_seam(const Fragment& seam,
                          const std::vector<std::pair<std::string, GraphSnapshot>>& services,
-                         std::span<const EndpointPrefix> prefixes, std::span<const ContractDatabase> databases) {
+                         std::span<const EndpointPrefix> prefixes, std::span<const ContractDatabase> databases,
+                         std::span<const EnvProvider> env) {
   SeamFuseResult result;
   result.ok = true;
 
@@ -237,17 +238,14 @@ SeamFuseResult fuse_seam(const Fragment& seam,
 
   // Node ids are project-relative, so two services can both own `src_db_client_ts`.
   // Scope every service-local id by its service; contract ids are shared on
-  // purpose, since that is where a provider and its consumers meet. A
-  // `table:local:` id is a service's own unless a declared database spells it
-  // as that database's, the spelling discover_seam joined it at.
-  auto shared_id = [](std::string_view id) {
-    return is_bridged_contract(id) || id.starts_with("service:") || id.starts_with("schema:");
-  };
+  // purpose, since that is where a provider and its consumers meet: the ids
+  // crossing_id gives, the spelling discover_seam joined them at. A
+  // `table:local:` id or an undeclared env id is a service's own.
   auto scoped = [&](const std::string& service, const std::string& id) {
-    if (auto declared = declared_contract_id(databases, service, id)) {
-      return std::move(*declared);
+    if (auto shared = crossing_id(databases, env, service, id)) {
+      return std::move(*shared);
     }
-    return shared_id(id) || service.empty() ? id : service + "::" + id;
+    return id.starts_with("service:") || id.starts_with("schema:") || service.empty() ? id : service + "::" + id;
   };
 
   // 1. Service code graphs: one community per service; real service nodes are authoritative.
@@ -296,6 +294,9 @@ SeamFuseResult fuse_seam(const Fragment& seam,
       }
       Node tagged = node;
       tagged.id = scoped(name, node.id);
+      if (declared_contract_id(databases, name, node.id)) {
+        tagged.properties["database"] = declared_database(databases, name)->name;  // was `local`
+      }
       tagged.properties["community"] = name;
       tagged.properties.try_emplace("service", name);
       put(std::move(tagged), /*authoritative=*/true);
@@ -699,10 +700,11 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
       }
     }
     for (const auto& node : graph.nodes()) {
-      // Every contract that is the same id in every graph joins here; a
-      // repo-local table or label only under a database its repo declares.
-      const auto declared = declared_contract_id(databases, name, node.id);
-      if (!declared && !is_bridged_contract(node.id)) {
+      // Every contract that crosses repositories joins here (crossing_id): a
+      // repo-local table or label only under a database its repo declares, an
+      // env variable only when declared.
+      const auto shared = crossing_id(databases, env, name, node.id);
+      if (!shared) {
         continue;
       }
       const bool served = handled.contains(node.id);
@@ -712,7 +714,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
         continue;
       }
       Node endpoint;
-      endpoint.id = declared.value_or(node.id);
+      endpoint.id = *shared;
       endpoint.label = node.label;
       endpoint.kind = node.kind;
       for (const auto* key : {"method", "path", "name", "database"}) {
@@ -720,12 +722,10 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
           endpoint.properties[key] = value->second;
         }
       }
-      if (declared) {
-        const auto database = std::ranges::find_if(databases, [&](const ContractDatabase& entry) {
-          return std::ranges::find(entry.repos, name) != entry.repos.end();
-        });
+      if (*shared != node.id) {  // a member's repo-local table, joined at its database's id
+        const auto* database = declared_database(databases, name);
         endpoint.properties["database"] = database->name;
-        ++mapped_per_database[static_cast<std::size_t>(database - databases.begin())];
+        ++mapped_per_database[static_cast<std::size_t>(database - databases.data())];
       }
       // A call this service only consumes, through its own proxy prefix, joins
       // at the path the proxy forwards to. Its own spelling stays on the edge.

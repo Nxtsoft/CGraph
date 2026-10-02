@@ -39,6 +39,38 @@ int test_database_spelling() {
   return 0;
 }
 
+// The one crossing rule: a member's local table crosses at its database's id,
+// a declared env id is itself, an undeclared env id and a standard header
+// cross nowhere. The spellings of a crossing in a member are the crossing id
+// and, inside its database, its own local id, whichever spelling the home
+// repo's graph used.
+int test_crossing_and_spellings() {
+  const std::vector<cgraph::ContractDatabase> databases{{.name = "turing", .repos = {"api", "ml"}}};
+  const std::vector<cgraph::EnvProvider> env{{.name = "API_URL", .service = "api"}};
+  if (cgraph::crossing_id(databases, env, "ml", "table:local:users") != "table:turing:users" ||
+      cgraph::crossing_id(databases, env, "api", "table:turing:users") != "table:turing:users" ||
+      cgraph::crossing_id(databases, env, "web", "table:local:users") ||
+      cgraph::crossing_id(databases, env, "web", "env:API_URL") != "env:API_URL" ||
+      cgraph::crossing_id(databases, env, "web", "env:NODE_ENV") ||
+      cgraph::crossing_id(databases, env, "web", "header:authorization") ||
+      cgraph::crossing_id(databases, env, "web", "header:x-tenant-id") != "header:x-tenant-id") {
+    return fail("crossing_id");
+  }
+  using Ids = std::vector<std::string>;
+  if (cgraph::contract_spellings(databases, env, "ml", "table:turing:users") != Ids{"table:turing:users", "table:local:users"} ||
+      cgraph::contract_spellings(databases, env, "web", "table:turing:users") != Ids{"table:turing:users"} ||
+      cgraph::contract_spellings(databases, env, "ml", "env:API_URL") != Ids{"env:API_URL"} ||
+      !cgraph::contract_spellings(databases, env, "ml", "env:NODE_ENV").empty() ||
+      !cgraph::contract_spellings(databases, env, "ml", "table:local:users").empty() ||
+      !cgraph::contract_spellings(databases, env, "ml", "header:accept").empty()) {
+    return fail("contract_spellings");
+  }
+  if (cgraph::declared_database(databases, "ml") != &databases[0] || cgraph::declared_database(databases, "web") != nullptr) {
+    return fail("declared_database");
+  }
+  return 0;
+}
+
 int test_env_provider() {
   const std::vector<cgraph::EnvProvider> env{{.name = "ML_BACKEND_URL", .service = "ml"}};
   if (cgraph::env_provider_of(env, "env:ML_BACKEND_URL") != "ml" || cgraph::env_provider_of(env, "env:ml_backend_url") ||
@@ -128,6 +160,7 @@ int main() {
   int failures = 0;
   failures += test_database_spelling();
   failures += test_env_provider();
+  failures += test_crossing_and_spellings();
   failures += test_parse_and_validate();
   return failures == 0 ? 0 : 1;
 }

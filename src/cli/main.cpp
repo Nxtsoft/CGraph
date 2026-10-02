@@ -750,7 +750,7 @@ int run_seam_fuse(int argc, char** argv) {
     services.emplace_back(name, cgraph::parse_node_link_graph(graph_json));
   }
 
-  const auto fused = cgraph::fuse_seam(seam, services, prefixes, databases);
+  const auto fused = cgraph::fuse_seam(seam, services, prefixes, databases, env);
   if (!fused.ok) {
     for (const auto& error : fused.errors) {
       std::cerr << "seam fuse: ERROR: " << error << '\n';

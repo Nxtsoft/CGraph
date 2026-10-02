@@ -21,10 +21,12 @@
 // are never rewritten, so a repo's graph does not depend on which workspace it
 // sits in, and an undeclared repo's tables never join anyone's.
 //
-// Env names are global (`env:<NAME>`), but nothing in the consumer's code says
-// which service a variable such as `ML_BACKEND_URL` addresses. A declaration
-// `{"name": "ML_BACKEND_URL", "service": "ml-backend"}` says it: `env:ML_BACKEND_URL`
-// is provided by the member `ml-backend`.
+// An env variable is no evidence by its name alone: every service reads
+// `NODE_ENV`, and nothing in a consumer's code says which service
+// `ML_BACKEND_URL` addresses. `env:<NAME>` therefore crosses repositories only
+// when declared: `{"name": "ML_BACKEND_URL", "service": "ml-backend"}` makes
+// `env:ML_BACKEND_URL` a shared contract provided by the member `ml-backend`;
+// an undeclared env id stays in its repo like a `table:local:` one.
 namespace cgraph {
 
 struct ContractDatabase {
@@ -74,6 +76,27 @@ struct EnvProvider {
 // declared in `<database>`; nullopt otherwise.
 [[nodiscard]] std::optional<std::string> local_contract_spelling(std::span<const ContractDatabase> databases,
                                                                  std::string_view repo, std::string_view contract);
+
+// The database `repo` is declared in, or nullptr.
+[[nodiscard]] const ContractDatabase* declared_database(std::span<const ContractDatabase> databases,
+                                                       std::string_view repo);
+
+// The id `repo`'s contract `id` crosses repositories at, or nullopt when it
+// stays in `repo`: a member's `table:local:` / `label:local:` id is its
+// database's spelling, a declared env id is itself, any id is_bridged_contract
+// accepts is itself. The one rule seam discover/fuse, workspace impact/path
+// and change context's cross_service share.
+[[nodiscard]] std::optional<std::string> crossing_id(std::span<const ContractDatabase> databases,
+                                                     std::span<const EnvProvider> env, std::string_view repo,
+                                                     std::string_view id);
+
+// Every id `repo`'s graph may hold the crossing contract `crossing` under: the
+// crossing id itself, and for `table:<database>:<name>` the repo's own
+// `table:local:<name>` when it is declared in that database. Empty when the
+// id crosses nowhere (crossing_id would never return it).
+[[nodiscard]] std::vector<std::string> contract_spellings(std::span<const ContractDatabase> databases,
+                                                          std::span<const EnvProvider> env, std::string_view repo,
+                                                          std::string_view crossing);
 
 // The member declared to provide `env:<NAME>`; nullopt when none is or `id` is
 // no env id.

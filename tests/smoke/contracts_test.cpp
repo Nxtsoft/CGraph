@@ -1381,6 +1381,8 @@ int test_generic_contract_facts() {
       fact("uses_contract", send_tenant, "claim:"),
       fact("uses_contract", list_users, "table:users", "a:b"),
       fact("uses_contract", "nobody", "header:x-tenant-id"),
+      // An extractor may not spell the reserved scope of undeclared tables.
+      fact("uses_contract", list_users, "table:accounts", "local"),
   };
   cgraph::resolve_contracts(graph, facts, &built.stats);
 
@@ -1426,7 +1428,10 @@ int test_generic_contract_facts() {
   }
   // Read through the stats JSON, as stats.json and `status` report it.
   const auto tally = cgraph::contract_resolution_json(built.stats);
-  if (tally.value("contract_facts", 0) != 13 || tally.value("contract_facts_unresolved", 0) != 5 ||
+  if (node_of(graph, "table:local:accounts") != nullptr) {
+    return fail("an extractor-supplied database `local` minted a table");
+  }
+  if (tally.value("contract_facts", 0) != 14 || tally.value("contract_facts_unresolved", 0) != 6 ||
       tally.value("contracts_provided", 0) != 2 || tally.value("contracts_external", 0) != 4 ||
       tally.value("contract_consumes", 0) != 6) {
     std::cerr << "  " << tally.dump() << '\n';
@@ -1440,6 +1445,46 @@ int test_generic_contract_facts() {
       !cgraph::is_bridged_contract("endpoint:GET /users") || cgraph::is_bridged_contract("src_db_client_ts") ||
       cgraph::is_bridged_contract("service:api")) {
     return fail("is_bridged_contract");
+  }
+  // Every service reads NODE_ENV and sends Authorization: an env name crosses
+  // only when declared, a standard header never.
+  if (cgraph::is_bridged_contract("env:NODE_ENV") || cgraph::is_bridged_contract("env:ML_BACKEND_URL") ||
+      cgraph::is_bridged_contract("header:authorization") || cgraph::is_bridged_contract("header:content-type") ||
+      cgraph::is_bridged_contract("header:x-forwarded-for") || cgraph::is_bridged_contract("header:x-request-id") ||
+      cgraph::is_bridged_contract("header:traceparent") || !cgraph::is_bridged_contract("header:x-act-as-org") ||
+      !cgraph::is_bridged_contract("claim:org_id")) {
+    return fail("env ids and standard headers never bridge by themselves");
+  }
+  return 0;
+}
+
+// The standard header table is sorted and unique (binary search depends on
+// it), lowercased, and holds the IANA permanent names and the de-facto ones.
+int test_standard_http_headers() {
+  const auto table = cgraph::standard_http_headers();
+  for (std::size_t i = 1; i < table.size(); ++i) {
+    if (!(table[i - 1] < table[i])) {
+      return fail("standard header table is not sorted and unique at " + std::string(table[i]));
+    }
+  }
+  for (const auto name : table) {
+    for (const char ch : name) {
+      if (ch >= 'A' && ch <= 'Z') {
+        return fail("standard header table holds an uppercase name: " + std::string(name));
+      }
+    }
+  }
+  for (const auto* name : {"accept", "authorization", "content-type", "cookie", "host", "if-none-match", "user-agent",
+                           "www-authenticate", "x-request-id", "x-real-ip", "x-correlation-id", "traceparent",
+                           "tracestate", "baggage", "x-forwarded-proto", "x-forwarded-host"}) {
+    if (!cgraph::is_standard_http_header(name)) {
+      return fail(std::string("a standard header is not in the table: ") + name);
+    }
+  }
+  for (const auto* name : {"x-tenant-id", "x-act-as-org", "x-webapp-env", "x-api-key-id", "x-forwarded"}) {
+    if (cgraph::is_standard_http_header(name)) {
+      return fail(std::string("an application header is in the standard table: ") + name);
+    }
   }
   return 0;
 }
@@ -1468,5 +1513,6 @@ int main() {
   failures += test_first_parameter_wrapper_options();
   failures += test_langgraph_sdk_clients();
   failures += test_generic_contract_facts();
+  failures += test_standard_http_headers();
   return failures == 0 ? 0 : 1;
 }

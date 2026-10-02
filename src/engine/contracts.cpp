@@ -42,6 +42,52 @@ constexpr std::string_view kRoutePrefix = "route_prefix";
 constexpr std::string_view kProvidesContractRelation = "provides_contract";
 constexpr std::string_view kUsesContractRelation = "uses_contract";
 constexpr std::array<std::string_view, 5> kContractKinds = {"table", "label", "header", "claim", "env"};
+// HTTP headers every service sends or reads for its own reasons
+// (`authorization`, `content-type`): two repos naming one are not evidence that
+// they talk to each other, so a standard header never bridges repositories.
+// The permanent entries of the IANA HTTP Field Name Registry
+// (https://www.iana.org/assignments/http-fields/field-names.csv, registry last
+// updated 2026-08-28, retrieved 2026-10-01; `*` dropped), lowercased, plus the
+// de-facto tracing and proxy headers x-request-id, x-real-ip, x-correlation-id,
+// traceparent, tracestate and baggage. Every `x-forwarded-*` header is standard
+// too (is_standard_http_header). Sorted for binary search.
+constexpr std::array<std::string_view, 192> kStandardHttpHeaders = {
+    "a-im", "accept", "accept-additions", "accept-ch", "accept-datetime", "accept-encoding",
+    "accept-features", "accept-language", "accept-patch", "accept-post", "accept-query", "accept-ranges",
+    "accept-signature", "access-control-allow-credentials", "access-control-allow-headers",
+    "access-control-allow-methods", "access-control-allow-origin", "access-control-expose-headers",
+    "access-control-max-age", "access-control-request-headers", "access-control-request-method", "age",
+    "allow", "alpn", "alt-svc", "alt-used", "alternates", "apply-to-redirect-ref", "authentication-control",
+    "authentication-info", "authorization", "available-dictionary", "baggage", "cache-control",
+    "cache-group-invalidation", "cache-groups", "cache-status", "cal-managed-id", "caldav-timezones",
+    "capsule-protocol", "cdn-cache-control", "cdn-loop", "cert-not-after", "cert-not-before",
+    "clear-site-data", "client-cert", "client-cert-chain", "close", "concealed-auth-export",
+    "connect-udp-bind", "connection", "content-digest", "content-disposition", "content-encoding",
+    "content-language", "content-length", "content-location", "content-range", "content-security-policy",
+    "content-security-policy-report-only", "content-type", "cookie", "cross-origin-embedder-policy",
+    "cross-origin-embedder-policy-report-only", "cross-origin-opener-policy",
+    "cross-origin-opener-policy-report-only", "cross-origin-resource-policy", "dasl", "date", "dav",
+    "delta-base", "deprecation", "depth", "destination", "detached-jws", "dictionary-id", "dpop",
+    "dpop-nonce", "early-data", "etag", "expect", "expires", "forwarded", "from", "hobareg", "host", "if",
+    "if-match", "if-modified-since", "if-none-match", "if-range", "if-schedule-tag-match",
+    "if-unmodified-since", "im", "include-referred-token-binding-id", "incremental", "keep-alive", "label",
+    "last-event-id", "last-modified", "link", "link-template", "location", "lock-token", "max-forwards",
+    "memento-datetime", "meter", "mime-version", "negotiate", "nel", "odata-entityid", "odata-isolation",
+    "odata-maxversion", "odata-version", "optional-www-authenticate", "ordering-type", "origin",
+    "origin-agent-cluster", "oscore", "oslc-core-version", "overwrite", "ping-from", "ping-to", "position",
+    "prefer", "preference-applied", "priority", "proxy-authenticate", "proxy-authentication-info",
+    "proxy-authorization", "proxy-public-address", "proxy-status", "public-key-pins",
+    "public-key-pins-report-only", "range", "redirect-ref", "referer", "referrer-policy", "refresh",
+    "replay-nonce", "repr-digest", "retry-after", "schedule-reply", "schedule-tag", "sec-fetch-dest",
+    "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user", "sec-purpose", "sec-token-binding",
+    "sec-websocket-accept", "sec-websocket-extensions", "sec-websocket-key", "sec-websocket-protocol",
+    "sec-websocket-version", "server", "server-timing", "set-cookie", "set-txn", "signature",
+    "signature-input", "slug", "soapaction", "status-uri", "strict-transport-security", "sunset", "tcn", "te",
+    "timeout", "topic", "traceparent", "tracestate", "trailer", "transfer-encoding", "ttl",
+    "unencoded-digest", "upgrade", "urgency", "use-as-dictionary", "user-agent", "variant-vary", "vary",
+    "via", "want-content-digest", "want-repr-digest", "want-unencoded-digest", "www-authenticate",
+    "x-content-type-options", "x-correlation-id", "x-frame-options", "x-real-ip", "x-request-id",
+};
 // A chain mounted under many parents serves its routes at every mount path.
 // Real code mounts a router once or twice; past this the mount graph is not a
 // router tree but something the walk should not keep unrolling.
@@ -91,6 +137,12 @@ struct MethodPath {
 
 }  // namespace
 
+std::span<const std::string_view> standard_http_headers() { return kStandardHttpHeaders; }
+
+bool is_standard_http_header(std::string_view name) {
+  return name.starts_with("x-forwarded-") || std::ranges::binary_search(kStandardHttpHeaders, name);
+}
+
 bool is_contract_kind(std::string_view kind) {
   return std::ranges::find(kContractKinds, kind) != kContractKinds.end();
 }
@@ -100,7 +152,9 @@ std::optional<std::string> contract_id(std::string_view kind, std::string_view n
     return std::nullopt;
   }
   if (database_scoped(kind)) {
-    if (database.find(':') != std::string_view::npos) {
+    // `local` is the scope of a table nobody named a database for; an extractor
+    // spelling it would claim a declaration it cannot make.
+    if (database.find(':') != std::string_view::npos || database == kLocalDatabase) {
       return std::nullopt;
     }
     const auto scope = database.empty() ? kLocalDatabase : database;
@@ -126,7 +180,11 @@ bool is_database_local_contract(std::string_view id) {
 }
 
 bool is_bridged_contract(std::string_view id) {
-  return !contract_kind_of(id).empty() && !is_database_local_contract(id);
+  const auto kind = contract_kind_of(id);
+  if (kind.empty() || kind == "env" || is_database_local_contract(id)) {
+    return false;  // an env variable bridges only where a declaration names its service
+  }
+  return kind != "header" || !is_standard_http_header(id.substr(kind.size() + 1));
 }
 
 bool is_http_verb(std::string_view verb) {

@@ -177,26 +177,23 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
 }
 
 // The id every repo shares for a contract `repo` reached, or nullopt when it
-// crosses nowhere: a repo-local table or label is the declared database's
-// spelling when `repo` declares one (contract_declarations.hpp), else local to
-// `repo`; an endpoint the repo only consumes under one of its prefixes is the
-// proxied spelling when it may cross there; any other bridged contract is
-// the id itself.
+// crosses nowhere (crossing_id, contract_declarations.hpp: a repo-local table
+// only under a declared database, an env variable only when declared); an
+// endpoint the repo only consumes under one of its prefixes is the proxied
+// spelling when it may cross there.
 [[nodiscard]] std::optional<std::string> shared_contract(const Workspace& workspace, const WorkspaceRepo& repo,
                                                          const nlohmann::json& brief, const RepoAsk& ask) {
-  auto id = brief.value("id", std::string{});
-  if (auto declared = declared_contract_id(workspace.databases, repo.name, id)) {
-    return declared;
-  }
-  if (!is_bridged_contract(id)) {
-    return std::nullopt;
+  const auto id = brief.value("id", std::string{});
+  auto shared = crossing_id(workspace.databases, workspace.env, repo.name, id);
+  if (!shared || *shared != id) {
+    return shared;
   }
   if (is_placeholder(brief)) {
     if (auto proxied = proxied_contract(workspace, repo, id, ask)) {
       return proxied;
     }
   }
-  return id;
+  return shared;
 }
 
 // The ids to ask `repo` for when crossing at `contract`: the contract itself,
@@ -207,10 +204,9 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
 // other repos, never to its own routes.
 [[nodiscard]] std::vector<std::string> spellings_in(const Workspace& workspace, const WorkspaceRepo& repo,
                                                     const std::string& contract, const RepoAsk& ask) {
-  std::vector<std::string> ids{contract};
-  if (auto local = local_contract_spelling(workspace.databases, repo.name, contract)) {
-    ids.push_back(std::move(*local));
-    return ids;
+  auto ids = contract_spellings(workspace.databases, workspace.env, repo.name, contract);
+  if (ids.size() != 1) {
+    return ids;  // crosses nowhere, or a database member's own spelling: no proxy applies
   }
   auto spellings = consumer_spellings(workspace.prefixes, repo.name, contract);
   if (spellings.empty() || !proxy_crosses_in(workspace, repo, contract, ask)) {
@@ -403,7 +399,7 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   // already covered it). The contract is not asked back of those repos.
   std::map<std::string, std::set<std::string>> proxied_from;
   std::map<std::string, std::set<std::string>> reached_in;
-  if (is_bridged_contract(seed)) {
+  if (crossing_id(workspace.databases, workspace.env, {}, seed) == seed) {
     contracts.emplace(seed, 0);
     // A seed spelled the way a repo calls it through its proxy is also the
     // proxied contract.

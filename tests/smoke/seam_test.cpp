@@ -531,11 +531,15 @@ fs::path contract_graph(const fs::path& root, const std::string& repo,
 int test_generic_contracts(const fs::path& root) {
   const auto api = contract_graph(root, "api",
                                   {{"provides_contract", "createUsers", "table:users", ""},
-                                   {"provides_contract", "readTenant", "header:X-Tenant-Id", ""}});
+                                   {"provides_contract", "readTenant", "header:X-Tenant-Id", ""},
+                                   {"provides_contract", "readTenant", "header:Authorization", ""},
+                                   {"uses_contract", "readTenant", "env:NODE_ENV", ""}});
   const auto ml = contract_graph(root, "ml",
                                  {{"uses_contract", "listUsers", "table:users", ""},
                                   {"uses_contract", "sendTenant", "header:x-tenant-id", ""},
-                                  {"uses_contract", "sendTenant", "env:API_URL", ""}});
+                                  {"uses_contract", "sendTenant", "env:API_URL", ""},
+                                  {"uses_contract", "sendTenant", "header:authorization", ""},
+                                  {"uses_contract", "sendTenant", "env:NODE_ENV", ""}});
   const auto billing = contract_graph(root, "billing", {{"uses_contract", "chargeUsers", "table:users", ""}});
   const std::vector<std::pair<std::string, fs::path>> graphs{{"api", api}, {"ml", ml}, {"billing", billing}};
 
@@ -550,8 +554,10 @@ int test_generic_contracts(const fs::path& root) {
     return 1;
   }
   for (const auto& node : plain.fragment.nodes) {
-    if (node.id.starts_with("table:")) {
-      std::cerr << "discover: an undeclared repo-local table entered the seam: " << node.id << '\n';
+    // Every service reads NODE_ENV and sends Authorization: neither, nor an
+    // undeclared env variable or table, is a contract between them.
+    if (node.id.starts_with("table:") || node.id.starts_with("env:") || node.id == "header:authorization") {
+      std::cerr << "discover: an undeclared table or env name, or a standard header, entered the seam: " << node.id << '\n';
       return 1;
     }
   }
@@ -578,7 +584,8 @@ int test_generic_contracts(const fs::path& root) {
   }
   if (!has_edge(declared.fragment, "env:API_URL", "service:api", "SERVED_BY") ||
       !has_edge(declared.fragment, "env:API_URL", "ml_sendTenant", "CONSUMED_AT") ||
-      find_node(declared.fragment, "env:API_URL")->properties.contains("served")) {
+      find_node(declared.fragment, "env:API_URL")->properties.contains("served") ||
+      find_node(declared.fragment, "env:NODE_ENV") != nullptr) {
     std::cerr << "discover: a declared env variable is not served by its service\n";
     return 1;
   }
@@ -602,12 +609,20 @@ int test_generic_contracts(const fs::path& root) {
   if (!fused_plain.ok || !has_snapshot_edge(fused_plain.graph, "ml::ml_sendTenant", "header:x-tenant-id", "CONSUMES") ||
       !has_snapshot_edge(fused_plain.graph, "header:x-tenant-id", "api::api_readTenant", "handled_by") ||
       find_in(fused_plain.graph, "ml::header:x-tenant-id") != nullptr || find_in(fused_plain.graph, "table:local:users") != nullptr ||
-      find_in(fused_plain.graph, "ml::table:local:users") == nullptr || find_in(fused_plain.graph, "api::table:local:users") == nullptr) {
+      find_in(fused_plain.graph, "ml::table:local:users") == nullptr || find_in(fused_plain.graph, "api::table:local:users") == nullptr ||
+      find_in(fused_plain.graph, "env:NODE_ENV") != nullptr || find_in(fused_plain.graph, "api::env:NODE_ENV") == nullptr ||
+      find_in(fused_plain.graph, "ml::env:NODE_ENV") == nullptr || find_in(fused_plain.graph, "env:API_URL") != nullptr ||
+      find_in(fused_plain.graph, "header:authorization") != nullptr ||
+      find_in(fused_plain.graph, "ml::header:authorization") == nullptr) {
     std::cerr << "fuse: a header is not shared, or an undeclared table is not scoped to its service\n";
     return 1;
   }
-  const auto fused = cgraph::fuse_seam(declared.fragment, services, {}, databases);
-  if (!fused.ok || !has_snapshot_edge(fused.graph, "ml::ml_listUsers", "table:turing:users", "CONSUMES") ||
+  const auto fused = cgraph::fuse_seam(declared.fragment, services, {}, databases, env);
+  const auto* fused_users = find_in(fused.graph, "table:turing:users");
+  if (!fused.ok || fused_users == nullptr || fused_users->properties.at("database") != "turing" ||
+      !has_snapshot_edge(fused.graph, "ml::ml_sendTenant", "env:API_URL", "CONSUMES") ||
+      find_in(fused.graph, "ml::env:API_URL") != nullptr || find_in(fused.graph, "ml::env:NODE_ENV") == nullptr ||
+      !has_snapshot_edge(fused.graph, "ml::ml_listUsers", "table:turing:users", "CONSUMES") ||
       !has_snapshot_edge(fused.graph, "table:turing:users", "api::api_createUsers", "handled_by") ||
       !has_snapshot_edge(fused.graph, "billing::billing_chargeUsers", "billing::table:local:users", "CONSUMES") ||
       find_in(fused.graph, "ml::table:local:users") != nullptr) {

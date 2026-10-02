@@ -438,13 +438,7 @@ nlohmann::json cross_service_for_file(const ClientRequest& base, const std::file
   const CrossServiceAsk ask{.enclosing = &scope->enclosing, .ask = scope->ask};
   auto section = cross_service_section(ask, contracts, max_contracts);
   for (const auto& row : section["rows"]) {
-    // An endpoint reads as `GET /path`; any other contract keeps its kind (`header:x-org-id`).
-    auto contract = row.value("contract", std::string{});
-    if (cgraph::contract_kind_of(contract) == "endpoint") contract = contract.substr(std::string_view("endpoint:").size());
-    const bool consumer = row.value("relation", std::string{}) == "consumer";
-    summary.push_back(relative + (consumer ? " serves " : " calls ") + contract + (consumer ? ", called from " : ", served by ") +
-                      row.value("repo", std::string{}) + " " + row.value("path", std::string{}) + ":" +
-                      std::to_string(row.value("line", 0)) + " (" + row.value("label", std::string{}) + ")");
+    summary.push_back(cross_service_summary(relative, row));
   }
   out["crossings"] = section["rows"].size();
   if (const auto omitted = section.value("contracts_omitted", std::size_t{0}); omitted > 0) {
