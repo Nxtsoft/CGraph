@@ -1,6 +1,7 @@
 #include "cgraph/non_grammar_extractors.hpp"
 
 #include "cgraph/contract_schemas.hpp"
+#include "cgraph/data_contracts.hpp"
 #include "cgraph/langgraph_config.hpp"
 #include "cgraph/spring_actuator.hpp"
 #include "cgraph/normalize.hpp"
@@ -275,6 +276,8 @@ ExtractionResult extract_sql(const ExtractionContext& context) {
         .confidence = Confidence::Extracted,
     });
   }
+  // Every table this file creates is a contract the repo provides (data_contracts.hpp).
+  result.raw_relations = sql_table_contract_facts(fragment, context);
   return result;
 }
 
@@ -293,6 +296,8 @@ std::optional<ExtractionResult> extract_non_grammar_language(
       return extract_mcp_config(context);
     case DetectedLanguage::Sql:
       return extract_sql(context);
+    case DetectedLanguage::Cypher:
+      return extract_cypher(context);
     case DetectedLanguage::OpenApi:
       return extract_openapi_document(context);
     case DetectedLanguage::Protobuf:
@@ -317,6 +322,7 @@ bool handles_non_grammar_language(DetectedLanguage language) {
     case DetectedLanguage::Apex:
     case DetectedLanguage::McpConfig:
     case DetectedLanguage::Sql:
+    case DetectedLanguage::Cypher:
     case DetectedLanguage::OpenApi:
     case DetectedLanguage::Protobuf:
     case DetectedLanguage::GraphQL:

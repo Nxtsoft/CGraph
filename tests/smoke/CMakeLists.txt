@@ -1058,3 +1058,15 @@ cgraph_set_warnings(cgraph_contract_declarations_test)
 cgraph_enable_sanitizers(cgraph_contract_declarations_test)
 
 add_test(NAME cgraph_contract_declarations_test COMMAND cgraph_contract_declarations_test)
+
+add_executable(cgraph_data_contracts_test
+  data_contracts_test.cpp)
+
+target_link_libraries(cgraph_data_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_data_contracts_test)
+cgraph_enable_sanitizers(cgraph_data_contracts_test)
+
+add_test(NAME cgraph_data_contracts_test COMMAND cgraph_data_contracts_test)

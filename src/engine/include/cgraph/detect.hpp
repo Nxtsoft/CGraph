@@ -13,6 +13,7 @@ enum class DetectedLanguage {
   C,
   Cpp,
   CSharp,
+  Cypher,
   Delphi,
   Go,
   GraphQL,
