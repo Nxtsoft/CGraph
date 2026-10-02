@@ -2,6 +2,7 @@
 
 #include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
+#include "cgraph/spring_actuator.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -14,7 +15,6 @@ namespace {
 
 using js_syntax::field_text;
 using js_syntax::is_function_node;
-using js_syntax::is_module_level_declaration;
 using js_syntax::unwrap_expression;
 
 constexpr std::string_view kUsesContract = "uses_contract";
@@ -84,20 +84,30 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, std::
   return std::string(text.substr(1, text.size() - 2));
 }
 
-// Every `${NAME` placeholder in `text` whose NAME is env-shaped; NAME ends at
-// `:` (a default follows) or `}`.
+// Every `${NAME` placeholder in `text` whose NAME is env-shaped, by Spring's
+// placeholder scan; NAME ends at `:` (a default follows). A placeholder nested
+// in a default (`${A:${B}}`) is read too.
 template <typename Emit>
 void placeholders(std::string_view text, Emit&& each) {
-  for (auto start = text.find("${"); start != std::string_view::npos; start = text.find("${", start + 2)) {
-    const auto begin = start + 2;
-    const auto end = text.find_first_of(":}", begin);
-    if (end == std::string_view::npos) {
-      return;
-    }
-    if (const auto name = text.substr(begin, end - begin); is_env_shaped_name(name)) {
+  for (auto placeholder = find_spring_placeholder(text); placeholder.open != std::string_view::npos &&
+                                                         placeholder.close != std::string_view::npos;
+       placeholder = find_spring_placeholder(text, placeholder.open + 2)) {
+    if (const auto name = placeholder.inner.substr(0, placeholder.inner.find(':')); is_env_shaped_name(name)) {
       each(name);
     }
   }
+}
+
+[[nodiscard]] TSNode named_child_of_type(const TSNode& node, std::string_view type) {
+  if (ts_node_is_null(node)) {
+    return TSNode{};
+  }
+  for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
+    if (const TSNode child = ts_node_named_child(node, index); type_of(child) == type) {
+      return child;
+    }
+  }
+  return TSNode{};
 }
 
 // ---------------------------------------------------------------- JavaScript
@@ -111,9 +121,12 @@ void placeholders(std::string_view text, Emit&& each) {
   return text == "process.env" || text == "import.meta.env" || text == "Bun.env";
 }
 
-// True when `name` is bound by a parameter of `function` (any destructuring
-// depth): it shadows any outer `const` of that name.
+// True when the binding pattern `node` (an identifier, a destructuring pattern,
+// a parameter list, an import clause) binds `name` at any depth.
 [[nodiscard]] bool binds_parameter(const TSNode& node, std::string_view name, std::string_view source) {
+  if (ts_node_is_null(node)) {
+    return false;
+  }
   const auto type = type_of(node);
   if ((type == "identifier" || type == "shorthand_property_identifier_pattern") && node_text(node, source) == name) {
     return true;
@@ -144,18 +157,103 @@ void placeholders(std::string_view text, Emit&& each) {
       return true;
     }
   }
+  // A named function expression binds its own name inside its body.
+  return type_of(function) == "function_expression" && field_text(function, "name", source) == name;
+}
+
+// True when a `var` anywhere under `scope` (not inside a nested function) binds
+// `name`: `var` hoists to the enclosing function or the program.
+[[nodiscard]] bool hoisted_var(const TSNode& scope, std::string_view name, std::string_view source) {
+  if (ts_node_is_null(scope)) {
+    return false;
+  }
+  for (std::uint32_t index = 0; index < ts_node_named_child_count(scope); ++index) {
+    const TSNode child = ts_node_named_child(scope, index);
+    const auto type = type_of(child);
+    if (is_function_node(type) || type == "function" || type == "generator_function") {
+      continue;
+    }
+    if (type == "variable_declaration") {
+      for (std::uint32_t slot = 0; slot < ts_node_named_child_count(child); ++slot) {
+        if (binds_parameter(field(ts_node_named_child(child, slot), "name"), name, source)) {
+          return true;
+        }
+      }
+    }
+    if (hoisted_var(child, name, source)) {
+      return true;
+    }
+  }
   return false;
 }
 
+// What a statement directly inside a block or the program binds `name` to.
+enum class Bound { kNo, kOther, kConst, kFunction };
+
+[[nodiscard]] Bound statement_binds(TSNode statement, std::string_view name, std::string_view source,
+                                    TSNode& binding) {
+  if (type_of(statement) == "export_statement") {
+    statement = field(statement, "declaration");
+  }
+  const auto type = type_of(statement);
+  if ((type == "function_declaration" || type == "generator_function_declaration") &&
+      field_text(statement, "name", source) == name) {
+    binding = statement;
+    return Bound::kFunction;
+  }
+  if ((type == "class_declaration" || type == "abstract_class_declaration") &&
+      field_text(statement, "name", source) == name) {
+    return Bound::kOther;
+  }
+  if (type == "import_statement") {
+    const TSNode clause = named_child_of_type(statement, "import_clause");
+    return !ts_node_is_null(clause) && binds_parameter(clause, name, source) ? Bound::kOther : Bound::kNo;
+  }
+  if (type != "lexical_declaration" && type != "variable_declaration") {
+    return Bound::kNo;
+  }
+  const bool constant = type == "lexical_declaration" && ts_node_child_count(statement) > 0 &&
+                        node_text(ts_node_child(statement, 0), source) == "const";
+  for (std::uint32_t slot = 0; slot < ts_node_named_child_count(statement); ++slot) {
+    const TSNode declarator = ts_node_named_child(statement, slot);
+    const TSNode bound = field(declarator, "name");
+    if (type_of(declarator) != "variable_declarator" || !binds_parameter(bound, name, source)) {
+      continue;
+    }
+    if (constant && type_of(bound) == "identifier") {
+      binding = declarator;
+      return Bound::kConst;
+    }
+    return Bound::kOther;  // `let`, `var`, or a destructured `const { name }`
+  }
+  return Bound::kNo;
+}
+
 // The `const name = …` declarator or `function name` declaration the
-// identifier `name` at `from` refers to, innermost scope first; null when a
-// parameter shadows it or nothing in the file declares it (a `let` or `var`
-// may be reassigned, so it proves nothing).
+// identifier `name` at `from` refers to, innermost scope first. Any other
+// binding of the name on the way out (a `let` or `var`, a parameter, a
+// for-head, a `catch`, a class, an import, a destructured `const`) shadows
+// whatever is further out and proves nothing: null. Null too when nothing in
+// the file binds it.
 [[nodiscard]] TSNode find_binding(const TSNode& from, std::string_view name, std::string_view source) {
   for (TSNode scope = ts_node_parent(from); !ts_node_is_null(scope); scope = ts_node_parent(scope)) {
     const auto scope_type = type_of(scope);
-    if (is_function_node(scope_type) || scope_type == "function") {
-      if (function_binds(scope, name, source)) {
+    if (is_function_node(scope_type) || scope_type == "function" || scope_type == "generator_function") {
+      if (function_binds(scope, name, source) || hoisted_var(field(scope, "body"), name, source)) {
+        return TSNode{};
+      }
+      continue;
+    }
+    if (scope_type == "for_in_statement" || scope_type == "for_statement") {
+      const TSNode head = field(scope, scope_type == "for_in_statement" ? "left" : "initializer");
+      if (!ts_node_is_null(head) && binds_parameter(head, name, source)) {
+        return TSNode{};
+      }
+      continue;
+    }
+    if (scope_type == "catch_clause") {
+      if (const TSNode parameter = field(scope, "parameter");
+          !ts_node_is_null(parameter) && binds_parameter(parameter, name, source)) {
         return TSNode{};
       }
       continue;
@@ -164,26 +262,19 @@ void placeholders(std::string_view text, Emit&& each) {
       continue;
     }
     for (std::uint32_t index = 0; index < ts_node_named_child_count(scope); ++index) {
-      TSNode declaration = ts_node_named_child(scope, index);
-      if (type_of(declaration) == "export_statement") {
-        declaration = field(declaration, "declaration");
+      TSNode binding;
+      switch (statement_binds(ts_node_named_child(scope, index), name, source, binding)) {
+        case Bound::kNo:
+          break;
+        case Bound::kOther:
+          return TSNode{};
+        case Bound::kConst:
+        case Bound::kFunction:
+          return binding;
       }
-      const auto type = type_of(declaration);
-      if (type == "function_declaration" && field_text(declaration, "name", source) == name) {
-        return declaration;
-      }
-      if (type != "lexical_declaration" || ts_node_child_count(declaration) == 0 ||
-          node_text(ts_node_child(declaration, 0), source) != "const") {
-        continue;
-      }
-      for (std::uint32_t slot = 0; slot < ts_node_named_child_count(declaration); ++slot) {
-        const TSNode declarator = ts_node_named_child(declaration, slot);
-        const TSNode bound = field(declarator, "name");
-        if (type_of(declarator) == "variable_declarator" && type_of(bound) == "identifier" &&
-            node_text(bound, source) == name) {
-          return declarator;
-        }
-      }
+    }
+    if (scope_type == "program" && hoisted_var(scope, name, source)) {
+      return TSNode{};
     }
   }
   return TSNode{};
@@ -303,29 +394,6 @@ struct EnvObject {
   return false;
 }
 
-[[nodiscard]] std::string js_reading_scope(const TSNode& node, const ExtractionContext& context,
-                                           const std::string& function_scope_id, const Fragment& fragment) {
-  if (!function_scope_id.empty()) {
-    return function_scope_id;
-  }
-  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
-    if (type_of(ancestor) != "variable_declarator") {
-      continue;
-    }
-    const TSNode declaration = ts_node_parent(ancestor);
-    if (ts_node_is_null(declaration) || !is_module_level_declaration(declaration)) {
-      continue;
-    }
-    // A module-level variable is a node only when the extractor made one for it
-    // (an object, array, call or `new` value); a read in any other initializer
-    // (`const API = process.env.X || '…'`) belongs to the file.
-    auto id = make_id(context.relative_path + ":" + field_text(ancestor, "name", context.source));
-    const bool noded = std::ranges::any_of(fragment.nodes, [&](const Node& candidate) { return candidate.id == id; });
-    return noded ? id : make_id(context.relative_path);
-  }
-  return make_id(context.relative_path);
-}
-
 // `const { X, Y: y, Z = d } = <env value>`: the keys it reads.
 void destructured_reads(const TSNode& pattern, bool typed, std::string_view source, std::vector<std::string>& names) {
   for (std::uint32_t index = 0; index < ts_node_named_child_count(pattern); ++index) {
@@ -363,17 +431,6 @@ void value_annotation_reads(const TSNode& node, const ExtractionContext& context
   placeholders(text, [&](std::string_view name) { emit(out, context, scope_or_file(context, function_scope_id), name); });
 }
 
-[[nodiscard]] TSNode named_child_of_type(const TSNode& node, std::string_view type) {
-  if (ts_node_is_null(node)) {
-    return TSNode{};
-  }
-  for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
-    if (const TSNode child = ts_node_named_child(node, index); type_of(child) == type) {
-      return child;
-    }
-  }
-  return TSNode{};
-}
 
 // A string literal with no interpolation: Kotlin `"X"` (a `$` template is not a literal).
 [[nodiscard]] std::optional<std::string> plain_literal(const TSNode& node, std::string_view source) {
@@ -450,7 +507,7 @@ void javascript_env_reads(const TSNode& node, const ExtractionContext& context, 
   if (names.empty()) {
     return;
   }
-  const auto scope = js_reading_scope(node, context, function_scope_id, fragment);
+  const auto scope = js_syntax::reading_scope_id(node, context, function_scope_id, fragment);
   for (const auto& name : names) {
     emit(out, context, scope, name);
   }
@@ -580,19 +637,7 @@ void append_spring_config_env_reads(const ExtractionContext& context, Extraction
       continue;  // a comment line
     }
     if (!properties) {
-      // A YAML comment starts at a `#` after whitespace, outside quotes.
-      char quote = 0;
-      for (std::size_t index = first; index < line.size(); ++index) {
-        const char ch = line[index];
-        if (quote != 0) {
-          quote = ch == quote ? 0 : quote;
-        } else if (ch == '"' || ch == '\'') {
-          quote = ch;
-        } else if (ch == '#' && (line[index - 1] == ' ' || line[index - 1] == '\t')) {
-          line = line.substr(0, index);
-          break;
-        }
-      }
+      line = strip_yaml_comment(line);
     }
     placeholders(line, [&](std::string_view name) { emit(result.raw_relations, context, file_id, name); });
   }

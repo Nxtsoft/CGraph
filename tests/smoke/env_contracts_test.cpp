@@ -56,6 +56,8 @@ namespace {
 
 int main() {
   bool orphan = false;
+  // Every language reports before the exit, so a failure shows them all.
+  bool failed = false;
 
   // TypeScript: direct reads, destructuring, subscripts and typed env objects.
   // A module-level const the extractor made no node for reads from the file; an
@@ -113,7 +115,7 @@ export function viaParsed() {
         id("src/config.ts", "viaParsed") + "|env:PARSED_B",
     };
     if (!expect("typescript", env_facts(result, orphan), expected)) {
-      return 1;
+      failed = true;
     }
 
     // resolve_contracts mints one env node per name, unserved (no repo provides
@@ -129,7 +131,7 @@ export function viaParsed() {
     if (node == graph.nodes.end() || node->kind != "env" || node->properties.at("served") != "false" || !consumed ||
         cgraph::is_bridged_contract("env:DATABASE_URL")) {
       std::cerr << "env:DATABASE_URL was not minted as an unserved, unbridged env contract consumed by readAll\n";
-      return 1;
+      failed = true;
     }
   }
 
@@ -155,7 +157,7 @@ def database_url():
         id("app/settings.py", "database_url") + "|env:ENV",
     };
     if (!expect("python", env_facts(result, orphan), expected)) {
-      return 1;
+      failed = true;
     }
   }
 
@@ -182,7 +184,7 @@ func BaseURL() string {
         id("contract/spec.go", "BaseURL") + "|env:RAW_NAME",
     };
     if (!result || !expect("go", env_facts(*result, orphan), expected)) {
-      return 1;
+      failed = true;
     }
   }
 
@@ -209,7 +211,7 @@ class Keys(
         id("src/Keys.kt", "load") + "|env:SPRING_PROFILES_ACTIVE",
     };
     if (!result || !expect("kotlin", env_facts(*result, orphan), expected)) {
-      return 1;
+      failed = true;
     }
   }
 
@@ -228,7 +230,7 @@ class Cfg {
         id("src/Cfg.java", "region") + "|env:AWS_REGION",
     };
     if (!result || !expect("java", env_facts(*result, orphan), expected)) {
-      return 1;
+      failed = true;
     }
   }
 
@@ -247,15 +249,17 @@ spring:
   datasource:
     url: "${DB_URL:jdbc:${DB_HOST:localhost}}"
     other: ${server.port}
+message: Can't reach ${API_URL} # was ${OLD_URL}
 )yml"});
     const auto yml_file = id("idp-core/src/main/resources/application-dev.yml");
     const std::set<std::string> expected_yml{
         yml_file + "|env:SAML_IDP_BASE_URL",
         yml_file + "|env:DB_URL",
         yml_file + "|env:DB_HOST",
+        yml_file + "|env:API_URL",
     };
     if (!yml || !expect("spring yaml", env_facts(*yml, orphan), expected_yml)) {
-      return 1;
+      failed = true;
     }
     const auto properties = cgraph::extract_configured_language(
         cgraph::DetectedLanguage::SpringConfig,
@@ -267,11 +271,57 @@ server.port=${PORT:8080}
 )props"});
     const std::set<std::string> expected_properties{id("src/main/resources/application.properties") + "|env:PORT"};
     if (!properties || !expect("spring properties", env_facts(*properties, orphan), expected_properties)) {
-      return 1;
+      failed = true;
     }
   }
 
-  if (orphan) {
+  // Plain JavaScript reads the same way.
+  {
+    const auto result = cgraph::extract_javascript({.source_file = "lib/env.js", .relative_path = "lib/env.js", .source = R"js(
+const url = process.env.API_URL;
+const { DB_HOST } = process.env;
+function client() { return process.env['CLIENT_KEY']; }
+module.exports = { url, client };
+)js"});
+    const std::set<std::string> expected{
+        id("lib/env.js") + "|env:API_URL",
+        id("lib/env.js") + "|env:DB_HOST",
+        id("lib/env.js", "client") + "|env:CLIENT_KEY",
+    };
+    if (!expect("javascript", env_facts(result, orphan), expected)) {
+      failed = true;
+    }
+  }
+
+  // Any other binding of the name between a read and a module-level typed env
+  // `const` shadows it: `let`, `var` (hoisted from a nested block), a for-head,
+  // a `catch` parameter, a class, a destructured `const`, an import.
+  {
+    const auto result = cgraph::extract_typescript({.source_file = "src/shadow.ts", .relative_path = "src/shadow.ts", .source = R"ts(
+function loadConfig() { return Value.Decode(envSchema, process.env) }
+const env = loadConfig()
+export function letShadow(p: any) { let env = p.cfg; return env.LET_SHADOWED }
+export function forHead(list: any[]) { for (const env of list) { use(env.FOR_SHADOWED) } }
+export function caught() { try { run() } catch (env) { return env.CATCH_SHADOWED } }
+export function varHoisted(p: any) { if (p) { var env = p } return env.VAR_SHADOWED }
+export function destructured(p: any) { const { env } = p; return env.DESTRUCTURED_SHADOWED }
+export function classShadow() { class env { static CLASS_SHADOWED = 1 } return env.CLASS_SHADOWED }
+export function reads() { return env.MODULE_READ }
+)ts"});
+    const std::set<std::string> expected{id("src/shadow.ts", "reads") + "|env:MODULE_READ"};
+    if (!expect("typescript shadowing", env_facts(result, orphan), expected)) {
+      failed = true;
+    }
+    const auto imported = cgraph::extract_typescript({.source_file = "src/imported.ts", .relative_path = "src/imported.ts", .source = R"ts(
+import { env } from './env'
+export function a() { return env.IMPORTED_NAME }
+)ts"});
+    if (!expect("typescript import", env_facts(imported, orphan), {})) {
+      failed = true;
+    }
+  }
+
+  if (orphan || failed) {
     return 1;
   }
   if (!cgraph::is_env_shaped_name("ML_BACKEND_BASE_URL") || cgraph::is_env_shaped_name("server.port") ||
