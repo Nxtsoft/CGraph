@@ -117,6 +117,17 @@ int test_sql_text_tables() {
       {"Only SELECT queries are allowed. Received from the user", ""},
       {"SELECT INTO is not allowed. Only read-only SELECT queries are permitted.", ""},
       {"select id from users", ""},
+      // JPQL: `JOIN u.roles` after the alias `u` is a path through the entity.
+      {"SELECT u FROM User u JOIN u.roles r JOIN public.grants g ON true", "user,grants"},
+      // A name glued to an interpolation (\x01) or a format directive is unreadable.
+      {"SELECT * FROM measurements_\x01 m JOIN outcomes o ON true", "outcomes"},
+      {"SELECT * FROM events_%s", ""},
+      {"SELECT * FROM \x01_archive", ""},
+      {"SELECT * FROM {prefix}_events", ""},
+      // CTEs with a column list or a materialization hint are no tables.
+      {"WITH x AS MATERIALIZED (SELECT 1 FROM a) SELECT * FROM x", "a"},
+      {"WITH x AS NOT MATERIALIZED (SELECT 1 FROM a), y(c, d) AS (SELECT 1, 2 FROM b) SELECT * FROM x JOIN y ON true",
+       "a,b"},
       {"FROM projects p ", ""},
       {"Select a project from the list", ""},
   };
@@ -180,8 +191,15 @@ int test_test_paths() {
       return fail(std::string("not seen as a test path: ") + path);
     }
   }
+  for (const auto* path : {"src/testFixtures/kotlin/Seed.kt", "src/integrationTest/kotlin/Seed.kt", "e2e/login.ts",
+                           "src/__mocks__/db.ts", "cypress/support/db.ts", "src/UserServiceTests.kt", "src/V2Test.java"}) {
+    if (!cgraph::is_test_source_path(path)) {
+      return fail(std::string("not seen as a test path: ") + path);
+    }
+  }
   for (const auto* path : {"ops/services/projects/repository.py", "src/AUDIT.py", "src/compiq_agent/utils/db.ts",
-                           "idp-core/src/main/kotlin/User.kt", "src/latest.ts"}) {
+                           "idp-core/src/main/kotlin/User.kt", "src/latest.ts", "src/AUDIT.kt", "src/ABTest.kt",
+                           "src/CONTEXT.java"}) {
     if (cgraph::is_test_source_path(path)) {
       return fail(std::string("seen as a test path: ") + path);
     }
@@ -293,6 +311,14 @@ int test_graph_labels() {
                            "    @Relationship(type = \"HAS_ROLE\")\n"
                            "    var clientRoles: MutableSet<Role> = mutableSetOf()\n"
                            "}\n"},
+      {"entity/Group.kt", "package x\n"
+                          "@Node(labels = [\"Group\", \"Principal\"])\n"
+                          "data class Group(val id: String) {\n"
+                          "    @Relationship(type = \"PEER_OF\", direction = Relationship.Direction.UNDIRECTED)\n"
+                          "    var peers: MutableSet<Group> = mutableSetOf()\n"
+                          "    @Relationship(type = \"HAS_ROLE\")\n"
+                          "    var roles: MutableSet<Role> = mutableSetOf()\n"
+                          "}\n"},
       {"entity/Role.java", "package x;\n"
                            "@Node\n"
                            "public class Role {\n"
@@ -308,8 +334,9 @@ int test_graph_labels() {
                                       "MERGE (u)-[:HAS_ROLE]->(r);\n"},
   });
   const auto ids = joined(contract_ids(graph));
-  if (ids != "label:local:Client,label:local:Client.HAS_ROLE,label:local:Role,label:local:Role.COMPOSED_OF,"
-             "label:local:User,label:local:User.HAS_ROLE") {
+  if (ids != "label:local:Client,label:local:Client.HAS_ROLE,label:local:Group,label:local:Group.HAS_ROLE,"
+             "label:local:Principal,label:local:Role,label:local:Role.COMPOSED_OF,label:local:User,"
+             "label:local:User.HAS_ROLE") {
     return fail("label contract ids: [" + ids + "]");
   }
   if (const auto got = joined(sides(graph, "label:local:User.HAS_ROLE", "handled_by")); got != "User") {
@@ -330,11 +357,72 @@ int test_graph_labels() {
   return 0;
 }
 
+// SQL strings in every language the reader covers, through the real
+// extractors: `+` chains (the verb in one literal, the table in the next),
+// interpolations as opaque placeholders, JPQL annotations skipped.
+int test_sql_strings_per_language() {
+  const auto graph = build({
+      {"src/q.js", "export function listOrders(db, id) {\n"
+                   "  return db.query(\"SELECT * \" + \"FROM orders o \" + \"WHERE o.id = \" + id);\n"
+                   "}\n"
+                   "export function byYear(db, year) {\n"
+                   "  return db.query(`SELECT * FROM measurements_${year}`);\n"
+                   "}\n"
+                   "export function fromTemplate(db, t) {\n"
+                   "  return db.query(`SELECT * FROM ${t} JOIN items i ON true`);\n"
+                   "}\n"},
+      {"src/q.ts", "export async function listAccounts(db: Db, y: string) {\n"
+                   "  return db.execute(`SELECT id FROM accounts WHERE x = ${y}`);\n"
+                   "}\n"},
+      {"src/Repo.kt", "package x\n"
+                      "class Repo(private val jdbc: Jdbc) {\n"
+                      "    fun load(id: String) = jdbc.query(\"SELECT * \" + \"FROM invoices i WHERE i.id = $id\")\n"
+                      "    fun tpl(t: String) = jdbc.query(\"SELECT * FROM ${t}_archive JOIN ledgers l ON true\")\n"
+                      "}\n"
+                      "interface UserJpa {\n"
+                      "    @Query(\"SELECT u FROM User u JOIN u.roles r\")\n"
+                      "    fun jpql(): List<User>\n"
+                      "    @Query(value = \"SELECT * FROM app_users\", nativeQuery = true)\n"
+                      "    fun native(): List<User>\n"
+                      "}\n"},
+      {"src/Dao.java", "package x;\n"
+                       "class Dao {\n"
+                       "  List<X> all(String id) { return jdbc.query(\"SELECT * \" + \"FROM payments p WHERE p.id = \" + id); }\n"
+                       "  @Query(\"SELECT o FROM Order o JOIN o.lines l\")\n"
+                       "  List<Order> jpql() { return null; }\n"
+                       "}\n"},
+      {"ops/q.py", "def plus(id):\n"
+                   "    return \"SELECT * \" + \"FROM shipments s WHERE s.id = \" + id\n"
+                   "\n"
+                   "def glued(year):\n"
+                   "    return f\"SELECT * FROM measurements_{year}\"\n"
+                   "\n"
+                   "def pct():\n"
+                   "    return \"SELECT * FROM events_%s\" % \"x\"\n"},
+      {"src/__mocks__/db.ts", "export function mock(db) { return db.query(\"SELECT * FROM mocked\"); }\n"},
+  });
+  const auto ids = joined(contract_ids(graph));
+  if (ids != "table:local:accounts,table:local:app_users,table:local:invoices,table:local:items,table:local:ledgers,"
+             "table:local:orders,table:local:payments,table:local:shipments") {
+    return fail("per-language table ids: [" + ids + "]");
+  }
+  const std::vector<std::pair<std::string, std::string>> users = {
+      {"orders", "listOrders"}, {"items", "fromTemplate"}, {"accounts", "listAccounts"}, {"invoices", "load"},
+      {"ledgers", "tpl"},       {"app_users", "native"},   {"payments", "all"},          {"shipments", "plus"},
+  };
+  for (const auto& [table, user] : users) {
+    if (const auto got = joined(sides(graph, "table:local:" + table, "CONSUMES")); got != user) {
+      return fail(table + " users: [" + got + "], want [" + user + "]");
+    }
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
   for (const auto test : {test_sql_text_tables, test_cypher_text_labels, test_test_paths, test_tables_in_one_repo,
-                          test_mirrored_drizzle_schema, test_graph_labels}) {
+                          test_mirrored_drizzle_schema, test_graph_labels, test_sql_strings_per_language}) {
     if (const int status = test(); status != 0) {
       return status;
     }

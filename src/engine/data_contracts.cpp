@@ -22,8 +22,11 @@ constexpr std::string_view kProvides = "provides_contract";
 constexpr std::string_view kUses = "uses_contract";
 constexpr std::string_view kOrmTableUse = "orm_table_use";
 // Stands for an interpolation (`{x}`, `${x}`, `$x`) or a non-literal operand of
-// a concatenation: never an identifier, so a table spelled through one is not read.
-constexpr std::string_view kPlaceholder = " ? ";
+// a concatenation. It is one opaque byte with no spaces around it, so text the
+// code glues to it stays glued: `measurements_{year}` reads `measurements_\x01`,
+// and the SQL reader treats a name touching it as unreadable, never as a table.
+constexpr char kOpaque = '\x01';
+constexpr std::string_view kPlaceholder = "\x01";
 
 [[nodiscard]] bool is_ident_start(char ch) {
   return std::isalpha(static_cast<unsigned char>(ch)) != 0 || ch == '_';
@@ -91,7 +94,11 @@ struct SqlToken {
       while (i < n && is_ident_char(text[i])) {
         ++i;
       }
-      tokens.push_back({SqlToken::Ident, std::string(text.substr(start, i - start))});
+      // A name glued to an interpolation (`events_{year}`, `events_%s`,
+      // `{prefix}_events`) is only part of a name: unreadable, not a table.
+      const bool glued = (start > 0 && (text[start - 1] == kOpaque || text[start - 1] == '}')) ||
+                         (i < n && (text[i] == kOpaque || text[i] == '%' || text[i] == '{'));
+      tokens.push_back({glued ? SqlToken::Other : SqlToken::Ident, std::string(text.substr(start, i - start))});
     } else if (ch == ':' || ch == '$' || ch == '@') {
       // `:name`, `$1`, `@p`: a bind parameter, one opaque token.
       const auto start = i++;
@@ -118,7 +125,8 @@ struct SqlToken {
       "CONFLICT",  "CROSS",   "DEFAULT", "DELETE", "DESC",     "DISTINCT", "DO",      "ELSE",     "END",
       "EXCEPT",    "EXISTS",  "FALSE",  "FETCH",   "FILTER",   "FOR",      "FROM",    "FULL",     "GROUP",
       "HAVING",    "ILIKE",   "IN",     "INNER",   "INSERT",   "INTERSECT", "INTO",   "IS",       "JOIN",
-      "LATERAL",   "LEFT",    "LIKE",   "LIMIT",   "NATURAL",  "NOT",      "NOTHING", "NULL",     "OF",
+      "LATERAL",   "LEFT",    "LIKE",   "LIMIT",   "MATERIALIZED", "NATURAL", "NOT",   "NOTHING",  "NULL",
+      "OF",
       "OFFSET",    "ON",      "ONLY",   "OR",      "ORDER",    "OUTER",    "OVER",    "PARTITION", "RECURSIVE",
       "RETURNING", "RIGHT",   "ROW",    "SELECT",  "SET",      "SOME",     "THEN",    "TRUE",     "UNION",
       "UPDATE",    "USING",   "VALUES", "WHEN",    "WHERE",    "WINDOW",   "WITH",    "WITHIN",
@@ -137,6 +145,7 @@ struct SqlToken {
 // the index after it, or nullopt when no table name stands there.
 struct TableRef {
   std::string name;
+  std::string schema;  // the qualifier as written, lower-cased unless quoted; empty when none
   std::size_t next;
 };
 [[nodiscard]] std::optional<TableRef> table_ref(const std::vector<SqlToken>& tokens, std::size_t index) {
@@ -164,7 +173,25 @@ struct TableRef {
   if (name.empty() || schema == "information_schema" || schema == "pg_catalog" || name.starts_with("pg_")) {
     return std::nullopt;  // the database's own catalog, not a schema anybody owns
   }
-  return TableRef{std::move(name), index};
+  return TableRef{std::move(name), std::move(schema), index};
+}
+
+// Whether the text's first word (after spaces and `(`) is an upper-case SQL
+// statement verb: the cheap test every string literal takes first.
+[[nodiscard]] bool opens_with_sql_verb(std::string_view text) {
+  std::size_t i = 0;
+  while (i < text.size() && (std::isspace(static_cast<unsigned char>(text[i])) != 0 || text[i] == '(')) {
+    ++i;
+  }
+  const auto start = i;
+  while (i < text.size() && std::isupper(static_cast<unsigned char>(text[i])) != 0) {
+    ++i;
+  }
+  if (i < text.size() && is_ident_char(text[i])) {
+    return false;
+  }
+  const auto word = text.substr(start, i - start);
+  return word == "SELECT" || word == "INSERT" || word == "UPDATE" || word == "DELETE" || word == "WITH";
 }
 
 // ---------------------------------------------------------------- Cypher text
@@ -423,10 +450,12 @@ enum class Family { None, Python, JavaScript, Kotlin, Java };
 // A `+` concatenation (or Python's adjacent literals).
 [[nodiscard]] bool is_concatenation(Family family, const TSNode& node, std::string_view source) {
   const std::string_view type = ts_node_type(node);
-  if (family == Family::Python) {
-    return type == "concatenated_string";
+  if (family == Family::Python && type == "concatenated_string") {
+    return true;
   }
-  const bool binary = (family == Family::Kotlin) ? type == "additive_expression" : type == "binary_expression";
+  const bool binary = family == Family::Python   ? type == "binary_operator"
+                      : family == Family::Kotlin ? type == "additive_expression"
+                                                 : type == "binary_expression";
   if (!binary || ts_node_child_count(node) != 3) {
     return false;
   }
@@ -763,8 +792,27 @@ void orm_table_use(const TSNode& call, std::string_view source, const Scopes& sc
             std::string(text_of(first, source)));
 }
 
-void read_text(const std::string& text, const TSNode& at, const Scopes& scopes, Emitter& emit) {
-  const auto tables = sql_text_tables(text);
+// Whether a string sits in a JPA query annotation whose text is JPQL / HQL,
+// which names entities and paths, not tables: `@Query` without
+// `nativeQuery = true`, `@NamedQuery`. (A Spring Data Neo4j `@Query` holds
+// Cypher, which is still read.)
+[[nodiscard]] bool in_jpql_annotation(const TSNode& node, std::string_view source) {
+  for (auto parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
+    const std::string_view type = ts_node_type(parent);
+    if (is_annotation(type)) {
+      const auto [name, arguments] = annotation_parts(text_of(parent, source));
+      static const std::regex kNative{R"(nativeQuery\s*=\s*true)"};
+      return (name == "Query" && !std::regex_search(arguments, kNative)) || name == "NamedQuery";
+    }
+    if (type.ends_with("declaration") || type == "class_body" || type == "block" || type == "function_body") {
+      return false;
+    }
+  }
+  return false;
+}
+
+void read_text(const std::string& text, bool sql, const TSNode& at, const Scopes& scopes, Emitter& emit) {
+  const auto tables = sql ? sql_text_tables(text) : std::vector<std::string>{};
   const auto labels = cypher_text_labels(text, true);
   if (tables.empty() && labels.empty()) {
     return;
@@ -782,6 +830,10 @@ void read_text(const std::string& text, const TSNode& at, const Scopes& scopes, 
 
 std::vector<std::string> sql_text_tables(std::string_view text) {
   std::vector<std::string> tables;
+  // Most string literals are no SQL: decide on the first word before tokenizing.
+  if (!opens_with_sql_verb(text)) {
+    return tables;
+  }
   const auto tokens = sql_tokens(text);
   std::size_t first = 0;
   while (is_punct(tokens, first, '(')) {
@@ -791,21 +843,57 @@ std::vector<std::string> sql_text_tables(std::string_view text) {
         is_word(tokens, first, "DELETE") || is_word(tokens, first, "WITH"))) {
     return tables;
   }
-  // CTE names (`WITH recent AS (`, `, older AS (`) are no tables.
+  // CTE names are no tables: `WITH recent AS (`, `, older AS (`,
+  // `WITH x(a, b) AS (`, `WITH x AS [NOT] MATERIALIZED (`.
   std::unordered_set<std::string> ctes;
   for (std::size_t i = 1; i + 2 < tokens.size(); ++i) {
-    if ((tokens[i].kind == SqlToken::Ident || tokens[i].kind == SqlToken::Quoted) && is_word(tokens, i + 1, "AS") &&
-        is_punct(tokens, i + 2, '(') &&
-        (is_word(tokens, i - 1, "WITH") || is_word(tokens, i - 1, "RECURSIVE") || is_punct(tokens, i - 1, ','))) {
+    if ((tokens[i].kind != SqlToken::Ident && tokens[i].kind != SqlToken::Quoted) ||
+        !(is_word(tokens, i - 1, "WITH") || is_word(tokens, i - 1, "RECURSIVE") || is_punct(tokens, i - 1, ','))) {
+      continue;
+    }
+    auto at = i + 1;
+    if (is_punct(tokens, at, '(')) {  // a column list
+      int depth = 0;
+      for (; at < tokens.size(); ++at) {
+        if (is_punct(tokens, at, '(')) {
+          ++depth;
+        } else if (is_punct(tokens, at, ')') && --depth == 0) {
+          ++at;
+          break;
+        }
+      }
+    }
+    if (!is_word(tokens, at, "AS")) {
+      continue;
+    }
+    ++at;
+    if (is_word(tokens, at, "NOT")) {
+      ++at;
+    }
+    if (is_word(tokens, at, "MATERIALIZED")) {
+      ++at;
+    }
+    if (is_punct(tokens, at, '(')) {
       ctes.insert(tokens[i].kind == SqlToken::Quoted ? tokens[i].text : lower(tokens[i].text));
     }
   }
+  // Aliases bound by an earlier table reference (`FROM users u`): `JOIN u.roles`
+  // after one is a path through an entity (JPQL / HQL), not a table.
+  std::unordered_set<std::string> aliases;
   // Inside a function call's parentheses (`EXTRACT(YEAR FROM d)`,
   // `SUBSTRING(s FROM 2)`) FROM names no table.
   std::vector<bool> in_function;
   const auto add = [&](const std::optional<TableRef>& ref) {
-    if (ref && !ctes.contains(ref->name)) {
-      push_unique(tables, ref->name);
+    if (!ref || ctes.contains(ref->name) || (!ref->schema.empty() && aliases.contains(ref->schema))) {
+      return;
+    }
+    push_unique(tables, ref->name);
+    auto alias = ref->next;
+    if (is_word(tokens, alias, "AS")) {
+      ++alias;
+    }
+    if (alias < tokens.size() && tokens[alias].kind == SqlToken::Ident && !is_sql_keyword(tokens[alias])) {
+      aliases.insert(lower(tokens[alias].text));
     }
   };
   for (std::size_t i = 0; i < tokens.size(); ++i) {
@@ -855,6 +943,15 @@ std::vector<std::string> sql_text_tables(std::string_view text) {
 
 std::vector<std::string> cypher_text_labels(std::string_view text, bool require_clause) {
   std::vector<std::string> out;
+  if (require_clause) {
+    // The cheap test first: a string that opens with neither a clause nor a
+    // comment is no Cypher, and is never copied.
+    std::size_t first = 0;
+    skip_space(text, first);
+    if ((first >= text.size() || text[first] != '/') && !opens_with_cypher_clause(text)) {
+      return out;
+    }
+  }
   const auto code = cypher_code(text);
   if (require_clause && !opens_with_cypher_clause(code)) {
     return out;
@@ -943,8 +1040,9 @@ bool is_test_source_path(std::string_view relative_path) {
   const std::filesystem::path path{std::string(relative_path)};
   for (const auto& part : path.parent_path()) {
     const auto segment = part.generic_string();
-    if (segment == "test" || segment == "tests" || segment == "__tests__" || segment == "spec" ||
-        segment == "specs" || segment == "testdata" || segment == "fixtures") {
+    if (segment == "test" || segment == "tests" || segment == "__tests__" || segment == "__mocks__" ||
+        segment == "spec" || segment == "specs" || segment == "testdata" || segment == "fixtures" ||
+        segment == "testFixtures" || segment == "integrationTest" || segment == "e2e" || segment == "cypress") {
       return true;
     }
   }
@@ -958,7 +1056,14 @@ bool is_test_source_path(std::string_view relative_path) {
     return file.starts_with("test_") || stem.ends_with("_test") || file == "conftest.py";
   }
   if (extension == ".kt" || extension == ".java") {
-    return stem.ends_with("Test") || stem.ends_with("Tests") || stem.ends_with("IT");
+    // `UserServiceTest`, `UserServiceTests`, `UserRepositoryIT`: the suffix
+    // follows a lower-case letter or digit, so `AUDIT` and `ABTest` are not tests.
+    for (const std::string_view suffix : {"Tests", "Test", "IT"}) {
+      if (stem.size() > suffix.size() && stem.ends_with(suffix)) {
+        const auto before = static_cast<unsigned char>(stem[stem.size() - suffix.size() - 1]);
+        return std::islower(before) != 0 || std::isdigit(before) != 0;
+      }
+    }
   }
   return false;
 }
@@ -969,7 +1074,9 @@ void extract_code_data_contracts(const TSNode& root, std::string_view language, 
   if (family == Family::None) {
     return;
   }
-  const bool read_strings = !is_test_source_path(context.relative_path);
+  if (is_test_source_path(context.relative_path)) {
+    return;  // a test's strings, entities and queries are fixtures, not the service's schema
+  }
   const Scopes scopes(fragment, context);
   Emitter emit(context, raw_relations);
   std::vector<TSNode> stack{root};
@@ -989,9 +1096,8 @@ void extract_code_data_contracts(const TSNode& root, std::string_view language, 
       bool has_literal = false;
       concatenation_text(family, node, context.source, text, has_literal);
       if (has_literal) {
-        if (read_strings) {
-          read_text(text, node, scopes, emit);
-        }
+        const bool jpql = (family == Family::Kotlin || family == Family::Java) && in_jpql_annotation(node, context.source);
+        read_text(text, !jpql, node, scopes, emit);
         continue;  // its literals are read; a nested query inside an interpolation is not
       }
     }

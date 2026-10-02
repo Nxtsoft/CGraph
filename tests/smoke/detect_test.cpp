@@ -76,7 +76,7 @@ int main() {
     return 1;
   }
   if (cgraph::detect_language("scripts/cypher/setup.cypher") != DetectedLanguage::Cypher ||
-      cgraph::detect_language("schema.cql") != DetectedLanguage::Cypher ||
+      cgraph::detect_language("schema.cql") != DetectedLanguage::Unknown ||
       cgraph::language_name(DetectedLanguage::Cypher) != "cypher" ||
       !cgraph::has_registered_extractor(DetectedLanguage::Cypher)) {
     return 1;

@@ -40,18 +40,26 @@
 //     use `table:compiq_jobs`;
 //   - a table named in SQL inside a string literal (Python, JavaScript /
 //     TypeScript, Kotlin, Java), adjacent literals and `+` chains read as one
-//     text, interpolations as an opaque placeholder: the text must open with an
+//     text, interpolations as an opaque placeholder (a name glued to one,
+//     `events_{year}` or `events_%s`, is unreadable): the text must open with an
 //     upper-case SELECT / INSERT / UPDATE / DELETE / WITH, and the table follows
-//     an upper-case FROM, JOIN, INSERT INTO, UPDATE ... SET or DELETE FROM;
-//   - a label or relationship type in Cypher: a `.cypher` file, or a string
-//     literal opening with an upper-case MATCH / OPTIONAL MATCH / MERGE / CREATE
-//     / UNWIND. Commented-out Cypher is ignored.
+//     an upper-case FROM, JOIN, INSERT INTO, UPDATE ... SET or DELETE FROM. A
+//     JPA `@Query` without `nativeQuery = true` and a `@NamedQuery` hold JPQL
+//     (entities, not tables) and are not read as SQL; `JOIN u.roles` after an
+//     alias `u` is a path, not a table;
+//   - a label or relationship type in Cypher: a `.cypher` file (not `.cql`,
+//     which is also Cassandra's), or a string literal opening with an
+//     upper-case MATCH / OPTIONAL MATCH / MERGE / CREATE ( / UNWIND.
+//     Commented-out Cypher is ignored.
 //
-// String literals in test files (a `test`, `tests`, `__tests__`, `spec`,
-// `specs`, `testdata` or `fixtures` directory, `*.test.*`, `*.spec.*`,
-// `test_*.py`, `*_test.py`, `conftest.py`, `*Test.kt|java`, `*Tests.*`, `*IT.*`)
-// are not read: they hold queries a test feeds a SQL generator or a fixture
-// database, not the service's own reads.
+// Test files (a `test`, `tests`, `__tests__`, `__mocks__`, `spec`, `specs`,
+// `testdata`, `fixtures`, `testFixtures`, `integrationTest`, `e2e` or `cypress`
+// directory, `*.test.*`, `*.spec.*`, Python `test_*.py` / `*_test.py` /
+// `conftest.py`, Kotlin / Java `FooTest`, `FooTests`, `FooIT`) are not read at
+// all by extract_code_data_contracts: their strings are queries a test feeds a
+// SQL generator or a fixture database, and their entities and query builders
+// are fixtures, not the service's schema. Migrations and Drizzle models are
+// read everywhere: a `.sql` file or a `pgTable` is a schema wherever it sits.
 namespace cgraph {
 
 // A SQL text's table names, normalized as contracts.hpp says (unquoted folded

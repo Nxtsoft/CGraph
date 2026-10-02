@@ -128,7 +128,8 @@ DetectedLanguage detect_language(const std::filesystem::path& path) {
   if (extension == ".sql") {
     return DetectedLanguage::Sql;
   }
-  if (extension == ".cypher" || extension == ".cql") {
+  // `.cypher` only: `.cql` is also Cassandra's CQL, and detection reads no content.
+  if (extension == ".cypher") {
     return DetectedLanguage::Cypher;
   }
   if (extension == ".xml") {
