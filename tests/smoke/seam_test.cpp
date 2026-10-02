@@ -531,8 +531,10 @@ fs::path contract_graph(const fs::path& root, const std::string& repo,
 int test_generic_contracts(const fs::path& root) {
   const auto api = contract_graph(root, "api",
                                   {{"provides_contract", "createUsers", "table:users", ""},
-                                   {"provides_contract", "readTenant", "header:X-Tenant-Id", ""},
-                                   {"provides_contract", "readTenant", "header:Authorization", ""},
+                                   // A framework-bound read (`@RequestHeader`): it provides
+                                   // without a caller (contracts.hpp kBoundHeaderRead).
+                                   {"provides_contract", "readTenant", "header:X-Tenant-Id", "bound"},
+                                   {"provides_contract", "readTenant", "header:Authorization", "bound"},
                                    {"uses_contract", "readTenant", "env:NODE_ENV", ""}});
   const auto ml = contract_graph(root, "ml",
                                  {{"uses_contract", "listUsers", "table:users", ""},

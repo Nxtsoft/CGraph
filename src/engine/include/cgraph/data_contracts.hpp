@@ -55,11 +55,14 @@
 //     upper-case MATCH / OPTIONAL MATCH / MERGE / CREATE ( / UNWIND.
 //     Commented-out Cypher is ignored.
 //
-// Test files (a `test`, `tests`, `__tests__`, `__mocks__`, `spec`, `specs`,
-// `testdata`, `fixtures`, `testFixtures`, `integrationTest`, `e2e` or `cypress`
-// directory, `*.test.*`, `*.spec.*`, Python `test_*.py` / `*_test.py` /
-// `conftest.py`, Kotlin / Java `FooTest`, `FooTests`, `FooIT`) are not read at
-// all by extract_code_data_contracts: their strings are queries a test feeds a
+// Test files (a `test`, `tests`, `__tests__`, `__mocks__`, `mocks`, `spec`,
+// `specs`, `testdata`, `testutil`, `fixtures`, `testFixtures`,
+// `integrationTest`, `e2e` or `cypress` directory, `*.test.*`, `*.spec.*`,
+// Python `test_*.py` / `*_test.py` / `conftest.py`, Go `*_test.go`, a
+// `scripts/mock-*` server, Kotlin / Java `FooTest`, `FooTests`, `FooIT`) are
+// not read at all by extract_code_data_contracts, nor by the header contract
+// walks (header_contracts.hpp), and code in them does not reach a header read
+// (contracts.hpp): their strings are queries a test feeds a
 // SQL generator or a fixture database, and their entities and query builders
 // are fixtures, not the service's schema. Migrations and Drizzle models are
 // read everywhere: a `.sql` file or a `pgTable` is a schema wherever it sits.

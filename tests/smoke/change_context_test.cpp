@@ -64,7 +64,8 @@ void test_contract_crossings() {
   graph.edges.push_back({.source = "db_orders_ts", .target = "db_createOrders", .relation = "contains"});
   const std::vector<cgraph::RawRelation> facts{
       {.source_id = "db_createOrders", .relation = "provides_contract", .context = "table:orders", .source_file = "/app/db/orders.ts"},
-      {.source_id = "app_readTenant", .relation = "provides_contract", .context = "header:X-Tenant-Id", .source_file = "/app/src/app.ts"},
+      // Framework-bound (`@RequestHeader`): provides without a caller (kBoundHeaderRead).
+      {.source_id = "app_readTenant", .target_label = "bound", .relation = "provides_contract", .context = "header:X-Tenant-Id", .source_file = "/app/src/app.ts"},
       {.source_id = "app_createUsers", .relation = "provides_contract", .context = "table:users", .source_file = "/app/src/app.ts"},
       {.source_id = "app_sendTenant", .relation = "uses_contract", .context = "header:x-org-id", .source_file = "/app/src/app.ts"},
       {.source_id = "app_sendTenant", .relation = "uses_contract", .context = "env:ML_URL", .source_file = "/app/src/app.ts"},

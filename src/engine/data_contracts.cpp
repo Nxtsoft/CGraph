@@ -1099,7 +1099,8 @@ bool is_test_source_path(std::string_view relative_path) {
     const auto segment = part.generic_string();
     if (segment == "test" || segment == "tests" || segment == "__tests__" || segment == "__mocks__" ||
         segment == "spec" || segment == "specs" || segment == "testdata" || segment == "fixtures" ||
-        segment == "testFixtures" || segment == "integrationTest" || segment == "e2e" || segment == "cypress") {
+        segment == "testFixtures" || segment == "integrationTest" || segment == "e2e" || segment == "cypress" ||
+        segment == "mocks" || segment == "testutil") {
       return true;
     }
   }
@@ -1112,7 +1113,14 @@ bool is_test_source_path(std::string_view relative_path) {
   if (extension == ".py") {
     return file.starts_with("test_") || stem.ends_with("_test") || file == "conftest.py";
   }
-  if (extension == ".kt" || extension == ".java") {
+  if (extension == ".go") {
+    return stem.ends_with("_test");
+  }
+  // A mock server script (`scripts/mock-backend.ts`) stands in for a service.
+  if (path.parent_path().filename() == "scripts" && file.starts_with("mock-")) {
+    return true;
+  }
+  if (extension == ".kt" || extension == ".kts" || extension == ".java") {
     // `UserServiceTest`, `UserServiceTests`, `UserRepositoryIT`: the suffix
     // follows a lower-case letter or digit, so `AUDIT` and `ABTest` are not tests.
     for (const std::string_view suffix : {"Tests", "Test", "IT"}) {
