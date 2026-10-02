@@ -205,14 +205,18 @@ int test_test_paths() {
     }
   }
   for (const auto* path : {"src/testFixtures/kotlin/Seed.kt", "src/integrationTest/kotlin/Seed.kt", "e2e/login.ts",
-                           "src/__mocks__/db.ts", "cypress/support/db.ts", "src/UserServiceTests.kt", "src/V2Test.java"}) {
+                           "src/__mocks__/db.ts", "cypress/support/db.ts", "src/UserServiceTests.kt", "src/V2Test.java",
+                           // Go tests, mock and test-utility directories, a mock server script.
+                           "internal/api/device_test.go", "src/mocks/handlers.ts", "internal/testutil/server.go",
+                           "scripts/mock-backend.ts", "build/ClientTest.kts"}) {
     if (!cgraph::is_test_source_path(path)) {
       return fail(std::string("not seen as a test path: ") + path);
     }
   }
   for (const auto* path : {"ops/services/projects/repository.py", "src/AUDIT.py", "src/compiq_agent/utils/db.ts",
                            "idp-core/src/main/kotlin/User.kt", "src/latest.ts", "src/AUDIT.kt", "src/ABTest.kt",
-                           "src/CONTEXT.java"}) {
+                           "src/CONTEXT.java", "internal/api/client.go", "scripts/build.ts", "src/mock-data.ts",
+                           "src/LatestController.kt"}) {
     if (cgraph::is_test_source_path(path)) {
       return fail(std::string("seen as a test path: ") + path);
     }

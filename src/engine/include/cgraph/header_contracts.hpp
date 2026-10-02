@@ -35,12 +35,9 @@
 // function is attributed to the module-level variable whose initializer holds
 // it when the JavaScript extractor made a node for it
 // (js_syntax::reading_scope_id), else to its file; a reader outside any function is not
-// recorded (no handler reads it). A test source (`*_test.go`, `*.test.ts`,
-// `*.spec.ts`, `test_*.py`, `*_test.py`, `conftest.py`, a `FooTest` /
-// `FooTests` JVM class file, or under `test/`, `tests/`, `__tests__/`, `e2e/`,
-// `__mocks__/`, `mocks/`, `testutil/`, or `scripts/mock-*`) records nothing:
-// its handlers are fakes standing in for another service and its requests go
-// to its own service under test.
+// recorded (no handler reads it). A test source (data_contracts.hpp
+// is_test_source_path) records nothing: its handlers are fakes standing in for
+// another service and its requests go to its own service under test.
 
 #include "cgraph/language_config.hpp"
 
@@ -66,14 +63,6 @@ class HeaderContractsFileScope {
   struct Index;
   std::unique_ptr<Index> index_;
 };
-
-// True for a test source by its path relative to the project root:
-// `*_test.go`, `*.test.ts`, `*.spec.ts`, `test_*.py`, `*_test.py`,
-// `conftest.py`, a JVM `FooTest` / `FooTests` class file, or under `test`,
-// `tests`, `__tests__`, `e2e`, `__mocks__`, `mocks`, `testutil`, or a
-// `scripts/mock-*` file. resolve_contracts uses it too: a test's call does
-// not make a header read reached.
-[[nodiscard]] bool is_test_source_path(std::string_view relative_path);
 
 // True for a name a header contract is recorded under: token characters
 // (letters, digits, `-`), at least one dash, not a standard header.

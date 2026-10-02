@@ -1,6 +1,7 @@
 #include "cgraph/header_contracts.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/data_contracts.hpp"
 #include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
 
@@ -128,47 +129,6 @@ constexpr std::string_view kUses = "uses_contract";
   }
   return false;
 }
-
-// A test source: `*_test.go`, `*.test.ts`, `*.spec.ts`, `test_x.py`, `x_test.py`,
-// `conftest.py`, a JVM `FooTest` / `FooTests` class file (`.kt`, `.kts`,
-// `.java`; `Latest.kt` is not one), or anything under a `test`, `tests`,
-// `__tests__`, `e2e`, `__mocks__`, `mocks` or `testutil` directory, or a
-// `scripts/mock-*` file. A handler there is a fake server standing in for
-// another service (`httptest.NewServer` reading `X-Tenant-ID`), not this repo
-// serving it, and a request there goes to the repo's own service under test
-// (`MockMvc`) or to such a fake, not across services.
-}  // namespace
-
-bool is_test_source_path(std::string_view relative_path) {
-  std::string path(relative_path);
-  std::ranges::replace(path, '\\', '/');
-  const auto slash = path.rfind('/');
-  const std::string file = path.substr(slash == std::string::npos ? 0 : slash + 1);
-  const std::string lowered_file = lower(file);
-  if (lowered_file.find(".test.") != std::string::npos || lowered_file.find(".spec.") != std::string::npos ||
-      lowered_file.starts_with("test_") || lowered_file.find("_test.") != std::string::npos ||
-      lowered_file == "conftest.py") {
-    return true;
-  }
-  if (const auto dot = file.rfind('.'); dot != std::string::npos) {
-    const auto extension = lowered_file.substr(dot);
-    const std::string_view stem = std::string_view(file).substr(0, dot);
-    if ((extension == ".kt" || extension == ".kts" || extension == ".java") &&
-        (stem == "Test" || stem == "Tests" || camel_suffix(stem, "Test") || camel_suffix(stem, "Tests"))) {
-      return true;
-    }
-  }
-  const std::string lowered_path = "/" + lower(path);
-  for (const std::string_view directory :
-       {"/test/", "/tests/", "/__tests__/", "/e2e/", "/__mocks__/", "/mocks/", "/testutil/", "/scripts/mock-"}) {
-    if (lowered_path.find(directory) != std::string::npos) {
-      return true;
-    }
-  }
-  return false;
-}
-
-namespace {
 
 // Records one header fact. `bound` marks a read the framework binds to a
 // request itself (contracts.hpp kBoundHeaderRead): it provides even when no
