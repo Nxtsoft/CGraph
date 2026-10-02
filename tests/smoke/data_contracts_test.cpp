@@ -124,6 +124,19 @@ int test_sql_text_tables() {
       {"SELECT * FROM events_%s", ""},
       {"SELECT * FROM \x01_archive", ""},
       {"SELECT * FROM {prefix}_events", ""},
+      // A name complete before an interpolation or a `+` boundary (\x02) is read;
+      // one ending in `_`, or continued after it, is not.
+      {"SELECT * FROM users\x01", "users"},
+      {"SELECT * FROM users\x01 WHERE id = 1", "users"},
+      {"SELECT * FROM users{where_sql}", "users"},
+      {"SELECT * FROM users%s", "users"},
+      {"SELECT * FROM t\x01_2024", ""},
+      {"SELECT * FROM users\x02", "users"},
+      {"SELECT * FROM events_\x02", ""},
+      {"SELECT * FROM \x02_archive JOIN \x02 x ON true JOIN items i ON true", "items"},
+      // Leading SQL comments before the verb.
+      {"-- name: list users\nSELECT * FROM users", "users"},
+      {"/* annotated */ SELECT * FROM users", "users"},
       // CTEs with a column list or a materialization hint are no tables.
       {"WITH x AS MATERIALIZED (SELECT 1 FROM a) SELECT * FROM x", "a"},
       {"WITH x AS NOT MATERIALIZED (SELECT 1 FROM a), y(c, d) AS (SELECT 1, 2 FROM b) SELECT * FROM x JOIN y ON true",
@@ -373,11 +386,15 @@ int test_sql_strings_per_language() {
                    "}\n"},
       {"src/q.ts", "export async function listAccounts(db: Db, y: string) {\n"
                    "  return db.execute(`SELECT id FROM accounts WHERE x = ${y}`);\n"
+                   "}\n"
+                   "export function filtered(db: Db, whereClause: string) {\n"
+                   "  return db.query(\"SELECT * FROM members\" + whereClause);\n"
                    "}\n"},
       {"src/Repo.kt", "package x\n"
                       "class Repo(private val jdbc: Jdbc) {\n"
                       "    fun load(id: String) = jdbc.query(\"SELECT * \" + \"FROM invoices i WHERE i.id = $id\")\n"
                       "    fun tpl(t: String) = jdbc.query(\"SELECT * FROM ${t}_archive JOIN ledgers l ON true\")\n"
+                      "    fun filtered(filter: String) = jdbc.query(\"SELECT * FROM credits$filter\")\n"
                       "}\n"
                       "interface UserJpa {\n"
                       "    @Query(\"SELECT u FROM User u JOIN u.roles r\")\n"
@@ -388,6 +405,7 @@ int test_sql_strings_per_language() {
       {"src/Dao.java", "package x;\n"
                        "class Dao {\n"
                        "  List<X> all(String id) { return jdbc.query(\"SELECT * \" + \"FROM payments p WHERE p.id = \" + id); }\n"
+                       "  List<X> refunds(String where) { return jdbc.query(\"SELECT * FROM refunds\" + where); }\n"
                        "  @Query(\"SELECT o FROM Order o JOIN o.lines l\")\n"
                        "  List<Order> jpql() { return null; }\n"
                        "}\n"},
@@ -398,17 +416,26 @@ int test_sql_strings_per_language() {
                    "    return f\"SELECT * FROM measurements_{year}\"\n"
                    "\n"
                    "def pct():\n"
-                   "    return \"SELECT * FROM events_%s\" % \"x\"\n"},
+                   "    return \"SELECT * FROM events_%s\" % \"x\"\n"
+                   "\n"
+                   "def where(where_sql):\n"
+                   "    return f\"SELECT * FROM parcels{where_sql}\"\n"
+                   "\n"
+                   "def where_plus(where_sql):\n"
+                   "    return \"SELECT * FROM carriers\" + where_sql\n"},
       {"src/__mocks__/db.ts", "export function mock(db) { return db.query(\"SELECT * FROM mocked\"); }\n"},
   });
   const auto ids = joined(contract_ids(graph));
-  if (ids != "table:local:accounts,table:local:app_users,table:local:invoices,table:local:items,table:local:ledgers,"
-             "table:local:orders,table:local:payments,table:local:shipments") {
+  if (ids != "table:local:accounts,table:local:app_users,table:local:carriers,table:local:credits,"
+             "table:local:invoices,table:local:items,table:local:ledgers,table:local:members,table:local:orders,"
+             "table:local:parcels,table:local:payments,table:local:refunds,table:local:shipments") {
     return fail("per-language table ids: [" + ids + "]");
   }
   const std::vector<std::pair<std::string, std::string>> users = {
       {"orders", "listOrders"}, {"items", "fromTemplate"}, {"accounts", "listAccounts"}, {"invoices", "load"},
       {"ledgers", "tpl"},       {"app_users", "native"},   {"payments", "all"},          {"shipments", "plus"},
+      {"members", "filtered"},  {"credits", "filtered"},   {"refunds", "refunds"},       {"parcels", "where"},
+      {"carriers", "where_plus"},
   };
   for (const auto& [table, user] : users) {
     if (const auto got = joined(sides(graph, "table:local:" + table, "CONSUMES")); got != user) {

@@ -40,8 +40,11 @@
 //     use `table:compiq_jobs`;
 //   - a table named in SQL inside a string literal (Python, JavaScript /
 //     TypeScript, Kotlin, Java), adjacent literals and `+` chains read as one
-//     text, interpolations as an opaque placeholder (a name glued to one,
-//     `events_{year}` or `events_%s`, is unreadable): the text must open with an
+//     text, interpolations as an opaque placeholder (a name ending in `_`
+//     before one, or with more name after it, is unreadable: `events_{year}`,
+//     `events_%s`, `t{y}_x`; `users{where_sql}`, `users$filter` and
+//     `"... FROM users" + where` read `users`): the text must open, after
+//     spaces, `(` and leading SQL comments, with an
 //     upper-case SELECT / INSERT / UPDATE / DELETE / WITH, and the table follows
 //     an upper-case FROM, JOIN, INSERT INTO, UPDATE ... SET or DELETE FROM. A
 //     JPA `@Query` without `nativeQuery = true` and a `@NamedQuery` hold JPQL

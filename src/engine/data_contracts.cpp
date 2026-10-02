@@ -21,12 +21,19 @@ namespace {
 constexpr std::string_view kProvides = "provides_contract";
 constexpr std::string_view kUses = "uses_contract";
 constexpr std::string_view kOrmTableUse = "orm_table_use";
-// Stands for an interpolation (`{x}`, `${x}`, `$x`) or a non-literal operand of
-// a concatenation. It is one opaque byte with no spaces around it, so text the
-// code glues to it stays glued: `measurements_{year}` reads `measurements_\x01`,
-// and the SQL reader treats a name touching it as unreadable, never as a table.
+// Two opaque bytes stand for code the reader cannot see, with no spaces around
+// them so text the code glues to them stays glued:
+//   kOpaque   an interpolation inside one literal (`{x}`, `${x}`, `$x`);
+//   kBoundary a non-literal operand of a `+` concatenation, which sits between
+//             two literals and so always ends (or starts) a token there.
+// The SQL reader decides per name touching one (sql_tokens): `users{where}`,
+// `users$filter` and `"... FROM users" + where` read `users`, while
+// `measurements_{year}`, `events_%s`, `"FROM events_" + year`, `t_{y}x` and
+// `{prefix}_events` are only parts of a name and read nothing.
 constexpr char kOpaque = '\x01';
+constexpr char kBoundary = '\x02';
 constexpr std::string_view kPlaceholder = "\x01";
+constexpr std::string_view kBoundaryText = "\x02";
 
 [[nodiscard]] bool is_ident_start(char ch) {
   return std::isalpha(static_cast<unsigned char>(ch)) != 0 || ch == '_';
@@ -51,6 +58,29 @@ struct SqlToken {
   enum Kind { Ident, Quoted, Punct, Other } kind;
   std::string text;
 };
+
+// The index just past an interpolation starting at `at` (kOpaque, a Python
+// `%s` / `%(name)s` directive, a `{field}`), or nullopt when none starts there.
+[[nodiscard]] std::optional<std::size_t> interpolation_end(std::string_view text, std::size_t at) {
+  if (text[at] == kOpaque) {
+    return at + 1;
+  }
+  if (text[at] == '{') {
+    const auto close = text.find('}', at + 1);
+    return close == std::string_view::npos ? std::nullopt : std::optional<std::size_t>{close + 1};
+  }
+  if (text[at] == '%' && at + 1 < text.size()) {
+    if (text[at + 1] == '(') {
+      const auto close = text.find(')', at + 2);
+      return close == std::string_view::npos || close + 1 >= text.size() ? std::nullopt
+                                                                           : std::optional<std::size_t>{close + 2};
+    }
+    if (std::isalpha(static_cast<unsigned char>(text[at + 1])) != 0) {
+      return at + 2;
+    }
+  }
+  return std::nullopt;
+}
 
 [[nodiscard]] std::vector<SqlToken> sql_tokens(std::string_view text) {
   std::vector<SqlToken> tokens;
@@ -94,11 +124,27 @@ struct SqlToken {
       while (i < n && is_ident_char(text[i])) {
         ++i;
       }
-      // A name glued to an interpolation (`events_{year}`, `events_%s`,
-      // `{prefix}_events`) is only part of a name: unreadable, not a table.
-      const bool glued = (start > 0 && (text[start - 1] == kOpaque || text[start - 1] == '}')) ||
-                         (i < n && (text[i] == kOpaque || text[i] == '%' || text[i] == '{'));
-      tokens.push_back({glued ? SqlToken::Other : SqlToken::Ident, std::string(text.substr(start, i - start))});
+      // A name touching code the reader cannot see may be only part of a name.
+      // After it: an interpolation (kOpaque, a `%s` / `%(x)s` directive, a
+      // `{x}` format field) glues when the name ends in `_` or more name
+      // follows the interpolation (`t_{y}`, `t{y}_x`); a concatenation
+      // boundary glues only a name ending in `_`. Before it: a name right after
+      // an interpolation or a `{x}` field is a suffix (`{prefix}_events`); right
+      // after a boundary only when it starts with `_` (`schema + "_events"`).
+      const auto name = text.substr(start, i - start);
+      bool glued = false;
+      if (start > 0) {
+        const char before = text[start - 1];
+        glued = before == kOpaque || before == '}' || (before == kBoundary && name.front() == '_');
+      }
+      if (!glued && i < n) {
+        if (text[i] == kBoundary) {
+          glued = name.back() == '_';
+        } else if (const auto end = interpolation_end(text, i)) {
+          glued = name.back() == '_' || (*end < n && is_ident_char(text[*end]));
+        }
+      }
+      tokens.push_back({glued ? SqlToken::Other : SqlToken::Ident, std::string(name)});
     } else if (ch == ':' || ch == '$' || ch == '@') {
       // `:name`, `$1`, `@p`: a bind parameter, one opaque token.
       const auto start = i++;
@@ -180,8 +226,19 @@ struct TableRef {
 // statement verb: the cheap test every string literal takes first.
 [[nodiscard]] bool opens_with_sql_verb(std::string_view text) {
   std::size_t i = 0;
-  while (i < text.size() && (std::isspace(static_cast<unsigned char>(text[i])) != 0 || text[i] == '(')) {
-    ++i;
+  for (;;) {  // spaces, `(`, and leading `-- ...` / `/* ... */` comments
+    while (i < text.size() && (std::isspace(static_cast<unsigned char>(text[i])) != 0 || text[i] == '(')) {
+      ++i;
+    }
+    if (text.substr(i).starts_with("--")) {
+      const auto end = text.find('\n', i);
+      i = end == std::string_view::npos ? text.size() : end + 1;
+    } else if (text.substr(i).starts_with("/*")) {
+      const auto end = text.find("*/", i + 2);
+      i = end == std::string_view::npos ? text.size() : end + 2;
+    } else {
+      break;
+    }
   }
   const auto start = i;
   while (i < text.size() && std::isupper(static_cast<unsigned char>(text[i])) != 0) {
@@ -519,7 +576,7 @@ void concatenation_text(Family family, const TSNode& node, std::string_view sour
     }
     return;
   }
-  out += kPlaceholder;
+  out += kBoundaryText;
 }
 
 struct Scope {
@@ -1096,7 +1153,8 @@ void extract_code_data_contracts(const TSNode& root, std::string_view language, 
       bool has_literal = false;
       concatenation_text(family, node, context.source, text, has_literal);
       if (has_literal) {
-        const bool jpql = (family == Family::Kotlin || family == Family::Java) && in_jpql_annotation(node, context.source);
+        const bool jpql = (family == Family::Kotlin || family == Family::Java) && opens_with_sql_verb(text) &&
+                          in_jpql_annotation(node, context.source);
         read_text(text, !jpql, node, scopes, emit);
         continue;  // its literals are read; a nested query inside an interpolation is not
       }
