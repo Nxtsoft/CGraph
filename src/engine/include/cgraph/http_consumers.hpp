@@ -14,8 +14,10 @@ namespace cgraph {
 
 // `fetch(url, opts)`, `api.GET('/path')`, `axios.post(url)`, calls to wrappers,
 // and functions that are wrappers themselves.
+// Calls outside any function hang on js_syntax::reading_scope_id, which reads
+// `fragment` for the module-level variable's node.
 void http_call_handler(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
-                       std::vector<RawRelation>& out);
+                       const Fragment& fragment, std::vector<RawRelation>& out);
 
 // Held while one file is extracted: remembers which of its functions are
 // wrappers so a file with many `this.x()` calls reads each function once.

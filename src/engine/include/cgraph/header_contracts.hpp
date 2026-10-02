@@ -30,7 +30,9 @@
 //
 // Each walk is called by its language's extra_walk on every node, with the
 // innermost enclosing function as `function_scope_id`. A sender outside any
-// function is attributed to its file; a reader outside any function is not
+// function is attributed to the module-level variable whose initializer holds
+// it when the JavaScript extractor made a node for it
+// (js_syntax::reading_scope_id), else to its file; a reader outside any function is not
 // recorded (no handler reads it). A test source (`*_test.go`, `*.test.ts`,
 // `*.spec.ts`, `test_*.py`, `*_test.py`, `conftest.py`, a `FooTest` /
 // `FooTests` JVM class file, or under `test/`, `tests/`, `__tests__/`, `e2e/`,
@@ -73,7 +75,7 @@ class HeaderContractsFileScope {
 // `request.headers.get('x-a')`, `req.headers['x-a']`, `headers.get(CONST)`,
 // `c.req.header('x-a')` (readers). Response headers are not requests.
 void js_header_contracts(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
-                         std::vector<RawRelation>& out);
+                         const Fragment& fragment, std::vector<RawRelation>& out);
 
 // Python: `headers={"X-A": v}`, `headers = {...}`, `headers["X-A"] = v`
 // (senders); FastAPI `Header(alias=...)` parameters, a `Header()` parameter's

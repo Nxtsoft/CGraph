@@ -496,8 +496,11 @@ bool is_contract_header_name(std::string_view name) {
 }
 
 void js_header_contracts(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
-                         std::vector<RawRelation>& out) {
+                         const Fragment& fragment, std::vector<RawRelation>& out) {
   const auto source = context.source;
+  // A sender outside any function belongs to the module variable it helps
+  // initialise when the extractor made a node for it, else to the file.
+  const auto sender = [&] { return js_syntax::reading_scope_id(node, context, function_scope_id, fragment); };
   const auto type = type_of(node);
   if (type == "object") {
     if (!js_headers_object(node, source)) {
@@ -505,7 +508,7 @@ void js_header_contracts(const TSNode& node, const ExtractionContext& context, c
     }
     for (const auto& member : named_children(node)) {
       if (type_of(member) == "pair") {
-        emit(out, context, false, function_scope_id, js_key(field(member, "key"), source));
+        emit(out, context, false, sender(), js_key(field(member, "key"), source));
       }
     }
     return;
@@ -516,7 +519,7 @@ void js_header_contracts(const TSNode& node, const ExtractionContext& context, c
     }
     const TSNode parent = ts_node_parent(node);
     const bool written = type_of(parent) == "assignment_expression" && ts_node_eq(field(parent, "left"), node);
-    emit(out, context, !written, function_scope_id, js_name(field(node, "index"), source));
+    emit(out, context, !written, written ? sender() : function_scope_id, js_name(field(node, "index"), source));
     return;
   }
   if (type != "call_expression") {
@@ -533,7 +536,7 @@ void js_header_contracts(const TSNode& node, const ExtractionContext& context, c
   const TSNode receiver = field(callee, "object");
   const auto arguments = named_children(field(node, "arguments"));
   if ((method == "set" || method == "append") && arguments.size() == 2 && js_headers_receiver(receiver, source)) {
-    emit(out, context, false, function_scope_id, js_name(arguments[0], source));
+    emit(out, context, false, sender(), js_name(arguments[0], source));
   } else if ((method == "get" || method == "has") && arguments.size() == 1 && js_headers_receiver(receiver, source)) {
     emit(out, context, true, function_scope_id, js_name(arguments[0], source));
   } else if ((method == "header" || method == "get") && arguments.size() == 1) {

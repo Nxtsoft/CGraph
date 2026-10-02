@@ -2,6 +2,7 @@
 
 #include "cgraph/contracts.hpp"
 #include "cgraph/cpp_extractor.hpp"
+#include "cgraph/env_contracts.hpp"
 #include "cgraph/header_contracts.hpp"
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/non_grammar_extractors.hpp"
@@ -642,6 +643,11 @@ void java_relation_handler(const TSNode& node, const ExtractionContext& context,
   config.member_handler = java_member_handler;
   config.resolve_callee_name = java_callee_name;
   config.relation_handler = java_relation_handler;
+  config.extra_walk = [](const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                         Fragment& /*fragment*/, std::vector<RawCall>& /*raw_calls*/,
+                         std::vector<RawRelation>& raw_relations) {
+    java_env_reads(node, context, function_scope_id, raw_relations);
+  };
   return config;
 }
 
@@ -1086,6 +1092,7 @@ void kotlin_collect_url(const TSNode& node, std::string_view source, const std::
 
 void kotlin_http_walk(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
                       Fragment& /*fragment*/, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& out) {
+  kotlin_env_reads(node, context, function_scope_id, out);
   kotlin_header_contracts(node, context, function_scope_id, out);
   if (std::string_view(ts_node_type(node)) != "call_expression") {
     return;
@@ -1530,6 +1537,7 @@ void go_extra_walk(const TSNode& node, const ExtractionContext& context,
                    std::vector<RawCall>& raw_calls, std::vector<RawRelation>& raw_relations) {
   (void)raw_calls;
   go_http_walk(node, context, function_scope_id, raw_relations);
+  go_env_reads(node, context, function_scope_id, raw_relations);
   go_header_contracts(node, context, function_scope_id, raw_relations);
   if (std::string_view(ts_node_type(node)) != "type_spec") {
     return;

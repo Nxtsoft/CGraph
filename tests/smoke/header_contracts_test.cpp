@@ -275,6 +275,8 @@ export async function agentProxy() { const agentRes = await fetch(u); return age
 export const elysia = ({ set }: any) => { set.headers['x-elysia-tag'] = 'v'; };
 export function shadowParam(TAG: string) { return request.headers.get(TAG); }
 export function shadowLocal() { const TAG = other(); return request.headers.get(TAG); }
+// A module-level sender belongs to the variable it initialises.
+export const defaultHeaders = { 'X-Module-Sender': 'v' };
 // A generator expression is a function too: its return is not at module level.
 export const live = gen(function* () { return { 'X-Gen-Tag': 1 }; });
 export function noise() {
@@ -294,6 +296,7 @@ export function noise() {
                      "uses|" + id(file, "sendSet") + "|header:X-Append-Tag",
                      "uses|" + id(file, "assign") + "|header:X-Assigned-Tag",
                      "uses|" + id(file, "arrowHeaders") + "|header:X-Arrow-Tag",
+                     "uses|" + id(file, "defaultHeaders") + "|header:X-Module-Sender",
                  });
   }
 
