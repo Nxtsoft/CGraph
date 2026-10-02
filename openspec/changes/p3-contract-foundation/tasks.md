@@ -32,3 +32,8 @@
 - [x] 5.3 Change context partitions repo-local contracts out before the 24-contract cap.
 - [x] 5.4 `trace_impact` serves every contract kind from its file, so a changed file touches its tables and headers.
 - [x] 5.5 The three endpoint-only requirements are MODIFIED with every existing scenario; fused declared tables carry their database; `contract_id` refuses a database `local`; extractor normalization documented; per-kind summary wording; `declared_database` reused.
+
+## 6. Review round 2 (PR #158)
+
+- [x] 6.1 README: claims and non-standard headers join by id, standard headers never, env names only when declared, tables and labels only within a declared database.
+- [x] 6.2 `seam fuse` refuses a seam contract its declarations would split from the seam id, naming the missing `--env` / `--database`.

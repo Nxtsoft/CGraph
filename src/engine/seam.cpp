@@ -355,6 +355,39 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     add_edge({.source = scoped(service->second, edge.source), .target = scoped(service->second, edge.target),
               .relation = edge.relation});
   }
+  // A contract discover joined under a declaration (`--env`, `--database`)
+  // must be held under one of its spellings by every service the seam says
+  // provides or uses it; fused without the same declarations, that service's
+  // node would be scoped away from the seam's id and the join would silently
+  // split, so it is refused, as an unjoined proxied endpoint is.
+  std::unordered_map<std::string, std::unordered_set<std::string>> held;  // service -> its node ids
+  for (const auto& [name, graph] : services) {
+    auto& ids = held[name];
+    for (const auto& node : graph.nodes) {
+      ids.insert(node.id);
+    }
+  }
+  std::vector<std::string> undeclared;
+  for (const auto& edge : seam.edges) {
+    const auto service = edge.properties.find("service");
+    const auto kind = contract_kind_of(edge.source);
+    if (service == edge.properties.end() || kind.empty() || kind == "endpoint" || !held.contains(service->second)) {
+      continue;
+    }
+    const auto spellings = contract_spellings(databases, env, service->second, edge.source);
+    const auto& ids = held.at(service->second);
+    if (std::ranges::none_of(spellings, [&](const std::string& id) { return ids.contains(id); })) {
+      undeclared.push_back("seam contract " + edge.source + " (" + edge.relation + " in " + service->second +
+                           ") was joined by discover under a declaration fuse was not given; pass fuse the same " +
+                           (kind == "env" ? "--env" : "--database") + " as discover");
+    }
+  }
+  if (!undeclared.empty()) {
+    result.ok = false;
+    result.errors.push_back(std::to_string(undeclared.size()) + " seam contract edge(s) would split: " +
+                            undeclared.front());
+    return result;
+  }
   if (!unplaced.empty()) {
     result.ok = false;
     result.errors.push_back(std::to_string(unplaced.size()) +

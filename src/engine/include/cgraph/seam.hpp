@@ -100,6 +100,10 @@ struct SeamFuseResult {
 // included, is scoped to its service. With `databases`, a declared member's
 // `table:local:<name>` becomes the seam's `table:<database>:<name>` (its
 // `database` property too); with `env`, a declared `env:<NAME>` is shared.
+// The declarations must be the ones discover joined the seam under: a seam
+// contract whose `HANDLED_BY` / `CONSUMED_AT` service holds it under none of
+// the ids these declarations give (contract_spellings) fails loud, naming the
+// missing `--env` / `--database`, rather than splitting the join.
 [[nodiscard]] SeamFuseResult fuse_seam(
     const Fragment& seam,
     const std::vector<std::pair<std::string, GraphSnapshot>>& services,

@@ -288,14 +288,22 @@ end serves is not joined. Each repository's own graph keeps its own spelling. Th
 is not read from the proxy's code: it is built at run time from the handler's parameters, so it is
 declared, not guessed.
 
-Contracts other than endpoints join the same way once an extractor records them as
-`provides_contract` / `uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`,
-`env:<NAME>`, and tables and graph labels as `table:<database>:<name>` / `label:<database>:<name>`.
-Nothing in code says which repositories share a database, so a table with no known database is
-`table:local:<name>`, local to its repository, until `--database turing=turing-api,ml-backend`
-says both use database `turing`; their tables then meet at `table:turing:<name>` and no other
-repository's do. `--env ML_BACKEND_URL=ml-backend` names the service an env variable addresses
-(`SERVED_BY`). Both flags go on `seam discover` and `seam fuse`.
+Contracts other than endpoints are recorded by extractors as `provides_contract` /
+`uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`, `env:<NAME>`, and tables and
+graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do not all join alike:
+
+- **Claims and non-standard headers** (`x-tenant-id`) join like endpoints, by id. A standard HTTP
+  header (`authorization`, `content-type`, any IANA permanent field name, `x-request-id`,
+  `x-forwarded-*`, `traceparent`) never joins: every service uses those for its own reasons.
+- **Tables and graph labels** join only within a declared database. Nothing in code says which
+  repositories share one, so a table with no known database is `table:local:<name>`, local to its
+  repository, until `--database turing=turing-api,ml-backend` says both use database `turing`;
+  their tables then meet at `table:turing:<name>` and no other repository's do.
+- **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
+  variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
+
+Both flags go on `seam discover` and `seam fuse`, and must be the same on both: a seam joined
+under a declaration that fuse is not given is refused rather than silently split.
 
 ### Contract documents
 
@@ -338,8 +346,9 @@ proxy mapping into `impact` and `path`, which then cross from web's `/api/backen
 backend's `/api/...` endpoint and back; a `path` across it keeps both spellings. A change to web's own
 route never reaches web's proxied callers, which hit the backend's copy. Its optional `databases`
 (`[{"name": "turing", "repos": ["api", "ml"]}]`) and `env` (`[{"name": "ML_BACKEND_URL", "service": "ml"}]`)
-carry the seam declarations: `impact` and `path` cross at headers, claims and env names as at
-endpoints, and at a member's `table:local:` id only towards the other members of its database. A repository
+carry the seam declarations. `impact` and `path` cross at claims and non-standard headers as at
+endpoints; never at a standard HTTP header; at an env name only when `env` declares it; and at a
+member's `table:local:` id only towards the other members of its database. A repository
 whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
 `context` and the memory ops are answered per project and say so, naming the roots to use. The
 MCP server federates too when its root is a workspace, with no new tool.

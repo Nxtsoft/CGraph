@@ -617,6 +617,20 @@ int test_generic_contracts(const fs::path& root) {
     std::cerr << "fuse: a header is not shared, or an undeclared table is not scoped to its service\n";
     return 1;
   }
+  // Fused without the declarations discover joined under, the join would split
+  // (ml's node scoped to `ml::env:API_URL` / `ml::table:local:users` while the
+  // seam keeps the shared id): refused, naming the missing flag.
+  const auto no_env = cgraph::fuse_seam(declared.fragment, services, {}, databases);
+  const auto no_database = cgraph::fuse_seam(declared.fragment, services, {}, {}, env);
+  if (no_env.ok || no_env.errors.empty() || no_env.errors.front().find("env:API_URL") == std::string::npos ||
+      no_env.errors.front().find("--env") == std::string::npos || no_database.ok || no_database.errors.empty() ||
+      no_database.errors.front().find("table:turing:users") == std::string::npos ||
+      no_database.errors.front().find("--database") == std::string::npos) {
+    std::cerr << "fuse: a seam joined under --env/--database was fused without them and not refused: "
+              << (no_env.errors.empty() ? std::string{"(no error)"} : no_env.errors.front()) << " | "
+              << (no_database.errors.empty() ? std::string{"(no error)"} : no_database.errors.front()) << '\n';
+    return 1;
+  }
   const auto fused = cgraph::fuse_seam(declared.fragment, services, {}, databases, env);
   const auto* fused_users = find_in(fused.graph, "table:turing:users");
   if (!fused.ok || fused_users == nullptr || fused_users->properties.at("database") != "turing" ||
