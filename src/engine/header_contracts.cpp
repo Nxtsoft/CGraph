@@ -1,6 +1,7 @@
 #include "cgraph/header_contracts.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace cgraph {
@@ -40,6 +42,16 @@ constexpr std::string_view kUses = "uses_contract";
     ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   }
   return out;
+}
+
+[[nodiscard]] bool is_lower_or_digit(char ch) {
+  return std::islower(static_cast<unsigned char>(ch)) || std::isdigit(static_cast<unsigned char>(ch));
+}
+
+// True when `word` ends in `suffix` at a camelCase boundary (`agentRes` ends in
+// `Res`; `Fres` does not, nor does `Latest` end in `Test`).
+[[nodiscard]] bool camel_suffix(std::string_view word, std::string_view suffix) {
+  return word.size() > suffix.size() && word.ends_with(suffix) && is_lower_or_digit(word[word.size() - suffix.size() - 1]);
 }
 
 [[nodiscard]] TSNode field(const TSNode& node, std::string_view name) {
@@ -77,59 +89,85 @@ constexpr std::string_view kUses = "uses_contract";
   return node;
 }
 
-// A variable or function whose name says it holds or builds request headers:
-// `headers`, `authHeaders`, `extraHeaders`, `tenantHeader`.
-[[nodiscard]] bool names_headers(std::string_view name) { return lower(name).find("header") != std::string::npos; }
+// A name that says it holds or builds request headers: exactly `headers` or
+// `header`, or one ending in `Headers` / `Header` at a camelCase boundary
+// (`authHeaders`, `getAuthHeaders`, `tenantHeader`, `doWithHeaders`) or in
+// `_headers` / `_header`. Not a name that merely contains the word
+// (`headerStyles`, `subheaderText`). A holder only records the keys that are
+// header-shaped, so a `tableHeaders` of column titles records nothing.
+[[nodiscard]] bool holds_headers(std::string_view name) {
+  const auto lowered = lower(name);
+  return lowered == "headers" || lowered == "header" || camel_suffix(name, "Headers") ||
+         camel_suffix(name, "Header") || lowered.ends_with("_headers") || lowered.ends_with("_header");
+}
 
-// Code that is about a response, not a request: an identifier in it is `res`,
-// `resp` or `response`, or contains `response` (`nextResponse`,
-// `ResponseEntity`, `JSONResponse`). A header set on a response or read from
+// A word that names a response: `res`, `resp`, `response`, anything containing
+// `response` (`nextResponse`, `ResponseEntity`, `JSONResponse`), or a camelCase
+// `...Res` / `...Resp` (`agentRes`). A header set on a response or read from
 // one is the server talking back, not the contract a client sends.
+[[nodiscard]] bool is_response_word(std::string_view word) {
+  const auto lowered = lower(word);
+  return lowered == "res" || lowered == "resp" || lowered.find("response") != std::string::npos ||
+         camel_suffix(word, "Res") || camel_suffix(word, "Resp");
+}
+
+// True when any identifier-like word of `text` names a response. `_` splits
+// words too (`agent_res`).
 [[nodiscard]] bool mentions_response(std::string_view text) {
-  std::string token;
-  const auto check = [&token]() {
-    const auto word = lower(token);
-    token.clear();
-    return word == "res" || word == "resp" || word == "response" || word.find("response") != std::string::npos;
-  };
-  for (const char ch : text) {
-    if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_') {
-      token.push_back(ch);
-    } else if (!token.empty() && check()) {
+  std::size_t start = 0;
+  for (std::size_t index = 0; index <= text.size(); ++index) {
+    if (index == text.size() || !std::isalnum(static_cast<unsigned char>(text[index]))) {
+      if (index > start && is_response_word(text.substr(start, index - start))) {
+        return true;
+      }
+      start = index + 1;
+    }
+  }
+  return false;
+}
+
+// A test source: `*_test.go`, `*.test.ts`, `*.spec.ts`, `test_x.py`, `x_test.py`,
+// `conftest.py`, a JVM `FooTest` / `FooTests` class file (`.kt`, `.kts`,
+// `.java`; `Latest.kt` is not one), or anything under a `test`, `tests`,
+// `__tests__`, `e2e`, `__mocks__`, `mocks` or `testutil` directory, or a
+// `scripts/mock-*` file. A handler there is a fake server standing in for
+// another service (`httptest.NewServer` reading `X-Tenant-ID`), not this repo
+// serving it, and a request there goes to the repo's own service under test
+// (`MockMvc`) or to such a fake, not across services.
+[[nodiscard]] bool is_test_source(std::string_view relative_path) {
+  std::string path(relative_path);
+  std::ranges::replace(path, '\\', '/');
+  const auto slash = path.rfind('/');
+  const std::string file = path.substr(slash == std::string::npos ? 0 : slash + 1);
+  const std::string lowered_file = lower(file);
+  if (lowered_file.find(".test.") != std::string::npos || lowered_file.find(".spec.") != std::string::npos ||
+      lowered_file.starts_with("test_") || lowered_file.find("_test.") != std::string::npos ||
+      lowered_file == "conftest.py") {
+    return true;
+  }
+  if (const auto dot = file.rfind('.'); dot != std::string::npos) {
+    const auto extension = lowered_file.substr(dot);
+    const std::string_view stem = std::string_view(file).substr(0, dot);
+    if ((extension == ".kt" || extension == ".kts" || extension == ".java") &&
+        (stem == "Test" || stem == "Tests" || camel_suffix(stem, "Test") || camel_suffix(stem, "Tests"))) {
       return true;
     }
   }
-  return !token.empty() && check();
-}
-
-// A test source: `_test.go`, `*.test.ts`, `*.spec.ts`, `test_x.py`, `x_test.py`,
-// `FooTest.kt`, or anything under a `test` / `tests` / `__tests__` / `e2e`
-// directory. A handler there is a fake server standing in for another service
-// (`httptest.NewServer` reading `X-Tenant-ID`), not this repo serving it, and a
-// request there goes to the repo's own service under test (`MockMvc`) or to
-// such a fake, not across services.
-[[nodiscard]] bool is_test_source(std::string_view relative_path) {
-  std::string path = lower(relative_path);
-  std::ranges::replace(path, '\\', '/');
-  const auto slash = path.rfind('/');
-  const std::string_view file = std::string_view(path).substr(slash == std::string::npos ? 0 : slash + 1);
-  if (file.find(".test.") != std::string_view::npos || file.find(".spec.") != std::string_view::npos ||
-      file.starts_with("test_") || file.find("_test.") != std::string_view::npos ||
-      file.find("test.kt") != std::string_view::npos || file.find("tests.kt") != std::string_view::npos ||
-      file.find("test.java") != std::string_view::npos) {
-    return true;
-  }
-  const std::string directories = "/" + path.substr(0, slash == std::string::npos ? 0 : slash + 1);
-  for (const std::string_view directory : {"/test/", "/tests/", "/__tests__/", "/e2e/"}) {
-    if (directories.find(directory) != std::string::npos) {
+  const std::string lowered_path = "/" + lower(path);
+  for (const std::string_view directory :
+       {"/test/", "/tests/", "/__tests__/", "/e2e/", "/__mocks__/", "/mocks/", "/testutil/", "/scripts/mock-"}) {
+    if (lowered_path.find(directory) != std::string::npos) {
       return true;
     }
   }
   return false;
 }
 
+// Records one header fact. `bound` marks a read the framework binds to a
+// request itself (contracts.hpp kBoundHeaderRead): it provides even when no
+// code calls the reading function.
 void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool providing, const std::string& scope,
-          const std::optional<std::string>& name) {
+          const std::optional<std::string>& name, bool bound = false) {
   if (!name || !is_contract_header_name(*name)) {
     return;
   }
@@ -141,7 +179,7 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
   }
   out.push_back(RawRelation{
       .source_id = scope.empty() ? make_id(context.relative_path) : scope,
-      .target_label = {},
+      .target_label = providing && bound ? std::string(kBoundHeaderRead) : std::string{},
       .relation = std::string(providing ? kProvides : kUses),
       .context = "header:" + *name,
       .source_file = context.source_file,
@@ -150,13 +188,25 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
 
 // ---- JavaScript / TypeScript ------------------------------------------------
 
-[[nodiscard]] bool js_is_wrapper(std::string_view type) {
-  return type == "parenthesized_expression" || type == "as_expression" || type == "satisfies_expression" ||
-         type == "non_null_expression" || type == "type_assertion" || type == "await_expression";
-}
+// What a file declares at module level that header reading looks up: string
+// constants (the one hop a header name may take) and function parameter
+// names (an object passed at an `extraHeaders` parameter is headers). Built
+// once per file under a HeaderContractsFileScope.
+struct JsFileIndex {
+  bool built = false;
+  std::unordered_map<std::string, std::optional<std::string>> constants;  // nullopt: declared, not a plain string
+  std::unordered_map<std::string, std::vector<std::string>> functions;
+};
 
-[[nodiscard]] TSNode js_unwrap(TSNode node) {
-  while (js_is_wrapper(type_of(node)) && ts_node_named_child_count(node) > 0) {
+thread_local JsFileIndex* current_js_index = nullptr;
+
+// Through TypeScript's type-only wrappers (js_syntax::unwrap_expression) and `await`.
+[[nodiscard]] TSNode js_value(TSNode node) {
+  for (int guard = 0; guard < 16; ++guard) {
+    node = js_syntax::unwrap_expression(node);
+    if (type_of(node) != "await_expression" || ts_node_named_child_count(node) == 0) {
+      break;
+    }
     node = ts_node_named_child(node, 0);
   }
   return node;
@@ -165,45 +215,109 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
 // `'X-A'`, `"X-A"`, or a template literal with no substitution.
 [[nodiscard]] std::optional<std::string> js_string(const TSNode& node, std::string_view source) {
   const auto type = type_of(node);
-  if (type == "string") {
-    const auto text = text_of(node, source);
-    return text.size() >= 2 ? std::optional<std::string>(text.substr(1, text.size() - 2)) : std::nullopt;
-  }
-  if (type == "template_string" && ts_node_is_null(first_named_of_type(node, "template_substitution"))) {
+  if (type == "string" ||
+      (type == "template_string" && ts_node_is_null(first_named_of_type(node, "template_substitution")))) {
     const auto text = text_of(node, source);
     return text.size() >= 2 ? std::optional<std::string>(text.substr(1, text.size() - 2)) : std::nullopt;
   }
   return std::nullopt;
 }
 
-// The string a module-level `const NAME = '...'` of this file holds: the one
-// constant hop a header name may take.
-[[nodiscard]] std::optional<std::string> js_const(const std::string& name, const TSNode& from,
-                                                  std::string_view source) {
-  const TSNode program = root_of(from);
+void build_js_index(const TSNode& program, std::string_view source, JsFileIndex& index) {
+  index.built = true;
   for (TSNode declaration : named_children(program)) {
     if (type_of(declaration) == "export_statement") {
       declaration = field(declaration, "declaration");
     }
-    if (type_of(declaration) != "lexical_declaration" || ts_node_child_count(declaration) == 0 ||
-        text_of(ts_node_child(declaration, 0), source) != "const") {
+    const auto type = type_of(declaration);
+    if (type == "function_declaration" || type == "generator_function_declaration") {
+      auto& parameters = index.functions[text_of(field(declaration, "name"), source)];
+      parameters.clear();
+      js_syntax::parameter_names(declaration, source, parameters);
       continue;
     }
+    if (type != "lexical_declaration" && type != "variable_declaration") {
+      continue;
+    }
+    const bool constant = ts_node_child_count(declaration) > 0 && text_of(ts_node_child(declaration, 0), source) == "const";
     for (const auto& declarator : named_children(declaration)) {
-      if (type_of(declarator) == "variable_declarator" && text_of(field(declarator, "name"), source) == name) {
-        return js_string(js_unwrap(field(declarator, "value")), source);
+      if (type_of(declarator) != "variable_declarator") {
+        continue;
+      }
+      const auto name = text_of(field(declarator, "name"), source);
+      const TSNode value = js_value(field(declarator, "value"));
+      if (js_syntax::is_function_node(type_of(value))) {
+        auto& parameters = index.functions[name];
+        parameters.clear();
+        js_syntax::parameter_names(value, source, parameters);
+      }
+      // A second declaration of one name (`let` reassigned, a redeclared
+      // `var`) is not a constant this file can read.
+      const auto [slot, fresh] = index.constants.try_emplace(name, std::nullopt);
+      slot->second = fresh && constant ? js_string(value, source) : std::nullopt;
+    }
+  }
+}
+
+// The current file's index: the scope's, built on first use, or a throwaway
+// one when no scope is held.
+[[nodiscard]] const JsFileIndex& js_index(const TSNode& from, std::string_view source, JsFileIndex& scratch) {
+  JsFileIndex& index = current_js_index != nullptr ? *current_js_index : scratch;
+  if (!index.built) {
+    build_js_index(root_of(from), source, index);
+  }
+  return index;
+}
+
+// True when something between `use` and module scope binds `name` again: a
+// parameter of an enclosing function, or a declaration directly in an
+// enclosing block. The module constant is then not what `use` reads.
+[[nodiscard]] bool js_shadowed(const TSNode& use, const std::string& name, std::string_view source) {
+  for (TSNode scope = ts_node_parent(use); !ts_node_is_null(scope); scope = ts_node_parent(scope)) {
+    const auto type = type_of(scope);
+    if (type == "program") {
+      return false;
+    }
+    if (js_syntax::is_function_node(type)) {
+      std::vector<std::string> parameters;
+      js_syntax::parameter_names(scope, source, parameters);
+      if (std::ranges::find(parameters, name) != parameters.end()) {
+        return true;
+      }
+    } else if (type == "statement_block" || type == "switch_body") {
+      for (const auto& statement : named_children(scope)) {
+        const auto statement_type = type_of(statement);
+        if ((statement_type == "function_declaration" || statement_type == "class_declaration") &&
+            text_of(field(statement, "name"), source) == name) {
+          return true;
+        }
+        if (statement_type != "lexical_declaration" && statement_type != "variable_declaration") {
+          continue;
+        }
+        for (const auto& declarator : named_children(statement)) {
+          if (text_of(field(declarator, "name"), source) == name) {
+            return true;
+          }
+        }
       }
     }
   }
-  return std::nullopt;
+  return false;
 }
 
 [[nodiscard]] std::optional<std::string> js_name(const TSNode& value, std::string_view source) {
-  const TSNode node = js_unwrap(value);
-  if (type_of(node) == "identifier") {
-    return js_const(text_of(node, source), node, source);
+  const TSNode node = js_value(value);
+  if (type_of(node) != "identifier") {
+    return js_string(node, source);
   }
-  return js_string(node, source);
+  const auto name = text_of(node, source);
+  if (js_shadowed(node, name, source)) {
+    return std::nullopt;
+  }
+  JsFileIndex scratch;
+  const auto& index = js_index(node, source, scratch);
+  const auto constant = index.constants.find(name);
+  return constant == index.constants.end() ? std::nullopt : constant->second;
 }
 
 [[nodiscard]] std::optional<std::string> js_key(const TSNode& key, std::string_view source) {
@@ -215,12 +329,6 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
     return text_of(key, source);
   }
   return js_string(key, source);
-}
-
-[[nodiscard]] bool js_is_function(std::string_view type) {
-  return type == "function_declaration" || type == "generator_function_declaration" || type == "function_expression" ||
-         type == "function" || type == "arrow_function" || type == "method_definition" ||
-         type == "generator_function";
 }
 
 [[nodiscard]] std::string js_function_name(const TSNode& function, std::string_view source) {
@@ -239,66 +347,40 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
 
 [[nodiscard]] TSNode js_enclosing_function(const TSNode& node) {
   for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
-    if (js_is_function(type_of(parent))) {
+    if (js_syntax::is_function_node(type_of(parent))) {
       return parent;
     }
   }
   return TSNode{};
 }
 
-// The parameter names of the module-level function `name` of this file.
-[[nodiscard]] std::vector<std::string> js_function_parameters(const std::string& name, const TSNode& from,
-                                                              std::string_view source) {
-  const TSNode program = root_of(from);
-  for (TSNode declaration : named_children(program)) {
-    if (type_of(declaration) == "export_statement") {
-      declaration = field(declaration, "declaration");
-    }
-    TSNode function{};
-    if (type_of(declaration) == "function_declaration" && text_of(field(declaration, "name"), source) == name) {
-      function = declaration;
-    } else if (type_of(declaration) == "lexical_declaration") {
-      for (const auto& declarator : named_children(declaration)) {
-        if (type_of(declarator) == "variable_declarator" && text_of(field(declarator, "name"), source) == name &&
-            js_is_function(type_of(js_unwrap(field(declarator, "value"))))) {
-          function = js_unwrap(field(declarator, "value"));
-        }
-      }
-    }
-    if (ts_node_is_null(function)) {
-      continue;
-    }
-    std::vector<std::string> names;
-    for (const auto& parameter : named_children(field(function, "parameters"))) {
-      const TSNode pattern = field(parameter, "pattern");
-      names.push_back(text_of(ts_node_is_null(pattern) ? parameter : pattern, source));
-    }
-    return names;
-  }
-  return {};
-}
-
 // A receiver that holds a request's headers: `headers`, `authHeaders`,
 // `request.headers`, `c.req.raw.headers`, next/headers' `headers()`; never one
-// that names a response.
+// that names a response (`agentRes.headers`), nor Elysia's `set.headers`, the
+// response a handler is building.
 [[nodiscard]] bool js_headers_receiver(const TSNode& value, std::string_view source) {
-  const TSNode node = js_unwrap(value);
+  const TSNode node = js_value(value);
   const auto type = type_of(node);
-  const auto text = text_of(node, source);
-  if (mentions_response(text)) {
-    return false;
-  }
   if (type == "identifier") {
-    return names_headers(text);
+    const auto text = text_of(node, source);
+    return holds_headers(text) && !mentions_response(text);
   }
   if (type == "member_expression") {
-    return text_of(field(node, "property"), source) == "headers";
+    const TSNode object = field(node, "object");
+    return text_of(field(node, "property"), source) == "headers" && !mentions_response(text_of(object, source)) &&
+           !(type_of(object) == "identifier" && text_of(object, source) == "set");
   }
   if (type == "call_expression") {  // next/headers: `headers().get('x-a')`
     return text_of(field(node, "function"), source) == "headers" &&
            named_children(field(node, "arguments")).empty();
   }
   return false;
+}
+
+// The call whose arguments `arguments` is, and its callee (`constructor` for `new`).
+[[nodiscard]] TSNode js_callee(const TSNode& call) {
+  const TSNode function = field(call, "function");
+  return ts_node_is_null(function) ? field(call, "constructor") : function;
 }
 
 // True when `object` is the headers of a request being built.
@@ -308,7 +390,7 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
   }
   TSNode child = object;
   TSNode parent = ts_node_parent(object);
-  while (js_is_wrapper(type_of(parent)) || type_of(parent) == "ternary_expression" ||
+  while (js_syntax::is_type_wrapper(type_of(parent)) || type_of(parent) == "ternary_expression" ||
          type_of(parent) == "binary_expression") {
     child = parent;
     parent = ts_node_parent(parent);
@@ -323,27 +405,24 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
       return false;
     }
     TSNode options = ts_node_parent(parent);
-    while (js_is_wrapper(type_of(ts_node_parent(options)))) {
+    while (js_syntax::is_type_wrapper(type_of(ts_node_parent(options)))) {
       options = ts_node_parent(options);
     }
     const TSNode arguments = ts_node_parent(options);
-    if (type_of(arguments) == "arguments") {
-      const TSNode call = ts_node_parent(arguments);
-      const TSNode callee = ts_node_is_null(field(call, "function")) ? field(call, "constructor") : field(call, "function");
-      return !mentions_response(text_of(callee, source));
-    }
-    return true;
+    return type_of(arguments) != "arguments" ||
+           !mentions_response(text_of(js_callee(ts_node_parent(arguments)), source));
   }
   if (type == "variable_declarator") {
     const auto name = text_of(field(parent, "name"), source);
-    return names_headers(name) && !mentions_response(name);
+    return holds_headers(name) && !mentions_response(name);
   }
   if (type == "assignment_expression" && ts_node_eq(field(parent, "right"), child)) {
     const TSNode left = field(parent, "left");
-    const auto left_text = text_of(left, source);
-    return !mentions_response(left_text) &&
-           ((type_of(left) == "identifier" && names_headers(left_text)) ||
-            (type_of(left) == "member_expression" && text_of(field(left, "property"), source) == "headers"));
+    if (type_of(left) == "identifier") {
+      const auto name = text_of(left, source);
+      return holds_headers(name) && !mentions_response(name);
+    }
+    return type_of(left) == "member_expression" && js_headers_receiver(left, source);
   }
   if (type == "arguments") {
     const TSNode call = ts_node_parent(parent);
@@ -356,25 +435,43 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, bool 
     }
     // `mlRequest(base, ..., { 'X-Webapp-Env': env })` into a function of this
     // file whose parameter there is `extraHeaders`.
-    std::size_t index = 0;
+    std::size_t position = 0;
     for (const auto& argument : named_children(parent)) {
       if (ts_node_eq(argument, child)) {
         break;
       }
-      ++index;
+      ++position;
     }
-    const auto parameters = js_function_parameters(text_of(callee, source), call, source);
-    return index < parameters.size() && names_headers(parameters[index]) && !mentions_response(parameters[index]);
+    JsFileIndex scratch;
+    const auto& index = js_index(call, source, scratch);
+    const auto function = index.functions.find(text_of(callee, source));
+    if (function == index.functions.end() || position >= function->second.size()) {
+      return false;
+    }
+    const auto& parameter = function->second[position];
+    return holds_headers(parameter) && !mentions_response(parameter);
   }
-  if (type == "return_statement" || (js_is_function(type) && ts_node_eq(field(parent, "body"), child))) {
-    const TSNode function = js_is_function(type) ? parent : js_enclosing_function(parent);
+  if (type == "return_statement" || (js_syntax::is_function_node(type) && ts_node_eq(field(parent, "body"), child))) {
+    const TSNode function = js_syntax::is_function_node(type) ? parent : js_enclosing_function(parent);
     const auto name = js_function_name(function, source);
-    return names_headers(name) && !mentions_response(name);
+    return holds_headers(name) && !mentions_response(name);
   }
   return false;
 }
 
 }  // namespace
+
+struct HeaderContractsFileScope::Index {
+  JsFileIndex js;
+  JsFileIndex* previous = nullptr;
+};
+
+HeaderContractsFileScope::HeaderContractsFileScope() : index_(std::make_unique<Index>()) {
+  index_->previous = current_js_index;
+  current_js_index = &index_->js;
+}
+
+HeaderContractsFileScope::~HeaderContractsFileScope() { current_js_index = index_->previous; }
 
 bool is_contract_header_name(std::string_view name) {
   if (name.empty() || name.size() > 128 || name.front() == '-' || name.back() == '-' ||
@@ -419,6 +516,9 @@ void js_header_contracts(const TSNode& node, const ExtractionContext& context, c
     return;
   }
   const auto method = text_of(field(callee, "property"), source);
+  if (method != "set" && method != "append" && method != "get" && method != "has" && method != "header") {
+    return;
+  }
   const TSNode receiver = field(callee, "object");
   const auto arguments = named_children(field(node, "arguments"));
   if ((method == "set" || method == "append") && arguments.size() == 2 && js_headers_receiver(receiver, source)) {
@@ -427,7 +527,7 @@ void js_header_contracts(const TSNode& node, const ExtractionContext& context, c
     emit(out, context, true, function_scope_id, js_name(arguments[0], source));
   } else if ((method == "header" || method == "get") && arguments.size() == 1) {
     // Hono's `c.req.header('x-a')`, Express's `req.get('x-a')` / `req.header('x-a')`.
-    const auto receiver_text = lower(text_of(js_unwrap(receiver), source));
+    const auto receiver_text = lower(text_of(js_value(receiver), source));
     if (receiver_text == "req" || receiver_text == "request" || receiver_text.ends_with(".req") ||
         receiver_text.ends_with(".request")) {
       emit(out, context, true, function_scope_id, js_name(arguments[0], source));
@@ -456,35 +556,80 @@ namespace {
   return value;
 }
 
+// True when `name` is local to a function enclosing `use`: one of its
+// parameters, or assigned anywhere in its body (Python makes such a name
+// local to the whole function). Nested functions are their own scope.
+[[nodiscard]] bool py_shadowed(const TSNode& use, const std::string& name, std::string_view source) {
+  for (TSNode scope = ts_node_parent(use); !ts_node_is_null(scope); scope = ts_node_parent(scope)) {
+    if (type_of(scope) != "function_definition") {
+      continue;
+    }
+    for (const auto& parameter : named_children(field(scope, "parameters"))) {
+      TSNode identifier = type_of(parameter) == "identifier" ? parameter : field(parameter, "name");
+      if (ts_node_is_null(identifier)) {
+        identifier = first_named_of_type(parameter, "identifier");
+      }
+      if (text_of(identifier, source) == name) {
+        return true;
+      }
+    }
+    std::vector<TSNode> pending{field(scope, "body")};
+    while (!pending.empty()) {
+      const TSNode node = pending.back();
+      pending.pop_back();
+      if (type_of(node) == "assignment" || type_of(node) == "augmented_assignment") {
+        const TSNode left = field(node, "left");
+        if (type_of(left) == "identifier" && text_of(left, source) == name) {
+          return true;
+        }
+      }
+      for (const auto& child : named_children(node)) {
+        if (type_of(child) != "function_definition" && type_of(child) != "class_definition") {
+          pending.push_back(child);
+        }
+      }
+    }
+  }
+  return false;
+}
+
 [[nodiscard]] std::optional<std::string> py_const(const std::string& name, const TSNode& from,
                                                   std::string_view source) {
+  std::optional<std::string> value;
+  bool seen = false;
   for (TSNode statement : named_children(root_of(from))) {
     if (type_of(statement) == "expression_statement" && ts_node_named_child_count(statement) == 1) {
       statement = ts_node_named_child(statement, 0);
     }
     if (type_of(statement) == "assignment" && text_of(field(statement, "left"), source) == name) {
-      return py_string(field(statement, "right"), source);
+      if (seen) {
+        return std::nullopt;  // assigned twice at module level: not a constant
+      }
+      seen = true;
+      value = py_string(field(statement, "right"), source);
     }
   }
-  return std::nullopt;
+  return value;
 }
 
 [[nodiscard]] std::optional<std::string> py_name(const TSNode& node, std::string_view source) {
-  if (type_of(node) == "identifier") {
-    return py_const(text_of(node, source), node, source);
+  if (type_of(node) != "identifier") {
+    return py_string(node, source);
   }
-  return py_string(node, source);
+  const auto name = text_of(node, source);
+  if (py_shadowed(node, name, source)) {
+    return std::nullopt;
+  }
+  return py_const(name, node, source);
 }
 
 [[nodiscard]] bool py_headers_receiver(const TSNode& node, std::string_view source) {
-  const auto text = text_of(node, source);
-  if (mentions_response(text)) {
-    return false;
-  }
   if (type_of(node) == "identifier") {
-    return names_headers(text);
+    const auto text = text_of(node, source);
+    return holds_headers(text) && !mentions_response(text);
   }
-  return type_of(node) == "attribute" && text_of(field(node, "attribute"), source) == "headers";
+  return type_of(node) == "attribute" && text_of(field(node, "attribute"), source) == "headers" &&
+         !mentions_response(text_of(field(node, "object"), source));
 }
 
 [[nodiscard]] std::string py_enclosing_function_name(const TSNode& node, std::string_view source) {
@@ -498,7 +643,7 @@ namespace {
 
 // True when `dictionary` is a request's headers: `headers={...}` passed to a
 // call that is not a response or an exception, `headers = {...}`, or returned
-// by a `*header*` function.
+// by a `*_headers` function.
 [[nodiscard]] bool py_headers_dictionary(const TSNode& dictionary, std::string_view source) {
   const TSNode parent = ts_node_parent(dictionary);
   const auto type = type_of(parent);
@@ -514,11 +659,11 @@ namespace {
   if (type == "assignment" && ts_node_eq(field(parent, "right"), dictionary)) {
     const TSNode left = field(parent, "left");
     const auto left_text = text_of(left, source);
-    return type_of(left) == "identifier" && names_headers(left_text) && !mentions_response(left_text);
+    return type_of(left) == "identifier" && holds_headers(left_text) && !mentions_response(left_text);
   }
   if (type == "return_statement") {
     const auto name = py_enclosing_function_name(parent, source);
-    return names_headers(name) && !mentions_response(name);
+    return holds_headers(name) && !mentions_response(name);
   }
   return false;
 }
@@ -567,48 +712,53 @@ void python_header_contracts(const TSNode& node, const ExtractionContext& contex
     return;
   }
   const TSNode callee = field(node, "function");
-  const auto callee_text = text_of(callee, source);
   const auto arguments = named_children(field(node, "arguments"));
-  if (callee_text == "Header" || callee_text.ends_with(".Header")) {
-    const TSNode parameter = py_header_parameter(node);
-    if (ts_node_is_null(parameter)) {
+  if (type_of(callee) == "attribute") {
+    if (text_of(field(callee, "attribute"), source) == "get" && !arguments.empty() &&
+        type_of(arguments[0]) != "keyword_argument" && py_headers_receiver(field(callee, "object"), source)) {
+      emit(out, context, true, function_scope_id, py_name(arguments[0], source));
       return;
     }
-    std::optional<std::string> name;
-    bool convert_underscores = true;
-    for (const auto& argument : arguments) {
-      if (type_of(argument) != "keyword_argument") {
-        continue;
-      }
-      const auto keyword = text_of(field(argument, "name"), source);
-      if (keyword == "alias") {
-        name = py_name(field(argument, "value"), source);
-        if (!name) {
-          return;  // an alias this file cannot read: the parameter name is not the header
-        }
-      } else if (keyword == "convert_underscores") {
-        convert_underscores = text_of(field(argument, "value"), source) != "False";
-      }
+    if (text_of(field(callee, "attribute"), source) != "Header") {
+      return;
     }
-    if (!name) {
-      // FastAPI reads `x_token: str = Header()` as header `x-token`.
-      TSNode identifier = field(parameter, "name");
-      if (ts_node_is_null(identifier)) {
-        identifier = first_named_of_type(parameter, "identifier");
-      }
-      auto spelled = text_of(identifier, source);
-      if (convert_underscores) {
-        std::ranges::replace(spelled, '_', '-');
-      }
-      name = std::move(spelled);
-    }
-    emit(out, context, true, function_scope_id, name);
+  } else if (text_of(callee, source) != "Header") {
     return;
   }
-  if (type_of(callee) == "attribute" && text_of(field(callee, "attribute"), source) == "get" && !arguments.empty() &&
-      type_of(arguments[0]) != "keyword_argument" && py_headers_receiver(field(callee, "object"), source)) {
-    emit(out, context, true, function_scope_id, py_name(arguments[0], source));
+  // FastAPI binds a `Header(...)` parameter from the request itself.
+  const TSNode parameter = py_header_parameter(node);
+  if (ts_node_is_null(parameter)) {
+    return;
   }
+  std::optional<std::string> name;
+  bool convert_underscores = true;
+  for (const auto& argument : arguments) {
+    if (type_of(argument) != "keyword_argument") {
+      continue;
+    }
+    const auto keyword = text_of(field(argument, "name"), source);
+    if (keyword == "alias") {
+      name = py_name(field(argument, "value"), source);
+      if (!name) {
+        return;  // an alias this file cannot read: the parameter name is not the header
+      }
+    } else if (keyword == "convert_underscores") {
+      convert_underscores = text_of(field(argument, "value"), source) != "False";
+    }
+  }
+  if (!name) {
+    // FastAPI reads `x_token: str = Header()` as header `x-token`.
+    TSNode identifier = field(parameter, "name");
+    if (ts_node_is_null(identifier)) {
+      identifier = first_named_of_type(parameter, "identifier");
+    }
+    auto spelled = text_of(identifier, source);
+    if (convert_underscores) {
+      std::ranges::replace(spelled, '_', '-');
+    }
+    name = std::move(spelled);
+  }
+  emit(out, context, true, function_scope_id, name, /*bound=*/true);
 }
 
 namespace {
@@ -704,6 +854,33 @@ struct KtArgument {
   return out;
 }
 
+// The names a call chain is spelled with, root first: the root identifier and
+// each member and callee name (`ResponseEntity.status(400).header` is
+// ResponseEntity, status). Arguments are not words of the chain:
+// `.uri(responseUrl).header(...)` builds a request.
+void kt_chain_words(TSNode node, std::string_view source, std::vector<std::string>& out, int depth = 0) {
+  for (; depth < 64; ++depth) {
+    const auto type = type_of(node);
+    if (type == "simple_identifier") {
+      out.insert(out.begin(), text_of(node, source));
+      return;
+    }
+    if (type == "call_expression" || type == "parenthesized_expression") {
+      node = ts_node_named_child(node, 0);
+      continue;
+    }
+    if (type != "navigation_expression") {
+      return;
+    }
+    const auto parts = named_children(node);
+    if (parts.size() < 2) {
+      return;
+    }
+    out.insert(out.begin(), text_of(first_named_of_type(parts.back(), "simple_identifier"), source));
+    node = parts.front();
+  }
+}
+
 // The call whose trailing lambda `node` sits in, or null.
 [[nodiscard]] TSNode kt_lambda_call(const TSNode& node) {
   for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
@@ -725,6 +902,7 @@ void kotlin_header_contracts(const TSNode& node, const ExtractionContext& contex
   const auto source = context.source;
   const auto type = type_of(node);
   if (type == "annotation") {
+    // Spring binds an `@RequestHeader` parameter from the request itself.
     const TSNode invocation = first_named_of_type(node, "constructor_invocation");
     const auto annotation = text_of(first_named_of_type(invocation, "user_type"), source);
     if (annotation != "RequestHeader" && !annotation.ends_with(".RequestHeader")) {
@@ -732,7 +910,7 @@ void kotlin_header_contracts(const TSNode& node, const ExtractionContext& contex
     }
     for (const auto& argument : kt_arguments(first_named_of_type(invocation, "value_arguments"), source)) {
       if (argument.name.empty() || argument.name == "name" || argument.name == "value") {
-        emit(out, context, true, function_scope_id, kt_name(argument.value, source));
+        emit(out, context, true, function_scope_id, kt_name(argument.value, source), /*bound=*/true);
         return;
       }
     }
@@ -742,17 +920,35 @@ void kotlin_header_contracts(const TSNode& node, const ExtractionContext& contex
     return;
   }
   const TSNode callee = ts_node_named_child(node, 0);
+  const auto callee_type = type_of(callee);
+  std::string member;
+  TSNode receiver{};
+  if (callee_type == "simple_identifier") {
+    member = text_of(callee, source);
+  } else if (callee_type == "navigation_expression") {
+    const auto parts = named_children(callee);
+    if (parts.size() != 2 || type_of(parts[1]) != "navigation_suffix") {
+      return;
+    }
+    member = text_of(first_named_of_type(parts[1], "simple_identifier"), source);
+    receiver = parts[0];
+  } else {
+    return;
+  }
+  if (member != "header" && member != "append" && member != "addHeader" && member != "setHeader" &&
+      member != "getHeader" && member != "getHeaders") {
+    return;
+  }
   const TSNode suffix = first_named_of_type(node, "call_suffix");
   const auto arguments = kt_arguments(first_named_of_type(suffix, "value_arguments"), source);
   if (arguments.empty()) {
     return;
   }
-  if (type_of(callee) == "simple_identifier") {
-    const auto name = text_of(callee, source);
-    if (name == "header" && arguments.size() == 2) {
+  if (ts_node_is_null(receiver)) {
+    if (member == "header" && arguments.size() == 2) {
       // Ktor's request builder: `client.post(url) { header("X-A", v) }`.
       emit(out, context, false, function_scope_id, kt_name(arguments[0].value, source));
-    } else if (name == "append" && arguments.size() == 2) {
+    } else if (member == "append" && arguments.size() == 2) {
       // `headers { append("X-A", v) }`.
       const TSNode outer = kt_lambda_call(node);
       if (!ts_node_is_null(outer) && text_of(ts_node_named_child(outer, 0), source) == "headers") {
@@ -761,26 +957,22 @@ void kotlin_header_contracts(const TSNode& node, const ExtractionContext& contex
     }
     return;
   }
-  if (type_of(callee) != "navigation_expression") {
+  std::vector<std::string> words;
+  kt_chain_words(receiver, source, words);
+  if (words.empty()) {
     return;
   }
-  const auto parts = named_children(callee);
-  if (parts.size() != 2 || type_of(parts[1]) != "navigation_suffix") {
-    return;
-  }
-  const auto member = text_of(first_named_of_type(parts[1], "simple_identifier"), source);
-  const auto receiver = text_of(parts[0], source);
   if ((member == "header" || member == "addHeader" || member == "setHeader") && arguments.size() == 2) {
     // A request builder (`Request.Builder().addHeader`, `restClient.post().header`);
     // `ResponseEntity.status(...).header(...)` and `response.addHeader` answer.
-    if (!mentions_response(receiver)) {
+    if (std::ranges::none_of(words, [](const std::string& word) { return is_response_word(word); })) {
       emit(out, context, false, function_scope_id, kt_name(arguments[0].value, source));
     }
-  } else if ((member == "getHeader" || member == "header" || member == "getHeaders") && arguments.size() == 1) {
-    const auto lowered = lower(receiver);
-    if (lowered == "request" || lowered.ends_with(".request") || lowered.ends_with("request")) {
-      emit(out, context, true, function_scope_id, kt_name(arguments[0].value, source));
-    }
+  } else if ((member == "getHeader" || member == "header" || member == "getHeaders") && arguments.size() == 1 &&
+             lower(words.back()).ends_with("request")) {
+    // Ktor binds `call` (the ApplicationCall) to the handler: `call.request.header`.
+    emit(out, context, true, function_scope_id, kt_name(arguments[0].value, source),
+         /*bound=*/words.front() == "call");
   }
 }
 
@@ -835,16 +1027,28 @@ namespace {
   return go_string(node, source);
 }
 
-[[nodiscard]] std::string go_function_name(const TSNode& node, std::string_view source) {
+[[nodiscard]] TSNode go_enclosing_function(const TSNode& node) {
   for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent); parent = ts_node_parent(parent)) {
-    if (type_of(parent) == "function_declaration" || type_of(parent) == "method_declaration") {
-      return text_of(field(parent, "name"), source);
-    }
-    if (type_of(parent) == "func_literal") {
-      return {};
+    const auto type = type_of(parent);
+    if (type == "function_declaration" || type == "method_declaration" || type == "func_literal") {
+      return parent;
     }
   }
-  return {};
+  return TSNode{};
+}
+
+// True inside a net/http handler, `func(w http.ResponseWriter, r *http.Request)`:
+// the server binds the request it reads.
+[[nodiscard]] bool go_in_http_handler(const TSNode& node, std::string_view source) {
+  const TSNode function = go_enclosing_function(node);
+  bool writer = false;
+  bool request = false;
+  for (const auto& parameter : named_children(field(function, "parameters"))) {
+    const auto type = text_of(field(parameter, "type"), source);
+    writer = writer || type == "http.ResponseWriter";
+    request = request || type == "*http.Request";
+  }
+  return writer && request;
 }
 
 // True when a `map[string]...{...}` literal is a request's headers.
@@ -860,36 +1064,32 @@ namespace {
     parent = ts_node_parent(parent);
   }
   if (type_of(parent) == "keyed_element") {  // `Request{Header: map[...]...}`
-    const auto key = text_of(ts_node_named_child(parent, 0), source);
-    return !ts_node_eq(ts_node_named_child(parent, 0), child) && names_headers(key);
+    const TSNode key = ts_node_named_child(parent, 0);
+    return !ts_node_eq(key, child) && holds_headers(text_of(key, source));
   }
   if (type_of(parent) == "argument_list") {  // `c.doWithHeaders(..., map[...]...)`
     const TSNode callee = field(ts_node_parent(parent), "function");
     const TSNode name = type_of(callee) == "selector_expression" ? field(callee, "field") : callee;
-    return names_headers(text_of(name, source));
+    return holds_headers(text_of(name, source));
   }
   if (type_of(parent) != "expression_list") {
     return false;
   }
   const TSNode holder = ts_node_parent(parent);
   const auto holder_type = type_of(holder);
+  std::string name;
   if (holder_type == "return_statement") {
-    const auto name = go_function_name(holder, source);
-    return names_headers(name) && !mentions_response(name);
-  }
-  if (holder_type == "short_var_declaration" || holder_type == "assignment_statement") {
+    name = text_of(field(go_enclosing_function(holder), "name"), source);
+  } else if (holder_type == "short_var_declaration" || holder_type == "assignment_statement") {
     const auto left = named_children(field(holder, "left"));
     if (left.size() != 1) {
       return false;
     }
-    const auto name = text_of(left[0], source);
-    return names_headers(name) && !mentions_response(name);
+    name = text_of(left[0], source);
+  } else if (holder_type == "var_spec") {
+    name = text_of(field(holder, "name"), source);
   }
-  if (holder_type == "var_spec") {
-    const auto name = text_of(field(holder, "name"), source);
-    return names_headers(name) && !mentions_response(name);
-  }
-  return false;
+  return holds_headers(name) && !mentions_response(name);
 }
 
 }  // namespace
@@ -929,10 +1129,13 @@ void go_header_contracts(const TSNode& node, const ExtractionContext& context, c
     return;
   }
   const auto method = text_of(field(callee, "field"), source);
+  if (method != "GetHeader" && method != "Set" && method != "Add" && method != "Get" && method != "Values") {
+    return;
+  }
   const TSNode operand = field(callee, "operand");
   const auto arguments = named_children(field(node, "arguments"));
-  if (method == "GetHeader" && arguments.size() == 1) {  // gin
-    emit(out, context, true, function_scope_id, go_name(arguments[0], source));
+  if (method == "GetHeader" && arguments.size() == 1) {  // gin binds `c` to the handler
+    emit(out, context, true, function_scope_id, go_name(arguments[0], source), /*bound=*/true);
     return;
   }
   // `req.Header.Set(...)`: the Header field of a request. A ResponseWriter's
@@ -944,7 +1147,7 @@ void go_header_contracts(const TSNode& node, const ExtractionContext& context, c
   if ((method == "Set" || method == "Add") && arguments.size() == 2) {
     emit(out, context, false, function_scope_id, go_name(arguments[0], source));
   } else if ((method == "Get" || method == "Values") && arguments.size() == 1) {
-    emit(out, context, true, function_scope_id, go_name(arguments[0], source));
+    emit(out, context, true, function_scope_id, go_name(arguments[0], source), go_in_http_handler(node, source));
   }
 }
 

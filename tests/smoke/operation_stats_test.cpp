@@ -22,7 +22,8 @@ int main() {
   {
     const nlohmann::json saved{{"routes", 1},         {"consumes", 2},           {"contract_facts", 13},
                                {"contract_facts_unresolved", 5}, {"contracts_provided", 2},
-                               {"contracts_external", 4},        {"contract_consumes", 6}};
+                               {"contracts_external", 4},        {"contract_consumes", 6},
+                               {"contract_reads_unreached", 3}};
     const auto restored = contract_resolution_json(contract_resolution_from_json(saved));
     for (const auto& [key, value] : saved.items()) {
       if (restored.value(key, -1) != value.get<int>()) {

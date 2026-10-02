@@ -49,9 +49,12 @@ constexpr std::array<std::string_view, 5> kContractKinds = {"table", "label", "h
 // (https://www.iana.org/assignments/http-fields/field-names.csv, registry last
 // updated 2026-08-28, retrieved 2026-10-01; `*` dropped), lowercased, plus the
 // de-facto tracing and proxy headers x-request-id, x-real-ip, x-correlation-id,
-// traceparent, tracestate and baggage. Every `x-forwarded-*` header is standard
+// traceparent, tracestate and baggage, and the browser and framework headers
+// x-requested-with, x-csrf-token, x-xss-protection, permissions-policy and
+// sentry-trace (an API key header such as x-api-key is an application
+// contract and stays out). Every `x-forwarded-*` header is standard
 // too (is_standard_http_header). Sorted for binary search.
-constexpr std::array<std::string_view, 192> kStandardHttpHeaders = {
+constexpr std::array<std::string_view, 197> kStandardHttpHeaders = {
     "a-im", "accept", "accept-additions", "accept-ch", "accept-datetime", "accept-encoding",
     "accept-features", "accept-language", "accept-patch", "accept-post", "accept-query", "accept-ranges",
     "accept-signature", "access-control-allow-credentials", "access-control-allow-headers",
@@ -74,19 +77,22 @@ constexpr std::array<std::string_view, 192> kStandardHttpHeaders = {
     "last-event-id", "last-modified", "link", "link-template", "location", "lock-token", "max-forwards",
     "memento-datetime", "meter", "mime-version", "negotiate", "nel", "odata-entityid", "odata-isolation",
     "odata-maxversion", "odata-version", "optional-www-authenticate", "ordering-type", "origin",
-    "origin-agent-cluster", "oscore", "oslc-core-version", "overwrite", "ping-from", "ping-to", "position",
+    "origin-agent-cluster", "oscore", "oslc-core-version", "overwrite", "permissions-policy", "ping-from",
+    "ping-to", "position",
     "prefer", "preference-applied", "priority", "proxy-authenticate", "proxy-authentication-info",
     "proxy-authorization", "proxy-public-address", "proxy-status", "public-key-pins",
     "public-key-pins-report-only", "range", "redirect-ref", "referer", "referrer-policy", "refresh",
     "replay-nonce", "repr-digest", "retry-after", "schedule-reply", "schedule-tag", "sec-fetch-dest",
     "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user", "sec-purpose", "sec-token-binding",
     "sec-websocket-accept", "sec-websocket-extensions", "sec-websocket-key", "sec-websocket-protocol",
-    "sec-websocket-version", "server", "server-timing", "set-cookie", "set-txn", "signature",
+    "sec-websocket-version", "sentry-trace", "server", "server-timing", "set-cookie", "set-txn",
+    "signature",
     "signature-input", "slug", "soapaction", "status-uri", "strict-transport-security", "sunset", "tcn", "te",
     "timeout", "topic", "traceparent", "tracestate", "trailer", "transfer-encoding", "ttl",
     "unencoded-digest", "upgrade", "urgency", "use-as-dictionary", "user-agent", "variant-vary", "vary",
     "via", "want-content-digest", "want-repr-digest", "want-unencoded-digest", "www-authenticate",
-    "x-content-type-options", "x-correlation-id", "x-frame-options", "x-real-ip", "x-request-id",
+    "x-content-type-options", "x-correlation-id", "x-csrf-token", "x-frame-options", "x-real-ip",
+    "x-request-id", "x-requested-with", "x-xss-protection",
 };
 // A chain mounted under many parents serves its routes at every mount path.
 // Real code mounts a router once or twice; past this the mount graph is not a
@@ -873,6 +879,19 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   //    in another repo's graph is the same id (a database-local table only
   //    once a workspace or seam declares the database).
   std::unordered_set<std::string> contract_nodes;  // ids minted this resolve
+  // Code something reaches: the target of a CALLS, imports or references edge,
+  // or a route's handler (`handled_by` from an endpoint, minted above). A header
+  // read in a function nothing reaches serves no request (a helper no caller
+  // uses), unless the framework binds the read itself (kBoundHeaderRead).
+  std::unordered_set<std::string> reached;  // copies: new_edges grows below
+  for (const auto* edges : {&graph.edges, &new_edges}) {
+    for (const auto& edge : *edges) {
+      if (edge.relation == "CALLS" || edge.relation == "imports" || edge.relation == "references" ||
+          edge.relation == kHandledBy) {
+        reached.insert(edge.target);
+      }
+    }
+  }
   for (const bool providing : {true, false}) {
     for (const auto& relation : raw_relations) {
       if (relation.relation != (providing ? kProvidesContractRelation : kUsesContractRelation)) {
@@ -886,6 +905,11 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       const auto id = contract_id(kind, name, database_scoped(kind) ? relation.target_label : std::string{});
       if (!id || source == by_id.end()) {
         ++tally.contract_facts_unresolved;  // malformed context, unknown kind, or no node at the code
+        continue;
+      }
+      if (providing && kind == "header" && relation.target_label != kBoundHeaderRead &&
+          !reached.contains(relation.source_id)) {
+        ++tally.contract_reads_unreached;
         continue;
       }
       if (!by_id.contains(*id) && contract_nodes.insert(*id).second) {

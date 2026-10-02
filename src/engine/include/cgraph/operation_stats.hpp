@@ -119,6 +119,7 @@ struct ContractResolution {
   std::size_t contracts_provided = 0;         // table/label/header/claim/env nodes this repo provides
   std::size_t contracts_external = 0;         // such nodes this repo only uses (`served: false`)
   std::size_t contract_consumes = 0;          // CONSUMES edges added to them
+  std::size_t contract_reads_unreached = 0;   // header reads in code nothing calls, imports or routes to
 };
 
 struct BuildStats {

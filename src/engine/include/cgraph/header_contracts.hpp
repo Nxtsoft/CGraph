@@ -11,9 +11,20 @@
 // digits and dashes with at least one dash (`X-Act-As-Org`), as a key of an
 // object/dict/map that is a request's headers, the name argument of a header
 // setter, or the name a server reads. Arbitrary dict keys are never read. A
-// name may be a constant one hop away (`headers.get(BACKEND_HEADER)` with
-// `const BACKEND_HEADER = 'x-ml-backend'` in the same file); imported
-// constants are not followed. Standard HTTP headers (is_standard_http_header:
+// holder is a request's headers when it is the value of a `headers` option or
+// keyword, or is named exactly `headers` / `header` or with a `Headers` /
+// `Header` camelCase suffix (`authHeaders`, `getAuthHeaders`, `tenantHeader`)
+// or a `_headers` / `_header` suffix; a name merely containing the word
+// (`headerStyles`) is not. A name may be a constant one hop away
+// (`headers.get(BACKEND_HEADER)` with `const BACKEND_HEADER = 'x-ml-backend'`
+// in the same file) unless a local or parameter shadows it; imported
+// constants are not followed.
+//
+// A read the framework binds to a request itself is marked kBoundHeaderRead
+// (contracts.hpp): Spring `@RequestHeader`, FastAPI `Header()`, Ktor
+// `call.request.header`, gin `c.GetHeader`, and `r.Header.Get` inside a
+// `func(http.ResponseWriter, *http.Request)`. Any other read provides only
+// when resolve_contracts finds something reaching its function. Standard HTTP headers (is_standard_http_header:
 // `authorization`, `content-type`, `x-request-id`, `x-forwarded-*`) are never
 // recorded: they never bridge repositories and every handler reads them.
 //
@@ -21,17 +32,36 @@
 // innermost enclosing function as `function_scope_id`. A sender outside any
 // function is attributed to its file; a reader outside any function is not
 // recorded (no handler reads it). A test source (`*_test.go`, `*.test.ts`,
-// `*.spec.ts`, `test_*.py`, `*Test.kt`, or under `test/`, `tests/`,
-// `__tests__/`, `e2e/`) records nothing: its handlers are fakes standing in
-// for another service and its requests go to its own service under test.
+// `*.spec.ts`, `test_*.py`, `*_test.py`, `conftest.py`, a `FooTest` /
+// `FooTests` JVM class file, or under `test/`, `tests/`, `__tests__/`, `e2e/`,
+// `__mocks__/`, `mocks/`, `testutil/`, or `scripts/mock-*`) records nothing:
+// its handlers are fakes standing in for another service and its requests go
+// to its own service under test.
 
 #include "cgraph/language_config.hpp"
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace cgraph {
+
+// Held while one JavaScript/TypeScript file is extracted: indexes the file's
+// module constants and function parameters once instead of per object
+// literal. Scopes nest; each covers one file on its thread. Without one the
+// walk still works, re-reading the module each time.
+class HeaderContractsFileScope {
+ public:
+  HeaderContractsFileScope();
+  ~HeaderContractsFileScope();
+  HeaderContractsFileScope(const HeaderContractsFileScope&) = delete;
+  HeaderContractsFileScope& operator=(const HeaderContractsFileScope&) = delete;
+
+ private:
+  struct Index;
+  std::unique_ptr<Index> index_;
+};
 
 // True for a name a header contract is recorded under: token characters
 // (letters, digits, `-`), at least one dash, not a standard header.

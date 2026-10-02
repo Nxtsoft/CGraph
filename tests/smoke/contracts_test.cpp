@@ -1476,12 +1476,13 @@ int test_standard_http_headers() {
   }
   for (const auto* name : {"accept", "authorization", "content-type", "cookie", "host", "if-none-match", "user-agent",
                            "www-authenticate", "x-request-id", "x-real-ip", "x-correlation-id", "traceparent",
-                           "tracestate", "baggage", "x-forwarded-proto", "x-forwarded-host"}) {
+                           "tracestate", "baggage", "x-forwarded-proto", "x-forwarded-host", "x-requested-with",
+                           "x-csrf-token", "x-xss-protection", "permissions-policy", "sentry-trace"}) {
     if (!cgraph::is_standard_http_header(name)) {
       return fail(std::string("a standard header is not in the table: ") + name);
     }
   }
-  for (const auto* name : {"x-tenant-id", "x-act-as-org", "x-webapp-env", "x-api-key-id", "x-forwarded"}) {
+  for (const auto* name : {"x-tenant-id", "x-act-as-org", "x-webapp-env", "x-api-key-id", "x-forwarded", "x-api-key"}) {
     if (cgraph::is_standard_http_header(name)) {
       return fail(std::string("an application header is in the standard table: ") + name);
     }
