@@ -1237,6 +1237,90 @@ export async function viaLocal() { const url = `${HOST}/api/v1/config`; return j
   return 0;
 }
 
+// A LangGraph SDK client made by a factory in another file (turing-webapp's
+// `createLangGraphClient`) consumes the Agent Server routes its methods send:
+// the factory's `langgraph_client` fact is what makes the importer's
+// `langgraph_call` a request. An imported function that returns anything else,
+// or one this project does not define, makes no request.
+int test_langgraph_sdk_clients() {
+  const auto built = build({
+      {"/proj/w/lib/langgraph-client.ts", R"ts(
+import { Client } from '@langchain/langgraph-sdk';
+export function createLangGraphClient(accessToken: string, service: 'luna' | 'ic' = 'luna'): Client {
+  const apiUrl = service === 'ic' ? process.env.NEXT_PUBLIC_IC_AGENTS_API_URL || 'https://a' : 'https://b';
+  return new Client({ apiUrl, defaultHeaders: { Authorization: `Bearer ${accessToken}` } });
+}
+export function createOther(): Other { return new Other(); }
+)ts"},
+      {"/proj/w/lib/use-stream.ts", R"ts(
+import { createLangGraphClient, createOther } from './langgraph-client';
+import { makeClient } from 'some-package';
+export async function send(token: string) {
+  const client = createLangGraphClient(token, 'ic');
+  const thread = await client.threads.create();
+  for await (const chunk of client.runs.stream(thread.thread_id, 'luna', { input: {} })) {}
+  return client.runs.wait(null, 'recap', {});
+}
+export async function notSdk(token: string, t: string) {
+  const other = createOther();
+  await other.threads.create();
+  const x = makeClient(token);
+  await x.runs.stream(t, 'luna', {});
+}
+)ts"},
+      {"/proj/w/lib/module-clients.ts", R"ts(
+import { Client } from '@langchain/langgraph-sdk';
+let shared = new Client();
+export function reset(other: Client) { shared = other; }
+export function useShared() { return shared.threads.get('x'); }
+const fixed = new Client();
+export function subgraphs(id: string, ns?: string) {
+  fixed.assistants.getSubgraphs(id, { namespace: 'child' });
+  fixed.assistants.getSubgraphs(id, { namespace: '' });
+  return fixed.assistants.getSubgraphs(id, { namespace: ns });
+}
+)ts"},
+  });
+  const auto& graph = built.graph;
+  const auto send = cgraph::make_id("/proj/w/lib/use-stream.ts:send");
+  if (!has_edge(graph, send, "endpoint:POST /threads", "CONSUMES") ||
+      !has_edge(graph, send, "endpoint:POST /threads/{}/runs/stream", "CONSUMES") ||
+      !has_edge(graph, send, "endpoint:POST /runs/wait", "CONSUMES")) {
+    for (const auto& edge : graph.edges) {
+      if (edge.relation == "CONSUMES") std::cerr << "  consumes: " << edge.source << " -> " << edge.target << '\n';
+    }
+    return fail("langgraph sdk client calls");
+  }
+  for (const auto& edge : graph.edges) {
+    if (edge.relation == "CONSUMES" && edge.source == cgraph::make_id("/proj/w/lib/use-stream.ts:notSdk")) {
+      return fail("a client no SDK factory made consumed " + edge.target);
+    }
+  }
+  // A module `let` may be reassigned (`reset`): not read as a client. The SDK
+  // tests `namespace` for truth: a non-empty literal is the namespaced route, an
+  // empty one the plain route, a value it cannot read records nothing.
+  const auto subgraphs = cgraph::make_id("/proj/w/lib/module-clients.ts:subgraphs");
+  if (!has_edge(graph, subgraphs, "endpoint:GET /assistants/{}/subgraphs/{}", "CONSUMES") ||
+      !has_edge(graph, subgraphs, "endpoint:GET /assistants/{}/subgraphs", "CONSUMES")) {
+    return fail("langgraph getSubgraphs namespace");
+  }
+  for (const auto& edge : graph.edges) {
+    if (edge.source == cgraph::make_id("/proj/w/lib/module-clients.ts:useShared") && edge.relation == "CONSUMES") {
+      return fail("a reassigned module let was read as a client: " + edge.target);
+    }
+    // Contract facts are resolve_contracts' input, never code-graph edges.
+    if (edge.relation == "langgraph_call" || edge.relation == "langgraph_client" || edge.relation == "http_call_args") {
+      return fail("a contract fact leaked into the graph: " + edge.relation + " " + edge.source + " -> " + edge.target);
+    }
+  }
+  if (built.stats.calls != 5 || built.stats.calls_unresolved != 0 || built.stats.consumes != 5) {
+    std::cerr << "  calls " << built.stats.calls << " unresolved " << built.stats.calls_unresolved << " consumes "
+              << built.stats.consumes << '\n';
+    return fail("langgraph sdk client tally");
+  }
+  return 0;
+}
+
 int main() {
   int failures = 0;
   failures += test_join_route_path();
@@ -1259,5 +1343,6 @@ int main() {
   failures += test_positional_and_relative_wrappers();
   failures += test_positional_wrapper_options();
   failures += test_first_parameter_wrapper_options();
+  failures += test_langgraph_sdk_clients();
   return failures == 0 ? 0 : 1;
 }

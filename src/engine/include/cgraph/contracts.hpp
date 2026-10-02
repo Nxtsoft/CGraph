@@ -43,6 +43,14 @@
 //                  `~<index>` when a caller's options at that argument index
 //                  override it (`{ ...init }`); calls to such a wrapper are
 //                  read from their `http_call_args`.
+//                  A call on a LangGraph SDK `Client` (`@langchain/langgraph-sdk`)
+//                  is an `http_call` too, labelled `client.runs.stream`, with the
+//                  verb and path that SDK method sends (`POST /threads/{}/runs/stream`).
+//   "langgraph_client" source_id = a module function whose every return is a
+//                  `new Client(...)` of the SDK (`createLangGraphClient`).
+//   "langgraph_call" source_id as for "http_call", target_label = the imported
+//                  function the client came from, context = "<METHOD> <path>":
+//                  a consumer once that name resolves to a `langgraph_client`.
 //   "maps_table"   source_id = a module-level ORM model variable, target_label =
 //                  the SQL table it declares (`pgTable('competitors', ...)`).
 //                  Resolves to a `maps_table` edge from the variable to the
