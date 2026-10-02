@@ -11,3 +11,14 @@
 - [x] 2.2 Full suite.
 - [x] 2.3 Probe: eight graphs against bin-v0.7.3, no node or edge lost or changed; every new cross-repo join hand-checked.
 - [x] 2.4 Seam discover/fuse and scorer: T38, T39, T41, M33 link; no previously linked edge lost.
+
+## 3. Review round 1 (PR #163)
+
+- [x] 3.1 `resolve_contracts`: a header read in a function nothing calls, imports, references or routes to provides nothing unless bound (`kBoundHeaderRead`); `contract_reads_unreached` tally; `contracts_test` `test_unreached_header_reads`.
+- [x] 3.2 Response words: camelCase `...Res` / `...Resp`, Elysia `set.headers`, Kotlin chain words without argument text.
+- [x] 3.3 Reuse `js_syntax::unwrap_expression`, `is_function_node`, `parameter_names`; per-file `HeaderContractsFileScope` index of module constants and function parameters.
+- [x] 3.4 A positive test per branch; a mutation run disabling each branch fails a test.
+- [x] 3.5 Test-source rule: JVM `FooTest` / `FooTests` stems, `__mocks__`, `mocks`, `testutil`, `scripts/mock-*`, `conftest.py`.
+- [x] 3.6 Header holders by exact name or suffix; constant hop respects shadowing (JavaScript, Python).
+- [x] 3.7 Five more standard headers.
+- [x] 3.8 Indexing time, base vs new, three runs.
