@@ -608,6 +608,18 @@ cgraph_enable_sanitizers(cgraph_contract_schemas_test)
 
 add_test(NAME cgraph_contract_schemas_test COMMAND cgraph_contract_schemas_test)
 
+add_executable(cgraph_claim_contracts_test
+  claim_contracts_test.cpp)
+
+target_link_libraries(cgraph_claim_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_claim_contracts_test)
+cgraph_enable_sanitizers(cgraph_claim_contracts_test)
+
+add_test(NAME cgraph_claim_contracts_test COMMAND cgraph_claim_contracts_test)
+
 add_executable(cgraph_contracts_test
   contracts_test.cpp)
 

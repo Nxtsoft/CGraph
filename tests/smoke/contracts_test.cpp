@@ -1457,7 +1457,34 @@ int test_generic_contract_facts() {
       !cgraph::is_bridged_contract("claim:org_id")) {
     return fail("env ids and standard headers never bridge by themselves");
   }
+  // Any issuer writes exp, email and scope with the same meaning: a standard
+  // claim never bridges, an application claim does, and claim names are
+  // case-sensitive (`EXP` is not `exp`).
+  for (const auto* standard : {"claim:iss", "claim:sub", "claim:aud", "claim:exp", "claim:nbf", "claim:iat", "claim:jti",
+                               "claim:email", "claim:name", "claim:preferred_username", "claim:scope",
+                               "claim:client_id", "claim:azp", "claim:nonce", "claim:sid"}) {
+    if (cgraph::is_bridged_contract(standard)) {
+      return fail(std::string("a standard claim bridges: ") + standard);
+    }
+  }
+  if (!cgraph::is_bridged_contract("claim:roles") || !cgraph::is_bridged_contract("claim:session_id") ||
+      !cgraph::is_bridged_contract("claim:tenant_id") || !cgraph::is_bridged_contract("claim:permissions") ||
+      !cgraph::is_bridged_contract("claim:EXP") || !cgraph::is_standard_jwt_claim("jti") ||
+      cgraph::is_standard_jwt_claim("roles") || cgraph::is_standard_jwt_claim("groups")) {
+    return fail("application claims bridge, standard claims do not");
+  }
   return 0;
+}
+
+// The standard claim table is sorted and unique (binary search depends on it).
+int test_standard_jwt_claims() {
+  const auto table = cgraph::standard_jwt_claims();
+  for (std::size_t i = 1; i < table.size(); ++i) {
+    if (!(table[i - 1] < table[i])) {
+      return fail("standard claim table is not sorted and unique at " + std::string(table[i]));
+    }
+  }
+  return table.size() == 45 ? 0 : fail("standard claim table size");
 }
 
 // The standard header table is sorted and unique (binary search depends on
@@ -1553,5 +1580,6 @@ int main() {
   failures += test_generic_contract_facts();
   failures += test_unreached_header_reads();
   failures += test_standard_http_headers();
+  failures += test_standard_jwt_claims();
   return failures == 0 ? 0 : 1;
 }
