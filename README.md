@@ -295,8 +295,9 @@ graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do n
 - **Claims and non-standard headers** (`x-tenant-id`) join like endpoints, by id. A standard HTTP
   header (`authorization`, `content-type`, any IANA permanent field name, `x-request-id`,
   `x-forwarded-*`, `traceparent`) never joins: every service uses those for its own reasons. Nor
-  does a registered JWT claim (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`): every token
-  carries them. A claim is recorded only where the code is provably about a JWT: `.claim("roles", r)`
+  does a standard JWT claim, which any issuer writes with the same meaning (`iss`, `sub`, `exp`,
+  `email`, `name`, `scope`, `client_id`: the IANA JWT Claims registry's RFC 7519, OpenID Connect,
+  RFC 7800, RFC 8693 and RFC 9449 names); application claims (`roles`, `tenant_id`, `session_id`) do. A claim is recorded only where the code is provably about a JWT: `.claim("roles", r)`
   on a jjwt `Jwts.builder()` or Nimbus `JWTClaimsSet.Builder()` chain, the payload keys of
   `jsonwebtoken` `sign`, jose `SignJWT` and PyJWT `jwt.encode`; the `json:"x"` tags of a Go struct
   that embeds golang-jwt's `RegisteredClaims`, goes to `ParseWithClaims`, or is unmarshalled from a
