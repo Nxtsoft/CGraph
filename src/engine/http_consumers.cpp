@@ -992,27 +992,6 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
   return false;
 }
 
-// What a consumer call is attributed to: the enclosing function when there is
-// one, else the module-level variable the call helps initialise (`export const
-// notebooksApi = { list: () => apiFetch('/notebooks') }`: the arrow is a
-// boundary, the object is the symbol), else the file.
-[[nodiscard]] std::string consumer_scope_id(const TSNode& node, const ExtractionContext& context,
-                                            const std::string& function_scope_id) {
-  if (!function_scope_id.empty()) {
-    return function_scope_id;
-  }
-  for (TSNode ancestor = ts_node_parent(node); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
-    if (std::string_view(ts_node_type(ancestor)) != "variable_declarator") {
-      continue;
-    }
-    const TSNode declaration = ts_node_parent(ancestor);
-    if (!ts_node_is_null(declaration) && is_module_level_declaration(declaration)) {
-      return make_id(context.relative_path + ":" + field_text(ancestor, "name", context.source));
-    }
-  }
-  return make_id(context.relative_path);
-}
-
 [[nodiscard]] std::string upper_verb(std::string text) {
   for (auto& ch : text) {
     ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
@@ -2205,14 +2184,14 @@ HttpConsumerFileScope::~HttpConsumerFileScope() {
 // `http_call_args` for a call whose wrapper takes its path or method from an
 // argument other than the first.
 void http_call_handler(const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
-                       std::vector<RawRelation>& out) {
+                       const Fragment& fragment, std::vector<RawRelation>& out) {
   langgraph_factory_handler(node, context, function_scope_id, out);
   // A call on a LangGraph SDK client sends the request its method spells; the
   // generic reading below must not see `client.runs.get(...)` again.
   if (auto sdk = langgraph_sdk_call(node, context)) {
     const bool here = sdk->client.origin == SdkOrigin::kHere;
     out.push_back(RawRelation{
-        .source_id = consumer_scope_id(node, context, function_scope_id),
+        .source_id = js_syntax::reading_scope_id(node, context, function_scope_id, fragment),
         .target_label = here ? std::move(sdk->label) : std::move(sdk->client.factory),
         .relation = here ? "http_call" : "langgraph_call",
         .context = sdk->verb + " " + sdk->path,
@@ -2254,7 +2233,7 @@ void http_call_handler(const TSNode& node, const ExtractionContext& context, con
       }
       case ClientCall::Kind::Consumer:
         out.push_back(RawRelation{
-            .source_id = consumer_scope_id(node, context, function_scope_id),
+            .source_id = js_syntax::reading_scope_id(node, context, function_scope_id, fragment),
             .target_label = std::move(call.client),
             .relation = "http_call",
             .context = call.method.verb + " " + call.path,
@@ -2263,7 +2242,7 @@ void http_call_handler(const TSNode& node, const ExtractionContext& context, con
         break;
       case ClientCall::Kind::Arguments:
         out.push_back(RawRelation{
-            .source_id = consumer_scope_id(node, context, function_scope_id),
+            .source_id = js_syntax::reading_scope_id(node, context, function_scope_id, fragment),
             .target_label = std::move(call.client),
             .relation = "http_call_args",
             .context = std::move(call.path),

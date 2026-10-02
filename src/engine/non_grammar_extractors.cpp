@@ -2,6 +2,7 @@
 
 #include "cgraph/contract_schemas.hpp"
 #include "cgraph/data_contracts.hpp"
+#include "cgraph/env_contracts.hpp"
 #include "cgraph/langgraph_config.hpp"
 #include "cgraph/spring_actuator.hpp"
 #include "cgraph/normalize.hpp"
@@ -306,8 +307,11 @@ std::optional<ExtractionResult> extract_non_grammar_language(
       return extract_graphql_sdl(context);
     case DetectedLanguage::LangGraphConfig:
       return extract_langgraph_config(context);
-    case DetectedLanguage::SpringConfig:
-      return extract_spring_application_config(context);
+    case DetectedLanguage::SpringConfig: {
+      auto result = extract_spring_application_config(context);
+      append_spring_config_env_reads(context, result);
+      return result;
+    }
     default:
       return std::nullopt;
   }
