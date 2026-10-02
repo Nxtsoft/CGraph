@@ -2,6 +2,7 @@
 
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/normalize.hpp"
+#include "cgraph/spring_actuator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -412,7 +413,17 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
 
   // 3. Routes: one endpoint per (method, full path); a handler registered on a
   //    chain served under two paths gets two endpoints, both handled by it.
-  for (const auto& relation : raw_relations) {
+  //    Spring Boot Actuator routes are decided across the build file and the
+  //    application config, so they are derived here from those files' facts.
+  const auto actuator_routes = spring_actuator_routes(raw_relations);
+  std::vector<RawRelation> with_actuator;
+  if (!actuator_routes.empty()) {
+    with_actuator.reserve(raw_relations.size() + actuator_routes.size());
+    with_actuator.assign(raw_relations.begin(), raw_relations.end());
+    with_actuator.insert(with_actuator.end(), actuator_routes.begin(), actuator_routes.end());
+  }
+  const std::span<const RawRelation> route_facts = actuator_routes.empty() ? raw_relations : with_actuator;
+  for (const auto& relation : route_facts) {
     const bool file_routed = relation.relation == kFileRouteRelation;
     if (relation.relation != kRouteRelation && !file_routed) {
       continue;

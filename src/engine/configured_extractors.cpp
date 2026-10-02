@@ -6,6 +6,7 @@
 #include "cgraph/non_grammar_extractors.hpp"
 #include "cgraph/normalize.hpp"
 #include "cgraph/python_extractor.hpp"
+#include "cgraph/spring_actuator.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -2284,9 +2285,9 @@ std::optional<LanguageConfig> config_for_language(DetectedLanguage language) {
   }
 }
 
-std::optional<ExtractionResult> extract_configured_language(
-    DetectedLanguage language,
-    const ExtractionContext& context) {
+namespace {
+
+[[nodiscard]] std::optional<ExtractionResult> extract_language(DetectedLanguage language, const ExtractionContext& context) {
   if (auto result = extract_non_grammar_language(language, context); result.has_value()) {
     return result;
   }
@@ -2311,6 +2312,20 @@ std::optional<ExtractionResult> extract_configured_language(
     return extract_tsx(context);
   }
   return extract_with_config(grammar, *config, context);
+}
+
+}  // namespace
+
+std::optional<ExtractionResult> extract_configured_language(
+    DetectedLanguage language,
+    const ExtractionContext& context) {
+  auto result = extract_language(language, context);
+  // A build file is also read for the Spring Boot Actuator it declares, beside
+  // its own grammar's (or the XML) extraction.
+  if (result.has_value() && is_spring_build_file(context.relative_path)) {
+    append_spring_actuator_facts(context, *result);
+  }
+  return result;
 }
 
 bool has_registered_extractor(DetectedLanguage language) {

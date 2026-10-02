@@ -1023,6 +1023,18 @@ cgraph_enable_sanitizers(cgraph_langgraph_config_test)
 
 add_test(NAME cgraph_langgraph_config_test COMMAND cgraph_langgraph_config_test)
 
+add_executable(cgraph_spring_actuator_test
+  spring_actuator_test.cpp)
+
+target_link_libraries(cgraph_spring_actuator_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_spring_actuator_test)
+cgraph_enable_sanitizers(cgraph_spring_actuator_test)
+
+add_test(NAME cgraph_spring_actuator_test COMMAND cgraph_spring_actuator_test)
+
 add_executable(cgraph_endpoint_prefixes_test
   endpoint_prefixes_test.cpp)
 

@@ -54,6 +54,7 @@ add_library(cgraph_engine STATIC
   semantic_orchestration.cpp
   skills_install.cpp
   snapshot_source_reader.cpp
+  spring_actuator.cpp
   tsconfig_aliases.cpp
   workspace.cpp)
 

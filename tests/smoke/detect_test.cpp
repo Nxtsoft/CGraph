@@ -39,6 +39,14 @@ int main() {
       cgraph::detect_language("package.json") != DetectedLanguage::Unknown) {
     return 1;
   }
+  // A Spring Boot application config decides the Actuator endpoints served; any
+  // other YAML or properties file stays undetected.
+  if (cgraph::detect_language("svc/src/main/resources/application-prod.yml") != DetectedLanguage::SpringConfig ||
+      cgraph::language_name(DetectedLanguage::SpringConfig) != "spring-config" ||
+      cgraph::detect_language("k8s/base/application.yml") != DetectedLanguage::Unknown ||
+      cgraph::detect_language("gradle.properties") != DetectedLanguage::Unknown) {
+    return 1;
+  }
   if (cgraph::detect_language("project.csproj") != DetectedLanguage::MsBuild) {
     return 1;
   }
