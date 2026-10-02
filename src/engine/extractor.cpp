@@ -1,3 +1,4 @@
+#include "cgraph/data_contracts.hpp"
 #include "cgraph/extractor.hpp"
 
 #include "cgraph/fingerprint.hpp"
@@ -486,6 +487,9 @@ ExtractionResult extract_with_config(
   // scope, so the function-scope seed is empty: top-level calls are dropped
   // until the walk enters a function body.
   walk_node(ts_tree_root_node(tree.get()), config, ctx, file_id, "file", /*function_scope_id=*/{}, result.fragment, result.raw_calls, result.raw_relations, /*depth=*/0);
+  // Tables and graph labels in string literals, Neo4j entities, Drizzle query
+  // builders (data_contracts.hpp); they hang off the nodes the walk just made.
+  extract_code_data_contracts(ts_tree_root_node(tree.get()), config.name, ctx, result.fragment, result.raw_relations);
   return result;
 }
 

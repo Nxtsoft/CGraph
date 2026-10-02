@@ -1,5 +1,6 @@
 #include "cgraph/contracts.hpp"
 
+#include "cgraph/data_contracts.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/header_contracts.hpp"
 #include "cgraph/normalize.hpp"
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -879,6 +881,17 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   //    and `served: false`. The nodes carry no make_id'd id: the same contract
   //    in another repo's graph is the same id (a database-local table only
   //    once a workspace or seam declares the database).
+  //    A Drizzle model provides its table when the repo's own .sql files create
+  //    it and uses it otherwise (a mirrored schema), and a function handing a
+  //    mirrored model to a query builder uses it too (data_contracts.hpp): facts
+  //    only the whole graph can decide, joined to the extractors' here.
+  const auto orm_facts = orm_table_contract_facts(
+      raw_relations,
+      [&](const std::string& table) {
+        const auto node = by_id.find(make_id("sql_table:" + table));
+        return node != by_id.end() && node->second->kind == kSqlTableKind;
+      },
+      name_in_scope);
   std::unordered_set<std::string> contract_nodes;  // ids minted this resolve
   // Code something reaches: the target of a CALLS, imports or references edge,
   // or a route's handler (`handled_by` from an endpoint, minted above). A header
@@ -920,8 +933,9 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       }
     }
   }
+  const std::array<std::span<const RawRelation>, 2> fact_sets{raw_relations, orm_facts};
   for (const bool providing : {true, false}) {
-    for (const auto& relation : raw_relations) {
+    for (const auto& relation : fact_sets | std::views::join) {
       if (relation.relation != (providing ? kProvidesContractRelation : kUsesContractRelation)) {
         continue;
       }

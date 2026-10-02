@@ -13,6 +13,7 @@ add_library(cgraph_engine STATIC
   contract_schemas.cpp
   contracts.cpp
   cpp_extractor.cpp
+  data_contracts.cpp
   detect.cpp
   endpoint_prefixes.cpp
   contract_declarations.cpp
