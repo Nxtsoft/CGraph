@@ -172,16 +172,23 @@ Kotlin and Java Spring controllers get the same nodes: a method annotated `@GetM
 `method`) under a class-level `@RequestMapping("/api/v1/users")` is `GET /api/v1/users/{id}`.
 Paths are read from string literals only (positional, `value =`, `path =`, or an array of them); a
 path built from a constant, and a method-level `@RequestMapping` without `method`, are not minted.
-A Spring Boot application whose `build.gradle(.kts)` or `pom.xml` applies the Boot plugin (or
-parent) and depends on `spring-boot-starter-actuator` and a web starter serves the Actuator
+A Spring Boot application whose `build.gradle(.kts)` or `pom.xml` applies the Boot plugin (not
+`apply false`; Maven: the Boot parent, or the plugin outside `<pluginManagement>`, packaging not
+`pom`) and depends on `spring-boot-starter-actuator` and a web starter serves the Actuator
 endpoints its `src/main/resources/application[-profile].{yml,yaml,properties}` expose: `health`
 by default, else `management.endpoints.web.exposure.include` less `exclude`, under
-`management.endpoints.web.base-path` (default `/actuator`), with the discovery page, health groups
-and probes, per-endpoint access, the context path and a separate management port's base path
-applied. The endpoints are the union over the base config and each profile, handled by the
-`actuator_exposure` node at the `include` line that won (or the build file's `spring_actuator`
-node when nothing sets it). Endpoints that need another bean or dependency, profile expressions and
-placeholders without a default are not modeled; see `spring_actuator.hpp`.
+`management.endpoints.web.base-path` (default `/actuator`), with the discovery page, health
+groups, per-endpoint access, and `prometheus` / `caches` only with the Prometheus registry / the
+cache module. The liveness and readiness groups are on by default for Boot 4 (unless
+`probes.enabled` is false) and only when it is true for Boot 3 or an unknown version. Where they
+sit follows Boot's `ManagementPortType`: a negative `management.server.port` or
+`spring.main.web-application-type: none` serves nothing; the same port puts them under the context
+path; another port under `management.server.base-path`. The endpoints are the union over the base
+config and each profile, handled by the `actuator_exposure` node at the `include` line that won
+(or the build file's `spring_actuator` node when nothing sets it). Endpoints that need another bean
+or dependency, profile expressions, placeholders without a default, and YAML anchors, aliases,
+tags or flow mappings on the deciding keys are not modeled (those configurations serve nothing);
+see `spring_actuator.hpp`.
 Python FastAPI services get them too: a function decorated `@router.post("/{project_id}/setup")`
 (or `.get`, `.put`, `.patch`, `.delete`, `.head`, `.options`, or `.api_route(path, methods=[...])`,
 which defaults to GET) on a module-level `router = APIRouter(prefix="/project")` or `app =

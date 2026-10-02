@@ -28,3 +28,11 @@
 - [x] 4.8 Facts serialize with the replace error handler (non-UTF-8 bytes).
 - [x] 4.9 `spring.main.web-application-type: none` serves nothing.
 - [x] 4.10 List appends and Gradle block lookups are linear.
+
+## 5. Review round 2 (PR #154)
+
+- [x] 5.1 An alias, a tag then an anchor, or any unreadable value on a key that may hold a deciding key makes the document unreadable.
+- [x] 5.2 Gradle `apply false` in every spelling (`version var`, `version(libs...)`, `.version("x").apply(false)`, `apply(false)`).
+- [x] 5.3 The linearity test compares 4x input against a time ratio, not a wall-clock limit.
+- [x] 5.4 `cgraph_fuzz_spring_config` runs in the fuzz smoke tests.
+- [x] 5.5 Proposal and README match the current rules.

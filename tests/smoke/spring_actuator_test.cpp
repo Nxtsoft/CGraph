@@ -442,6 +442,14 @@ int test_unreadable_management_block() {
   failures += expect(served_with("management: !!map" + children), {}, "a tagged management block");
   failures += expect(served_with("management: {endpoints: {web: {exposure: {include: env}}}}\n"), {},
                      "a flow-mapped management block");
+  // Review round 2: an alias, and a tag then an anchor, are values the reader
+  // cannot place either.
+  failures += expect(served_with("defaults: &mgmt\n  endpoints:\n    web:\n      exposure:\n        include: env\n"
+                                 "management: *mgmt\n"),
+                     {}, "an aliased management block");
+  failures += expect(served_with("management: !!map &m" + children), {}, "a tagged then anchored management block");
+  failures += expect(served_with("management:\n  endpoints:\n    web:\n      exposure:\n        include:\n          - *ids\n"), {},
+                     "an alias inside a deciding list");
   failures += expect(served_with("base: &b\n  x: 1\nmanagement.endpoints.web.exposure.include: info\n"),
                      {"get /actuator", "get /actuator/info"}, "an anchor on an unrelated key does not matter");
   return failures;
@@ -476,6 +484,32 @@ int test_build_detection_edges() {
            .raw_relations.empty()) {
     failures += fail("id(\"org.springframework.boot\") apply false does not apply the plugin");
   }
+  // Review round 2: every spelling of `apply false`, whatever the version is.
+  for (const std::string_view spelled :
+       {"id(\"org.springframework.boot\") version springBootVersion apply false",
+        "id(\"org.springframework.boot\") version(libs.versions.boot.get()) apply false",
+        "id(\"org.springframework.boot\").version(\"3.4.0\").apply(false)",
+        "id(\"org.springframework.boot\") apply(false)", "id 'org.springframework.boot' version bootVersion apply false"}) {
+    if (!build_facts("build.gradle.kts",
+                     replaced(std::string(kGradle), "id(\"org.springframework.boot\") version \"3.4.0\"", spelled))
+             .raw_relations.empty()) {
+      failures += fail("not applied: " + std::string(spelled));
+    }
+  }
+  // ... while a non-literal version still applies it (version unknown: 0).
+  const auto variable = build_facts(
+      "build.gradle.kts", replaced(std::string(kGradle), "version \"3.4.0\"", "version springBootVersion"));
+  if (variable.raw_relations.size() != 1 ||
+      variable.raw_relations.front().context.find("\"boot_major\":0") == std::string::npos) {
+    failures += fail("a plugin with a variable version is applied with an unknown version");
+  }
+  const auto chained = build_facts(
+      "build.gradle.kts", replaced(std::string(kGradle), "id(\"org.springframework.boot\") version \"3.4.0\"",
+                                   "id(\"org.springframework.boot\").version(\"4.0.1\")"));
+  if (chained.raw_relations.size() != 1 ||
+      chained.raw_relations.front().context.find("\"boot_major\":4") == std::string::npos) {
+    failures += fail("a chained .version(\"4.0.1\") is read");
+  }
   return failures;
 }
 
@@ -506,27 +540,48 @@ int test_web_application_type_none() {
 }
 
 // 10. Adversarial size stays linear: many dependency lines in one Gradle block,
-//     many list-valued keys in one YAML document.
+//     many list-valued keys in one YAML document. Not an absolute time limit
+//     (sanitizer builds are slow): reading 4x the input must cost well under
+//     the 16x a quadratic reader pays. Best of three runs per size.
 int test_large_inputs_stay_linear() {
-  std::string gradle = "plugins {\n    id(\"org.springframework.boot\") version \"3.4.0\"\n}\ndependencies {\n";
-  for (int index = 0; index < 8000; ++index) {
-    gradle += "    implementation(\"com.example:lib" + std::to_string(index) + ":1.0\")\n";
-  }
-  gradle += "    implementation(\"org.springframework.boot:spring-boot-starter-web\")\n"
-            "    implementation(\"org.springframework.boot:spring-boot-starter-actuator\")\n}\n";
-  std::string yaml;
-  for (int index = 0; index < 40000; ++index) {
-    yaml += "k" + std::to_string(index) + ":\n  - a\n";
-  }
-  yaml += "management.endpoints.web.exposure.include: info\n";
-  const auto start = std::chrono::steady_clock::now();
-  const auto served = served_with(yaml, gradle);
-  const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-  if (served != std::set<std::string>{"get /actuator", "get /actuator/info"}) {
-    return fail("large inputs: " + join(served));
-  }
-  if (seconds > 1.5) {
-    return fail("large inputs took " + std::to_string(seconds) + " s; reading must stay linear");
+  const auto inputs = [](int size) {
+    std::string gradle = "plugins {\n    id(\"org.springframework.boot\") version \"3.4.0\"\n}\ndependencies {\n";
+    for (int index = 0; index < size; ++index) {
+      gradle += "    implementation(\"com.example:lib" + std::to_string(index) + ":1.0\")\n";
+    }
+    gradle += "    implementation(\"org.springframework.boot:spring-boot-starter-web\")\n"
+              "    implementation(\"org.springframework.boot:spring-boot-starter-actuator\")\n}\n";
+    std::string yaml;
+    for (int index = 0; index < size * 5; ++index) {
+      yaml += "k" + std::to_string(index) + ":\n  - a\n";
+    }
+    yaml += "management.endpoints.web.exposure.include: info\n";
+    return std::pair{yaml, gradle};
+  };
+  const auto best_of_three = [&](int size) {
+    const auto [yaml, gradle] = inputs(size);
+    double best = 0;
+    for (int run = 0; run < 3; ++run) {
+      const auto start = std::chrono::steady_clock::now();
+      const auto served = served_with(yaml, gradle);
+      const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+      if (served != std::set<std::string>{"get /actuator", "get /actuator/info"}) {
+        throw std::logic_error("large inputs: " + join(served));
+      }
+      best = run == 0 ? seconds : std::min(best, seconds);
+    }
+    return best;
+  };
+  try {
+    const auto small = best_of_three(2000);
+    const auto large = best_of_three(8000);
+    const auto ratio = large / std::max(small, 1e-6);
+    if (ratio > 8.0) {
+      return fail("4x the input took " + std::to_string(ratio) + "x the time (" + std::to_string(small) + " s -> " +
+                  std::to_string(large) + " s); reading must stay linear");
+    }
+  } catch (const std::logic_error& error) {
+    return fail(error.what());
   }
   return 0;
 }

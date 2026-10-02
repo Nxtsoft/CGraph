@@ -95,6 +95,7 @@ foreach(target IN ITEMS
     cgraph_fuzz_python
     cgraph_fuzz_ruby
     cgraph_fuzz_scala
+    cgraph_fuzz_spring_config
     cgraph_fuzz_typescript
     cgraph_fuzz_tsx)
   add_test(NAME ${target}_smoke_test COMMAND ${target} -runs=1 -max_len=4096)

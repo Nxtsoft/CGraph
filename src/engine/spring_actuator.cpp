@@ -284,6 +284,7 @@ constexpr int kMaxFlowDepth = 8;
         continue;  // a mapping or nested sequence inside a sequence: not modeled
       }
       const auto scalar = yaml_scalar(value);
+      document.unreadable = document.unreadable || (!scalar && may_hold_relevant(relaxed_key(stack.back().key)));
       append_item(document, stack.back().key, scalar.value_or(""), scalar.has_value(), stack.back().line);
       continue;
     }
@@ -332,6 +333,13 @@ constexpr int kMaxFlowDepth = 8;
       block_indent = indent;
     }
     const auto scalar = yaml_scalar(rest);
+    if (!scalar) {
+      // An alias (`management: *m`), a tag then an anchor (`!!map &m`), a block
+      // scalar: a value the reader cannot place. If it may hold a deciding
+      // key the document is unreadable, and lines beneath it are skipped.
+      document.unreadable = document.unreadable || may_hold_relevant(relaxed_key(full));
+      stack.push_back(Frame{.indent = indent, .key = full, .line = line_number, .opaque = true});
+    }
     document.entries.push_back(
         ConfigEntry{.key = full, .value = scalar.value_or(""), .known = scalar.has_value(), .line = line_number});
   }
@@ -592,11 +600,19 @@ void note_dependency(BuildFacts& facts, std::string_view group, std::string_view
       matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Dependency, (*it)[2].str(), (*it)[3].str()});
     }
   }
-  static const std::regex plugin{
-      R"re(\bid\s*\(?\s*["']org\.springframework\.boot["']\s*\)?(?:[ \t]*version[ \t]*\(?[ \t]*["']([^"'\n]{1,32})["'][ \t]*\)?)?([ \t]*apply[ \t]*\(?[ \t]*false)?)re"};
+  // The plugin id, then the rest of its statement (to the end of the line or a
+  // `;`): `version "3.4.0"`, `version bootVersion`, `version(libs...)`,
+  // `.version("x")`, and `apply false` / `apply(false)` / `.apply(false)` in
+  // any of those spellings. Only a literal version is read.
+  static const std::regex plugin{R"re(\bid\s*\(?\s*["']org\.springframework\.boot["']\s*\)?([^;\n]{0,256}))re"};
+  static const std::regex literal_version{R"re(\bversion\s*\(?\s*["']([^"'\n]{1,32})["'])re"};
+  static const std::regex apply_false{R"re(\bapply\s*\(?\s*false\b)re"};
   for (auto it = std::sregex_iterator(text.begin(), text.end(), plugin); it != std::sregex_iterator(); ++it) {
-    matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Plugin, (*it)[1].str(),
-                            (*it)[2].matched ? "false" : ""});
+    const auto rest = (*it)[1].str();
+    std::smatch version;
+    const bool literal = std::regex_search(rest, version, literal_version);
+    matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Plugin, literal ? version[1].str() : "",
+                            std::regex_search(rest, apply_false) ? "false" : ""});
   }
   static const std::regex applied{R"re(\bapply\s*\(?\s*plugin\s*[:=]\s*["']org\.springframework\.boot["'])re"};
   for (auto it = std::sregex_iterator(text.begin(), text.end(), applied); it != std::sregex_iterator(); ++it) {
