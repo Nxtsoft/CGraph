@@ -25,6 +25,7 @@ The foundation (p3-contract-foundation) mints `claim:<name>` nodes from `provide
 - Suite: 89 of 90 pass; `cgraph_file_watcher_test` fails as on main.
 - Probe (8 repos, bin-v0.7.3 vs this branch): no node or edge lost or changed in any repo (layout and community properties excluded); new nodes are claim contracts only, new edges only `handled_by` / `contains` / `CONSUMES` on them. 16 provider-to-consumer claim joins, all hand-checked correct (idp to idp-front-end 12, to passless-cli 3, to passless-app 1); no Turing join.
 - Scorer: ModSquad 26/40 to 29/40 (M30, M31, M32 linked); Turing 25/41 unchanged.
+- Cost (Debug builds of origin/main and this branch, same host, three runs each): turing-webapp extract 2353/2388/2833 ms to 2730/2939/3395 ms, total 10.1/10.2/11.3 s to 10.6/11.8/12.4 s; idp-front-end total 4.1/4.4/5.1 s to 4.2/4.8/5.0 s.
 
 ## Non-goals
 
