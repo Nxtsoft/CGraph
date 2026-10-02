@@ -1576,7 +1576,8 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
         relation.relation == "http_call_args" || relation.relation == "langgraph_call" ||
         relation.relation == "langgraph_client" || relation.relation == "actuator_app" ||
         relation.relation == "actuator_config" || relation.relation == "provides_contract" ||
-        relation.relation == "uses_contract" || is_claim_read_relation(relation.relation)) {
+        relation.relation == "uses_contract" || relation.relation == "orm_table_use" ||
+        is_claim_read_relation(relation.relation)) {
       continue;  // contract facts: resolve_contracts mints endpoints, contracts and table links from these
     }
     if (relation.source_id.empty() || relation.target_label.empty() || !node_ids.contains(relation.source_id)) {

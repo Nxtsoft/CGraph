@@ -109,6 +109,7 @@ nlohmann::json contract_resolution_json(const ContractResolution& contracts) {
       {"contracts_provided", contracts.contracts_provided},
       {"contracts_external", contracts.contracts_external},
       {"contract_consumes", contracts.contract_consumes},
+      {"contract_reads_unreached", contracts.contract_reads_unreached},
   };
 }
 
@@ -129,6 +130,7 @@ ContractResolution contract_resolution_from_json(const nlohmann::json& value) {
   contracts.contracts_provided = value.value("contracts_provided", std::size_t{0});
   contracts.contracts_external = value.value("contracts_external", std::size_t{0});
   contracts.contract_consumes = value.value("contract_consumes", std::size_t{0});
+  contracts.contract_reads_unreached = value.value("contract_reads_unreached", std::size_t{0});
   return contracts;
 }
 

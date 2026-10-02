@@ -2,6 +2,7 @@
 
 #include "cgraph/contracts.hpp"
 #include "cgraph/env_contracts.hpp"
+#include "cgraph/header_contracts.hpp"
 #include "cgraph/http_consumers.hpp"
 #include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
@@ -885,6 +886,7 @@ void js_extra_walk(const TSNode& node, const ExtractionContext& context, const s
   route_mount_handler(node, context, raw_relations);
   url_const_handler(node, context, raw_relations);
   http_call_handler(node, context, function_scope_id, fragment, raw_relations);
+  js_header_contracts(node, context, function_scope_id, fragment, raw_relations);
 }
 
 // TS primitive/builtin type names that never become a `references` target.
@@ -1597,6 +1599,7 @@ ExtractionResult extract_javascript(const ExtractionContext& context) {
   auto config = javascript_language_config();
   intern_node_symbols(config, tree_sitter_javascript());
   const HttpConsumerFileScope http_consumers;
+  const HeaderContractsFileScope header_contracts;
   return extract_with_config(tree_sitter_javascript(), config, context);
 }
 
@@ -1604,6 +1607,7 @@ ExtractionResult extract_typescript(const ExtractionContext& context) {
   auto config = typescript_language_config();
   intern_node_symbols(config, tree_sitter_typescript());
   const HttpConsumerFileScope http_consumers;
+  const HeaderContractsFileScope header_contracts;
   return extract_with_config(tree_sitter_typescript(), config, context);
 }
 
@@ -1611,6 +1615,7 @@ ExtractionResult extract_tsx(const ExtractionContext& context) {
   auto config = tsx_language_config();
   intern_node_symbols(config, tree_sitter_tsx());
   const HttpConsumerFileScope http_consumers;
+  const HeaderContractsFileScope header_contracts;
   return extract_with_config(tree_sitter_tsx(), config, context);
 }
 

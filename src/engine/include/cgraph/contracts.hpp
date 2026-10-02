@@ -66,8 +66,15 @@
 //                  code spells it. For `table` and `label` target_label is the
 //                  database the extractor knows the name lives in, empty when
 //                  it knows none (the usual case: code rarely proves which
-//                  database a connection reaches); it is ignored for the other
-//                  kinds. resolve_contracts mints one node per contract id
+//                  database a connection reaches). For a `header` provider it
+//                  is kBoundHeaderRead when the framework binds the read to a
+//                  request itself, else empty; it is ignored otherwise.
+//                  A header provider that is not bound provides only when
+//                  something reaches its function: a CALLS, imports or
+//                  references edge, or a route's `handled_by`, from code
+//                  outside test sources (is_test_source_path). A read in a
+//                  helper no code calls serves no request (route_resolution
+//                  counts it as contract_reads_unreached). resolve_contracts mints one node per contract id
 //                  (contract_id below): kind = the contract kind, label = the
 //                  name as a provider spells it (a user's spelling when no
 //                  provider is in this repo, with `served: false`), properties
@@ -144,6 +151,14 @@ namespace cgraph {
 
 // The scope of a table or label whose database nobody declared.
 inline constexpr std::string_view kLocalDatabase = "local";
+
+// The `target_label` of a `provides_contract header:` fact whose read the
+// framework binds to a request without any call in the code: a Spring
+// `@RequestHeader` parameter, a FastAPI `Header()` parameter, Ktor's
+// `call.request.header` on the route's ApplicationCall, gin's `c.GetHeader` on
+// a `*gin.Context` parameter, or `r.Header.Get` in a Go
+// `func(http.ResponseWriter, *http.Request)` handler.
+inline constexpr std::string_view kBoundHeaderRead = "bound";
 
 // The contract kinds a `provides_contract` / `uses_contract` fact may name.
 [[nodiscard]] bool is_contract_kind(std::string_view kind);

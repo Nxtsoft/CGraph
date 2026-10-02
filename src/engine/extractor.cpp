@@ -1,3 +1,4 @@
+#include "cgraph/data_contracts.hpp"
 #include "cgraph/extractor.hpp"
 
 #include "cgraph/claim_contracts.hpp"
@@ -489,6 +490,9 @@ ExtractionResult extract_with_config(
   walk_node(ts_tree_root_node(tree.get()), config, ctx, file_id, "file", /*function_scope_id=*/{}, result.fragment, result.raw_calls, result.raw_relations, /*depth=*/0);
   // JWT claims need the finished fragment (field and function nodes name the facts' sources).
   extract_claim_contracts(ts_tree_root_node(tree.get()), config.name, ctx, result.fragment, result.raw_relations);
+  // Tables and graph labels in string literals, Neo4j entities, Drizzle query
+  // builders (data_contracts.hpp); they hang off the nodes the walk just made.
+  extract_code_data_contracts(ts_tree_root_node(tree.get()), config.name, ctx, result.fragment, result.raw_relations);
   return result;
 }
 

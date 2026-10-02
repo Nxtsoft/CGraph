@@ -1,6 +1,7 @@
 #include "cgraph/python_extractor.hpp"
 
 #include "cgraph/env_contracts.hpp"
+#include "cgraph/header_contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -564,6 +565,7 @@ void python_extra_walk(const TSNode& node, const ExtractionContext& context, con
   } else if (type == "call") {
     python_router_mount(node, context, raw_relations);
   }
+  python_header_contracts(node, context, function_scope, raw_relations);
 }
 
 // `@router.get("/x")`, `@app.api_route("/x", methods=["GET", "POST"])` on a
