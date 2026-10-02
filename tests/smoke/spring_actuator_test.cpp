@@ -5,9 +5,11 @@
 #include "cgraph/pipeline.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <set>
 #include <string>
 #include <string_view>
@@ -135,7 +137,8 @@ int test_build_file_declares_the_actuator() {
                                   "  implementation 'org.springframework.boot:spring-boot-starter-webflux'\n"
                                   "  implementation group: 'org.springframework.boot', name: 'spring-boot-starter-actuator'\n"
                                   "}\n");
-  if (groovy.raw_relations.size() != 1 || groovy.raw_relations.front().context.find("\"reactive\":true") == std::string::npos) {
+  if (groovy.raw_relations.size() != 1 || groovy.raw_relations.front().context.find("\"webflux\":true") == std::string::npos ||
+      groovy.raw_relations.front().context.find("\"servlet\":false") == std::string::npos) {
     return fail("Groovy DSL map notation with webflux is a reactive actuator app");
   }
   const std::string pom =
@@ -157,6 +160,7 @@ int test_build_file_declares_the_actuator() {
 
 // No config: only health, at /actuator, plus the discovery page, handled by the
 // build file's actuator node.
+// kGradle is Boot 3.4.0: liveness/readiness groups are off unless enabled.
 int test_default_exposure_is_health() {
   std::vector<std::string> handlers;
   if (const int failed = expect(routes_of({{"svc/build.gradle.kts", std::string(kGradle)}}, &handlers),
@@ -192,9 +196,10 @@ int test_exposure_rules() {
   // known endpoints.
   const auto star = with("management.endpoints.web.exposure.include: \"*\"\n");
   if (!star.contains("get /actuator/beans") || !star.contains("post /actuator/loggers/{name}") ||
-      !star.contains("delete /actuator/caches/{cache}") || star.contains("post /actuator/shutdown") ||
+      star.contains("get /actuator/caches") || star.contains("post /actuator/shutdown") ||
       star.contains("get /actuator/heapdump") || star.contains("get /actuator/prometheus")) {
-    failures += fail("`*` exposes built-ins except shutdown/heapdump and prometheus without its registry: " + join(star));
+    failures += fail("`*` exposes built-ins except shutdown/heapdump, caches without the cache module and prometheus "
+                     "without its registry: " + join(star));
   }
   std::string with_registry(kGradle);
   with_registry.replace(with_registry.find("    testImplementation"), 0,
@@ -335,6 +340,197 @@ int test_pipeline_serves_and_does_not_over_link() {
   return 0;
 }
 
+
+// --- review round 1 (PR #154) ----------------------------------------------
+
+std::string replaced(std::string text, std::string_view from, std::string_view to) {
+  const auto at = text.find(from);
+  if (at == std::string::npos) {
+    throw std::logic_error("fixture lacks " + std::string(from));
+  }
+  text.replace(at, from.size(), to);
+  return text;
+}
+
+std::set<std::string> served_with(std::string config, std::string build = std::string(kGradle)) {
+  return routes_of({{"svc/build.gradle.kts", std::move(build)}, {"svc/src/main/resources/application.yml", std::move(config)}});
+}
+
+const std::set<std::string> kHealthOnly = {"get /actuator", "get /actuator/health", "get /actuator/health/{*path}"};
+
+// 1. In Boot 4.1 the caches endpoint is auto-configured by spring-boot-cache,
+//    which neither the actuator nor the web starter pulls in.
+int test_caches_need_the_cache_module() {
+  const std::string star = "management.endpoints.web.exposure.include: \"*\"\n";
+  if (served_with(star).contains("get /actuator/caches")) {
+    return fail("caches is not served without spring-boot-cache");
+  }
+  const auto cached = served_with(
+      star, replaced(std::string(kGradle), "    testImplementation",
+                     "    implementation(\"org.springframework.boot:spring-boot-starter-cache\")\n    testImplementation"));
+  if (!cached.contains("get /actuator/caches") || !cached.contains("delete /actuator/caches/{cache}")) {
+    return fail("caches is served with spring-boot-starter-cache: " + join(cached));
+  }
+  return 0;
+}
+
+// 2. Probes: Boot 4 enables the liveness/readiness groups unless
+//    `probes.enabled` is false; Boot 3 only when it is true; an unknown Boot
+//    version is treated as off.
+int test_probes_follow_the_boot_version() {
+  int failures = 0;
+  const auto boot4 = replaced(std::string(kGradle), "version \"3.4.0\"", "version \"4.0.1\"");
+  const std::set<std::string> probes = {"get /actuator", "get /actuator/health", "get /actuator/health/{*path}",
+                                        "get /actuator/health/liveness", "get /actuator/health/readiness"};
+  failures += expect(routes_of({{"svc/build.gradle.kts", boot4}}), probes, "Boot 4 enables probes by default");
+  failures += expect(served_with("management.endpoint.health.probes.enabled: false\n", boot4), kHealthOnly,
+                     "Boot 4 with probes disabled");
+  failures += expect(routes_of({{"svc/build.gradle.kts", replaced(std::string(kGradle), " version \"3.4.0\"", "")}}),
+                     kHealthOnly, "an unknown Boot version keeps probes off");
+  failures += expect(routes_of({{"pom.xml",
+                                 "<project><parent><groupId>org.springframework.boot</groupId>"
+                                 "<artifactId>spring-boot-starter-parent</artifactId><version>4.1.1</version></parent>\n"
+                                 "<dependencies>\n"
+                                 "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>\n"
+                                 "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>\n"
+                                 "</dependencies></project>\n"}}),
+                     probes, "the Boot parent's version is read");
+  return failures;
+}
+
+// 3. A deeply nested flow sequence is not modeled (bounded recursion).
+int test_deep_flow_sequence_is_unknowable() {
+  return expect(served_with("management.endpoints.web.exposure.include: " + std::string(40, '[') + "health" +
+                            std::string(40, ']') + "\n"),
+                {}, "a flow sequence nested past the cap is unknowable");
+}
+
+// 4. Only `micrometer-registry-prometheus` itself backs the prometheus endpoint.
+int test_prometheus_registry_is_exact() {
+  const auto simpleclient = replaced(std::string(kGradle), "    testImplementation",
+                                     "    runtimeOnly(\"io.micrometer:micrometer-registry-prometheus-simpleclient\")\n"
+                                     "    testImplementation");
+  return expect(served_with("management.endpoints.web.exposure.include: health,prometheus\n", simpleclient), kHealthOnly,
+                "the simpleclient registry does not back prometheus");
+}
+
+// 5. ManagementPortType.get (Boot 4.1.1): negative is disabled; SAME when unset,
+//    when the server port is unset and it is 8080, or when it is not 0 and
+//    equals the server port; DIFFERENT otherwise. A non-integer fails startup.
+int test_management_port_type() {
+  int failures = 0;
+  const std::string context = "server.servlet.context-path: /idp\nmanagement.server.base-path: /m\n";
+  const std::set<std::string> same = {"get /idp/actuator", "get /idp/actuator/health", "get /idp/actuator/health/{*path}"};
+  const std::set<std::string> different = {"get /m/actuator", "get /m/actuator/health", "get /m/actuator/health/{*path}"};
+  failures += expect(served_with(context + "management.server.port: -2\n"), {}, "any negative management port disables");
+  failures += expect(served_with(context + "management.server.port: 8080\n"), same, "8080 with no server port is SAME");
+  failures += expect(served_with(context + "server.port: 9090\nmanagement.server.port: 9090\n"), same, "equal ports are SAME");
+  failures += expect(served_with(context + "server.port: 0\nmanagement.server.port: 0\n"), different,
+                     "port 0 is DIFFERENT even when both are 0");
+  failures += expect(served_with(context + "server.port: 9090\nmanagement.server.port: 8080\n"), different,
+                     "8080 against another server port is DIFFERENT");
+  failures += expect(served_with(context + "management.server.port: abc\n"), {}, "a non-integer port fails startup");
+  return failures;
+}
+
+// 6. A parent key whose value is an anchor, a tag or a flow mapping cannot be
+//    read; the document must not lose a level and serve the default.
+int test_unreadable_management_block() {
+  int failures = 0;
+  const std::string children = "\n  endpoints:\n    web:\n      exposure:\n        include: env\n";
+  failures += expect(served_with("management: &m" + children), {}, "an anchored management block");
+  failures += expect(served_with("management: !!map" + children), {}, "a tagged management block");
+  failures += expect(served_with("management: {endpoints: {web: {exposure: {include: env}}}}\n"), {},
+                     "a flow-mapped management block");
+  failures += expect(served_with("base: &b\n  x: 1\nmanagement.endpoints.web.exposure.include: info\n"),
+                     {"get /actuator", "get /actuator/info"}, "an anchor on an unrelated key does not matter");
+  return failures;
+}
+
+// 7. Build files that are not app modules, or that only manage the Boot pieces.
+int test_build_detection_edges() {
+  int failures = 0;
+  const std::string pom_head =
+      "<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId>"
+      "<version>3.4.0</version></parent>\n";
+  const std::string web =
+      "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>\n";
+  const std::string actuator =
+      "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>\n";
+  if (!build_facts("pom.xml", pom_head + "<dependencies>" + web + "</dependencies><profiles><profile><id>ops</id>"
+                                  "<dependencies>" + actuator + "</dependencies></profile></profiles></project>\n")
+           .raw_relations.empty()) {
+    failures += fail("an actuator only in a Maven <profile> is not on the default classpath");
+  }
+  if (!build_facts("pom.xml", "<project>\n<dependencies>" + web + actuator + "</dependencies>\n<build><pluginManagement><plugins>"
+                              "<plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin>"
+                              "</plugins></pluginManagement></build></project>\n")
+           .raw_relations.empty()) {
+    failures += fail("a Boot plugin only under <pluginManagement> does not make an application");
+  }
+  if (!build_facts("pom.xml", pom_head + "<packaging>pom</packaging>\n<dependencies>" + web + actuator + "</dependencies></project>\n")
+           .raw_relations.empty()) {
+    failures += fail("a <packaging>pom</packaging> aggregator is not an app module");
+  }
+  if (!build_facts("build.gradle.kts", replaced(std::string(kGradle), "version \"3.4.0\"", "version \"3.4.0\" apply false"))
+           .raw_relations.empty()) {
+    failures += fail("id(\"org.springframework.boot\") apply false does not apply the plugin");
+  }
+  return failures;
+}
+
+// 8. Invalid UTF-8 (a Latin-1 byte) neither throws nor drops the build file's
+//    own extraction.
+int test_latin1_bytes() {
+  try {
+    const auto config = served_with("management.endpoints.web.exposure.include: info,caf\xE9\n");
+    if (config != std::set<std::string>{"get /actuator", "get /actuator/info"}) {
+      return fail("a Latin-1 byte in the config: " + join(config));
+    }
+    const std::string path = "sv\xE9/build.gradle.kts";
+    const auto result = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Kotlin, {.source_file = "/repo/" + path, .relative_path = path, .source = kGradle});
+    if (!result || result->raw_relations.empty() ||
+        std::ranges::none_of(result->fragment.nodes, [](const cgraph::Node& node) { return node.kind == "file"; })) {
+      return fail("a Latin-1 module path keeps the Kotlin extraction and the actuator fact");
+    }
+  } catch (const std::exception& error) {
+    return fail(std::string("a Latin-1 byte threw: ") + error.what());
+  }
+  return 0;
+}
+
+// 9. `spring.main.web-application-type: none` runs no web server.
+int test_web_application_type_none() {
+  return expect(served_with("spring:\n  main:\n    web-application-type: none\n"), {}, "no web server, no endpoints");
+}
+
+// 10. Adversarial size stays linear: many dependency lines in one Gradle block,
+//     many list-valued keys in one YAML document.
+int test_large_inputs_stay_linear() {
+  std::string gradle = "plugins {\n    id(\"org.springframework.boot\") version \"3.4.0\"\n}\ndependencies {\n";
+  for (int index = 0; index < 8000; ++index) {
+    gradle += "    implementation(\"com.example:lib" + std::to_string(index) + ":1.0\")\n";
+  }
+  gradle += "    implementation(\"org.springframework.boot:spring-boot-starter-web\")\n"
+            "    implementation(\"org.springframework.boot:spring-boot-starter-actuator\")\n}\n";
+  std::string yaml;
+  for (int index = 0; index < 40000; ++index) {
+    yaml += "k" + std::to_string(index) + ":\n  - a\n";
+  }
+  yaml += "management.endpoints.web.exposure.include: info\n";
+  const auto start = std::chrono::steady_clock::now();
+  const auto served = served_with(yaml, gradle);
+  const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  if (served != std::set<std::string>{"get /actuator", "get /actuator/info"}) {
+    return fail("large inputs: " + join(served));
+  }
+  if (seconds > 1.5) {
+    return fail("large inputs took " + std::to_string(seconds) + " s; reading must stay linear");
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -345,5 +541,15 @@ int main() {
   failures += test_exposure_rules();
   failures += test_profiles_and_precedence();
   failures += test_pipeline_serves_and_does_not_over_link();
+  failures += test_caches_need_the_cache_module();
+  failures += test_probes_follow_the_boot_version();
+  failures += test_deep_flow_sequence_is_unknowable();
+  failures += test_prometheus_registry_is_exact();
+  failures += test_management_port_type();
+  failures += test_unreadable_management_block();
+  failures += test_build_detection_edges();
+  failures += test_latin1_bytes();
+  failures += test_web_application_type_none();
+  failures += test_large_inputs_stay_linear();
   return failures == 0 ? 0 : 1;
 }

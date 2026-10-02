@@ -8,13 +8,16 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <regex>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 namespace cgraph {
@@ -101,7 +104,21 @@ constexpr std::string_view kResources = "src/main/resources";
 [[nodiscard]] bool relevant_key(std::string_view key) {
   return key.starts_with("management.") || key == "server.port" || key == "server.servlet.contextpath" ||
          key == "spring.webflux.basepath" || key == "spring.mvc.servlet.path" ||
-         key == "spring.config.activate.onprofile" || key == "spring.profiles";
+         key == "spring.config.activate.onprofile" || key == "spring.profiles" ||
+         key == "spring.main.webapplicationtype";
+}
+
+// Whether a (relaxed) key is, or is a parent of, a key that decides the paths.
+// A parent the reader cannot open (an anchor, a tag, a flow mapping, a merge)
+// may hold any of them.
+[[nodiscard]] bool may_hold_relevant(std::string_view key) {
+  if (key.empty() || key == "management" || relevant_key(key)) {
+    return true;
+  }
+  static constexpr std::array<std::string_view, 8> kParents = {
+      "server", "server.servlet", "spring", "spring.webflux", "spring.mvc", "spring.mvc.servlet",
+      "spring.config", "spring.main"};
+  return std::ranges::find(kParents, key) != kParents.end() || key == "spring.config.activate";
 }
 
 // --- application config parsing ---------------------------------------------
@@ -113,17 +130,22 @@ struct ConfigEntry {
   std::uint32_t line = 1;
 };
 
-using ConfigDocument = std::vector<ConfigEntry>;
+struct ConfigDocument {
+  std::vector<ConfigEntry> entries;
+  std::unordered_map<std::string, std::size_t> lists;  // list-valued key -> its entry, so appends stay linear
+  bool unreadable = false;  // a structure that may hold a deciding key could not be read
+};
 
 // Appends `item` to a list-valued entry (YAML sequences, `key[0]=` properties).
 void append_item(ConfigDocument& document, const std::string& key, std::string item, bool known, std::uint32_t line) {
-  const auto slot = std::ranges::find_if(document, [&](const ConfigEntry& entry) { return entry.key == key; });
-  if (slot == document.end()) {
-    document.push_back(ConfigEntry{.key = key, .value = std::move(item), .known = known, .line = line});
+  const auto [slot, inserted] = document.lists.emplace(key, document.entries.size());
+  if (inserted) {
+    document.entries.push_back(ConfigEntry{.key = key, .value = std::move(item), .known = known, .line = line});
     return;
   }
-  slot->value += "," + item;
-  slot->known = slot->known && known;
+  auto& entry = document.entries[slot->second];
+  entry.value += "," + item;
+  entry.known = entry.known && known;
 }
 
 // The text of a line before a `#` comment (YAML: at the start or after
@@ -148,8 +170,11 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
   return line;
 }
 
+// How deep flow sequences nest before the value is not modeled.
+constexpr int kMaxFlowDepth = 8;
+
 // A YAML scalar's value, or nullopt for a form the reader does not model.
-[[nodiscard]] std::optional<std::string> yaml_scalar(std::string_view text) {
+[[nodiscard]] std::optional<std::string> yaml_scalar(std::string_view text, int depth = 0) {
   text = trim(text);
   if (text.empty()) {
     return std::string{};
@@ -178,14 +203,14 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
     return std::nullopt;
   }
   if (text.front() == '[') {
-    if (text.back() != ']') {
+    if (text.back() != ']' || depth >= kMaxFlowDepth) {
       return std::nullopt;
     }
     std::string out;
     auto body = text.substr(1, text.size() - 2);
     while (!body.empty()) {
       const auto comma = body.find(',');
-      const auto item = yaml_scalar(body.substr(0, comma));
+      const auto item = yaml_scalar(body.substr(0, comma), depth + 1);
       if (!item) {
         return std::nullopt;
       }
@@ -292,11 +317,23 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
       stack.push_back(Frame{.indent = indent, .key = full, .line = line_number, .opaque = false});
       continue;
     }
+    // A merge key, a flow mapping, or an anchor or tag opening a nested block
+    // (`management: &m`, `management: !!map`): what lies beneath cannot be
+    // placed. If it may hold a deciding key the document is unreadable;
+    // either way its children are skipped rather than mis-nested.
+    const bool opens_block = (rest.front() == '&' || rest.front() == '!') && rest.find(' ') == std::string_view::npos;
+    if (key == "<<" || rest.front() == '{' || opens_block) {
+      const auto parent = key == "<<" ? (stack.empty() ? std::string{} : stack.back().key) : full;
+      document.unreadable = document.unreadable || may_hold_relevant(relaxed_key(parent));
+      stack.push_back(Frame{.indent = indent, .key = full, .line = line_number, .opaque = true});
+      continue;
+    }
     if (rest.front() == '|' || rest.front() == '>') {
       block_indent = indent;
     }
     const auto scalar = yaml_scalar(rest);
-    document.push_back(ConfigEntry{.key = full, .value = scalar.value_or(""), .known = scalar.has_value(), .line = line_number});
+    document.entries.push_back(
+        ConfigEntry{.key = full, .value = scalar.value_or(""), .known = scalar.has_value(), .line = line_number});
   }
   return documents;
 }
@@ -373,7 +410,7 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
       append_item(document, key.substr(0, open), std::move(value), true, first_line);
       continue;
     }
-    document.push_back(ConfigEntry{.key = std::move(key), .value = std::move(value), .known = true, .line = first_line});
+    document.entries.push_back(ConfigEntry{.key = std::move(key), .value = std::move(value), .known = true, .line = first_line});
   }
   return documents;
 }
@@ -428,13 +465,29 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
   return out;
 }
 
-// The names of the Gradle blocks enclosing `offset` (`dependencies` inside
-// `subprojects` is {"subprojects", "dependencies"}): the identifier before each
-// unclosed `{`. Strings are skipped.
-[[nodiscard]] std::vector<std::string> enclosing_blocks(std::string_view text, std::size_t offset) {
+// Bound on the backward scan over a block's `(...)` arguments, so adversarial
+// parentheses stay linear.
+constexpr std::size_t kMaxBlockHeader = 512;
+
+// The names of the Gradle blocks enclosing each of `offsets` (ascending):
+// `dependencies` inside `subprojects` is {"subprojects", "dependencies"}, the
+// identifier before each unclosed `{`. One pass over the text; strings are
+// skipped.
+[[nodiscard]] std::vector<std::vector<std::string>> enclosing_blocks(std::string_view text,
+                                                                     std::span<const std::size_t> offsets) {
+  std::vector<std::vector<std::string>> result;
+  result.reserve(offsets.size());
   std::vector<std::string> blocks;
   char quote = 0;
-  for (std::size_t index = 0; index < offset && index < text.size(); ++index) {
+  std::size_t next = 0;
+  for (std::size_t index = 0; index <= text.size() && next < offsets.size(); ++index) {
+    while (next < offsets.size() && offsets[next] <= index) {
+      result.push_back(blocks);
+      ++next;
+    }
+    if (index == text.size()) {
+      break;
+    }
     const char ch = text[index];
     if (quote != 0) {
       if (ch == '\\') {
@@ -448,13 +501,14 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
       quote = ch;
     } else if (ch == '{') {
       // `name {`, `name(...) {` and `name("x") {` all name the block `name`.
+      const auto floor = index > kMaxBlockHeader ? index - kMaxBlockHeader : 0;
       auto end = index;
-      while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\n' || text[end - 1] == '\r')) {
+      while (end > floor && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\n' || text[end - 1] == '\r')) {
         --end;
       }
-      if (end > 0 && text[end - 1] == ')') {
+      if (end > floor && text[end - 1] == ')') {
         int depth = 0;
-        while (end > 0) {
+        while (end > floor) {
           --end;
           if (text[end] == ')') {
             ++depth;
@@ -464,7 +518,7 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
         }
       }
       auto begin = end;
-      while (begin > 0 && (std::isalnum(static_cast<unsigned char>(text[begin - 1])) != 0 || text[begin - 1] == '_')) {
+      while (begin > floor && (std::isalnum(static_cast<unsigned char>(text[begin - 1])) != 0 || text[begin - 1] == '_')) {
         --begin;
       }
       blocks.emplace_back(text.substr(begin, end - begin));
@@ -472,15 +526,20 @@ void append_item(ConfigDocument& document, const std::string& key, std::string i
       blocks.pop_back();
     }
   }
-  return blocks;
+  while (result.size() < offsets.size()) {
+    result.push_back(blocks);
+  }
+  return result;
 }
 
 struct BuildFacts {
   std::optional<std::size_t> actuator;  // offset of the actuator dependency
-  bool boot = false;                    // the Spring Boot plugin / parent: an application
+  bool boot = false;                    // the Spring Boot plugin applied / the Boot parent: an application
+  int boot_major = 0;                   // the Boot version the build declares, 0 when it names none
   bool servlet = false;                 // spring-boot-starter-web / -webmvc
   bool reactive = false;                // spring-boot-starter-webflux
   bool prometheus = false;              // io.micrometer:micrometer-registry-prometheus
+  bool cache = false;                   // spring-boot-starter-cache / spring-boot-cache (the caches endpoint, Boot 4)
 };
 
 void note_dependency(BuildFacts& facts, std::string_view group, std::string_view artifact, std::size_t offset) {
@@ -491,47 +550,84 @@ void note_dependency(BuildFacts& facts, std::string_view group, std::string_view
       facts.servlet = true;
     } else if (artifact == "spring-boot-starter-webflux") {
       facts.reactive = true;
+    } else if (artifact == "spring-boot-starter-cache" || artifact == "spring-boot-cache") {
+      facts.cache = true;
     }
-  } else if (group == "io.micrometer" && artifact.starts_with("micrometer-registry-prometheus")) {
-    facts.prometheus = true;
+  } else if (group == "io.micrometer" && artifact == "micrometer-registry-prometheus") {
+    facts.prometheus = true;  // not `-simpleclient`, which Boot 4.1 does not support
   }
+}
+
+// The major version a `4.1.1`-style version names, 0 when it is not a literal.
+[[nodiscard]] int major_of(std::string_view version) {
+  int major = 0;
+  std::size_t index = 0;
+  for (; index < version.size() && index < 4 && version[index] >= '0' && version[index] <= '9'; ++index) {
+    major = major * 10 + (version[index] - '0');
+  }
+  return index > 0 && (index == version.size() || version[index] == '.') ? major : 0;
 }
 
 // Gradle (Kotlin or Groovy DSL): dependencies on the runtime classpath, in the
 // project's own `dependencies` block (not `subprojects`/`allprojects`), and the
-// `org.springframework.boot` plugin in its `plugins` block or `apply plugin:`.
+// `org.springframework.boot` plugin applied in its `plugins` block (not `apply
+// false`) or by `apply plugin:`, with the version the plugin declares.
 [[nodiscard]] BuildFacts read_gradle(std::string_view source) {
   const auto text = blank_comments(source, false);
   BuildFacts facts;
-  const auto own = [&](std::size_t offset, std::string_view block) {
-    const auto blocks = enclosing_blocks(text, offset);
-    return blocks.size() == 1 && blocks.front() == block;
+  enum class Kind { Dependency, Plugin, Applied };
+  struct Match {
+    std::size_t offset;
+    Kind kind;
+    std::string first;   // group, or the plugin's version
+    std::string second;  // artifact, or "false" for `apply false`
   };
+  std::vector<Match> matches;
   static const std::regex coordinate{
-      R"re(\b(implementation|api|runtimeOnly|compile|runtime)\s*\(?\s*["']([\w.\-]+):([\w.\-]+)(?::[^"']*)?["'])re"};
+      R"re(\b(implementation|api|runtimeOnly|compile|runtime)\s*\(?\s*["']([\w.\-]+):([\w.\-]+)(?::[^"'\n]{0,128})?["'])re"};
   static const std::regex named{
       R"re(\b(implementation|api|runtimeOnly|compile|runtime)\s*\(?\s*group\s*[:=]\s*["']([\w.\-]+)["']\s*,\s*name\s*[:=]\s*["']([\w.\-]+)["'])re"};
   for (const auto* pattern : {&coordinate, &named}) {
     for (auto it = std::sregex_iterator(text.begin(), text.end(), *pattern); it != std::sregex_iterator(); ++it) {
-      const auto offset = static_cast<std::size_t>(it->position(0));
-      if (own(offset, "dependencies")) {
-        note_dependency(facts, (*it)[2].str(), (*it)[3].str(), offset);
-      }
+      matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Dependency, (*it)[2].str(), (*it)[3].str()});
     }
   }
-  static const std::regex plugin{R"re(\bid\s*\(?\s*["']org\.springframework\.boot["'])re"};
+  static const std::regex plugin{
+      R"re(\bid\s*\(?\s*["']org\.springframework\.boot["']\s*\)?(?:[ \t]*version[ \t]*\(?[ \t]*["']([^"'\n]{1,32})["'][ \t]*\)?)?([ \t]*apply[ \t]*\(?[ \t]*false)?)re"};
   for (auto it = std::sregex_iterator(text.begin(), text.end(), plugin); it != std::sregex_iterator(); ++it) {
-    facts.boot = facts.boot || own(static_cast<std::size_t>(it->position(0)), "plugins");
+    matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Plugin, (*it)[1].str(),
+                            (*it)[2].matched ? "false" : ""});
   }
   static const std::regex applied{R"re(\bapply\s*\(?\s*plugin\s*[:=]\s*["']org\.springframework\.boot["'])re"};
   for (auto it = std::sregex_iterator(text.begin(), text.end(), applied); it != std::sregex_iterator(); ++it) {
-    facts.boot = facts.boot || enclosing_blocks(text, static_cast<std::size_t>(it->position(0))).empty();
+    matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Applied, {}, {}});
+  }
+  std::ranges::sort(matches, {}, &Match::offset);
+  std::vector<std::size_t> offsets;
+  offsets.reserve(matches.size());
+  for (const auto& match : matches) {
+    offsets.push_back(match.offset);
+  }
+  const auto blocks = enclosing_blocks(text, offsets);
+  for (std::size_t index = 0; index < matches.size(); ++index) {
+    const auto& match = matches[index];
+    const auto own = [&](std::string_view block) { return blocks[index].size() == 1 && blocks[index].front() == block; };
+    if (match.kind == Kind::Dependency && own("dependencies")) {
+      note_dependency(facts, match.first, match.second, match.offset);
+    } else if (match.kind == Kind::Plugin && own("plugins") && match.second.empty()) {
+      facts.boot = true;
+      facts.boot_major = std::max(facts.boot_major, major_of(match.first));
+    } else if (match.kind == Kind::Applied && blocks[index].empty()) {
+      facts.boot = true;  // the version comes from the buildscript classpath: not read
+    }
   }
   return facts;
 }
 
-// Maven: `<dependency>` elements outside `<dependencyManagement>` and
-// `<plugins>` whose scope keeps them at runtime, and the Boot parent or plugin.
+// Maven: `<dependency>` elements outside `<dependencyManagement>`, `<plugins>`
+// and `<profiles>` whose scope keeps them at runtime, and the Boot parent or
+// a `spring-boot-maven-plugin` in `<plugins>` (not only `<pluginManagement>`).
+// A `<packaging>pom</packaging>` project is an aggregator, not an application.
 [[nodiscard]] BuildFacts read_pom(std::string_view source) {
   const auto text = blank_comments(source, true);
   BuildFacts facts;
@@ -542,15 +638,19 @@ void note_dependency(BuildFacts& facts, std::string_view group, std::string_view
     for (auto open = text.find(open_tag); open != std::string::npos; open = text.find(open_tag, open + 1)) {
       const auto close = text.find(close_tag, open);
       ranges.emplace_back(open, close == std::string::npos ? text.size() : close);
+      if (close == std::string::npos) {
+        break;  // unclosed: it runs to the end, and so would every later one
+      }
     }
     return ranges;
   };
-  const auto excluded = [&, managed = ranges_of("dependencyManagement"), plugins = ranges_of("plugins")](std::size_t offset) {
-    const auto inside = [&](const auto& ranges) {
-      return std::ranges::any_of(ranges, [&](const auto& range) { return range.first < offset && offset < range.second; });
-    };
-    return inside(managed) || inside(plugins);
+  const auto inside = [](const auto& ranges, std::size_t offset) {
+    return std::ranges::any_of(ranges, [&](const auto& range) { return range.first < offset && offset < range.second; });
   };
+  const auto managed = ranges_of("dependencyManagement");
+  const auto plugins = ranges_of("plugins");
+  const auto profiles = ranges_of("profiles");
+  const auto plugin_management = ranges_of("pluginManagement");
   const auto element = [](std::string_view block, std::string_view tag) {
     const auto open_tag = "<" + std::string(tag) + ">";
     const auto open = block.find(open_tag);
@@ -565,18 +665,40 @@ void note_dependency(BuildFacts& facts, std::string_view group, std::string_view
     const auto close = text.find("</dependency>", open);
     const auto block = std::string_view(text).substr(open, close == std::string::npos ? std::string::npos : close - open);
     const auto scope = element(block, "scope");
-    if (excluded(open) || scope == "test" || scope == "provided" || scope == "import") {
+    if (inside(managed, open) || inside(plugins, open) || inside(profiles, open) || scope == "test" ||
+        scope == "provided" || scope == "import") {
       continue;
     }
     note_dependency(facts, element(block, "groupId"), element(block, "artifactId"), open);
   }
   for (const auto& [open, close] : ranges_of("parent")) {
     const auto block = std::string_view(text).substr(open, close - open);
-    facts.boot = facts.boot || block.find("<artifactId>spring-boot-starter-parent</artifactId>") != std::string_view::npos;
+    if (block.find("<artifactId>spring-boot-starter-parent</artifactId>") != std::string_view::npos) {
+      facts.boot = true;
+      facts.boot_major = std::max(facts.boot_major, major_of(element(block, "version")));
+    }
   }
-  for (const auto& [open, close] : ranges_of("plugins")) {
+  for (const auto& [open, close] : plugins) {
+    if (inside(plugin_management, open) || inside(profiles, open)) {
+      continue;
+    }
     const auto block = std::string_view(text).substr(open, close - open);
-    facts.boot = facts.boot || block.find("<artifactId>spring-boot-maven-plugin</artifactId>") != std::string_view::npos;
+    for (auto plugin = block.find("<plugin>"); plugin != std::string_view::npos; plugin = block.find("<plugin>", plugin + 1)) {
+      const auto end = block.find("</plugin>", plugin);
+      const auto body = block.substr(plugin, end == std::string_view::npos ? std::string_view::npos : end - plugin);
+      if (element(body, "artifactId") == "spring-boot-maven-plugin") {
+        facts.boot = true;
+        facts.boot_major = std::max(facts.boot_major, major_of(element(body, "version")));
+      }
+    }
+  }
+  // The project's own packaging: the first <packaging> outside the parent.
+  const auto parents = ranges_of("parent");
+  for (auto open = text.find("<packaging>"); open != std::string::npos; open = text.find("<packaging>", open + 1)) {
+    if (!inside(parents, open)) {
+      facts.boot = facts.boot && element(std::string_view(text).substr(open), "packaging") != "pom";
+      break;
+    }
   }
   return facts;
 }
@@ -595,47 +717,55 @@ struct Operation {
   std::string_view path;    // beneath the endpoint's own path
 };
 
+enum class Needs { Nothing, Prometheus, Cache };
+
 struct BuiltinEndpoint {
   std::string_view id;
   std::array<Operation, 4> operations;
   std::size_t operation_count;
   Access default_access;
-  bool needs_prometheus;
+  Needs needs;
 };
 
 // The built-in web endpoints whose availability needs nothing beyond a web
-// application with the actuator (and, for `prometheus`, its registry), with the
-// web operations Spring Boot maps for them. `health` answers its groups and
-// components through `{*path}`.
+// application with the actuator, or one more dependency: `prometheus` its
+// registry, `caches` the spring-boot-cache module (Boot 4.1 auto-configures the
+// endpoint there, and neither the actuator nor the web starter pulls it in).
+// With the web operations Spring Boot maps for them; `health` answers its
+// groups and components through `{*path}`.
 constexpr std::array<BuiltinEndpoint, 15> kEndpoints = {{
-    {"health", {{{"get", ""}, {"get", "/{*path}"}}}, 2, Access::Unrestricted, false},
-    {"info", {{{"get", ""}}}, 1, Access::Unrestricted, false},
-    {"beans", {{{"get", ""}}}, 1, Access::Unrestricted, false},
-    {"caches", {{{"get", ""}, {"delete", ""}, {"get", "/{cache}"}, {"delete", "/{cache}"}}}, 4, Access::Unrestricted, false},
-    {"conditions", {{{"get", ""}}}, 1, Access::Unrestricted, false},
-    {"configprops", {{{"get", ""}, {"get", "/{prefix}"}}}, 2, Access::Unrestricted, false},
-    {"env", {{{"get", ""}, {"get", "/{toMatch}"}}}, 2, Access::Unrestricted, false},
-    {"loggers", {{{"get", ""}, {"get", "/{name}"}, {"post", "/{name}"}}}, 3, Access::Unrestricted, false},
-    {"mappings", {{{"get", ""}}}, 1, Access::Unrestricted, false},
-    {"metrics", {{{"get", ""}, {"get", "/{requiredMetricName}"}}}, 2, Access::Unrestricted, false},
-    {"scheduledtasks", {{{"get", ""}}}, 1, Access::Unrestricted, false},
-    {"threaddump", {{{"get", ""}}}, 1, Access::Unrestricted, false},
-    {"heapdump", {{{"get", ""}}}, 1, Access::None, false},
-    {"shutdown", {{{"post", ""}}}, 1, Access::None, false},
-    {"prometheus", {{{"get", ""}}}, 1, Access::Unrestricted, true},
+    {"health", {{{"get", ""}, {"get", "/{*path}"}}}, 2, Access::Unrestricted, Needs::Nothing},
+    {"info", {{{"get", ""}}}, 1, Access::Unrestricted, Needs::Nothing},
+    {"beans", {{{"get", ""}}}, 1, Access::Unrestricted, Needs::Nothing},
+    {"caches", {{{"get", ""}, {"delete", ""}, {"get", "/{cache}"}, {"delete", "/{cache}"}}}, 4, Access::Unrestricted, Needs::Cache},
+    {"conditions", {{{"get", ""}}}, 1, Access::Unrestricted, Needs::Nothing},
+    {"configprops", {{{"get", ""}, {"get", "/{prefix}"}}}, 2, Access::Unrestricted, Needs::Nothing},
+    {"env", {{{"get", ""}, {"get", "/{toMatch}"}}}, 2, Access::Unrestricted, Needs::Nothing},
+    {"loggers", {{{"get", ""}, {"get", "/{name}"}, {"post", "/{name}"}}}, 3, Access::Unrestricted, Needs::Nothing},
+    {"mappings", {{{"get", ""}}}, 1, Access::Unrestricted, Needs::Nothing},
+    {"metrics", {{{"get", ""}, {"get", "/{requiredMetricName}"}}}, 2, Access::Unrestricted, Needs::Nothing},
+    {"scheduledtasks", {{{"get", ""}}}, 1, Access::Unrestricted, Needs::Nothing},
+    {"threaddump", {{{"get", ""}}}, 1, Access::Unrestricted, Needs::Nothing},
+    {"heapdump", {{{"get", ""}}}, 1, Access::None, Needs::Nothing},
+    {"shutdown", {{{"post", ""}}}, 1, Access::None, Needs::Nothing},
+    {"prometheus", {{{"get", ""}}}, 1, Access::Unrestricted, Needs::Prometheus},
 }};
 
 struct App {
   std::string node_id;
   std::string source_file;
-  bool reactive = false;
+  bool servlet = false;  // spring-boot-starter-web / -webmvc
+  bool webflux = false;  // spring-boot-starter-webflux
   bool prometheus = false;
+  bool cache = false;
+  int boot_major = 0;  // 0: the build names no Boot version
 };
 
 struct Document {
   std::string profile;                   // the file's profile, "" for the base file
   std::vector<std::string> on_profiles;  // `spring.config.activate.on-profile`, empty when unset
   bool unmatchable = false;              // a profile expression: applies to no configuration modeled
+  bool unreadable = false;               // a structure that may hold a deciding key could not be read
   std::array<int, 3> rank{};             // file tier, format, document index: later wins
   std::string exposure_node;
   std::string source_file;
@@ -671,6 +801,18 @@ struct Value {
     return std::nullopt;  // "Base path must start with '/' or be empty": the app refuses to start
   }
   return value;
+}
+
+// Spring's String-to-Boolean conversion: true/on/yes/1 and false/off/no/0.
+[[nodiscard]] std::optional<bool> boolean_of(std::string_view value) {
+  const auto spelled = relaxed_key(value);
+  if (spelled == "true" || spelled == "on" || spelled == "yes" || spelled == "1") {
+    return true;
+  }
+  if (spelled == "false" || spelled == "off" || spelled == "no" || spelled == "0") {
+    return false;
+  }
+  return std::nullopt;
 }
 
 struct Route {
@@ -726,16 +868,54 @@ struct Route {
   }
   const auto max_permitted = access_key("management.endpoints.access.maxpermitted").value_or(Access::Unrestricted);
 
-  // Where the endpoints sit: the main server's context path, or the management
-  // server's own base path on another port.
-  const auto management_port = get("management.server.port");
-  if (management_port == "-1") {
+  // `spring.main.web-application-type` overrides the stack the classpath picks
+  // (servlet when both starters are there); `none` runs no web server, and a
+  // stack whose starter is missing does not start.
+  bool reactive = !app.servlet;
+  if (const auto type = get("spring.main.webapplicationtype")) {
+    const auto spelled = relaxed_key(*type);
+    if (spelled == "none" || (spelled == "servlet" && !app.servlet) || (spelled == "reactive" && !app.webflux)) {
+      return std::vector<Route>{};
+    }
+    if (spelled != "servlet" && spelled != "reactive") {
+      return std::nullopt;
+    }
+    reactive = spelled == "reactive";
+  }
+
+  // Where the endpoints sit, as ManagementPortType.get (Boot 4.1.1) decides: a
+  // negative management port disables them; it is the main server when unset,
+  // when it is 8080 and the server port is unset, or when it is not 0 and equals
+  // the server port; otherwise it is a separate server under its own base path.
+  // A port that is not an integer fails startup.
+  const auto port_of = [&](const std::string& key) -> std::optional<long long> {
+    const auto value = get(key);
+    if (!value) {
+      return std::nullopt;
+    }
+    long long port = 0;
+    const auto* end = value->data() + value->size();
+    const auto [last, error] = std::from_chars(value->data(), end, port);
+    if (error != std::errc{} || last != end) {
+      unknown = true;
+      return std::nullopt;
+    }
+    return port;
+  };
+  const auto management_port = port_of("management.server.port");
+  const auto server_port = port_of("server.port");
+  if (unknown) {
+    return std::nullopt;
+  }
+  if (management_port && *management_port < 0) {
     return std::vector<Route>{};
   }
+  const bool same_server = !management_port || (!server_port && *management_port == 8080) ||
+                           (*management_port != 0 && management_port == server_port);
   std::string prefix;
-  if (management_port && *management_port != get("server.port").value_or("8080")) {
+  if (!same_server) {
     prefix = get("management.server.basepath").value_or("");
-  } else if (app.reactive) {
+  } else if (reactive) {
     prefix = get("spring.webflux.basepath").value_or("");
   } else {
     const auto servlet_path = get("spring.mvc.servlet.path").value_or("/");
@@ -761,7 +941,7 @@ struct Route {
   bool any = false;
   for (const auto& endpoint : kEndpoints) {
     const std::string id(endpoint.id);
-    if (endpoint.needs_prometheus && !app.prometheus) {
+    if ((endpoint.needs == Needs::Prometheus && !app.prometheus) || (endpoint.needs == Needs::Cache && !app.cache)) {
       continue;
     }
     if (!(include.contains("*") || include.contains(id)) || exclude.contains("*") || exclude.contains(id)) {
@@ -786,8 +966,16 @@ struct Route {
       routes.push_back(Route{std::string(operation.method), join_route_path(path, operation.path), handler});
     }
     if (id == "health") {
+      // The liveness and readiness groups: Boot 4 enables them unless
+      // `probes.enabled` is false (AvailabilityProbesAutoConfiguration,
+      // matchIfMissing = true); Boot 3 only when it is true (or on Kubernetes,
+      // which config cannot tell). An unknown Boot version counts as off.
       std::set<std::string> named(groups);
-      if (relaxed_key(get("management.endpoint.health.probes.enabled").value_or("")) == "true") {
+      const auto probes = get("management.endpoint.health.probes.enabled");
+      const auto enabled = probes ? boolean_of(*probes) : std::optional<bool>(app.boot_major >= 4);
+      if (!enabled) {
+        unknown = true;
+      } else if (*enabled) {
         named.insert("liveness");
         named.insert("readiness");
       }
@@ -867,9 +1055,12 @@ void append_spring_actuator_facts(const ExtractionContext& context, ExtractionRe
       .target_label = {},
       .relation = std::string(kAppRelation),
       .context = nlohmann::json{{"module", directory_of(context.relative_path)},
-                                {"reactive", !facts.servlet},
-                                {"prometheus", facts.prometheus}}
-                     .dump(),
+                                {"servlet", facts.servlet},
+                                {"webflux", facts.reactive},
+                                {"prometheus", facts.prometheus},
+                                {"cache", facts.cache},
+                                {"boot_major", facts.boot_major}}
+                     .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),  // a path may not be UTF-8
       .source_file = context.source_file,
   });
 }
@@ -904,7 +1095,7 @@ ExtractionResult extract_spring_application_config(const ExtractionContext& cont
     nlohmann::json props = nlohmann::json::object();
     std::vector<std::string> groups;
     const ConfigEntry* include = nullptr;
-    for (const auto& entry : documents[index]) {
+    for (const auto& entry : documents[index].entries) {
       const auto key = relaxed_key(entry.key);
       if (!relevant_key(key)) {
         continue;
@@ -927,7 +1118,8 @@ ExtractionResult extract_spring_application_config(const ExtractionContext& cont
         }
       }
     }
-    if (props.empty()) {
+    const bool unreadable = documents[index].unreadable;
+    if (props.empty() && !unreadable) {
       continue;
     }
     std::string exposure_node;
@@ -953,8 +1145,9 @@ ExtractionResult extract_spring_application_config(const ExtractionContext& cont
                                   {"rank", {profile.empty() ? 0 : 1, properties ? 1 : 0, index}},
                                   {"exposure_node", exposure_node},
                                   {"groups", groups},
+                                  {"unreadable", unreadable},
                                   {"props", props}}
-                       .dump(),
+                       .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),  // config bytes may not be UTF-8
         .source_file = context.source_file,
     });
   }
@@ -976,12 +1169,16 @@ std::vector<RawRelation> spring_actuator_routes(std::span<const RawRelation> raw
     if (relation.relation == kAppRelation) {
       apps[module].push_back(App{.node_id = relation.source_id,
                                  .source_file = relation.source_file,
-                                 .reactive = fact.value("reactive", false),
-                                 .prometheus = fact.value("prometheus", false)});
+                                 .servlet = fact.value("servlet", false),
+                                 .webflux = fact.value("webflux", false),
+                                 .prometheus = fact.value("prometheus", false),
+                                 .cache = fact.value("cache", false),
+                                 .boot_major = fact.value("boot_major", 0)});
       continue;
     }
     Document document{
         .profile = fact.value("profile", std::string{}),
+        .unreadable = fact.value("unreadable", false),
         .exposure_node = fact.value("exposure_node", std::string{}),
         .source_file = relation.source_file,
         .props = fact.value("props", nlohmann::json::object()),
@@ -1032,6 +1229,14 @@ std::vector<RawRelation> spring_actuator_routes(std::span<const RawRelation> raw
     for (const auto& configuration : configurations) {
       std::map<std::string, Value> values;
       std::set<std::string> groups;
+      // A document the reader could not open may apply to this configuration
+      // (its own `on-profile` may be what it could not read): serve nothing.
+      const bool unreadable = std::ranges::any_of(docs, [&](const Document& document) {
+        return document.unreadable && (document.profile.empty() || document.profile == configuration);
+      });
+      if (unreadable) {
+        continue;
+      }
       for (const auto& document : docs) {
         const bool applies =
             !document.unmatchable && (document.profile.empty() || document.profile == configuration) &&

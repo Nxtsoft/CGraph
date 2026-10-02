@@ -25,8 +25,12 @@
 //   build file    (`build.gradle.kts`, `build.gradle`, `pom.xml`) beside its own
 //                 grammar's extraction: one `spring_actuator` node at the
 //                 actuator dependency, `contains`-ed by the file, and an
-//                 `actuator_app` fact (context: JSON module dir, web stack,
-//                 whether the Prometheus registry is a dependency).
+//                 `actuator_app` fact (context: JSON module dir, web
+//                 starters, whether the Prometheus registry and the cache
+//                 module are dependencies, the Boot major version the plugin or
+//                 parent declares). Maven `<profiles>`, `<pluginManagement>`
+//                 alone, a `<packaging>pom</packaging>` aggregator and Gradle
+//                 `apply false` do not make an application.
 //   config file   its `file` node, one `actuator_exposure` node per document
 //                 that sets `management.endpoints.web.exposure.include`, and an
 //                 `actuator_config` fact per document holding the keys that
@@ -46,17 +50,26 @@
 //     `management.endpoints.access.max-permitted`; the pre-3.4 `enabled` /
 //     `enabled-by-default` booleans read as unrestricted / none. `shutdown` and
 //     `heapdump` default to none. Read-only keeps only the GET operations.
+//   * Availability: `prometheus` needs `micrometer-registry-prometheus` (not
+//     `-simpleclient`), `caches` the spring-boot-cache module (Boot 4.1
+//     auto-configures it there); `spring.main.web-application-type: none` runs
+//     no web server.
 //   * Paths: `management.endpoints.web.base-path` (default `/actuator`, `/`
-//     meaning the root) plus `path-mapping.<id>`. On the main port the base path
-//     sits under `server.servlet.context-path` (servlet) or
-//     `spring.webflux.base-path` (reactive); with `management.server.port` set to
-//     another port it sits under `management.server.base-path`; `-1` serves
-//     nothing. The discovery page answers `GET <base-path>` unless the base path
-//     is the root or `management.endpoints.web.discovery.enabled` is false.
+//     meaning the root) plus `path-mapping.<id>`. Where they sit follows
+//     ManagementPortType.get (Boot 4.1.1): a negative `management.server.port`
+//     serves nothing; the main server when it is unset, is 8080 with no
+//     `server.port`, or is not 0 and equals `server.port`, under
+//     `server.servlet.context-path` (servlet) or `spring.webflux.base-path`
+//     (reactive); otherwise a separate server under `management.server.base-path`.
+//     A non-integer port fails startup. The discovery page answers
+//     `GET <base-path>` unless the base path is the root or
+//     `management.endpoints.web.discovery.enabled` is false.
 //   * Health also answers `GET <health>/{*path}`, and each configured group
-//     (`management.endpoint.health.group.<name>`, plus `liveness` and
-//     `readiness` when `management.endpoint.health.probes.enabled` is true) at
-//     `GET <health>/<name>`.
+//     (`management.endpoint.health.group.<name>`) at `GET <health>/<name>`, plus
+//     `liveness` and `readiness` when the probes are on: by default on Boot 4
+//     (AvailabilityProbesAutoConfiguration, `matchIfMissing = true`) unless
+//     `management.endpoint.health.probes.enabled` is false; on Boot 3 only when
+//     it is true; off when the build names no Boot version.
 //   * Profiles: the base documents (no profile) are one configuration; each
 //     profile named by a file (`application-prod.yml`) or a document
 //     (`spring.config.activate.on-profile`) is the base overlaid by that
@@ -67,7 +80,7 @@
 //
 // Conservatively NOT modeled (no endpoint rather than a wrong one): endpoints
 // whose availability needs a bean or dependency other than the Prometheus
-// registry (flyway, liquibase, quartz, sessions, integrationgraph,
+// registry and the cache module (flyway, liquibase, quartz, sessions, integrationgraph,
 // httpexchanges, auditevents, startup, logfile, sbom, custom `@Endpoint`s);
 // Jersey-only applications; `spring.mvc.servlet.path` other than `/` (a
 // configuration setting it serves nothing); a value whose `${...}` placeholder
@@ -76,8 +89,11 @@
 // `subprojects`/`allprojects` blocks; profile expressions (`prod & !cloud`) and
 // combinations of several active profiles; `spring.profiles.active`/groups;
 // config outside `src/main/resources` (`config/`, environment variables, command
-// line); health component paths and additional paths (`/livez`); ports, which
-// the graph's endpoint ids do not carry.
+// line); a YAML document whose anchor, tag, merge key or flow mapping may hold a
+// deciding key (the configurations it may apply to serve nothing); flow
+// sequences nested deeper than 8; health component paths and additional paths
+// (`/livez`); Boot 3 probes enabled by Kubernetes detection; Boot 3's unrestricted
+// `heapdump` default; ports, which the graph's endpoint ids do not carry.
 namespace cgraph {
 
 // `application.yml`, `application-<profile>.properties`, ... directly under a

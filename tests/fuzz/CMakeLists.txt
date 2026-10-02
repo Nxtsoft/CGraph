@@ -77,6 +77,7 @@ cgraph_add_extractor_fuzzer(cgraph_fuzz_msbuild MsBuild fuzz.csproj)
 cgraph_add_extractor_fuzzer(cgraph_fuzz_python Python fuzz.py)
 cgraph_add_extractor_fuzzer(cgraph_fuzz_ruby Ruby fuzz.rb)
 cgraph_add_extractor_fuzzer(cgraph_fuzz_scala Scala fuzz.scala)
+cgraph_add_extractor_fuzzer(cgraph_fuzz_spring_config SpringConfig application.yml)
 cgraph_add_extractor_fuzzer(cgraph_fuzz_typescript TypeScript fuzz.ts)
 cgraph_add_extractor_fuzzer(cgraph_fuzz_tsx Tsx fuzz.tsx)
 
