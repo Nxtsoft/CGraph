@@ -1346,6 +1346,8 @@ int test_generic_contract_facts() {
   auto built = build({
       {"/proj/c/api/migrate.ts", "export function createUsers() { return 1; }\n"},
       {"/proj/c/api/server.ts", "export function readTenant(req: any) { return req; }\n"},
+      // Something reaches readTenant: a header read in code nothing reaches provides nothing.
+      {"/proj/c/api/router.ts", "import { readTenant } from './server';\nexport const route = (req: any) => readTenant(req);\n"},
       {"/proj/c/web/client.ts",
        "export function listUsers() { return 1; }\nexport function sendTenant() { return 2; }\n"},
   });
@@ -1460,6 +1462,39 @@ int test_generic_contract_facts() {
 
 // The standard header table is sorted and unique (binary search depends on
 // it), lowercased, and holds the IANA permanent names and the de-facto ones.
+// A header read provides only where something reaches the reading function
+// (a CALLS, imports or references edge, or a route's handled_by), unless the
+// framework binds the read itself (kBoundHeaderRead).
+int test_unreached_header_reads() {
+  auto built = build({
+      {"/proj/h/api/admin-auth.ts", "export function applyActAsOverride(request: Request) { return request.headers.get('x-act-as-org'); }\n"},
+      {"/proj/h/api/routes.ts", "import { applyActAsOverride } from './admin-auth';\nexport const handle = (r: Request) => applyActAsOverride(r);\n"},
+      {"/proj/h/web/proxy.ts", "export function getUserContextFromHeaders(request: Request) { return request.headers.get('x-tenant-id'); }\n"},
+      {"/proj/h/api/Token.kt", "class Token { fun token(@RequestHeader(\"X-Bound-Tag\") tag: String): String = tag }\n"},
+  });
+  auto& graph = built.graph;
+  const auto apply = cgraph::make_id("/proj/h/api/admin-auth.ts:applyActAsOverride");
+  const auto orphan = cgraph::make_id("/proj/h/web/proxy.ts:getUserContextFromHeaders");
+  if (node_of(graph, apply) == nullptr || node_of(graph, orphan) == nullptr) {
+    return fail("unreached-read fixture functions missing");
+  }
+  if (!has_edge(graph, "header:x-act-as-org", apply, "handled_by")) {
+    return fail("a header read in an imported function provides the header");
+  }
+  if (node_of(graph, "header:x-tenant-id") != nullptr || has_edge(graph, "header:x-tenant-id", orphan, "handled_by")) {
+    return fail("a header read in a function nothing calls, imports or routes to provided the header");
+  }
+  const auto* bound = node_of(graph, "header:x-bound-tag");
+  if (bound == nullptr || bound->properties.contains("served")) {
+    return fail("a framework-bound read (@RequestHeader) in a function nothing calls still provides the header");
+  }
+  if (built.stats.contract_reads_unreached != 1) {
+    return fail("contract_reads_unreached counts the one unreached read: " +
+                std::to_string(built.stats.contract_reads_unreached));
+  }
+  return 0;
+}
+
 int test_standard_http_headers() {
   const auto table = cgraph::standard_http_headers();
   for (std::size_t i = 1; i < table.size(); ++i) {
@@ -1514,6 +1549,7 @@ int main() {
   failures += test_first_parameter_wrapper_options();
   failures += test_langgraph_sdk_clients();
   failures += test_generic_contract_facts();
+  failures += test_unreached_header_reads();
   failures += test_standard_http_headers();
   return failures == 0 ? 0 : 1;
 }

@@ -16,14 +16,16 @@
 
 namespace {
 
-// "<provides|uses>|<source id>|<context>" for every header fact.
+// "<provides|uses>|<source id>|<context>[|bound]" for every header fact; `bound`
+// marks a read the framework binds to a request (contracts.hpp kBoundHeaderRead).
 std::set<std::string> header_facts(const cgraph::ExtractionResult& result) {
   std::set<std::string> facts;
   for (const auto& relation : result.raw_relations) {
     if ((relation.relation == "provides_contract" || relation.relation == "uses_contract") &&
         relation.context.starts_with("header:")) {
       facts.insert(std::string(relation.relation == "provides_contract" ? "provides" : "uses") + "|" +
-                   relation.source_id + "|" + relation.context);
+                   relation.source_id + "|" + relation.context +
+                   (relation.target_label == cgraph::kBoundHeaderRead ? "|bound" : ""));
     }
   }
   return facts;
@@ -142,8 +144,8 @@ def send():
 )py"});
     ok &= expect("python", header_facts(result),
                  {
-                     "provides|" + id(file, "get_session") + "|header:X-Webapp-Env",
-                     "provides|" + id(file, "by_name") + "|header:x-trace-tag",
+                     "provides|" + id(file, "get_session") + "|header:X-Webapp-Env|bound",
+                     "provides|" + id(file, "by_name") + "|header:x-trace-tag|bound",
                      "provides|" + id(file, "by_name") + "|header:x-request-tag",
                      "uses|" + id(file, "send") + "|header:X-Dd-Thing",
                      "uses|" + id(file, "send") + "|header:X-Api-Key",
@@ -189,10 +191,10 @@ class TokenController {
 )kt"});
     ok &= expect("kotlin", result ? header_facts(*result) : std::set<std::string>{},
                  {
-                     "provides|" + id(file, "token") + "|header:X-Tenant-ID",
-                     "provides|" + id(file, "token") + "|header:X-Passless-Pairing",
+                     "provides|" + id(file, "token") + "|header:X-Tenant-ID|bound",
+                     "provides|" + id(file, "token") + "|header:X-Passless-Pairing|bound",
                      "provides|" + id(file, "token") + "|header:X-Client-Tag",
-                     "provides|" + id(file, "broker") + "|header:X-Passless-Pairing",
+                     "provides|" + id(file, "broker") + "|header:X-Passless-Pairing|bound",
                      "uses|" + id(file, "send") + "|header:X-Tenant-ID",
                      "uses|" + id(file, "send") + "|header:X-Device-Id",
                      "uses|" + id(file, "send") + "|header:X-Trace-Tag",
@@ -240,9 +242,173 @@ func ginHandle(c *gin.Context) {
                      "uses|" + id(file, "send") + "|header:X-Trace-Tag",
                      "uses|" + id(file, "send") + "|header:X-Device-Id",
                      "uses|" + id(file, "send") + "|header:X-Extra-Key",
-                     "provides|" + id(file, "handle") + "|header:X-Tenant-ID",
-                     "provides|" + id(file, "ginHandle") + "|header:X-Gin-Tag",
+                     "provides|" + id(file, "handle") + "|header:X-Tenant-ID|bound",
+                     "provides|" + id(file, "ginHandle") + "|header:X-Gin-Tag|bound",
                  });
+  }
+
+  // TypeScript, every other branch: Express `req.get`, Hono `c.req.header`,
+  // `.has`, next/headers `headers()`, `new Headers({...})`, `headers.set` /
+  // `.append`, `opts.headers = {...}`, an arrow returning headers. Not facts: a
+  // response named `agentRes`, Elysia's `set.headers` (the response), a module
+  // constant shadowed by a parameter or a local, a `tableHeaders` of column
+  // titles, `headerStyles`.
+  {
+    const std::string file = "src/branches.ts";
+    const auto result = cgraph::extract_typescript({.source_file = file, .relative_path = file, .source = R"ts(
+const TAG = 'x-module-tag';
+export function viaReq(req: Request) { return req.get('x-express-tag'); }
+export function viaHono(c: Ctx) { return c.req.header('x-hono-tag'); }
+export function viaHas(request: Request) { return request.headers.has(TAG); }
+export async function nextRead() { return (await headers()).get('x-next-tag'); }
+export function sendSet() {
+  const h = new Headers({ 'X-Ctor-Tag': 'a' });
+  h.set('X-Not-Headers-Holder', 'b');
+  const headers = new Headers();
+  headers.set('X-Set-Tag', v);
+  headers.append('X-Append-Tag', w);
+  return fetch(u, { headers });
+}
+export function assign(opts: any) { opts.headers = { 'X-Assigned-Tag': 'v' }; }
+export const arrowHeaders = () => ({ 'X-Arrow-Tag': 'v' });
+export async function agentProxy() { const agentRes = await fetch(u); return agentRes.headers.get('x-agent-tag'); }
+export const elysia = ({ set }: any) => { set.headers['x-elysia-tag'] = 'v'; };
+export function shadowParam(TAG: string) { return request.headers.get(TAG); }
+export function shadowLocal() { const TAG = other(); return request.headers.get(TAG); }
+export function noise() {
+  const tableHeaders = { 'Created At': 1, name: 2 };
+  const headerStyles = { 'font-size': 1 };
+  return [tableHeaders, headerStyles];
+}
+)ts"});
+    ok &= expect("typescript branches", header_facts(result),
+                 {
+                     "provides|" + id(file, "viaReq") + "|header:x-express-tag",
+                     "provides|" + id(file, "viaHono") + "|header:x-hono-tag",
+                     "provides|" + id(file, "viaHas") + "|header:x-module-tag",
+                     "provides|" + id(file, "nextRead") + "|header:x-next-tag",
+                     "uses|" + id(file, "sendSet") + "|header:X-Ctor-Tag",
+                     "uses|" + id(file, "sendSet") + "|header:X-Set-Tag",
+                     "uses|" + id(file, "sendSet") + "|header:X-Append-Tag",
+                     "uses|" + id(file, "assign") + "|header:X-Assigned-Tag",
+                     "uses|" + id(file, "arrowHeaders") + "|header:X-Arrow-Tag",
+                 });
+  }
+
+  // Python, every other branch: a `X.headers["x"]` read, a dict returned by a
+  // `*_headers` function. Not facts: a response named `agent_res`, a module
+  // constant a local assignment shadows.
+  {
+    const std::string file = "ops/branches.py";
+    const auto result = cgraph::extract_python({.source_file = file, .relative_path = file, .source = R"py(
+TAG = "X-Module-Tag"
+
+def read_sub(request):
+    return request.headers["x-sub-tag"]
+
+def shadowed(request):
+    TAG = compute()
+    return request.headers.get(TAG)
+
+def auth_headers():
+    return {"X-Returned-Tag": "v"}
+
+def agent(agent_res):
+    return agent_res.headers.get("x-agent-tag")
+)py"});
+    ok &= expect("python branches", header_facts(result),
+                 {
+                     "provides|" + id(file, "read_sub") + "|header:x-sub-tag",
+                     "uses|" + id(file, "auth_headers") + "|header:X-Returned-Tag",
+                 });
+  }
+
+  // Kotlin, every other branch: `@RequestHeader(value = ...)`, OkHttp
+  // `.setHeader`, a WebClient `.uri(responseUrl).header(...)` (an argument
+  // naming a response does not make the chain a response).
+  {
+    const std::string file = "idp/Client.kt";
+    const auto result = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Kotlin, {.source_file = file, .relative_path = file, .source = R"kt(
+class Client {
+    fun read(@RequestHeader(value = "X-Value-Tag") tag: String) = tag
+
+    fun build() {
+        val req = Request.Builder().setHeader("X-Set-Header-Tag", v).build()
+        webClient.post().uri(responseUrl).header("X-Uri-Tag", v).retrieve()
+    }
+}
+)kt"});
+    ok &= expect("kotlin branches", result ? header_facts(*result) : std::set<std::string>{},
+                 {
+                     "provides|" + id(file, "read") + "|header:X-Value-Tag|bound",
+                     "uses|" + id(file, "build") + "|header:X-Set-Header-Tag",
+                     "uses|" + id(file, "build") + "|header:X-Uri-Tag",
+                 });
+  }
+
+  // Go, every other branch: `.Header.Add`, a `Header:` keyed element, a map
+  // held in a `*headers` variable, a `var` constant, `.Header.Values` outside
+  // a net/http handler (not bound: something must call it).
+  {
+    const std::string file = "internal/api/branches.go";
+    const auto result = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Go, {.source_file = file, .relative_path = file, .source = R"go(
+package api
+
+var tagHeaderName = "X-Var-Tag"
+
+func (c *Client) send2(req *http.Request) {
+	req.Header.Add("X-Add-Tag", "v")
+	r := &Request{Header: map[string]string{"X-Keyed-Tag": "v"}}
+	extraHeaders := map[string]string{"X-Held-Tag": "v"}
+	_, _ = r, extraHeaders
+}
+
+func values(r *http.Request) []string {
+	return r.Header.Values(tagHeaderName)
+}
+)go"});
+    ok &= expect("go branches", result ? header_facts(*result) : std::set<std::string>{},
+                 {
+                     "uses|" + id(file, "send2") + "|header:X-Add-Tag",
+                     "uses|" + id(file, "send2") + "|header:X-Keyed-Tag",
+                     "uses|" + id(file, "send2") + "|header:X-Held-Tag",
+                     "provides|" + id(file, "values") + "|header:X-Var-Tag",
+                 });
+  }
+
+  // Test sources record nothing; a class that only ends in `test` letters is
+  // not one.
+  {
+    const std::string kotlin = R"kt(
+class C { fun token(@RequestHeader("X-Tenant-ID") t: String) = t }
+)kt";
+    const auto latest = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Kotlin,
+        {.source_file = "idp/LatestController.kt", .relative_path = "idp/LatestController.kt", .source = kotlin});
+    ok &= expect("Latest.kt is not a test", latest ? header_facts(*latest) : std::set<std::string>{},
+                 {"provides|" + id("idp/LatestController.kt", "token") + "|header:X-Tenant-ID|bound"});
+    for (const std::string path : {"idp/TokenControllerTests.kt", "idp/TokenControllerTest.kt"}) {
+      const auto result = cgraph::extract_configured_language(
+          cgraph::DetectedLanguage::Kotlin, {.source_file = path, .relative_path = path, .source = kotlin});
+      ok &= expect(path, result ? header_facts(*result) : std::set<std::string>{}, {});
+    }
+    const std::string ts = "export function f(request: Request) { return request.headers.get('x-act-as-org'); }\n";
+    for (const std::string path : {"src/__mocks__/api.ts", "src/mocks/handlers.ts", "scripts/mock-server.ts"}) {
+      ok &= expect(path, header_facts(cgraph::extract_typescript({.source_file = path, .relative_path = path, .source = ts})),
+                   {});
+    }
+    const std::string py = "def f(request):\n    return request.headers.get('x-act-as-org')\n";
+    ok &= expect("conftest.py",
+                 header_facts(cgraph::extract_python(
+                     {.source_file = "tests_x/conftest.py", .relative_path = "tests_x/conftest.py", .source = py})),
+                 {});
+    const std::string go = "package x\nfunc h(w http.ResponseWriter, r *http.Request) { _ = r.Header.Get(\"X-Tenant-ID\") }\n";
+    const auto testutil = cgraph::extract_configured_language(
+        cgraph::DetectedLanguage::Go,
+        {.source_file = "internal/testutil/server.go", .relative_path = "internal/testutil/server.go", .source = go});
+    ok &= expect("testutil/", testutil ? header_facts(*testutil) : std::set<std::string>{}, {});
   }
 
   // The facts a TypeScript sender and a Kotlin reader spell differently are
