@@ -3,6 +3,7 @@
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <unordered_map>
 #include <utility>
@@ -97,7 +98,11 @@ std::size_t find_node_by_id(const Fragment& fragment, const std::string& id, std
 
 void set_node_id(Fragment& fragment, std::size_t position, std::string id) {
   if (auto* index = id_index_for(fragment)) {
+    // The index lists every node under its current id; an id changed other
+    // than through here would leave it listed under a stale one.
     const auto old = index->positions.find(fragment.nodes[position].id);
+    assert(old != index->positions.end());
+    assert(std::ranges::find(old->second, position) != old->second.end());
     std::erase(old->second, position);
     if (old->second.empty()) {
       index->positions.erase(old);
