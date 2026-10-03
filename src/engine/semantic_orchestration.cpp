@@ -1,5 +1,6 @@
 #include "cgraph/semantic_orchestration.hpp"
 
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/pipeline.hpp"
 #include "cgraph/semantic_cache.hpp"
@@ -178,7 +179,7 @@ EnrichmentPlanResult plan_enrichment(const std::filesystem::path& root, const st
   }
 
   result.manifest_path = drop_dir / kManifestName;
-  std::ofstream(result.manifest_path, std::ios::binary) << manifest.dump(2) << '\n';
+  write_file_atomically(result.manifest_path, manifest.dump(2) + '\n');
   return result;
 }
 

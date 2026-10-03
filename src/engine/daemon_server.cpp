@@ -1,5 +1,6 @@
 #include "cgraph/daemon_server.hpp"
 
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
@@ -208,6 +209,16 @@ constexpr int kEndpointAlreadyServed = -2;
   return listen_fd;
 }
 
+// Logged, never fatal: an unwritten stat index only means the next plan
+// re-hashes the docs it would have reused.
+void persist_stat_index(const SemanticStatIndex& index, const std::filesystem::path& path) {
+  try {
+    write_semantic_stat_index(index, path);
+  } catch (const FileWriteError& error) {
+    std::cerr << "graphd: " << error.what() << '\n';
+  }
+}
+
 }  // namespace
 
 // A static, read-only daemon serving a pre-fused seam graph: load graph.json,
@@ -393,7 +404,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       // Serialize the file write with watcher eviction. Otherwise an older
       // worker could overwrite the just-evicted index after releasing the lock.
       if (plan.files_hashed > 0) {
-        write_semantic_stat_index(stat_index, stat_index_path);
+        persist_stat_index(stat_index, stat_index_path);
       }
     }
     {
@@ -591,7 +602,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       (void)ingest_semantic_fragment(overlay_state, cache, live.source_inputs, live.drop.path);
     }
     ingest_all_memory(overlay_state);
-    write_semantic_cache(cache, cache_path);
+    try {
+      write_semantic_cache(cache, cache_path);
+    } catch (const FileWriteError& error) {
+      // Logged, never fatal: the live overlay is already built; an unwritten
+      // cache only means the next restart re-enriches.
+      std::cerr << "graphd: " << error.what() << '\n';
+    }
     publish_graph_snapshot(state, *read_graph_snapshot(overlay_state));
     {
       // enrichment_mutex so a concurrent status read never tears the counter.
@@ -938,7 +955,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
           stat_index.erase(normalize_semantic_source_path(event.path));
         }
         ++stat_index_revision;
-        write_semantic_stat_index(stat_index, stat_index_path);
+        persist_stat_index(stat_index, stat_index_path);
         rebuild_final_overlay();
         request_refresh();
         last_activity = FileWatcherClock::now();

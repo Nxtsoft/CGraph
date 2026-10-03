@@ -1,5 +1,6 @@
 #include "cgraph/semantic_cache.hpp"
 
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/file_cache.hpp"
 
 #include <nlohmann/json.hpp>
@@ -398,8 +399,7 @@ void write_semantic_cache(const SemanticCache& cache, const std::filesystem::pat
     records.push_back(record_to_json(record));
   }
 
-  std::ofstream output(path, std::ios::binary);
-  output << nlohmann::json{{"version", 2}, {"records", std::move(records)}}.dump(2);
+  write_file_atomically(path, nlohmann::json{{"version", 2}, {"records", std::move(records)}}.dump(2));
 }
 
 SemanticCache read_semantic_cache(const std::filesystem::path& path) {

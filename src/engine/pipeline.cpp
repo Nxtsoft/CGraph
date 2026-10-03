@@ -1,5 +1,7 @@
 #include "cgraph/pipeline.hpp"
 
+#include "cgraph/atomic_write.hpp"
+
 #include "cgraph/path_classification.hpp"
 
 #include "cgraph/file_cache.hpp"
@@ -25,8 +27,7 @@ namespace {
 
 void write_text(const std::filesystem::path& path, std::string_view contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path, std::ios::binary);
-  output << contents;
+  write_file_atomically(path, contents);
 }
 
 }  // namespace

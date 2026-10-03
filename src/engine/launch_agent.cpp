@@ -1,5 +1,7 @@
 #include "cgraph/launch_agent.hpp"
 
+#include "cgraph/atomic_write.hpp"
+
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -135,12 +137,7 @@ std::filesystem::path write_launch_agent(
     return {};
   }
   const auto path = launch_agents_dir / (spec.label + ".plist");
-  std::ofstream output(path);
-  if (!output) {
-    return {};
-  }
-  output << render_launch_agent(spec);
-  return output ? path : std::filesystem::path{};
+  return try_write_file_atomically(path, render_launch_agent(spec)).empty() ? path : std::filesystem::path{};
 }
 
 bool launchctl_bootstrap(const std::filesystem::path& plist_path) {

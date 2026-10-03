@@ -818,6 +818,29 @@ add_test(
     --root "${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/one_shot"
     --out "${CMAKE_CURRENT_BINARY_DIR}/cli-one-shot-out")
 
+add_executable(cgraph_cli_main_test
+  cli_main_test.cpp)
+
+cgraph_set_warnings(cgraph_cli_main_test)
+cgraph_enable_sanitizers(cgraph_cli_main_test)
+
+add_test(NAME cgraph_cli_main_test
+  COMMAND cgraph_cli_main_test
+    $<TARGET_FILE:cgraph>
+    "${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/one_shot")
+
+add_executable(cgraph_atomic_write_test
+  atomic_write_test.cpp)
+
+target_link_libraries(cgraph_atomic_write_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_atomic_write_test)
+cgraph_enable_sanitizers(cgraph_atomic_write_test)
+
+add_test(NAME cgraph_atomic_write_test COMMAND cgraph_atomic_write_test)
+
 add_executable(cgraph_node_link_loader_test
   node_link_loader_test.cpp)
 

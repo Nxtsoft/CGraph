@@ -1,9 +1,11 @@
 #include "cgraph/daemon_lifecycle.hpp"
 
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/export_json.hpp"
 #include "cgraph/fragment_json.hpp"
 
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <unordered_map>
 #include <nlohmann/json.hpp>
@@ -60,32 +62,13 @@ namespace {
   return graph_path.parent_path() / "fingerprints.json";
 }
 
-[[nodiscard]] bool write_atomically(const std::filesystem::path& path, const std::string& contents) {
-  const auto temp_path = path.parent_path() / (path.filename().string() + ".tmp");
-  {
-    std::ofstream output(temp_path);
-    if (!output) {
-      return false;
-    }
-    output << contents;
-  }
-  std::error_code error;
-  std::filesystem::rename(temp_path, path, error);
-  if (error) {
-    std::error_code cleanup;
-    std::filesystem::remove(temp_path, cleanup);
-    return false;
-  }
-  return true;
-}
-
 void persist_fingerprints(const GraphSnapshot& snapshot, const std::filesystem::path& graph_path) {
   nlohmann::json functions = nlohmann::json::object();
   for (const auto& [id, fingerprint] : snapshot.fingerprints) {
     functions[id] = {{"tokens", fingerprint.tokens}, {"shingles", fingerprint.shingles}};
   }
   const nlohmann::json document{{"version", 1}, {"functions", std::move(functions)}};
-  (void)write_atomically(fingerprints_path(graph_path), document.dump());
+  (void)try_write_file_atomically(fingerprints_path(graph_path), document.dump());
 }
 
 [[nodiscard]] std::unordered_map<std::string, FunctionFingerprint> load_fingerprints(const std::filesystem::path& graph_path) {
@@ -126,24 +109,14 @@ bool persist_graph_snapshot(
     return false;
   }
 
-  const auto temp_path = graph_path.parent_path() / (graph_path.filename().string() + ".tmp");
-  {
-    std::ofstream output(temp_path);
-    if (!output) {
-      return false;
-    }
-    output << to_node_link_json(snapshot).dump(2) << '\n';
-  }
-
-  // Atomic replace only. rename() over an existing file is atomic on POSIX, so
-  // graph.json is never observed missing or half-written. On failure we must NOT
-  // delete the existing last-known-good graph.json to "make room" for a retry:
-  // if the retry also failed the daemon would be left with no graph at all. Leave
-  // the prior file untouched, remove the orphan temp, and surface the failure.
-  std::filesystem::rename(temp_path, graph_path, error);
-  if (error) {
-    std::error_code cleanup;
-    std::filesystem::remove(temp_path, cleanup);  // drop the orphan temp; keep the good file
+  // Atomic replace only, so graph.json is never observed missing or
+  // half-written. On failure we must NOT delete the existing last-known-good
+  // graph.json to "make room" for a retry: if the retry also failed the daemon
+  // would be left with no graph at all. The helper leaves the prior file
+  // untouched, removes the orphan temp, and we surface the failure.
+  if (const auto failure = try_write_file_atomically(graph_path, to_node_link_json(snapshot).dump(2) + '\n');
+      !failure.empty()) {
+    std::cerr << "graphd: " << failure << '\n';
     return false;
   }
   persist_fingerprints(snapshot, graph_path);

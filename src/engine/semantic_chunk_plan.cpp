@@ -1,5 +1,6 @@
 #include "cgraph/semantic_chunk_plan.hpp"
 
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/file_cache.hpp"
 #include "cgraph/file_watcher.hpp"
 #include "cgraph/path_ignore.hpp"
@@ -196,8 +197,7 @@ void write_semantic_stat_index(const SemanticStatIndex& index, const std::filesy
         {"sha256", entry.sha256},
     });
   }
-  std::ofstream output(path, std::ios::binary);
-  output << nlohmann::json{{"version", 1}, {"entries", std::move(entries)}}.dump(2);
+  write_file_atomically(path, nlohmann::json{{"version", 1}, {"entries", std::move(entries)}}.dump(2));
 }
 
 SemanticStatIndex read_semantic_stat_index(const std::filesystem::path& path) {
