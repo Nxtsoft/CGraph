@@ -32,8 +32,8 @@
 // each repo, and where a traversal reaches a contract it is forwarded once, with
 // the remaining depth, to the other repos -- one hop per contract, never a join
 // over copied graphs. Every id is_bridged_contract accepts (contracts.hpp:
-// endpoints, headers, claims, env names, tables and graph labels in a named
-// database) crosses this way.
+// endpoints, headers, claims, env names, DynamoDB tables, tables and graph
+// labels in a named database) crosses this way.
 //
 // A repo whose daemon cannot be reached is reported in `unreachable`, never
 // silently dropped: a partial answer that looks total is worse than a loud gap.
@@ -58,7 +58,13 @@
 // `impact` and `path` then cross from api's `table:local:users` to ml's
 // `table:local:users` at `table:turing:users`, and never to a repo outside the
 // database. A reached `env:ML_BACKEND_URL` is reported in `bridged` with
-// `provided_by: "ml"`.
+// `provided_by: "ml"`. Repos whose JWTs one issuer mints are declared the same
+// way:
+//
+//   "issuers": [ { "name": "idp", "repos": ["idp", "web"] } ]
+//
+// and their `claim:email` crosses between them at `claim:idp:email`, never to a
+// repo outside the issuer (contract_declarations.hpp).
 namespace cgraph {
 
 inline constexpr std::string_view kWorkspaceFile = "cgraph.workspace.json";
@@ -75,6 +81,7 @@ struct Workspace {
   std::vector<EndpointPrefix> prefixes;  // proxy prefixes between members, manifest order
   std::vector<ContractDatabase> databases;  // members sharing a database, manifest order
   std::vector<EnvProvider> env;             // env variables and the member each addresses
+  std::vector<ClaimIssuer> issuers;         // members sharing a JWT issuer, manifest order
   std::vector<std::string> errors;  // non-empty when the manifest is unusable
 
   [[nodiscard]] bool ok() const { return errors.empty(); }

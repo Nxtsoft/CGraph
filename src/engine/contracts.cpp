@@ -45,7 +45,7 @@ constexpr std::string_view kConsumes = "CONSUMES";
 constexpr std::string_view kRoutePrefix = "route_prefix";
 constexpr std::string_view kProvidesContractRelation = "provides_contract";
 constexpr std::string_view kUsesContractRelation = "uses_contract";
-constexpr std::array<std::string_view, 5> kContractKinds = {"table", "label", "header", "claim", "env"};
+constexpr std::array<std::string_view, 6> kContractKinds = {"table", "label", "header", "claim", "env", "dynamo"};
 // HTTP headers every service sends or reads for its own reasons
 // (`authorization`, `content-type`): two repos naming one are not evidence that
 // they talk to each other, so a standard header never bridges repositories.
@@ -162,6 +162,9 @@ constexpr std::array<std::string_view, 45> kStandardJwtClaims = {
     "sub", "sub_jwk", "updated_at", "website", "zoneinfo",
 };
 
+// The RFC 7519 section 4.1 registered claim names, sorted for binary search.
+constexpr std::array<std::string_view, 7> kRegisteredJwtClaims = {"aud", "exp", "iat", "iss", "jti", "nbf", "sub"};
+
 // `table` and `label` live in a database; the other kinds are global names.
 [[nodiscard]] bool database_scoped(std::string_view kind) { return kind == "table" || kind == "label"; }
 
@@ -212,6 +215,8 @@ bool is_database_local_contract(std::string_view id) {
 std::span<const std::string_view> standard_jwt_claims() { return kStandardJwtClaims; }
 
 bool is_standard_jwt_claim(std::string_view name) { return std::ranges::binary_search(kStandardJwtClaims, name); }
+
+bool is_registered_jwt_claim(std::string_view name) { return std::ranges::binary_search(kRegisteredJwtClaims, name); }
 
 bool is_bridged_contract(std::string_view id) {
   const auto kind = contract_kind_of(id);
@@ -904,8 +909,8 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
     }
   }
 
-  // 8. Contracts other than endpoints: tables, graph labels, headers, claims
-  //    and env names. Providers first, so a contract's label is a provider's
+  // 8. Contracts other than endpoints: tables, graph labels, headers, claims,
+  //    env names and DynamoDB tables. Providers first, so a contract's label is a provider's
   //    spelling; a contract only used here is minted with the user's spelling
   //    and `served: false`. The nodes carry no make_id'd id: the same contract
   //    in another repo's graph is the same id (a database-local table only
@@ -922,6 +927,9 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       },
       name_in_scope);
   std::unordered_set<std::string> contract_nodes;  // ids minted this resolve
+  // A DynamoDB table named by an env variable's default (`process.env.X ||
+  // 'name'`): the variables, in order of first appearance, become its `env`.
+  std::unordered_map<std::string, std::vector<std::string>> dynamo_env;
   // Code something reaches: the target of a CALLS, imports or references edge,
   // or a route's handler (`handled_by` from an endpoint, minted above). A header
   // read in a function nothing reaches serves no request (a helper no caller
@@ -986,6 +994,15 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
         ++tally.contract_reads_unreached;
         continue;
       }
+      if (kind == "dynamo" && !relation.target_label.empty()) {
+        auto& names = dynamo_env[*id];
+        for (const auto part : std::views::split(relation.target_label, ',')) {
+          std::string env(part.begin(), part.end());
+          if (!env.empty() && std::ranges::find(names, env) == names.end()) {
+            names.push_back(std::move(env));
+          }
+        }
+      }
       if (!by_id.contains(*id) && contract_nodes.insert(*id).second) {
         Node contract{
             .id = *id,
@@ -1016,6 +1033,16 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
       } else if (add_edge(relation.source_id, *id, kConsumes, "", {})) {
         ++tally.contract_consumes;
       }
+    }
+  }
+
+  for (auto& node : new_nodes) {
+    if (const auto env = dynamo_env.find(node.id); env != dynamo_env.end()) {
+      std::string joined;
+      for (const auto& name : env->second) {
+        joined += (joined.empty() ? "" : ",") + name;
+      }
+      node.properties.insert_or_assign("env", std::move(joined));
     }
   }
 

@@ -93,7 +93,7 @@ int main() {
                                        .kind = "schema",
                                        .properties = {{"community", "3"}}});
   }
-  // Tables, graph labels, headers, claims and env names are contracts named
+  // Tables, graph labels, headers, claims, env names and DynamoDB tables are contracts named
   // exactly: one migration providing `formulation_values` beside
   // `formulation_value` anchors both at the same lines.
   for (const auto& [kind, names] : std::vector<std::pair<std::string, std::vector<std::string>>>{
@@ -101,7 +101,8 @@ int main() {
            {"label", {"HAS_ORGANIZATION_ROLE", "HAS_ORGANIZATION_ROLES", "HAD_ORGANIZATION_ROLE"}},
            {"header", {"x-organization-tenant-id", "x-organization-tenant-ids", "x-organisation-tenant-id"}},
            {"claim", {"organization_roles", "organization_role", "organisation_roles"}},
-           {"env", {"ML_BACKEND_BASE_URL", "ML_BACKEND_BASE_URLS", "ML_BACKENDS_BASE_URL"}}}) {
+           {"env", {"ML_BACKEND_BASE_URL", "ML_BACKEND_BASE_URLS", "ML_BACKENDS_BASE_URL"}},
+           {"dynamo", {"turing-agents-dev", "turing-agents-dew", "turing-agent-dev"}}}) {
     for (const auto& name : names) {
       guard.nodes.push_back(cgraph::Node{.id = kind + ":" + name,
                                          .label = name,
@@ -269,8 +270,8 @@ int main() {
   for (const auto& node : guard.nodes) {
     contract_nodes += node.id.find(':') != std::string::npos && node.kind != "endpoint" && node.kind != "schema" ? 1 : 0;
   }
-  if (contract_nodes != 15) {
-    std::cerr << "near-identical contract names were merged: " << contract_nodes << " of 15 survive\n";
+  if (contract_nodes != 18) {
+    std::cerr << "near-identical contract names were merged: " << contract_nodes << " of 18 survive\n";
     return 1;
   }
   std::size_t schema_nodes = 0;

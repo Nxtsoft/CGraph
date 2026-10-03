@@ -289,15 +289,22 @@ is not read from the proxy's code: it is built at run time from the handler's pa
 declared, not guessed.
 
 Contracts other than endpoints are recorded by extractors as `provides_contract` /
-`uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`, `env:<NAME>`, and tables and
-graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do not all join alike:
+`uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`, `env:<NAME>`, DynamoDB tables
+as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
+`label:<database>:<name>`. They do not all join alike:
 
 - **Claims and non-standard headers** (`x-tenant-id`) join like endpoints, by id. A standard HTTP
   header (`authorization`, `content-type`, any IANA permanent field name, `x-request-id`,
   `x-forwarded-*`, `traceparent`) never joins: every service uses those for its own reasons. Nor
   does a standard JWT claim, which any issuer writes with the same meaning (`iss`, `sub`, `exp`,
   `email`, `name`, `scope`, `client_id`: the IANA JWT Claims registry's RFC 7519, OpenID Connect,
-  RFC 7800, RFC 8693 and RFC 9449 names); application claims (`roles`, `tenant_id`, `session_id`) do. A claim is recorded only where the code is provably about a JWT: `.claim("roles", r)`
+  RFC 7800, RFC 8693 and RFC 9449 names); application claims (`roles`, `tenant_id`, `session_id`) do.
+  A claim name alone does not say whose token it is in, so the repositories whose tokens one issuer
+  mints can be declared: `--issuer idp=idp,web,cli` spells their `claim:<name>` as
+  `claim:idp:<name>`. Between those repositories every claim then joins except the RFC 7519
+  registered ones (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`), so OpenID Connect claims
+  (`email`, `name`, `scope`) join there too, and their claims never join a repository outside the
+  issuer. With no issuer declared, claims join as above. A claim is recorded only where the code is provably about a JWT: `.claim("roles", r)`
   on a jjwt `Jwts.builder()` or Nimbus `JWTClaimsSet.Builder()` chain, the payload keys of
   `jsonwebtoken` `sign`, jose `SignJWT` and PyJWT `jwt.encode`; the `json:"x"` tags of a Go struct
   that embeds golang-jwt's `RegisteredClaims`, goes to `ParseWithClaims`, or is unmarshalled from a
@@ -325,10 +332,24 @@ graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do n
   in `.cypher` files (`.cql` is not detected: Cassandra uses it too) and in strings opening with
   `MATCH` / `OPTIONAL MATCH` / `MERGE` / `CREATE (` / `UNWIND` uses the labels, and a relationship
   only when its start node's label is known.
+- **DynamoDB tables** (`src/engine/dynamo_contracts.cpp`) join by name with no declaration: a
+  table's name is its whole address in an AWS account, and it is never a `table:`, so it cannot
+  meet a Postgres table of the same name. In TypeScript/JavaScript files that import the DynamoDB
+  SDK, a write (`PutItemCommand`, `UpdateItemCommand`, `DeleteItemCommand`, lib-dynamodb
+  `PutCommand`, DocumentClient `put` / `update` / `delete`, ...) provides `dynamo:<name>` and a read
+  (`GetItemCommand`, `QueryCommand`, `ScanCommand`, `get` / `query` / `scan`) uses it. The name is a
+  literal `TableName`, the default in `process.env.X || 'name'`, or a same-file `const` holding
+  either; the env variables are kept as the node's `env`. One variable read with two defaults names
+  two tables (`turing-agents-dev` and `wiki-agent-memory` stay apart). `this.tableName`, parameters,
+  env reads with no default, batch requests and test files record nothing. Python (boto3) is not
+  read. Caveat: nothing in code says which AWS account or region a service uses, so a `dynamo:`
+  name joins every repository given to the workspace or seam that names it, whatever account each
+  runs in: two services in different accounts that each have a `sessions` table would join. An
+  optional account declaration is a recorded follow-up.
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 
-Both flags go on `seam discover` and `seam fuse`, and must be the same on both: a seam joined
+The `--database`, `--env` and `--issuer` flags go on `seam discover` and `seam fuse`, and must be the same on both: a seam joined
 under a declaration that fuse is not given is refused rather than silently split.
 
 ### Contract documents
@@ -371,10 +392,12 @@ optional `prefixes` (`[{"repo": "web", "from": "/api/backend", "to": "/api"}]`) 
 proxy mapping into `impact` and `path`, which then cross from web's `/api/backend/...` placeholder to the
 backend's `/api/...` endpoint and back; a `path` across it keeps both spellings. A change to web's own
 route never reaches web's proxied callers, which hit the backend's copy. Its optional `databases`
-(`[{"name": "turing", "repos": ["api", "ml"]}]`) and `env` (`[{"name": "ML_BACKEND_URL", "service": "ml"}]`)
-carry the seam declarations. `impact` and `path` cross at claims and non-standard headers as at
-endpoints; never at a standard HTTP header; at an env name only when `env` declares it; and at a
-member's `table:local:` id only towards the other members of its database. A repository
+(`[{"name": "turing", "repos": ["api", "ml"]}]`), `env` (`[{"name": "ML_BACKEND_URL", "service": "ml"}]`)
+and `issuers` (`[{"name": "idp", "repos": ["idp", "web"]}]`) carry the seam declarations. `impact`
+and `path` cross at claims and non-standard headers as at endpoints; never at a standard HTTP
+header; at an env name only when `env` declares it; at a member's `table:local:` id only towards
+the other members of its database; and at an issuer member's claim only towards the other members
+of its issuer. A repository
 whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
 `context` and the memory ops are answered per project and say so, naming the roots to use. The
 MCP server federates too when its root is a workspace, with no new tool.

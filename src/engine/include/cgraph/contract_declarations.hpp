@@ -27,9 +27,25 @@
 // when declared: `{"name": "ML_BACKEND_URL", "service": "ml-backend"}` makes
 // `env:ML_BACKEND_URL` a shared contract provided by the member `ml-backend`;
 // an undeclared env id stays in its repo like a `table:local:` one.
+//
+// A JWT claim name is evidence only for a token both sides share: `session_id`
+// written by one issuer and read by a service trusting another are different
+// claims, and two repos reading `email` prove nothing. With no issuer declared,
+// a claim outside the standard set (contracts.hpp is_standard_jwt_claim)
+// crosses between any repos as `claim:<name>`. A declaration
+// `{"name": "idp", "repos": ["idp", "web"]}` says those repos' tokens come from
+// issuer `idp`, so their `claim:<name>` is spelled `claim:idp:<name>` and meets
+// only the other members': every name joins there except the RFC 7519
+// registered claims (`sub`, `exp`, ...), OpenID Connect ones like `email`
+// included, and a member's claims never join a repo outside the issuer.
 namespace cgraph {
 
 struct ContractDatabase {
+  std::string name;                // no `:`, never `local`
+  std::vector<std::string> repos;  // member repo names, manifest order, no duplicates
+};
+
+struct ClaimIssuer {
   std::string name;                // no `:`, never `local`
   std::vector<std::string> repos;  // member repo names, manifest order, no duplicates
 };
@@ -49,22 +65,32 @@ struct EnvProvider {
 [[nodiscard]] std::vector<EnvProvider> parse_env_providers(const nlohmann::json& entries,
                                                            std::vector<std::string>& errors);
 
-// The CLI spellings `NAME=repoA,repoB` and `NAME=service`; nullopt (with `error`)
-// when malformed, by the same rules as the JSON forms.
+// Reads a JSON array of `{"name", "repos": [...]}` issuer objects, errors as for
+// databases.
+[[nodiscard]] std::vector<ClaimIssuer> parse_claim_issuers(const nlohmann::json& entries,
+                                                           std::vector<std::string>& errors);
+
+// The CLI spellings `NAME=repoA,repoB` (`--database`, `--issuer`) and
+// `NAME=service`; nullopt (with `error`) when malformed, by the same rules as
+// the JSON forms.
 [[nodiscard]] std::optional<ContractDatabase> parse_database_flag(std::string_view flag, std::string& error);
 [[nodiscard]] std::optional<EnvProvider> parse_env_flag(std::string_view flag, std::string& error);
+[[nodiscard]] std::optional<ClaimIssuer> parse_issuer_flag(std::string_view flag, std::string& error);
 
 // One error per problem across the declarations: a repo or service that is not
 // among `members` (a manifest's repos, or the graphs given to a seam command),
-// a database or env name declared twice, and a repo declared in two databases
-// (its `table:local:` ids could not say which one they mean).
+// a database, env or issuer name declared twice, and a repo declared in two
+// databases or two issuers (its `table:local:` ids or claims could not say
+// which one they mean).
 [[nodiscard]] std::vector<std::string> contract_declaration_errors(std::span<const ContractDatabase> databases,
                                                                    std::span<const EnvProvider> env,
+                                                                   std::span<const ClaimIssuer> issuers,
                                                                    std::span<const std::string> members);
 
 // The JSON forms the parsers read.
 [[nodiscard]] nlohmann::json contract_databases_json(std::span<const ContractDatabase> databases);
 [[nodiscard]] nlohmann::json env_providers_json(std::span<const EnvProvider> env);
+[[nodiscard]] nlohmann::json claim_issuers_json(std::span<const ClaimIssuer> issuers);
 
 // `table:local:<name>` / `label:local:<name>` in `repo`'s graph -> the declared
 // database's spelling `table:<database>:<name>`; nullopt when `repo` declares no
@@ -81,22 +107,41 @@ struct EnvProvider {
 [[nodiscard]] const ContractDatabase* declared_database(std::span<const ContractDatabase> databases,
                                                        std::string_view repo);
 
+// The issuer `repo` is declared in, or nullptr.
+[[nodiscard]] const ClaimIssuer* declared_issuer(std::span<const ClaimIssuer> issuers, std::string_view repo);
+
 // The id `repo`'s contract `id` crosses repositories at, or nullopt when it
 // stays in `repo`: a member's `table:local:` / `label:local:` id is its
-// database's spelling, a declared env id is itself, any id is_bridged_contract
-// accepts is itself. The one rule seam discover/fuse, workspace impact/path
-// and change context's cross_service share.
+// database's spelling, an issuer member's `claim:<name>` is
+// `claim:<issuer>:<name>` (nullopt for an RFC 7519 registered name), a
+// declared env id is itself, any other id is_bridged_contract accepts is
+// itself. An issuer's own `claim:<issuer>:<name>` crosses for its members
+// only. The one rule seam discover/fuse, workspace impact/path and change
+// context's cross_service share.
 [[nodiscard]] std::optional<std::string> crossing_id(std::span<const ContractDatabase> databases,
-                                                     std::span<const EnvProvider> env, std::string_view repo,
+                                                     std::span<const EnvProvider> env,
+                                                     std::span<const ClaimIssuer> issuers, std::string_view repo,
                                                      std::string_view id);
 
 // Every id `repo`'s graph may hold the crossing contract `crossing` under: the
 // crossing id itself, and for `table:<database>:<name>` the repo's own
-// `table:local:<name>` when it is declared in that database. Empty when the
-// id crosses nowhere (crossing_id would never return it).
+// `table:local:<name>` when it is declared in that database. For
+// `claim:<issuer>:<name>` a member holds only `claim:<name>` and any other
+// repo nothing; a repo in an issuer holds no unscoped `claim:<name>` crossing
+// (its claims cross at its issuer's id). Empty when the id crosses nowhere for
+// `repo`.
 [[nodiscard]] std::vector<std::string> contract_spellings(std::span<const ContractDatabase> databases,
-                                                          std::span<const EnvProvider> env, std::string_view repo,
+                                                          std::span<const EnvProvider> env,
+                                                          std::span<const ClaimIssuer> issuers, std::string_view repo,
                                                           std::string_view crossing);
+
+// `claim:<issuer>:<name>` for a declared issuer: the issuer and the name;
+// nullopt for any other id.
+struct IssuerClaim {
+  const ClaimIssuer* issuer;
+  std::string_view name;
+};
+[[nodiscard]] std::optional<IssuerClaim> issuer_claim(std::span<const ClaimIssuer> issuers, std::string_view id);
 
 // The member declared to provide `env:<NAME>`; nullopt when none is or `id` is
 // no env id.

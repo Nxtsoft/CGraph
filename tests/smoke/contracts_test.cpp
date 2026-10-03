@@ -9,6 +9,7 @@
 #include "cgraph/python_extractor.hpp"
 
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1473,6 +1474,95 @@ int test_generic_contract_facts() {
       cgraph::is_standard_jwt_claim("roles") || cgraph::is_standard_jwt_claim("groups")) {
     return fail("application claims bridge, standard claims do not");
   }
+  // Inside a declared issuer only the RFC 7519 section 4.1 names stay home;
+  // every one is also standard, and the OIDC ones are not registered.
+  for (const auto* registered : {"iss", "sub", "aud", "exp", "nbf", "iat", "jti"}) {
+    if (!cgraph::is_registered_jwt_claim(registered) || !cgraph::is_standard_jwt_claim(registered)) {
+      return fail(std::string("an RFC 7519 registered claim is not registered: ") + registered);
+    }
+  }
+  for (const auto* other : {"email", "name", "scope", "preferred_username", "client_id", "roles", "EXP"}) {
+    if (cgraph::is_registered_jwt_claim(other)) {
+      return fail(std::string("a claim outside RFC 7519 section 4.1 is registered: ") + other);
+    }
+  }
+  return 0;
+}
+
+// DynamoDB tables (dynamo_contracts.hpp): their own kind, never a `table:`;
+// writers provide, readers use; the id is the case-sensitive name with no
+// database and crosses repositories by itself; the env variables a name is the
+// default of become the node's `env`, and two defaults of one variable are two
+// tables.
+int test_dynamo_contract_facts() {
+  auto built = build({
+      {"/proj/d/api/connectors.ts", "export function storeTokens() { return 1; }\n"},
+      {"/proj/d/web/dynamo.ts",
+       "export function putConnection() { return 1; }\nexport function getConnection() { return 2; }\n"},
+      {"/proj/d/agents/memory.ts", "export function remember() { return 1; }\n"},
+  });
+  auto& graph = built.graph;
+  const auto store = cgraph::make_id("/proj/d/api/connectors.ts:storeTokens");
+  const auto put = cgraph::make_id("/proj/d/web/dynamo.ts:putConnection");
+  const auto get = cgraph::make_id("/proj/d/web/dynamo.ts:getConnection");
+  const auto remember = cgraph::make_id("/proj/d/agents/memory.ts:remember");
+  for (const auto& id : {store, put, get, remember}) {
+    if (node_of(graph, id) == nullptr) {
+      return fail("fixture function missing: " + id);
+    }
+  }
+  const auto fact = [](std::string relation, std::string source, std::string context, std::string env,
+                       std::string file) {
+    return cgraph::RawRelation{.source_id = std::move(source), .target_label = std::move(env),
+                               .relation = std::move(relation), .context = std::move(context),
+                               .source_file = std::move(file)};
+  };
+  const std::vector<cgraph::RawRelation> facts{
+      fact("uses_contract", get, "dynamo:turing-agents-dev", "DYNAMODB_TABLE_NAME", "/proj/d/web/dynamo.ts"),
+      fact("provides_contract", store, "dynamo:turing-agents-dev", "DYNAMODB_TABLE_NAME", "/proj/d/api/connectors.ts"),
+      fact("provides_contract", put, "dynamo:turing-agents-dev", "DYNAMODB_TABLE_NAME,TABLE", "/proj/d/web/dynamo.ts"),
+      fact("provides_contract", remember, "dynamo:wiki-agent-memory", "DYNAMODB_TABLE_NAME", "/proj/d/agents/memory.ts"),
+      fact("uses_contract", get, "dynamo:Sessions", "", "/proj/d/web/dynamo.ts"),
+  };
+  cgraph::resolve_contracts(graph, facts, &built.stats);
+
+  const auto* shared = node_of(graph, "dynamo:turing-agents-dev");
+  if (shared == nullptr || shared->kind != "dynamo" || shared->label != "turing-agents-dev" ||
+      property_of(*shared, "name") != "turing-agents-dev" || property_of(*shared, "database") != "<none>" ||
+      property_of(*shared, "env") != "DYNAMODB_TABLE_NAME,TABLE" || shared->properties.contains("served") ||
+      shared->source_file != "/proj/d/api/connectors.ts") {
+    if (shared != nullptr) {
+      std::cerr << "  env=" << property_of(*shared, "env") << " file=" << shared->source_file << '\n';
+    }
+    return fail("a DynamoDB table is dynamo:<name>, kind dynamo, no database, its env variables kept");
+  }
+  if (!has_edge(graph, "dynamo:turing-agents-dev", store, "handled_by") ||
+      !has_edge(graph, "dynamo:turing-agents-dev", put, "handled_by") ||
+      !has_edge(graph, get, "dynamo:turing-agents-dev", "CONSUMES") ||
+      has_edge(graph, "dynamo:turing-agents-dev", get, "handled_by")) {
+    return fail("a DynamoDB table is handled_by its writers and CONSUMED by its readers");
+  }
+  const auto* memory = node_of(graph, "dynamo:wiki-agent-memory");
+  if (memory == nullptr || property_of(*memory, "env") != "DYNAMODB_TABLE_NAME" ||
+      has_edge(graph, "dynamo:turing-agents-dev", remember, "handled_by")) {
+    return fail("one env variable read with another default names another table");
+  }
+  const auto* sessions = node_of(graph, "dynamo:Sessions");
+  if (sessions == nullptr || property_of(*sessions, "served") != "false" || property_of(*sessions, "env") != "<none>" ||
+      node_of(graph, "dynamo:sessions") != nullptr) {
+    return fail("a DynamoDB table name keeps its case; one only read is served:false");
+  }
+  for (const auto& node : graph.nodes) {
+    if (node.id.starts_with("table:")) {
+      return fail("a DynamoDB table minted a SQL table contract: " + node.id);
+    }
+  }
+  if (cgraph::contract_kind_of("dynamo:turing-agents-dev") != "dynamo" ||
+      !cgraph::is_bridged_contract("dynamo:turing-agents-dev") ||
+      cgraph::contract_id("dynamo", "Sessions") != std::optional<std::string>("dynamo:Sessions") ||
+      cgraph::contract_id("dynamo", "Sessions", "turing") != std::optional<std::string>("dynamo:Sessions")) {
+    return fail("dynamo ids: kind, bridged by name, no database scope");
+  }
   return 0;
 }
 
@@ -1581,5 +1671,6 @@ int main() {
   failures += test_unreached_header_reads();
   failures += test_standard_http_headers();
   failures += test_standard_jwt_claims();
+  failures += test_dynamo_contract_facts();
   return failures == 0 ? 0 : 1;
 }

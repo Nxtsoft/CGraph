@@ -564,7 +564,7 @@ int test_generic_contracts(const fs::path& root) {
     }
   }
   const auto other_line = std::ranges::any_of(plain.resolution_log, [](const std::string& line) {
-    return line.starts_with("other contracts (tables, graph labels, headers, claims, env): matched 1;");
+    return line.starts_with("other contracts (tables, graph labels, headers, claims, env, DynamoDB tables): matched 1;");
   });
   if (!other_line) {
     std::cerr << "discover: other contracts are not logged\n";
@@ -644,6 +644,167 @@ int test_generic_contracts(const fs::path& root) {
       find_in(fused.graph, "ml::table:local:users") != nullptr) {
     for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
     std::cerr << "fuse: a declared member's table is not the database's shared id\n";
+    return 1;
+  }
+  return 0;
+}
+
+// A DynamoDB table joins repositories by name with no declaration: api writes
+// it and web reads it, both through `process.env.DYNAMODB_TABLE_NAME ||
+// 'turing-agents-dev'`, so discover joins them at `dynamo:turing-agents-dev`
+// and carries the env variable onto the seam node; agents' table under the
+// same variable with another default joins nobody. Fuse shares the id.
+int test_dynamo_contracts(const fs::path& root) {
+  const auto api = contract_graph(root, "dapi",
+                                  {{"provides_contract", "storeTokens", "dynamo:turing-agents-dev", "DYNAMODB_TABLE_NAME"}});
+  const auto web = contract_graph(root, "dweb",
+                                  {{"uses_contract", "getConnection", "dynamo:turing-agents-dev", "DYNAMODB_TABLE_NAME"},
+                                   {"uses_contract", "getConnection", "dynamo:sessions", ""}});
+  const auto agents = contract_graph(root, "dagents",
+                                     {{"provides_contract", "remember", "dynamo:wiki-agent-memory", "DYNAMODB_TABLE_NAME"}});
+  const std::vector<std::pair<std::string, fs::path>> graphs{{"dapi", api}, {"dweb", web}, {"dagents", agents}};
+  const auto seam = cgraph::discover_seam(graphs);
+  const auto* shared = find_node(seam.fragment, "dynamo:turing-agents-dev");
+  if (!seam.ok || shared == nullptr || shared->kind != "dynamo" || shared->properties.contains("served") ||
+      !shared->properties.contains("env") || shared->properties.at("env") != "DYNAMODB_TABLE_NAME" ||
+      !has_edge(seam.fragment, "dynamo:turing-agents-dev", "dapi_storeTokens", "HANDLED_BY") ||
+      !has_edge(seam.fragment, "dynamo:turing-agents-dev", "dweb_getConnection", "CONSUMED_AT") ||
+      !has_edge(seam.fragment, "dynamo:turing-agents-dev", "service:dapi", "SERVED_BY") ||
+      !has_edge(seam.fragment, "service:dweb", "dynamo:turing-agents-dev", "CONSUMES") ||
+      has_edge(seam.fragment, "dynamo:turing-agents-dev", "dagents_remember", "HANDLED_BY") ||
+      has_edge(seam.fragment, "dynamo:wiki-agent-memory", "dweb_getConnection", "CONSUMED_AT")) {
+    std::cerr << "discover: a DynamoDB table written by one repo and read by another did not join by name\n";
+    return 1;
+  }
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const std::vector<std::pair<std::string, cgraph::GraphSnapshot>> services{
+      {"dapi", snapshot(api)}, {"dweb", snapshot(web)}, {"dagents", snapshot(agents)}};
+  const auto fused = cgraph::fuse_seam(seam.fragment, services);
+  const auto* fused_table = find_in(fused.graph, "dynamo:turing-agents-dev");
+  if (!fused.ok || fused_table == nullptr || !fused_table->properties.contains("env") ||
+      !has_snapshot_edge(fused.graph, "dweb::dweb_getConnection", "dynamo:turing-agents-dev", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "dynamo:turing-agents-dev", "dapi::dapi_storeTokens", "handled_by") ||
+      find_in(fused.graph, "dweb::dynamo:turing-agents-dev") != nullptr) {
+    for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
+    std::cerr << "fuse: a DynamoDB table is not one shared node\n";
+    return 1;
+  }
+  return 0;
+}
+
+// Claims under a declared issuer: idp mints the token web and cli read, api
+// trusts its own. Undeclared, `session_id` joins idp to api too and `email`
+// joins nobody; with `idp=idp,web,cli`, members meet at `claim:idp:<name>`
+// (OIDC `email` included, RFC 7519 `sub` never) and api's `session_id` and
+// `roles` stay apart from them. Fuse shares the issuer's ids, scopes the
+// rest, and refuses a seam joined under an issuer it is not given.
+int test_issuer_claims(const fs::path& root) {
+  const auto idp = contract_graph(root, "idp",
+                                  {{"provides_contract", "mintToken", "claim:session_id", ""},
+                                   {"provides_contract", "mintToken", "claim:email", ""},
+                                   {"provides_contract", "mintToken", "claim:sub", ""},
+                                   {"provides_contract", "mintToken", "claim:roles", ""}});
+  const auto web = contract_graph(root, "web",
+                                  {{"uses_contract", "readToken", "claim:session_id", ""},
+                                   {"uses_contract", "readToken", "claim:email", ""},
+                                   {"uses_contract", "readToken", "claim:sub", ""}});
+  const auto cli = contract_graph(root, "cli", {{"uses_contract", "whoami", "claim:email", ""}});
+  const auto api = contract_graph(root, "api",
+                                  {{"uses_contract", "checkToken", "claim:session_id", ""},
+                                   {"uses_contract", "checkToken", "claim:roles", ""},
+                                   {"uses_contract", "checkToken", "claim:email", ""}});
+  const std::vector<std::pair<std::string, fs::path>> graphs{{"idp", idp}, {"web", web}, {"cli", cli}, {"api", api}};
+
+  const auto plain = cgraph::discover_seam(graphs);
+  if (!plain.ok || !has_edge(plain.fragment, "claim:session_id", "api_checkToken", "CONSUMED_AT") ||
+      !has_edge(plain.fragment, "claim:session_id", "idp_mintToken", "HANDLED_BY") ||
+      find_node(plain.fragment, "claim:email") != nullptr) {
+    std::cerr << "discover: with no issuer an application claim does not join every repo, or a standard one joins\n";
+    return 1;
+  }
+
+  const std::vector<cgraph::ClaimIssuer> issuers{{.name = "idp", .repos = {"idp", "web", "cli"}}};
+  const auto declared = cgraph::discover_seam(graphs, {}, {}, {}, issuers);
+  const auto* email = find_node(declared.fragment, "claim:idp:email");
+  if (!declared.ok || email == nullptr || email->kind != "claim" || email->label != "email" ||
+      email->properties.contains("served") || email->properties.at("issuer") != "idp" ||
+      !has_edge(declared.fragment, "claim:idp:email", "idp_mintToken", "HANDLED_BY") ||
+      !has_edge(declared.fragment, "claim:idp:email", "web_readToken", "CONSUMED_AT") ||
+      !has_edge(declared.fragment, "claim:idp:email", "cli_whoami", "CONSUMED_AT") ||
+      !has_edge(declared.fragment, "claim:idp:session_id", "web_readToken", "CONSUMED_AT") ||
+      has_edge(declared.fragment, "claim:idp:session_id", "api_checkToken", "CONSUMED_AT") ||
+      !has_edge(declared.fragment, "claim:idp:roles", "service:idp", "SERVED_BY")) {
+    std::cerr << "discover: members of a declared issuer did not join at its id, or an outsider did\n";
+    return 1;
+  }
+  for (const auto& node : declared.fragment.nodes) {
+    if (node.id == "claim:sub" || node.id == "claim:idp:sub" || node.id == "claim:email") {
+      std::cerr << "discover: a registered claim, or an outsider's OIDC claim, entered the seam: " << node.id << '\n';
+      return 1;
+    }
+  }
+  // api's own claims stay apart: its `session_id` and `roles` have no provider.
+  const auto* api_session = find_node(declared.fragment, "claim:session_id");
+  if (api_session == nullptr || !has_edge(declared.fragment, "claim:session_id", "api_checkToken", "CONSUMED_AT") ||
+      has_edge(declared.fragment, "claim:session_id", "idp_mintToken", "HANDLED_BY") ||
+      api_session->properties.contains("issuer") ||
+      has_edge(declared.fragment, "claim:roles", "idp_mintToken", "HANDLED_BY")) {
+    std::cerr << "discover: an outsider's claim joined the issuer's members\n";
+    return 1;
+  }
+  const bool issuer_line = std::ranges::any_of(declared.resolution_log, [](const std::string& line) {
+    return line == "issuer idp (idp,web,cli): 6 claims joined at the issuer's id";
+  });
+  const bool no_issuer_line = std::ranges::none_of(plain.resolution_log, [](const std::string& line) {
+    return line.starts_with("issuer ");
+  });
+  if (!issuer_line || !no_issuer_line) {
+    for (const auto& line : declared.resolution_log) std::cerr << "  " << line << '\n';
+    std::cerr << "discover: the issuer count is not logged, or logged with no issuer\n";
+    return 1;
+  }
+
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const std::vector<std::pair<std::string, cgraph::GraphSnapshot>> services{
+      {"idp", snapshot(idp)}, {"web", snapshot(web)}, {"cli", snapshot(cli)}, {"api", snapshot(api)}};
+  const auto undeclared = cgraph::fuse_seam(declared.fragment, services);
+  if (undeclared.ok || undeclared.errors.empty() || undeclared.errors.front().find("--issuer") == std::string::npos) {
+    std::cerr << "fuse: a seam joined under --issuer was fused without it and not refused: "
+              << (undeclared.errors.empty() ? std::string{"(no error)"} : undeclared.errors.front()) << '\n';
+    return 1;
+  }
+  // The reverse: discovered with no issuer, fused with one. idp's
+  // `claim:session_id` would be scoped to `claim:idp:session_id` away from the
+  // seam's `claim:session_id`: refused too, saying the two runs disagree.
+  const auto reverse = cgraph::fuse_seam(plain.fragment, services, {}, {}, {}, issuers);
+  if (reverse.ok || reverse.errors.empty() || reverse.errors.front().find("claim:session_id") == std::string::npos ||
+      reverse.errors.front().find("discover and fuse were given different --issuer") == std::string::npos) {
+    std::cerr << "fuse: a seam discovered without --issuer was fused with one and not refused: "
+              << (reverse.errors.empty() ? std::string{"(no error)"} : reverse.errors.front()) << '\n';
+    return 1;
+  }
+  const auto fused = cgraph::fuse_seam(declared.fragment, services, {}, {}, {}, issuers);
+  const auto* fused_email = find_in(fused.graph, "claim:idp:email");
+  if (!fused.ok || fused_email == nullptr || fused_email->properties.at("issuer") != "idp" ||
+      !has_snapshot_edge(fused.graph, "web::web_readToken", "claim:idp:email", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "cli::cli_whoami", "claim:idp:email", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "claim:idp:email", "idp::idp_mintToken", "handled_by") ||
+      !has_snapshot_edge(fused.graph, "api::api_checkToken", "claim:session_id", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "api::api_checkToken", "api::claim:email", "CONSUMES") ||
+      find_in(fused.graph, "web::claim:sub") == nullptr || find_in(fused.graph, "claim:idp:sub") != nullptr ||
+      find_in(fused.graph, "web::claim:email") != nullptr) {
+    for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
+    std::cerr << "fuse: an issuer member's claim is not the issuer's shared id, or an outsider's is\n";
     return 1;
   }
   return 0;
@@ -884,7 +1045,13 @@ int main() {
   if (test_proxy_prefix(root) != 0) {
     return 1;
   }
+  if (test_dynamo_contracts(root) != 0) {
+    return 1;
+  }
   if (test_generic_contracts(root) != 0) {
+    return 1;
+  }
+  if (test_issuer_claims(root) != 0) {
     return 1;
   }
 

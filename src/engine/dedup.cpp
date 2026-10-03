@@ -254,7 +254,7 @@ void semantic_dedup_impl(
     if (node.kind == "endpoint" || node.kind == "schema") {
       continue;  // a contract schema's identity is its exact name too (`Note` beside `Notes`)
     }
-    // Tables, graph labels, headers, claims and env names are contracts named
+    // Tables, graph labels, headers, claims, env names and DynamoDB tables are contracts named
     // exactly too (`user_roles` beside `user_role`, `X-Org-Id` beside `X-Org-Ids`).
     if (is_contract_kind(node.kind)) {
       continue;
