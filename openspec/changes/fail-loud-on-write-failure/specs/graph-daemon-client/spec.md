@@ -3,7 +3,8 @@
 ### Requirement: Persistence never destroys the last-known-good graph
 The daemon SHALL persist the graph snapshot by writing a temp file and atomically renaming it
 over `graph.json` only after the whole snapshot was written: the write, flush and close SHALL
-succeed and the temp file SHALL hold exactly the snapshot's bytes. On a failed write or a failed
+succeed and the temp file SHALL hold exactly the snapshot's bytes, and SHALL sync the temp file to
+stable storage before the rename and the directory after it. On a failed write or a failed
 rename it SHALL leave the existing `graph.json` untouched, remove the temp file, and surface the
 failure. It SHALL NOT delete the existing file to retry.
 

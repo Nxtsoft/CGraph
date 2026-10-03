@@ -32,6 +32,17 @@ cgraph::GraphSnapshot sample_graph() {
   return graph;
 }
 
+// True when `directory` holds a temp file (the persist helper names them
+// `<name>.<pid>.<n>.tmp`).
+bool has_temp_file(const std::filesystem::path& directory) {
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    if (entry.path().filename().string().ends_with(".tmp")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 int main() {
@@ -171,7 +182,6 @@ int main() {
   const auto blocked_path = root / "blocked-graph.json";
   std::filesystem::create_directories(blocked_path);           // destination is a directory...
   std::ofstream(blocked_path / "keep.txt") << "last known good";  // ...and non-empty
-  const auto temp_path = root / "blocked-graph.json.tmp";
   if (cgraph::persist_graph_snapshot(deterministic, blocked_path)) {
     return 1;  // must fail: cannot atomically replace a non-empty directory
   }
@@ -179,7 +189,7 @@ int main() {
       !std::filesystem::exists(blocked_path / "keep.txt")) {
     return 1;  // the prior data must survive the failed persist untouched
   }
-  if (std::filesystem::exists(temp_path)) {
+  if (has_temp_file(root)) {
     return 1;  // the orphan temp must be cleaned up, not left behind
   }
 
@@ -213,7 +223,7 @@ int main() {
       return 1;  // the last-known-good graph must survive a failed persist
     }
   }
-  if (std::filesystem::exists(root / "good-graph.json.tmp")) {
+  if (has_temp_file(root)) {
     return 1;
   }
 

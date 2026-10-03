@@ -39,6 +39,20 @@ bool contains(const std::string& haystack, const std::string& needle) {
   return haystack.find(needle) != std::string::npos;
 }
 
+// True when `directory` holds no temp file (any name ending in ".tmp").
+bool no_temp_files(const fs::path& directory) {
+  if (!fs::exists(directory)) {
+    return true;
+  }
+  for (const auto& entry : fs::directory_iterator(directory)) {
+    if (entry.path().filename().string().ends_with(".tmp")) {
+      std::cerr << "leftover temp file: " << entry.path() << '\n';
+      return false;
+    }
+  }
+  return true;
+}
+
 struct RunResult {
   int exit_code = -1;
   std::string stderr_text;
@@ -131,7 +145,7 @@ int main(int argc, char** argv) {
   expect(ok, contains(run.stderr_text, (fused / "graph.json").string()),
          "seam fuse names the file it failed to write: " + run.stderr_text);
   expect(ok, read_file(fused / "graph.json") == "PRIOR\n", "seam fuse leaves the prior graph.json untouched");
-  expect(ok, !fs::exists(fused / "graph.json.tmp"), "seam fuse leaves no temp file");
+  expect(ok, no_temp_files(fused), "seam fuse leaves no temp file");
   expect(ok, !fs::exists(fused / ".cgraph-seam"), "seam fuse does not mark a failed output dir");
 
   // The same fuse, unrestricted, still succeeds.
@@ -148,7 +162,7 @@ int main(int argc, char** argv) {
   expect(ok, contains(run.stderr_text, (small_drop / "chunk_00.json").string()),
          "seam discover names the file it failed to write: " + run.stderr_text);
   expect(ok, !fs::exists(small_drop / "chunk_00.json"), "seam discover leaves no truncated chunk_00.json");
-  expect(ok, !fs::exists(small_drop / "chunk_00.json.tmp"), "seam discover leaves no temp file");
+  expect(ok, no_temp_files(small_drop), "seam discover leaves no temp file");
 
   // One-shot build (write_exports): graph.html does not fit.
   const auto limited_out = root / "limited-out";
@@ -157,7 +171,7 @@ int main(int argc, char** argv) {
   expect(ok, contains(run.stderr_text, (limited_out / "graph.html").string()),
          "one-shot build names the file it failed to write: " + run.stderr_text);
   expect(ok, !fs::exists(limited_out / "graph.html"), "one-shot build leaves no truncated graph.html");
-  expect(ok, !fs::exists(limited_out / "graph.html.tmp"), "one-shot build leaves no temp file");
+  expect(ok, no_temp_files(limited_out), "one-shot build leaves no temp file");
 
   fs::remove_all(root);
   if (ok) {

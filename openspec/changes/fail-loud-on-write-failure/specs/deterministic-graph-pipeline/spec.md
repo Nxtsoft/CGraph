@@ -7,7 +7,11 @@ manifest, stat index and cache, `seam gen` / `seam discover` fragments, `seam fu
 a temp file in the same directory and renamed into place only after the write, flush and close
 succeeded and the temp file holds exactly the intended bytes. When a file cannot be written whole,
 the command SHALL exit non-zero with a message naming that file and the reason, SHALL leave any
-prior file at that path untouched, and SHALL leave no temp file behind.
+prior file at that path untouched, and SHALL leave no temp file behind. Each write SHALL use its
+own temp file, so two writers of one path (two processes, or two threads) never mix their bytes and
+neither fails because of the other. Because the file is replaced by rename, a symlink at the path is
+replaced by a regular file rather than written through, and the new file's mode is the umask
+default rather than the prior file's.
 
 #### Scenario: seam fuse on a full disk
 - **GIVEN** an output directory that already holds a `graph.json`
@@ -19,6 +23,10 @@ prior file at that path untouched, and SHALL leave no temp file behind.
 - **WHEN** `cgraph --root ROOT --out OUT` runs and the disk fills while it writes `graph.html`
 - **THEN** it exits non-zero naming `OUT/graph.html` and no `graph.html` or `graph.html.tmp`
   exists in `OUT`
+
+#### Scenario: Two writers of one file
+- **WHEN** two processes replace the same output file at the same time, each with its own contents
+- **THEN** both writes succeed and the file afterwards holds exactly one writer's complete contents
 
 #### Scenario: Output is unchanged when writes succeed
 - **WHEN** the same commands run with space to spare

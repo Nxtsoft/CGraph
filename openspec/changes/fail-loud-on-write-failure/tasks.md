@@ -3,6 +3,7 @@
 - [x] 1.1 `cli_main_test`: under a file-size limit `seam fuse`, `seam discover` and the one-shot build exit non-zero, name the file, leave no truncated file, no temp file and no seam marker, and keep a prior `graph.json` (fails on origin/main: all three exit 0 over truncated files).
 - [x] 1.2 `daemon_lifecycle_test`: a persist that runs out of space part-way returns false and keeps the last-known-good `graph.json` (fails on origin/main: the truncated temp was renamed over it).
 - [x] 1.3 `atomic_write_test`: exact bytes, overwrite, short write reported with the prior file kept and no temp, missing directory throws `FileWriteError` naming the path.
+- [x] 1.4 `atomic_write_test`: two threads and two processes each replace one file 200 times; every write succeeds and the file is always one writer's whole content (fails with the shared `<name>.tmp`: "wrote 253952 of 262144 bytes", 0-byte files renamed into place). A stale temp of the same path is swept; a fresh one, a foreign name and another file's temp are kept. A durable write lands the exact bytes.
 
 ## 2. Implementation
 

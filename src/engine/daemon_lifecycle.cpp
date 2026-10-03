@@ -114,7 +114,8 @@ bool persist_graph_snapshot(
   // graph.json to "make room" for a retry: if the retry also failed the daemon
   // would be left with no graph at all. The helper leaves the prior file
   // untouched, removes the orphan temp, and we surface the failure.
-  if (const auto failure = try_write_file_atomically(graph_path, to_node_link_json(snapshot).dump(2) + '\n');
+  if (const auto failure = try_write_file_atomically(graph_path, to_node_link_json(snapshot).dump(2) + '\n',
+                                                       WriteDurability::Durable);
       !failure.empty()) {
     std::cerr << "graphd: " << failure << '\n';
     return false;
