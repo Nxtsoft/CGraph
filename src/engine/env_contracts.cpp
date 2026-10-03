@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -252,13 +253,18 @@ void statement_bindings(TSNode statement, std::string_view source, Each&& each) 
 
 // What each block-like scope of one file binds, built once per scope: the
 // first binding of each name among its statements, and for a function body
-// or the program the names its `var`s hoist.
+// or the program the names its `var`s hoist. `env_values` remembers whether a
+// `const` declarator's value or a function's returns are a typed env object,
+// per hop count (the hop bound can change the answer), so N reads of `env.X`
+// through `const env = loadConfig()` read `loadConfig`'s body once.
 struct EnvFileIndex {
   std::unordered_map<const void*, std::unordered_map<std::string, Binding>> blocks;
   std::unordered_map<const void*, std::unordered_set<std::string>> hoisted;
+  std::map<std::pair<const void*, int>, bool> env_values;
 };
 
 thread_local EnvFileIndex* current_env_index = nullptr;
+thread_local EnvLookupCounts lookup_counts;
 
 // The statements directly in a block-like scope: a program or statement
 // block's children, or every case's statements of a switch (one scope).
@@ -285,6 +291,7 @@ void scope_statements(const TSNode& scope, Each&& each) {
                                                                             EnvFileIndex& index) {
   const auto [slot, fresh] = index.blocks.try_emplace(scope.id);
   if (fresh) {
+    ++lookup_counts.tables;
     scope_statements(scope, [&](const TSNode& statement) {
       statement_bindings(statement, source, [&](std::string name, const Binding& binding) {
         slot->second.try_emplace(std::move(name), binding);  // the first binding of a name decides
@@ -301,6 +308,7 @@ void scope_statements(const TSNode& scope, Each&& each) {
   }
   const auto [slot, fresh] = index.hoisted.try_emplace(scope.id);
   if (fresh) {
+    ++lookup_counts.tables;
     collect_hoisted(scope, source, slot->second);
   }
   return slot->second.contains(std::string(name));
@@ -376,6 +384,7 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   if (ts_node_is_null(body)) {
     return false;
   }
+  ++lookup_counts.factory_walks;
   std::vector<TSNode> returns;
   if (type_of(body) == "statement_block") {
     collect_returns(body, returns);
@@ -385,6 +394,22 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   return !returns.empty() && std::ranges::all_of(returns, [&](const TSNode& returned) {
     return !ts_node_is_null(returned) && is_js_env_value(returned, source, hops);
   });
+}
+
+// `compute()` for the binding `node` at `hops`, once per file under an
+// EnvContractsFileScope.
+template <typename Compute>
+[[nodiscard]] bool remembered(const TSNode& node, int hops, Compute&& compute) {
+  if (current_env_index == nullptr) {
+    return compute();
+  }
+  const std::pair<const void*, int> key{node.id, hops};
+  if (const auto found = current_env_index->env_values.find(key); found != current_env_index->env_values.end()) {
+    return found->second;
+  }
+  const bool value = compute();
+  current_env_index->env_values.emplace(key, value);
+  return value;
 }
 
 // True for a value whose keys are environment variable names: an env object
@@ -404,7 +429,9 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   const auto type = type_of(value);
   if (type == "identifier") {
     const TSNode binding = find_binding(value, node_text(value, source), source);
-    return type_of(binding) == "variable_declarator" && is_js_env_value(field(binding, "value"), source, hops + 1);
+    return type_of(binding) == "variable_declarator" && remembered(binding, hops + 1, [&] {
+             return is_js_env_value(field(binding, "value"), source, hops + 1);
+           });
   }
   if (type != "call_expression") {
     return false;
@@ -426,7 +453,7 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   const auto function_type = type_of(function);
   return (function_type == "function_declaration" || function_type == "arrow_function" ||
           function_type == "function_expression" || function_type == "function") &&
-         returns_env(function, source, hops + 1);
+         remembered(function, hops + 1, [&] { return returns_env(function, source, hops + 1); });
 }
 
 // The env object a member or subscript reads from: true and `typed` false for
@@ -525,6 +552,8 @@ EnvContractsFileScope::EnvContractsFileScope() : index_(std::make_unique<Index>(
 }
 
 EnvContractsFileScope::~EnvContractsFileScope() { current_env_index = index_->previous; }
+
+EnvLookupCounts env_lookup_counts() { return lookup_counts; }
 
 bool is_env_variable_name(std::string_view name) {
   if (name.empty() || !(std::isalpha(static_cast<unsigned char>(name.front())) || name.front() == '_')) {

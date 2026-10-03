@@ -45,6 +45,7 @@
 
 #include <tree_sitter/api.h>
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -68,6 +69,14 @@ class EnvContractsFileScope {
   struct Index;
   std::unique_ptr<Index> index_;
 };
+
+// Test hook: how many scope binding tables and factory-function body walks
+// this thread has done, so a test can prove a held scope reads each once.
+struct EnvLookupCounts {
+  std::size_t tables = 0;
+  std::size_t factory_walks = 0;
+};
+[[nodiscard]] EnvLookupCounts env_lookup_counts();
 
 // One handler per grammar, called from that language's extra_walk on every
 // node. `fragment` is the file's fragment so far: a module-level variable is

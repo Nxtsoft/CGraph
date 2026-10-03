@@ -413,6 +413,46 @@ server.port=${PORT:8080}
     }
   }
 
+  // The scope is what makes lookups linear: with it each scope's tables are
+  // built once and `loadConfig`'s body is read once for all 80 reads of
+  // `env.X`; without it every read rebuilds the tables it passes and re-reads
+  // the factory. Same facts either way.
+  {
+    std::string source = "function loadConfig() { const env = Value.Decode(envSchema, process.env); return env }\n"
+                         "const env = loadConfig()\n";
+    constexpr int kFunctions = 40;
+    for (int index = 0; index < kFunctions; ++index) {
+      const auto n = std::to_string(index);
+      source += "export function f" + n + "() { if (1) { use(env.A_" + n + ") } return env.B_" + n + " }\n";
+    }
+    const cgraph::ExtractionContext context{.source_file = "src/many.ts", .relative_path = "src/many.ts", .source = source};
+    const auto before = cgraph::env_lookup_counts();
+    const auto cached = cgraph::extract_typescript(context);
+    const auto middle = cgraph::env_lookup_counts();
+    auto config = cgraph::typescript_language_config();
+    const TSLanguage* grammar = cgraph::tree_sitter_language_for(cgraph::DetectedLanguage::TypeScript);
+    cgraph::intern_node_symbols(config, grammar);
+    const auto uncached = cgraph::extract_with_config(grammar, config, context);
+    const auto after = cgraph::env_lookup_counts();
+    const auto cached_tables = middle.tables - before.tables;
+    const auto cached_walks = middle.factory_walks - before.factory_walks;
+    const auto uncached_tables = after.tables - middle.tables;
+    const auto uncached_walks = after.factory_walks - middle.factory_walks;
+    // Per function: its body block, its hoisted vars and the `if` block; plus
+    // the program's two tables.
+    if (cached_walks != 1 || cached_tables > 3 * kFunctions + 2 || uncached_walks < 2 * kFunctions ||
+        uncached_tables <= cached_tables) {
+      std::cerr << "env scope cache: cached tables " << cached_tables << " walks " << cached_walks
+                << ", uncached tables " << uncached_tables << " walks " << uncached_walks << '\n';
+      failed = true;
+    }
+    auto facts = env_facts(cached, orphan);
+    if (facts.size() != 2 * kFunctions || facts != env_facts(uncached, orphan)) {
+      std::cerr << "env scope cache: " << facts.size() << " cached facts, or cached and uncached differ\n";
+      failed = true;
+    }
+  }
+
   if (orphan || failed) {
     return 1;
   }
