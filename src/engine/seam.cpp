@@ -759,7 +759,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
       endpoint.id = *shared;
       endpoint.label = node.label;
       endpoint.kind = node.kind;
-      for (const auto* key : {"method", "path", "name", "database"}) {
+      for (const auto* key : {"method", "path", "name", "database", "env"}) {
         if (const auto value = node.properties.find(key); value != node.properties.end()) {
           endpoint.properties[key] = value->second;
         }
@@ -926,7 +926,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
                                     " consumed endpoints joined at the proxied path");
   }
   if (other_matched + other_used_only + other_provided_only > 0) {
-    result.resolution_log.push_back("other contracts (tables, graph labels, headers, claims, env): matched " +
+    result.resolution_log.push_back("other contracts (tables, graph labels, headers, claims, env, DynamoDB tables): matched " +
                                     std::to_string(other_matched) + "; " + std::to_string(other_used_only) +
                                     " used with no provider among these graphs; " +
                                     std::to_string(other_provided_only) + " provided with no user");

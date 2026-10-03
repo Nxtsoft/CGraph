@@ -564,7 +564,7 @@ int test_generic_contracts(const fs::path& root) {
     }
   }
   const auto other_line = std::ranges::any_of(plain.resolution_log, [](const std::string& line) {
-    return line.starts_with("other contracts (tables, graph labels, headers, claims, env): matched 1;");
+    return line.starts_with("other contracts (tables, graph labels, headers, claims, env, DynamoDB tables): matched 1;");
   });
   if (!other_line) {
     std::cerr << "discover: other contracts are not logged\n";
@@ -644,6 +644,54 @@ int test_generic_contracts(const fs::path& root) {
       find_in(fused.graph, "ml::table:local:users") != nullptr) {
     for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
     std::cerr << "fuse: a declared member's table is not the database's shared id\n";
+    return 1;
+  }
+  return 0;
+}
+
+// A DynamoDB table joins repositories by name with no declaration: api writes
+// it and web reads it, both through `process.env.DYNAMODB_TABLE_NAME ||
+// 'turing-agents-dev'`, so discover joins them at `dynamo:turing-agents-dev`
+// and carries the env variable onto the seam node; agents' table under the
+// same variable with another default joins nobody. Fuse shares the id.
+int test_dynamo_contracts(const fs::path& root) {
+  const auto api = contract_graph(root, "dapi",
+                                  {{"provides_contract", "storeTokens", "dynamo:turing-agents-dev", "DYNAMODB_TABLE_NAME"}});
+  const auto web = contract_graph(root, "dweb",
+                                  {{"uses_contract", "getConnection", "dynamo:turing-agents-dev", "DYNAMODB_TABLE_NAME"},
+                                   {"uses_contract", "getConnection", "dynamo:sessions", ""}});
+  const auto agents = contract_graph(root, "dagents",
+                                     {{"provides_contract", "remember", "dynamo:wiki-agent-memory", "DYNAMODB_TABLE_NAME"}});
+  const std::vector<std::pair<std::string, fs::path>> graphs{{"dapi", api}, {"dweb", web}, {"dagents", agents}};
+  const auto seam = cgraph::discover_seam(graphs);
+  const auto* shared = find_node(seam.fragment, "dynamo:turing-agents-dev");
+  if (!seam.ok || shared == nullptr || shared->kind != "dynamo" || shared->properties.contains("served") ||
+      !shared->properties.contains("env") || shared->properties.at("env") != "DYNAMODB_TABLE_NAME" ||
+      !has_edge(seam.fragment, "dynamo:turing-agents-dev", "dapi_storeTokens", "HANDLED_BY") ||
+      !has_edge(seam.fragment, "dynamo:turing-agents-dev", "dweb_getConnection", "CONSUMED_AT") ||
+      !has_edge(seam.fragment, "dynamo:turing-agents-dev", "service:dapi", "SERVED_BY") ||
+      !has_edge(seam.fragment, "service:dweb", "dynamo:turing-agents-dev", "CONSUMES") ||
+      has_edge(seam.fragment, "dynamo:turing-agents-dev", "dagents_remember", "HANDLED_BY") ||
+      has_edge(seam.fragment, "dynamo:wiki-agent-memory", "dweb_getConnection", "CONSUMED_AT")) {
+    std::cerr << "discover: a DynamoDB table written by one repo and read by another did not join by name\n";
+    return 1;
+  }
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const std::vector<std::pair<std::string, cgraph::GraphSnapshot>> services{
+      {"dapi", snapshot(api)}, {"dweb", snapshot(web)}, {"dagents", snapshot(agents)}};
+  const auto fused = cgraph::fuse_seam(seam.fragment, services);
+  const auto* fused_table = find_in(fused.graph, "dynamo:turing-agents-dev");
+  if (!fused.ok || fused_table == nullptr || !fused_table->properties.contains("env") ||
+      !has_snapshot_edge(fused.graph, "dweb::dweb_getConnection", "dynamo:turing-agents-dev", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "dynamo:turing-agents-dev", "dapi::dapi_storeTokens", "handled_by") ||
+      find_in(fused.graph, "dweb::dynamo:turing-agents-dev") != nullptr) {
+    for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
+    std::cerr << "fuse: a DynamoDB table is not one shared node\n";
     return 1;
   }
   return 0;
@@ -995,6 +1043,9 @@ int main() {
     return 1;
   }
   if (test_proxy_prefix(root) != 0) {
+    return 1;
+  }
+  if (test_dynamo_contracts(root) != 0) {
     return 1;
   }
   if (test_generic_contracts(root) != 0) {

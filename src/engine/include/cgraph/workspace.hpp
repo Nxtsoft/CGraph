@@ -32,8 +32,8 @@
 // each repo, and where a traversal reaches a contract it is forwarded once, with
 // the remaining depth, to the other repos -- one hop per contract, never a join
 // over copied graphs. Every id is_bridged_contract accepts (contracts.hpp:
-// endpoints, headers, claims, env names, tables and graph labels in a named
-// database) crosses this way.
+// endpoints, headers, claims, env names, DynamoDB tables, tables and graph
+// labels in a named database) crosses this way.
 //
 // A repo whose daemon cannot be reached is reported in `unreachable`, never
 // silently dropped: a partial answer that looks total is worse than a loud gap.
