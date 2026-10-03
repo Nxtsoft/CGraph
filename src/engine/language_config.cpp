@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <unordered_map>
 #include <utility>
 
 namespace cgraph {
@@ -35,7 +36,77 @@ namespace {
   return symbols;
 }
 
+// Positions in fragment.nodes by id, ascending, for the first `synced` nodes.
+struct IdIndex {
+  const Fragment* fragment = nullptr;
+  std::size_t synced = 0;
+  std::unordered_map<std::string, std::vector<std::size_t>> positions;
+};
+
+thread_local IdIndex* current_id_index = nullptr;
+
+// The held index over `fragment`, caught up with the nodes appended since the
+// last lookup, or nullptr when no scope covers `fragment`.
+[[nodiscard]] IdIndex* id_index_for(const Fragment& fragment) {
+  auto* index = current_id_index;
+  if (index == nullptr || index->fragment != &fragment) {
+    return nullptr;
+  }
+  for (; index->synced < fragment.nodes.size(); ++index->synced) {
+    index->positions[fragment.nodes[index->synced].id].push_back(index->synced);
+  }
+  return index;
+}
+
 }  // namespace
+
+struct NodeIdIndexScope::Index {
+  IdIndex ids;
+  IdIndex* previous = nullptr;
+};
+
+NodeIdIndexScope::NodeIdIndexScope(const Fragment& fragment) : index_(std::make_unique<Index>()) {
+  index_->ids.fragment = &fragment;
+  index_->previous = current_id_index;
+  current_id_index = &index_->ids;
+}
+
+NodeIdIndexScope::~NodeIdIndexScope() { current_id_index = index_->previous; }
+
+bool node_id_taken(const Fragment& fragment, const std::string& id) {
+  if (const auto* index = id_index_for(fragment)) {
+    return index->positions.contains(id);
+  }
+  return std::ranges::any_of(fragment.nodes, [&id](const Node& existing) { return existing.id == id; });
+}
+
+std::size_t find_node_by_id(const Fragment& fragment, const std::string& id, std::string_view kind) {
+  if (const auto* index = id_index_for(fragment)) {
+    const auto found = index->positions.find(id);
+    if (found == index->positions.end()) {
+      return fragment.nodes.size();
+    }
+    const auto position = std::ranges::find_if(
+        found->second, [&](std::size_t candidate) { return fragment.nodes[candidate].kind == kind; });
+    return position == found->second.end() ? fragment.nodes.size() : *position;
+  }
+  const auto position = std::ranges::find_if(
+      fragment.nodes, [&](const Node& existing) { return existing.id == id && existing.kind == kind; });
+  return static_cast<std::size_t>(position - fragment.nodes.begin());
+}
+
+void set_node_id(Fragment& fragment, std::size_t position, std::string id) {
+  if (auto* index = id_index_for(fragment)) {
+    const auto old = index->positions.find(fragment.nodes[position].id);
+    std::erase(old->second, position);
+    if (old->second.empty()) {
+      index->positions.erase(old);
+    }
+    auto& positions = index->positions[id];
+    positions.insert(std::ranges::upper_bound(positions, position), position);
+  }
+  fragment.nodes[position].id = std::move(id);
+}
 
 void intern_node_symbols(LanguageConfig& config, const TSLanguage* language) {
   config.symbols.class_nodes = intern_many(language, config.class_node_types);
@@ -52,10 +123,7 @@ bool contains_symbol(const std::vector<TSSymbol>& symbols, TSSymbol symbol) {
 
 std::string unique_node_id(
     const std::string& seed, const SourceLocation& location, const Fragment& fragment) {
-  const auto taken = [&fragment](const std::string& candidate) {
-    return std::ranges::any_of(
-        fragment.nodes, [&candidate](const Node& existing) { return existing.id == candidate; });
-  };
+  const auto taken = [&fragment](const std::string& candidate) { return node_id_taken(fragment, candidate); };
   auto id = make_id(seed);
   if (!taken(id)) {
     return id;

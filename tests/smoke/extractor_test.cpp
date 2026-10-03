@@ -1,7 +1,10 @@
 #include "cgraph/extractor.hpp"
+#include "cgraph/normalize.hpp"
+#include "cgraph/python_extractor.hpp"
 
 #include <algorithm>
 #include <iostream>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -169,9 +172,84 @@ int use(void) { return 0; }
   return true;
 }
 
+// add_symbol_node relocates a field that holds the id a symbol wants, and the
+// extraction's id index (NodeIdIndexScope) must follow the rename: a later
+// symbol wanting the field's NEW id has to find it there and move it again.
+// An index left at the old id would let that symbol miss the field and take a
+// line-suffixed id, leaving the function off the id an agent asks for.
+[[nodiscard]] bool check_relocated_field_is_reindexed() {
+  const auto result = cgraph::extract_python({.source_file = "c.py", .relative_path = "c.py", .source = R"py(
+class First:
+    size: int
+def first_size():
+    return 1
+def first_size_size():
+    return 2
+)py"});
+  const cgraph::Node* field = nullptr;
+  std::set<std::string> ids;
+  for (const auto& node : result.fragment.nodes) {
+    if (!ids.insert(node.id).second) {
+      std::cerr << "relocation: two nodes share id " << node.id << '\n';
+      return false;
+    }
+    if (node.kind == "field" && node.label == "size") {
+      field = &node;
+    }
+    if (node.kind == "function" && node.id != cgraph::make_id("c.py:" + node.label)) {
+      std::cerr << "relocation: function " << node.label << " lost its natural id, got " << node.id << '\n';
+      return false;
+    }
+  }
+  // Moved once by `first_size` (to first_size:size) and again by
+  // `first_size_size` (to first_size_size:size).
+  if (field == nullptr || field->id != cgraph::make_id(cgraph::make_id("c.py:first_size_size") + ":size")) {
+    std::cerr << "relocation: field id is " << (field == nullptr ? std::string("missing") : field->id) << '\n';
+    return false;
+  }
+  const auto defines_field = std::ranges::any_of(result.fragment.edges, [&](const cgraph::Edge& edge) {
+    return edge.relation == "defines" && edge.source == cgraph::make_id("c.py:First") && edge.target == field->id;
+  });
+  if (!defines_field) {
+    std::cerr << "relocation: First's defines edge does not follow the field\n";
+    return false;
+  }
+  return true;
+}
+
+// Each node costs a bounded number of make_id calls. add_symbol_node once
+// normalized its seed again for every node already in the fragment, so a file
+// with N symbols paid N^2 / 2 utf8proc normalizations (an 8,000-line file spent
+// about 20 seconds there).
+[[nodiscard]] bool check_make_id_calls_are_linear() {
+  constexpr std::size_t kMembers = 400;
+  std::string source = "class Big:\n";
+  for (std::size_t i = 0; i < kMembers; ++i) {
+    source += "    field" + std::to_string(i) + ": int\n";
+  }
+  for (std::size_t i = 0; i < kMembers; ++i) {
+    source += "    def method" + std::to_string(i) + "(self):\n        return self.field" + std::to_string(i) + "\n";
+  }
+  const auto before = cgraph::make_id_calls();
+  const auto result = cgraph::extract_python({.source_file = "big.py", .relative_path = "big.py", .source = source});
+  const auto calls = cgraph::make_id_calls() - before;
+  const auto nodes = result.fragment.nodes.size();
+  if (nodes < 2 * kMembers || calls > 16 * nodes) {
+    std::cerr << "make_id: " << calls << " calls for " << nodes << " nodes\n";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
+  if (!check_relocated_field_is_reindexed()) {
+    return 1;
+  }
+  if (!check_make_id_calls_are_linear()) {
+    return 1;
+  }
   if (!check_forward_declarations()) {
     return 1;
   }

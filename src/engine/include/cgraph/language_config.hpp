@@ -4,7 +4,9 @@
 
 #include <tree_sitter/api.h>
 
+#include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -191,6 +193,32 @@ void intern_node_symbols(LanguageConfig& config, const TSLanguage* language);
 // counter, all stable for a given file so the id stays deterministic.
 [[nodiscard]] std::string unique_node_id(
     const std::string& seed, const SourceLocation& location, const Fragment& fragment);
+
+// Held while one file's fragment is extracted (extract_with_config): the node
+// lookups below read an index of `fragment`'s ids, caught up with the nodes
+// appended since the last lookup, instead of scanning every node, which made
+// extracting a file quadratic in its symbol count. A node's id changes only
+// through set_node_id while a scope is held. Scopes nest; each covers one
+// fragment on its thread. A lookup on any other fragment scans its nodes.
+class NodeIdIndexScope {
+ public:
+  explicit NodeIdIndexScope(const Fragment& fragment);
+  ~NodeIdIndexScope();
+  NodeIdIndexScope(const NodeIdIndexScope&) = delete;
+  NodeIdIndexScope& operator=(const NodeIdIndexScope&) = delete;
+
+ private:
+  struct Index;
+  std::unique_ptr<Index> index_;
+};
+
+// True when a node in `fragment` has id `id`.
+[[nodiscard]] bool node_id_taken(const Fragment& fragment, const std::string& id);
+// The position of the first node in `fragment` with id `id` and kind `kind`,
+// or fragment.nodes.size() when there is none.
+[[nodiscard]] std::size_t find_node_by_id(const Fragment& fragment, const std::string& id, std::string_view kind);
+// Renames the node at `position`, keeping a held index in step.
+void set_node_id(Fragment& fragment, std::size_t position, std::string id);
 
 // The one field emitter: every language's members become `field` nodes and
 // `defines` edges here, through unique_node_id, so a member never lands on an

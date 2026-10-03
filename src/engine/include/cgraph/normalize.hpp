@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -7,6 +8,9 @@
 namespace cgraph {
 
 [[nodiscard]] std::string make_id(std::string_view input);
+// Test hook: how many times this thread has called make_id, so a test can
+// prove extraction normalizes a bounded number of ids per node.
+[[nodiscard]] std::size_t make_id_calls();
 
 // The id input of a relative import's stub, before make_id. `joined` is the
 // importing file's project-relative directory joined with the import's

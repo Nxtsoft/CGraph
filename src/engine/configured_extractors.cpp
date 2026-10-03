@@ -1729,9 +1729,7 @@ void rust_emit_use_stub(
   // same path never collide across fragments (first-occurrence-wins in merge
   // would otherwise pick one kind nondeterministically).
   const auto stub_id = make_id("rust_use:" + joined + ":" + label);
-  const auto exists = std::ranges::any_of(
-      fragment.nodes, [&](const Node& existing) { return existing.id == stub_id; });
-  if (!exists) {
+  if (!node_id_taken(fragment, stub_id)) {
     Node stub{
         .id = stub_id,
         .label = label,
