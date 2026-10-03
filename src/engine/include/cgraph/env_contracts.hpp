@@ -53,11 +53,14 @@
 
 namespace cgraph {
 
-// Held while one JavaScript/TypeScript file is extracted: what each block,
-// switch, function body and the program binds is read once per scope instead
+// Held while one file is extracted (JavaScript/TypeScript, Python, the
+// configured grammars, Spring application config): what each JavaScript or
+// TypeScript block, switch, function body and the program binds is read once per scope instead
 // of on every lookup of a typed env object (each `Enum.MEMBER` walked the whole
-// module before). Scopes nest; each covers one file on its thread. Without one
-// every lookup reads the scopes it passes afresh, with the same result.
+// module before), and the file's env facts are kept as a set
+// (relation_keys.hpp) instead of rescanned for each new read. Scopes nest; each
+// covers one file on its thread. Without one every lookup reads the scopes it
+// passes afresh and every read scans the file's relations, with the same result.
 class EnvContractsFileScope {
  public:
   EnvContractsFileScope();
@@ -71,10 +74,12 @@ class EnvContractsFileScope {
 };
 
 // Test hook: how many scope binding tables and factory-function body walks
-// this thread has done, so a test can prove a held scope reads each once.
+// this thread has done, and how many relations the one-fact-per-symbol-and-name
+// check has read, so a test can prove a held scope reads each once.
 struct EnvLookupCounts {
   std::size_t tables = 0;
   std::size_t factory_walks = 0;
+  std::size_t fact_reads = 0;
 };
 [[nodiscard]] EnvLookupCounts env_lookup_counts();
 
