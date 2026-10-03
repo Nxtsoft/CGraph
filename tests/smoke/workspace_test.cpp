@@ -879,6 +879,89 @@ int test_impact_crosses_a_declared_database(const fs::path& root) {
   return 0;
 }
 
+// Claims of the repos one declared issuer mints tokens for cross between those
+// repos only, at `claim:<issuer>:<name>`: web is reached through idp's
+// `session_id` and OIDC `email`, never through the RFC 7519 `sub`, and api,
+// outside the issuer, is reached through none of them. Without the
+// declaration `session_id` crosses to every repo and `email` to none, as
+// before. Malformed or conflicting issuers are manifest errors.
+int test_impact_crosses_within_a_declared_issuer(const fs::path& root) {
+  const auto ws = root / "ws-issuer";
+  for (const auto* repo : {"idp", "web", "api"}) {
+    fs::create_directories(ws / repo);
+  }
+  const std::string members =
+      R"("repos": [{"name": "idp", "root": "./idp"}, {"name": "web", "root": "./web"}, {"name": "api", "root": "./api"}])";
+  write_file(ws / std::string(cgraph::kWorkspaceFile),
+             "{" + members + R"(, "issuers": [{"name": "idp", "repos": ["idp", "web"]}]})");
+  const auto workspace = cgraph::load_workspace(ws);
+  if (!workspace.ok() ||
+      cgraph::workspace_manifest_json(workspace).value("issuers", json{}) !=
+          json::parse(R"([{"name": "idp", "repos": ["idp", "web"]}])")) {
+    return fail("an issuer manifest loads and round-trips");
+  }
+  FakeRepos repos;
+  repos.answers["idp"]["impact:idp::mintToken"] = impact_ok({contract_brief("claim:session_id", 1, true),
+                                                              contract_brief("claim:email", 1, true),
+                                                              contract_brief("claim:sub", 1, true)});
+  for (const auto* repo : {"web", "api"}) {
+    for (const auto* claim : {"session_id", "email", "sub"}) {
+      repos.answers[repo]["impact:claim:" + std::string(claim)] =
+          impact_ok({node(std::string(repo) + "::read_" + claim, 1)});
+    }
+  }
+  const json params{{"id", "idp::mintToken"}, {"direction", "dependents"}, {"max_depth", 3}};
+  json last;
+  auto reached_by = [&](const cgraph::Workspace& scope) {
+    std::map<std::string, std::string> reached;  // node -> the contract it came through
+    last = cgraph::federate_workspace_request(scope, "impact", params, repos.ask());
+    for (const auto& hit : last["result"]["nodes"]) {
+      if (hit.value("repo", std::string{}) != "idp") {
+        reached[hit["id"]] = hit.value("bridged_through", std::string{});
+      }
+    }
+    return reached;
+  };
+  const auto declared = reached_by(workspace);
+  const std::map<std::string, std::string> within{{"web::read_session_id", "claim:idp:session_id"},
+                                                  {"web::read_email", "claim:idp:email"}};
+  if (declared != within) {
+    std::cerr << last.dump(2) << '\n';
+    return fail("an issuer member's claims cross to its other members only, every name but the RFC 7519 ones");
+  }
+  const auto undeclared = reached_by(workspace_of(ws, {{"idp", ws / "idp"}, {"web", ws / "web"}, {"api", ws / "api"}}));
+  const std::map<std::string, std::string> everywhere{{"web::read_session_id", "claim:session_id"},
+                                                      {"api::read_session_id", "claim:session_id"}};
+  if (undeclared != everywhere) {
+    std::cerr << last.dump(2) << '\n';
+    return fail("with no issuer declared an application claim crosses to every repo and a standard one to none");
+  }
+  const std::map<std::string, std::string> invalid{
+      {"issuer-stranger", R"(, "issuers": [{"name": "idp", "repos": ["idp", "billing"]}])"},
+      {"two-issuers", R"(, "issuers": [{"name": "a", "repos": ["web"]}, {"name": "b", "repos": ["idp", "web"]}])"},
+      {"issuer-twice", R"(, "issuers": [{"name": "a", "repos": ["idp"]}, {"name": "a", "repos": ["web"]}])"},
+      {"issuer-local", R"(, "issuers": [{"name": "local", "repos": ["idp"]}])"},
+      {"issuer-colon", R"(, "issuers": [{"name": "a:b", "repos": ["idp"]}])"},
+      {"issuer-typed", R"(, "issuers": [{"name": "idp", "repos": [3]}])"},
+      {"issuer-empty", R"(, "issuers": [{"name": "idp", "repos": []}])"},
+      {"issuer-not-array", R"(, "issuers": {"name": "idp"})"},
+  };
+  for (const auto& [name, extra] : invalid) {
+    write_file(ws / name / std::string(cgraph::kWorkspaceFile),
+               "{" + std::string(R"("repos": [{"name": "idp", "root": "../idp"}, {"name": "web", "root": "../web"}])") +
+                   extra + "}");
+    try {
+      const auto bad = cgraph::load_workspace(ws / name);
+      if (bad.ok() || !bad.repos.empty() || bad.errors.empty()) {
+        return fail("a malformed or conflicting issuer is a manifest error: " + name);
+      }
+    } catch (const std::exception& error) {
+      return fail("a malformed issuer threw instead of reporting an error: " + name + ": " + error.what());
+    }
+  }
+  return 0;
+}
+
 int main() {
   const auto root = fs::temp_directory_path() / "cgraph-workspace-test";
   fs::remove_all(root);
@@ -899,6 +982,7 @@ int main() {
   failures += test_manifest_databases_and_env(root);
   failures += test_impact_and_path_cross_a_header(root);
   failures += test_impact_crosses_a_declared_database(root);
+  failures += test_impact_crosses_within_a_declared_issuer(root);
 
   fs::remove_all(root);
   return failures == 0 ? 0 : 1;

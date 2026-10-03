@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <set>
 #include <string>
 
 namespace {
@@ -194,10 +195,53 @@ void test_contract_crossings() {
               "src/client.ts uses header:x-org-id, provided by api src/auth.ts:4 (readOrg)",
           "header summary");
 }
+
+// A change to idp's token builder asks web, a member of idp's issuer, about the
+// claims it writes (OIDC `email` included, RFC 7519 `sub` never) and never
+// asks api, outside the issuer.
+void test_issuer_crossings() {
+  const auto ws = output / "issuer-crossings";
+  for (const auto* repo : {"idp", "web", "api"}) fs::create_directories(ws / repo);
+  write(ws / "cgraph.workspace.json",
+        R"({"repos": [{"name": "idp", "root": "./idp"}, {"name": "web", "root": "./web"}, {"name": "api", "root": "./api"}],
+            "issuers": [{"name": "idp", "repos": ["idp", "web"]}]})");
+  cgraph::EnclosingWorkspace enclosing{.workspace = cgraph::load_workspace(ws), .home = "idp", .home_root = ws / "idp"};
+  require(enclosing.workspace.ok(), "the issuer manifest loads");
+  std::vector<std::string> asked;
+  const auto impact_of = [](std::vector<Json> nodes) {
+    return Json{{"ok", true}, {"result", {{"found", true}, {"nodes", std::move(nodes)}}}};
+  };
+  const cgraph::CrossServiceAsk scope{
+      .enclosing = &enclosing,
+      .ask = [&](const cgraph::WorkspaceRepo& repo, const std::string& op, const Json& params,
+                 std::string&) -> std::optional<Json> {
+        const auto id = params.value("id", std::string{});
+        asked.push_back(repo.name + ":" + op + ":" + id);
+        if (id.starts_with("claim:"))
+          return impact_of({{{"id", repo.name + "_read_" + id.substr(6)}, {"label", "read"}, {"kind", "function"}}});
+        return impact_of({});
+      }};
+  cgraph::CrossServiceContracts touched;
+  for (const auto* claim : {"claim:email", "claim:session_id", "claim:sub"}) touched[claim].roles.insert("serves");
+  const auto section = cgraph::cross_service_section(scope, touched);
+  std::set<std::string> rows;
+  for (const auto& row : section["rows"]) rows.insert(row.value("id", std::string{}));
+  require(rows == std::set<std::string>{"web_read_email", "web_read_session_id"},
+          "an issuer member's claims reach its other members only, every name but the RFC 7519 ones: " + section.dump());
+  require(std::ranges::none_of(asked, [](const std::string& call) { return call.starts_with("api:"); }),
+          "a repo outside the issuer was asked about an issuer member's claim");
+  bool shared = false, local = false;
+  for (const auto& contract : section["contracts"]) {
+    shared = shared || (contract["id"] == "claim:email" && contract.value("shared_id", std::string{}) == "claim:idp:email");
+    local = local || (contract["id"] == "claim:sub" && contract.value("local", false));
+  }
+  require(shared && local, "the issuer's claim lists its shared id and a registered claim is local: " + section.dump());
+}
 }
 int main() {
   try {
     test_contract_crossings();
+    test_issuer_crossings();
     fs::create_directories(output);
     auto deletion = cgraph::change_context(parameters("deletion"));
     write(output / "deletion.json", deletion.dump(2));
