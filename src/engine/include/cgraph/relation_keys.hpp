@@ -21,7 +21,11 @@
 namespace cgraph {
 
 // Held by a file scope: the keys of the first `synced` relations of the one
-// vector it covers (the first it is asked about).
+// vector it covers. It binds to the first vector it is asked about and keeps
+// that vector's address for the scope's life, so a scope covers exactly one
+// extraction: an extraction nested inside another (its own result vector)
+// must hold its own scope, or a later vector at a freed one's address would
+// be read against the stale keys.
 template <typename Key>
 struct RelationKeys {
   const std::vector<RawRelation>* relations = nullptr;

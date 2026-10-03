@@ -8,6 +8,7 @@
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/normalize.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <iostream>
 #include <set>
@@ -279,6 +280,15 @@ export async function seed(c: any) {
     const auto result = typescript(file, source);
     const auto reads = cgraph::dynamo_lookup_counts().fact_reads - before.fact_reads;
     ok &= expect("many tables", dynamo_facts(result), expected);
+    // The set above would hide a duplicate: each table's second Put writes none.
+    const auto relations = std::ranges::count_if(result.raw_relations, [](const cgraph::RawRelation& relation) {
+      return (relation.relation == "provides_contract" || relation.relation == "uses_contract") &&
+             relation.context.starts_with("dynamo:");
+    });
+    if (static_cast<std::size_t>(relations) != kFunctions) {
+      std::cerr << "dynamo fact set: " << relations << " dynamo relations for " << kFunctions << " tables\n";
+      ok = false;
+    }
     if (reads > result.raw_relations.size()) {
       std::cerr << "dynamo fact set: " << reads << " relation reads for " << result.raw_relations.size()
                 << " relations\n";

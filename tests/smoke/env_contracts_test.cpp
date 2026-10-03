@@ -38,6 +38,14 @@ namespace {
   return facts;
 }
 
+// How many env relations the file wrote, duplicates included: the set above
+// would hide a duplicate the one-fact-per-symbol-and-name check let through.
+[[nodiscard]] std::size_t env_relation_count(const cgraph::ExtractionResult& result) {
+  return static_cast<std::size_t>(std::ranges::count_if(result.raw_relations, [](const cgraph::RawRelation& relation) {
+    return relation.relation == "uses_contract" && relation.context.starts_with("env:");
+  }));
+}
+
 // The JavaScript and TypeScript sources, also replayed without the per-file
 // binding cache to prove it changes nothing.
 constexpr std::string_view kConfigTs = R"ts(
@@ -485,6 +493,47 @@ server.port=${PORT:8080}
     const auto facts = env_facts(cached, orphan);
     if (facts.size() != 2 * kFunctions || facts != env_facts(uncached, orphan)) {
       std::cerr << "env fact set: " << facts.size() << " cached facts, or cached and uncached differ\n";
+      failed = true;
+    }
+    // A duplicate read writes no relation: A_n twice and SHARED once per
+    // function leave two env relations each.
+    if (env_relation_count(cached) != 2 * kFunctions || env_relation_count(uncached) != 2 * kFunctions) {
+      std::cerr << "env fact set: " << env_relation_count(cached) << " cached env relations, "
+                << env_relation_count(uncached) << " uncached\n";
+      failed = true;
+    }
+  }
+
+  // Python holds the scope too (extract_python): the same set, the same facts.
+  {
+    constexpr std::size_t kFunctions = 300;
+    std::string source = "import os\n";
+    for (std::size_t index = 0; index < kFunctions; ++index) {
+      const auto n = std::to_string(index);
+      source += "def g" + n + "():\n    return os.environ.get(\"A_" + n + "\"), os.getenv(\"A_" + n +
+                "\"), os.environ[\"SHARED\"]\n";
+    }
+    const cgraph::ExtractionContext context{.source_file = "app/heavy.py", .relative_path = "app/heavy.py", .source = source};
+    const auto before = cgraph::env_lookup_counts();
+    const auto cached = cgraph::extract_python(context);
+    const auto middle = cgraph::env_lookup_counts();
+    auto config = cgraph::python_language_config();
+    const TSLanguage* grammar = cgraph::tree_sitter_language_for(cgraph::DetectedLanguage::Python);
+    cgraph::intern_node_symbols(config, grammar);
+    const auto uncached = cgraph::extract_with_config(grammar, config, context);
+    const auto after = cgraph::env_lookup_counts();
+    const auto cached_reads = middle.fact_reads - before.fact_reads;
+    const auto uncached_reads = after.fact_reads - middle.fact_reads;
+    if (cached_reads > cached.raw_relations.size() || uncached_reads < kFunctions * kFunctions) {
+      std::cerr << "python env fact set: cached reads " << cached_reads << " of " << cached.raw_relations.size()
+                << " relations, uncached reads " << uncached_reads << '\n';
+      failed = true;
+    }
+    const auto facts = env_facts(cached, orphan);
+    if (facts.size() != 2 * kFunctions || facts != env_facts(uncached, orphan) ||
+        env_relation_count(cached) != 2 * kFunctions || env_relation_count(uncached) != 2 * kFunctions) {
+      std::cerr << "python env fact set: " << facts.size() << " facts, " << env_relation_count(cached)
+                << " cached env relations, " << env_relation_count(uncached) << " uncached\n";
       failed = true;
     }
   }

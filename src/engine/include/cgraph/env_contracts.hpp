@@ -53,8 +53,9 @@
 
 namespace cgraph {
 
-// Held while one JavaScript/TypeScript file is extracted: what each block,
-// switch, function body and the program binds is read once per scope instead
+// Held while one file is extracted (JavaScript/TypeScript, Python, the
+// configured grammars, Spring application config): what each JavaScript or
+// TypeScript block, switch, function body and the program binds is read once per scope instead
 // of on every lookup of a typed env object (each `Enum.MEMBER` walked the whole
 // module before), and the file's env facts are kept as a set
 // (relation_keys.hpp) instead of rescanned for each new read. Scopes nest; each

@@ -667,6 +667,7 @@ LanguageConfig python_language_config() {
 ExtractionResult extract_python(const ExtractionContext& context) {
   auto config = python_language_config();
   intern_node_symbols(config, tree_sitter_python());
+  const EnvContractsFileScope env_contracts;
   return extract_with_config(tree_sitter_python(), config, context);
 }
 
