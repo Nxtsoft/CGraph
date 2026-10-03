@@ -15,4 +15,4 @@ The #161 re-review left two items open in `src/engine/env_contracts.cpp`:
 
 ## Impact
 
-- `src/engine/env_contracts.cpp`, `src/engine/include/cgraph/env_contracts.hpp`, `tests/smoke/env_contracts_test.cpp`; a one-line scope in each of the three JS/TS entry points in `javascript_extractor.cpp`; `index_persistence.cpp` `logic-22` (the shadowing fix changes output for files with the switch-case / local-enum pattern; the eight probe graphs are byte-identical to bin-v0.8.0).
+- `src/engine/env_contracts.cpp`, `src/engine/include/cgraph/env_contracts.hpp`, `tests/smoke/env_contracts_test.cpp`; a one-line scope in each of the three JS/TS entry points in `javascript_extractor.cpp`; `index_persistence.cpp` `logic-22` (the shadowing fix changes output for files with the switch-case / local-enum pattern; on the eight probe repos the env nodes and edges are identical to bin-v0.8.0).

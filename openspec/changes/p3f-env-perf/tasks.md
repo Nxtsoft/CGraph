@@ -12,4 +12,4 @@
 ## 3. Gates
 
 - [x] 3.1 Extraction time before/after on probe repos and a synthetic file.
-- [x] 3.2 Eight probe repos byte-identical to bin-v0.8.0 except listed shadowing fixes.
+- [x] 3.2 Eight probe repos: env nodes and edges identical to bin-v0.8.0; after the merge with #168 only its `dynamo:` node and edges are new.
