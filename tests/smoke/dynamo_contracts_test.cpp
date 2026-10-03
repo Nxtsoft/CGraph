@@ -2,11 +2,13 @@
 // JavaScript extractors: a call that writes a table records
 // `provides_contract dynamo:<name>`, one that only reads it records
 // `uses_contract dynamo:<name>`, with the env variables the name defaults from
-// as target_label. Driven only through the extractors' public entry points, so
-// it builds against an engine without DynamoDB contracts and fails there.
+// as target_label. Driven through the extractors' public entry points, plus
+// the dynamo_lookup_counts test hook.
+#include "cgraph/dynamo_contracts.hpp"
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/normalize.hpp"
 
+#include <cstddef>
 #include <iostream>
 #include <set>
 #include <string>
@@ -257,6 +259,31 @@ export async function seed(c: any) {
 }
 )ts");
     ok &= expect("test source", dynamo_facts(result), {});
+  }
+
+  // One fact per reading symbol and table is checked against a set the file
+  // scope keeps, caught up with the relations appended since: each relation is
+  // read once per file, not once per call (a scan per call was quadratic).
+  {
+    constexpr std::size_t kFunctions = 200;
+    const std::string file = "src/tables.ts";
+    std::string source = "import { PutItemCommand } from '@aws-sdk/client-dynamodb';\n";
+    std::set<std::string> expected;
+    for (std::size_t index = 0; index < kFunctions; ++index) {
+      const auto n = std::to_string(index);
+      source += "export async function put" + n + "(c: any) { await c.send(new PutItemCommand({ TableName: 'tbl-" + n +
+                "', Item: {} })); await c.send(new PutItemCommand({ TableName: 'tbl-" + n + "', Item: {} })) }\n";
+      expected.insert("provides|" + id(file, "put" + n) + "|dynamo:tbl-" + n + "|");
+    }
+    const auto before = cgraph::dynamo_lookup_counts();
+    const auto result = typescript(file, source);
+    const auto reads = cgraph::dynamo_lookup_counts().fact_reads - before.fact_reads;
+    ok &= expect("many tables", dynamo_facts(result), expected);
+    if (reads > result.raw_relations.size()) {
+      std::cerr << "dynamo fact set: " << reads << " relation reads for " << result.raw_relations.size()
+                << " relations\n";
+      ok = false;
+    }
   }
 
   return ok ? 0 : 1;

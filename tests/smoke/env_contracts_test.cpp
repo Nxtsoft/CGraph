@@ -11,6 +11,7 @@
 #include "cgraph/python_extractor.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <iostream>
 #include <set>
 #include <string>
@@ -449,6 +450,41 @@ server.port=${PORT:8080}
     auto facts = env_facts(cached, orphan);
     if (facts.size() != 2 * kFunctions || facts != env_facts(uncached, orphan)) {
       std::cerr << "env scope cache: " << facts.size() << " cached facts, or cached and uncached differ\n";
+      failed = true;
+    }
+  }
+
+  // One fact per reading symbol and name is checked against a set the scope
+  // keeps, caught up with the relations appended since: each relation is read
+  // once per file. Without the scope every read scans all of the file's
+  // relations, which made an env-heavy file quadratic. Same facts either way.
+  {
+    constexpr std::size_t kFunctions = 300;
+    std::string source;
+    for (std::size_t index = 0; index < kFunctions; ++index) {
+      const auto n = std::to_string(index);
+      source += "export function g" + n + "() { return [process.env.A_" + n + ", process.env.A_" + n +
+                ", process.env.SHARED] }\n";
+    }
+    const cgraph::ExtractionContext context{.source_file = "src/heavy.ts", .relative_path = "src/heavy.ts", .source = source};
+    const auto before = cgraph::env_lookup_counts();
+    const auto cached = cgraph::extract_typescript(context);
+    const auto middle = cgraph::env_lookup_counts();
+    auto config = cgraph::typescript_language_config();
+    const TSLanguage* grammar = cgraph::tree_sitter_language_for(cgraph::DetectedLanguage::TypeScript);
+    cgraph::intern_node_symbols(config, grammar);
+    const auto uncached = cgraph::extract_with_config(grammar, config, context);
+    const auto after = cgraph::env_lookup_counts();
+    const auto cached_reads = middle.fact_reads - before.fact_reads;
+    const auto uncached_reads = after.fact_reads - middle.fact_reads;
+    if (cached_reads > cached.raw_relations.size() || uncached_reads < kFunctions * kFunctions) {
+      std::cerr << "env fact set: cached reads " << cached_reads << " of " << cached.raw_relations.size()
+                << " relations, uncached reads " << uncached_reads << '\n';
+      failed = true;
+    }
+    const auto facts = env_facts(cached, orphan);
+    if (facts.size() != 2 * kFunctions || facts != env_facts(uncached, orphan)) {
+      std::cerr << "env fact set: " << facts.size() << " cached facts, or cached and uncached differ\n";
       failed = true;
     }
   }

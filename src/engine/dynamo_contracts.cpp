@@ -3,6 +3,7 @@
 #include "cgraph/data_contracts.hpp"
 #include "cgraph/env_contracts.hpp"
 #include "cgraph/javascript_syntax.hpp"
+#include "cgraph/relation_keys.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -181,6 +183,13 @@ struct FileIndex {
 // The index of the file being extracted, built on its first DynamoDB call.
 thread_local std::optional<FileIndex>* current_index = nullptr;
 
+// A `dynamo:` fact's (relation, reading symbol, context, target label).
+using DynamoFact = std::tuple<std::string, std::string, std::string, std::string>;
+
+// The dynamo facts of the file a DynamoContractsFileScope covers.
+thread_local RelationKeys<DynamoFact>* current_facts = nullptr;
+thread_local DynamoLookupCounts lookup_counts;
+
 // The file's root, which index_file reads. Done only for a call that already
 // passes TableName and a DynamoDB command or method, so a file pays for it only
 // where it talks to DynamoDB.
@@ -287,14 +296,23 @@ thread_local std::optional<FileIndex>* current_index = nullptr;
 struct DynamoContractsFileScope::Index {
   std::optional<FileIndex> file;
   std::optional<FileIndex>* previous = nullptr;
+  RelationKeys<DynamoFact> facts;
+  RelationKeys<DynamoFact>* previous_facts = nullptr;
 };
 
 DynamoContractsFileScope::DynamoContractsFileScope() : index_(std::make_unique<Index>()) {
   index_->previous = current_index;
   current_index = &index_->file;
+  index_->previous_facts = current_facts;
+  current_facts = &index_->facts;
 }
 
-DynamoContractsFileScope::~DynamoContractsFileScope() { current_index = index_->previous; }
+DynamoContractsFileScope::~DynamoContractsFileScope() {
+  current_index = index_->previous;
+  current_facts = index_->previous_facts;
+}
+
+DynamoLookupCounts dynamo_lookup_counts() { return lookup_counts; }
 
 bool is_dynamo_table_name(std::string_view name) {
   return name.size() >= 3 && name.size() <= 255 && std::ranges::all_of(name, [](char ch) {
@@ -360,11 +378,14 @@ void js_dynamo_contracts(const TSNode& node, const ExtractionContext& context, c
   auto scope = js_syntax::reading_scope_id(node, context, function_scope_id, fragment);
   const auto relation = writes ? kProvides : kUses;
   const auto fact = "dynamo:" + table->name;
-  const bool seen = std::ranges::any_of(out, [&](const RawRelation& existing) {
-    return existing.relation == relation && existing.source_id == scope && existing.context == fact &&
-           existing.target_label == table->env;
-  });
-  if (seen) {
+  const auto dynamo_fact = [](const RawRelation& existing) -> std::optional<DynamoFact> {
+    if ((existing.relation != kProvides && existing.relation != kUses) || !existing.context.starts_with("dynamo:")) {
+      return std::nullopt;
+    }
+    return DynamoFact{existing.relation, existing.source_id, existing.context, existing.target_label};
+  };
+  if (has_relation_key(current_facts, out, DynamoFact{std::string(relation), scope, fact, table->env}, dynamo_fact,
+                       lookup_counts.fact_reads)) {
     return;
   }
   out.push_back(RawRelation{
