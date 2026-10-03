@@ -162,7 +162,7 @@ int run_build(const Args& args) {
 
   // Sidecar stats.json (durable, diffable) deliberately kept out of graph.json
   // so the Graphify node-link parity golden stays byte-identical.
-  std::filesystem::create_directories(args.output);
+  cgraph::create_output_directories(args.output);
   cgraph::write_file_atomically(args.output / "stats.json", cgraph::build_stats_json(result.stats).dump(2));
 
   std::cerr << "processed " << result.file_count << " files, wrote exports to " << args.output << '\n';
@@ -445,7 +445,7 @@ int run_seam_gen(int argc, char** argv) {
     std::cerr << "  " << line << '\n';
   }
 
-  std::filesystem::create_directories(out_dir);
+  cgraph::create_output_directories(out_dir);
   const auto out_file = out_dir / "chunk_00.json";
   cgraph::write_file_atomically(out_file, cgraph::to_json(result.fragment).dump(2) + '\n');
   std::cerr << "seam gen: wrote " << out_file << " (" << result.fragment.nodes.size()
@@ -647,7 +647,7 @@ int run_seam_discover(int argc, char** argv) {
   for (const auto& line : result.resolution_log) {
     std::cerr << "  " << line << '\n';
   }
-  std::filesystem::create_directories(out_dir);
+  cgraph::create_output_directories(out_dir);
   const auto out_file = out_dir / "chunk_00.json";
   cgraph::write_file_atomically(out_file, cgraph::to_json(result.fragment).dump(2) + '\n');
   std::cerr << "seam discover: wrote " << out_file << " (" << result.fragment.nodes.size() << " nodes, "
@@ -766,7 +766,7 @@ int run_seam_fuse(int argc, char** argv) {
     return 1;
   }
 
-  std::filesystem::create_directories(out_dir);
+  cgraph::create_output_directories(out_dir);
   cgraph::write_file_atomically(out_dir / "graph.json", cgraph::to_node_link_json(fused.graph).dump(2) + '\n');
   cgraph::write_file_atomically(out_dir / "graph.html", cgraph::export_graph_html(fused.graph));
   // Marker: tells graphd to serve this dir as a static read-only seam graph.
@@ -1250,9 +1250,13 @@ int run(int argc, char** argv) {
 int main(int argc, char** argv) {
   // Every output file goes through write_file_atomically: a full disk or any
   // other failed write leaves no truncated file behind and must not exit 0.
+  // One handler reports every failure the same way: cgraph::FileWriteError
+  // (names the file and the OS reason), std::filesystem::filesystem_error
+  // (what() names the path(s)), and any other std::exception. An escaped
+  // exception would instead abort with a core dump (exit 134).
   try {
     return run(argc, argv);
-  } catch (const cgraph::FileWriteError& error) {
+  } catch (const std::exception& error) {
     std::cerr << "cgraph: " << error.what() << '\n';
     return 1;
   }

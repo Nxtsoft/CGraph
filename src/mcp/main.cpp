@@ -2,11 +2,14 @@
 #include "cgraph/mcp_server.hpp"
 
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <string>
 
-int main(int argc, char** argv) {
+namespace {
+
+int run(int argc, char** argv) {
   cgraph::ClientRequest base;
   // Claude Code (and other hosts) set CLAUDE_PROJECT_DIR to the project root and
   // do not guarantee the server's working directory, so prefer it over cwd.
@@ -55,4 +58,18 @@ int main(int argc, char** argv) {
     }
   }
   return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // Per-request failures are answered as JSON-RPC errors (handle_mcp_request);
+  // anything else (e.g. a filesystem_error resolving the working directory at
+  // startup) is reported and exits non-zero instead of aborting.
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& error) {
+    std::cerr << "cgraph-mcp: " << error.what() << '\n';
+    return 1;
+  }
 }

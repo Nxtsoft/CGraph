@@ -6,6 +6,7 @@
 #include "cgraph/seam.hpp"
 
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <string>
 
@@ -16,9 +17,7 @@ void print_usage() {
                "             [--benchmark-query --graph PATH --query TEXT]\n";
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
   const auto info = cgraph::build_info();
   std::filesystem::path graph_path;
   std::filesystem::path root;
@@ -99,4 +98,18 @@ int main(int argc, char** argv) {
     return cgraph::run_static_seam_server(root, options);
   }
   return cgraph::run_daemon_server(root, options);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // A failure the server does not handle itself (e.g. a filesystem_error
+  // creating the socket directory, or an unreadable --idle-timeout) is logged
+  // and exits non-zero; an escaped exception would abort with a core dump.
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& error) {
+    std::cerr << "graphd: " << error.what() << '\n';
+    return 1;
+  }
 }

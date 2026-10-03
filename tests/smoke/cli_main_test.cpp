@@ -173,6 +173,37 @@ int main(int argc, char** argv) {
   expect(ok, !fs::exists(limited_out / "graph.html"), "one-shot build leaves no truncated graph.html");
   expect(ok, no_temp_files(limited_out), "one-shot build leaves no temp file");
 
+  // --out under a read-only directory: creating the output directory fails.
+  // That must exit 1 naming the path, not escape as an uncaught
+  // std::filesystem::filesystem_error that aborts with a core dump (134).
+  // Skipped as root, which bypasses directory permissions.
+  if (::geteuid() != 0) {
+    const auto read_only = root / "read-only";
+    fs::create_directories(read_only);
+    fs::permissions(read_only, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+    const auto blocked = read_only / "out";
+
+    auto blocked_fuse = fuse_inputs;
+    blocked_fuse.insert(blocked_fuse.end(), {"--out", blocked.string()});
+    run = run_cgraph(cgraph, blocked_fuse, kUnlimited);
+    expect(ok, run.exit_code == 1, "seam fuse into a read-only parent exits 1 (got " +
+                                       std::to_string(run.exit_code) + "): " + run.stderr_text);
+    expect(ok, contains(run.stderr_text, "cgraph: failed to write " + blocked.string() + ": cannot create directory"),
+           "seam fuse names the directory it cannot create: " + run.stderr_text);
+    expect(ok, contains(run.stderr_text, "Permission denied"), "seam fuse gives the OS reason: " + run.stderr_text);
+
+    run = run_cgraph(cgraph, {"--root", fixture.string(), "--out", blocked.string()}, kUnlimited);
+    expect(ok, run.exit_code == 1, "one-shot build into a read-only parent exits 1 (got " +
+                                       std::to_string(run.exit_code) + "): " + run.stderr_text);
+    expect(ok, contains(run.stderr_text, "cgraph: failed to write " + blocked.string() + ": cannot create directory"),
+           "one-shot build names the directory it cannot create: " + run.stderr_text);
+    expect(ok, !fs::exists(blocked), "no output directory appears under the read-only parent");
+
+    fs::permissions(read_only, fs::perms::owner_all, fs::perm_options::replace);
+  } else {
+    std::cout << "cli_main_test: read-only --out case skipped (running as root)\n";
+  }
+
   fs::remove_all(root);
   if (ok) {
     std::cout << "cli_main_test: ok\n";

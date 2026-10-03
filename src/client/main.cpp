@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <string>
 
@@ -15,9 +16,7 @@ void print_usage() {
                "         the other services on the far side of each endpoint FILE serves or calls\n";
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
   const auto info = cgraph::build_info();
   cgraph::ClientRequest request{
       .project_root = std::filesystem::current_path(),
@@ -87,4 +86,17 @@ int main(int argc, char** argv) {
 
   std::cout << result.response->dump(2) << '\n';
   return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // Report any unhandled failure (e.g. a filesystem_error resolving the
+  // project root) and exit non-zero instead of aborting with a core dump.
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& error) {
+    std::cerr << "cgraph-client: " << error.what() << '\n';
+    return 1;
+  }
 }

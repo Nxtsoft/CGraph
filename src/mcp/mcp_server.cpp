@@ -342,7 +342,14 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
     return error_response(id, -32603, "missing daemon forwarder");
   }
 
-  const auto daemon_response = forwarder(daemon_request);
+  // A forwarder that throws (a filesystem or runtime failure reaching the
+  // daemon) fails this request only; the stdio loop keeps serving.
+  nlohmann::json daemon_response;
+  try {
+    daemon_response = forwarder(daemon_request);
+  } catch (const std::exception& error) {
+    return error_response(id, -32603, error.what());
+  }
   if (!daemon_response.value("ok", false)) {
     if (name == "graph_report") {
       if (const auto hint = report_upgrade_hint(daemon_response)) {
