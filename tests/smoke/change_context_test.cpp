@@ -236,6 +236,15 @@ void test_issuer_crossings() {
     local = local || (contract["id"] == "claim:sub" && contract.value("local", false));
   }
   require(shared && local, "the issuer's claim lists its shared id and a registered claim is local: " + section.dump());
+
+  // api, outside the issuer, changing code that writes `session_id`: the claim
+  // still crosses (at `claim:session_id`), but no member of idp's issuer holds
+  // that crossing, so nobody is asked and no row names idp or web.
+  enclosing.home = "api";
+  asked.clear();
+  const auto outsider = cgraph::cross_service_section(scope, {{"claim:session_id", {.roles = {"serves"}}}});
+  require(asked.empty() && outsider["rows"].empty() && !outsider["contracts"][0].value("local", false),
+          "an outsider's claim was asked of an issuer's members: " + outsider.dump());
 }
 }
 int main() {

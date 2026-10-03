@@ -194,6 +194,13 @@ int test_issuer_crossing() {
       !spell("api", "claim:email").empty()) {
     return fail("contract_spellings under an issuer");
   }
+  // An issuer of one member: its claims cross at an id no other repo holds.
+  const std::vector<cgraph::ClaimIssuer> solo{{.name = "idp", .repos = {"idp"}}};
+  if (cgraph::crossing_id({}, {}, solo, "idp", "claim:session_id") != "claim:idp:session_id" ||
+      !cgraph::contract_spellings({}, {}, solo, "web", "claim:idp:session_id").empty() ||
+      !cgraph::contract_spellings({}, {}, solo, "api", "claim:idp:session_id").empty()) {
+    return fail("an issuer with a single member stays isolated");
+  }
   if (cgraph::declared_issuer(issuers, "web") != &issuers[0] || cgraph::declared_issuer(issuers, "api") != nullptr ||
       !cgraph::issuer_claim(issuers, "claim:idp:email") || cgraph::issuer_claim(issuers, "claim:other:email") ||
       cgraph::issuer_claim(issuers, "claim:email") || cgraph::issuer_claim(issuers, "header:idp:x")) {
@@ -217,6 +224,10 @@ int test_issuer_parse_and_validate() {
   const auto flag = cgraph::parse_issuer_flag("idp=idp,web", error);
   if (!flag || flag->name != "idp" || flag->repos != std::vector<std::string>{"idp", "web"}) {
     return fail("the --issuer form parses: " + error);
+  }
+  error.clear();
+  if (cgraph::parse_issuer_flag("a:b=web", error) || !error.starts_with("each `issuers` entry needs a `name`")) {
+    return fail("a malformed issuer name reads as a sentence: " + error);
   }
   for (const auto* bad : {"idp", "=web", "local=web", "a:b=web", "idp=", "idp=web,,idp", "i dp=web"}) {
     error.clear();

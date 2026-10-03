@@ -735,6 +735,16 @@ int test_issuer_claims(const fs::path& root) {
               << (undeclared.errors.empty() ? std::string{"(no error)"} : undeclared.errors.front()) << '\n';
     return 1;
   }
+  // The reverse: discovered with no issuer, fused with one. idp's
+  // `claim:session_id` would be scoped to `claim:idp:session_id` away from the
+  // seam's `claim:session_id`: refused too, saying the two runs disagree.
+  const auto reverse = cgraph::fuse_seam(plain.fragment, services, {}, {}, {}, issuers);
+  if (reverse.ok || reverse.errors.empty() || reverse.errors.front().find("claim:session_id") == std::string::npos ||
+      reverse.errors.front().find("discover and fuse were given different --issuer") == std::string::npos) {
+    std::cerr << "fuse: a seam discovered without --issuer was fused with one and not refused: "
+              << (reverse.errors.empty() ? std::string{"(no error)"} : reverse.errors.front()) << '\n';
+    return 1;
+  }
   const auto fused = cgraph::fuse_seam(declared.fragment, services, {}, {}, {}, issuers);
   const auto* fused_email = find_in(fused.graph, "claim:idp:email");
   if (!fused.ok || fused_email == nullptr || fused_email->properties.at("issuer") != "idp" ||

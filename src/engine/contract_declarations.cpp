@@ -49,7 +49,7 @@ constexpr ScopeWords kIssuerWords{.key = "issuers", .noun = "issuer", .reserved 
 template <typename Scope>
 [[nodiscard]] std::optional<std::string> scope_entry_error(const Scope& scope, const ScopeWords& words) {
   if (!plain_name(scope.name) || scope.name.find(':') != std::string::npos) {
-    return "a `" + std::string(words.key) + "` entry needs a `name` with no `:` or whitespace: '" + scope.name + "'";
+    return "each `" + std::string(words.key) + "` entry needs a `name` with no `:` or whitespace: '" + scope.name + "'";
   }
   if (scope.name == kLocalDatabase) {
     return std::string(words.noun) + " name `local` is reserved" + std::string(words.reserved);
@@ -79,7 +79,7 @@ template <typename Scope>
     const auto repos = entry.find("repos");
     if (name == entry.end() || !name->is_string() || repos == entry.end() || !repos->is_array() ||
         !std::ranges::all_of(*repos, [](const nlohmann::json& repo) { return repo.is_string(); })) {
-      errors.push_back("a `" + key + "` entry needs a string `name` and a `repos` array of strings: " + entry.dump());
+      errors.push_back("each `" + key + "` entry needs a string `name` and a `repos` array of strings: " + entry.dump());
       continue;
     }
     Scope scope{.name = name->get<std::string>(), .repos = {}};

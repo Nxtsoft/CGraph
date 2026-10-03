@@ -15,3 +15,9 @@
 
 - [x] 3.1 Tests in contract_declarations, contracts, seam, workspace and change_context; the workspace and change context ones fail on origin/main.
 - [x] 3.2 Probe: seam with `--issuer idp=idp,idp-front-end,passless-cli,passless-app`, every cross-repo claim join before/after hand-checked; seam without `--issuer` byte-identical to bin-v0.8.0's; scorer before/after.
+
+## 4. Review round 1
+
+- [x] 4.1 Fuse's refusal says discover and fuse were given different declarations (either direction); test for a seam discovered without `--issuer` and fused with one.
+- [x] 4.2 Entry errors read "each `<key>` entry needs ...".
+- [x] 4.3 Tests: change context from an outsider home asks no member; workspace `path` across an issuer and never to an outsider; an issuer of one member stays isolated.

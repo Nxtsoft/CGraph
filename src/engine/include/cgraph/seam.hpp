@@ -107,7 +107,8 @@ struct SeamFuseResult {
 // The declarations must be the ones discover joined the seam under: a seam
 // contract whose `HANDLED_BY` / `CONSUMED_AT` service holds it under none of
 // the ids these declarations give (contract_spellings) fails loud, naming the
-// missing `--env` / `--database` / `--issuer`, rather than splitting the join.
+// `--env` / `--database` / `--issuer` discover and fuse disagree on (either
+// side may hold the extra one), rather than splitting the join.
 [[nodiscard]] SeamFuseResult fuse_seam(
     const Fragment& seam,
     const std::vector<std::pair<std::string, GraphSnapshot>>& services,

@@ -358,11 +358,13 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     add_edge({.source = scoped(service->second, edge.source), .target = scoped(service->second, edge.target),
               .relation = edge.relation});
   }
-  // A contract discover joined under a declaration (`--env`, `--database`, `--issuer`)
-  // must be held under one of its spellings by every service the seam says
-  // provides or uses it; fused without the same declarations, that service's
-  // node would be scoped away from the seam's id and the join would silently
-  // split, so it is refused, as an unjoined proxied endpoint is.
+  // A seam contract other than an endpoint must be held under one of its
+  // spellings by every service the seam says provides or uses it. When it is
+  // not, discover and fuse were given different declarations (`--env`,
+  // `--database`, `--issuer`, in either direction: a declaration only discover
+  // had, or only fuse has), that service's node would be scoped away from the
+  // seam's id and the join would silently split, so it is refused, as an
+  // unjoined proxied endpoint is.
   std::unordered_map<std::string, std::unordered_set<std::string>> held;  // service -> its node ids
   for (const auto& [name, graph] : services) {
     auto& ids = held[name];
@@ -381,8 +383,10 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     const auto& ids = held.at(service->second);
     if (std::ranges::none_of(spellings, [&](const std::string& id) { return ids.contains(id); })) {
       undeclared.push_back("seam contract " + edge.source + " (" + edge.relation + " in " + service->second +
-                           ") was joined by discover under a declaration fuse was not given; pass fuse the same " +
-                           (kind == "env" ? "--env" : kind == "claim" ? "--issuer" : "--database") + " as discover");
+                           ") is held by " + service->second +
+                           " under none of the ids fuse's declarations give it; discover and fuse were given different " +
+                           (kind == "env" ? "--env" : kind == "claim" ? "--issuer" : "--database") +
+                           " declarations, pass both the same");
     }
   }
   if (!undeclared.empty()) {

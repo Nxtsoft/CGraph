@@ -936,6 +936,42 @@ int test_impact_crosses_within_a_declared_issuer(const fs::path& root) {
     std::cerr << last.dump(2) << '\n';
     return fail("with no issuer declared an application claim crosses to every repo and a standard one to none");
   }
+  // `path` joins idp to web at the issuer's id, each side under its own
+  // `claim:email`, and never joins idp to api.
+  const auto empty_path = json{{"ok", true}, {"result", {{"path", json::array()}, {"path_nodes", json::array()}}}};
+  for (const auto* repo : {"idp", "web", "api"}) repos.answers[repo]["path"] = empty_path;
+  auto leg = [](const std::string& from, const std::string& to) {
+    return json{{"ok", true}, {"result", {{"path", {from, to}}, {"path_nodes", {{{"id", from}}, {{"id", to}}}}}}};
+  };
+  for (const auto* claim : {"claim:email", "claim:session_id"}) {
+    repos.answers["idp"]["path:idp::mintToken->" + std::string(claim)] = leg("idp::mintToken", claim);
+  }
+  repos.answers["web"]["path:claim:email->web::read_email"] = leg("claim:email", "web::read_email");
+  repos.answers["api"]["path:claim:session_id->api::read_session_id"] = leg("claim:session_id", "api::read_session_id");
+  const auto path = cgraph::federate_workspace_request(
+      workspace, "path", json{{"source", "idp::mintToken"}, {"target", "web::read_email"}}, repos.ask());
+  if (path["result"]["path"] != json::array({"idp::mintToken", "claim:email", "web::read_email"}) ||
+      path["result"].value("bridged_through", std::string{}) != "claim:idp:email") {
+    std::cerr << path.dump(2) << '\n';
+    return fail("path joins two members of an issuer at its id");
+  }
+  const auto outside = cgraph::federate_workspace_request(
+      workspace, "path", json{{"source", "idp::mintToken"}, {"target", "api::read_session_id"}}, repos.ask());
+  if (!outside["result"]["path"].empty()) {
+    std::cerr << outside.dump(2) << '\n';
+    return fail("path joined an issuer member to a repo outside the issuer");
+  }
+  // An issuer of one member: its claims cross nowhere, not even to repos in no
+  // issuer that read the same names.
+  const auto solo_root = root / "ws-issuer-solo";
+  for (const auto* repo : {"idp", "web", "api"}) fs::create_directories(solo_root / repo);
+  write_file(solo_root / std::string(cgraph::kWorkspaceFile),
+             "{" + members + R"(, "issuers": [{"name": "idp", "repos": ["idp"]}]})");
+  const auto solo = cgraph::load_workspace(solo_root);
+  if (!solo.ok() || !reached_by(solo).empty()) {
+    std::cerr << last.dump(2) << '\n';
+    return fail("an issuer with a single member stays isolated");
+  }
   const std::map<std::string, std::string> invalid{
       {"issuer-stranger", R"(, "issuers": [{"name": "idp", "repos": ["idp", "billing"]}])"},
       {"two-issuers", R"(, "issuers": [{"name": "a", "repos": ["web"]}, {"name": "b", "repos": ["idp", "web"]}])"},
