@@ -26,3 +26,8 @@
 - [x] 4.4 `contracts_test`: the standard-claim comment back above its function.
 - [x] 4.5 `DynamoContractsFileScope`: the file's imports and constants are read once per file.
 - [x] 4.6 `paginateQuery` / `paginateScan` (TableName in the second argument), namespaced commands (`new ddb.PutItemCommand`), destructured parameters and locals shadow a module constant; tests for each fail on the round-0 code.
+
+## 5. Merge with main (#169 claim issuers)
+
+- [x] 5.1 `git merge origin/main` (8be77de): `contracts.hpp` keeps both the issuer and the DynamoDB notes; `seam.cpp` keeps `env` in the copied keys and #169's issuer tagging; `seam_test` keeps `test_dynamo_contracts` and `test_issuer_claims`; the MODIFIED "One rule says which contract ids cross repositories" block is #169's text plus `dynamo:`.
+- [x] 5.2 Index version `logic-21`.

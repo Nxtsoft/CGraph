@@ -298,7 +298,13 @@ as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
   `x-forwarded-*`, `traceparent`) never joins: every service uses those for its own reasons. Nor
   does a standard JWT claim, which any issuer writes with the same meaning (`iss`, `sub`, `exp`,
   `email`, `name`, `scope`, `client_id`: the IANA JWT Claims registry's RFC 7519, OpenID Connect,
-  RFC 7800, RFC 8693 and RFC 9449 names); application claims (`roles`, `tenant_id`, `session_id`) do. A claim is recorded only where the code is provably about a JWT: `.claim("roles", r)`
+  RFC 7800, RFC 8693 and RFC 9449 names); application claims (`roles`, `tenant_id`, `session_id`) do.
+  A claim name alone does not say whose token it is in, so the repositories whose tokens one issuer
+  mints can be declared: `--issuer idp=idp,web,cli` spells their `claim:<name>` as
+  `claim:idp:<name>`. Between those repositories every claim then joins except the RFC 7519
+  registered ones (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`), so OpenID Connect claims
+  (`email`, `name`, `scope`) join there too, and their claims never join a repository outside the
+  issuer. With no issuer declared, claims join as above. A claim is recorded only where the code is provably about a JWT: `.claim("roles", r)`
   on a jjwt `Jwts.builder()` or Nimbus `JWTClaimsSet.Builder()` chain, the payload keys of
   `jsonwebtoken` `sign`, jose `SignJWT` and PyJWT `jwt.encode`; the `json:"x"` tags of a Go struct
   that embeds golang-jwt's `RegisteredClaims`, goes to `ParseWithClaims`, or is unmarshalled from a
@@ -343,7 +349,7 @@ as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 
-Both flags go on `seam discover` and `seam fuse`, and must be the same on both: a seam joined
+The `--database`, `--env` and `--issuer` flags go on `seam discover` and `seam fuse`, and must be the same on both: a seam joined
 under a declaration that fuse is not given is refused rather than silently split.
 
 ### Contract documents
@@ -386,10 +392,12 @@ optional `prefixes` (`[{"repo": "web", "from": "/api/backend", "to": "/api"}]`) 
 proxy mapping into `impact` and `path`, which then cross from web's `/api/backend/...` placeholder to the
 backend's `/api/...` endpoint and back; a `path` across it keeps both spellings. A change to web's own
 route never reaches web's proxied callers, which hit the backend's copy. Its optional `databases`
-(`[{"name": "turing", "repos": ["api", "ml"]}]`) and `env` (`[{"name": "ML_BACKEND_URL", "service": "ml"}]`)
-carry the seam declarations. `impact` and `path` cross at claims and non-standard headers as at
-endpoints; never at a standard HTTP header; at an env name only when `env` declares it; and at a
-member's `table:local:` id only towards the other members of its database. A repository
+(`[{"name": "turing", "repos": ["api", "ml"]}]`), `env` (`[{"name": "ML_BACKEND_URL", "service": "ml"}]`)
+and `issuers` (`[{"name": "idp", "repos": ["idp", "web"]}]`) carry the seam declarations. `impact`
+and `path` cross at claims and non-standard headers as at endpoints; never at a standard HTTP
+header; at an env name only when `env` declares it; at a member's `table:local:` id only towards
+the other members of its database; and at an issuer member's claim only towards the other members
+of its issuer. A repository
 whose daemon is down appears in `unreachable` rather than vanishing from the answer. `report`,
 `context` and the memory ops are answered per project and say so, naming the roots to use. The
 MCP server federates too when its root is a workspace, with no new tool.

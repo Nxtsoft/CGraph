@@ -1474,6 +1474,18 @@ int test_generic_contract_facts() {
       cgraph::is_standard_jwt_claim("roles") || cgraph::is_standard_jwt_claim("groups")) {
     return fail("application claims bridge, standard claims do not");
   }
+  // Inside a declared issuer only the RFC 7519 section 4.1 names stay home;
+  // every one is also standard, and the OIDC ones are not registered.
+  for (const auto* registered : {"iss", "sub", "aud", "exp", "nbf", "iat", "jti"}) {
+    if (!cgraph::is_registered_jwt_claim(registered) || !cgraph::is_standard_jwt_claim(registered)) {
+      return fail(std::string("an RFC 7519 registered claim is not registered: ") + registered);
+    }
+  }
+  for (const auto* other : {"email", "name", "scope", "preferred_username", "client_id", "roles", "EXP"}) {
+    if (cgraph::is_registered_jwt_claim(other)) {
+      return fail(std::string("a claim outside RFC 7519 section 4.1 is registered: ") + other);
+    }
+  }
   return 0;
 }
 

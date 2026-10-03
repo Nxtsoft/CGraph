@@ -184,7 +184,7 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
 [[nodiscard]] std::optional<std::string> shared_contract(const Workspace& workspace, const WorkspaceRepo& repo,
                                                          const nlohmann::json& brief, const RepoAsk& ask) {
   const auto id = brief.value("id", std::string{});
-  auto shared = crossing_id(workspace.databases, workspace.env, repo.name, id);
+  auto shared = crossing_id(workspace.databases, workspace.env, workspace.issuers, repo.name, id);
   if (!shared || *shared != id) {
     return shared;
   }
@@ -204,7 +204,7 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
 // other repos, never to its own routes.
 [[nodiscard]] std::vector<std::string> spellings_in(const Workspace& workspace, const WorkspaceRepo& repo,
                                                     const std::string& contract, const RepoAsk& ask) {
-  auto ids = contract_spellings(workspace.databases, workspace.env, repo.name, contract);
+  auto ids = contract_spellings(workspace.databases, workspace.env, workspace.issuers, repo.name, contract);
   if (ids.size() != 1) {
     return ids;  // crosses nowhere, or a database member's own spelling: no proxy applies
   }
@@ -399,7 +399,7 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
   // already covered it). The contract is not asked back of those repos.
   std::map<std::string, std::set<std::string>> proxied_from;
   std::map<std::string, std::set<std::string>> reached_in;
-  if (crossing_id(workspace.databases, workspace.env, {}, seed) == seed) {
+  if (crossing_id(workspace.databases, workspace.env, workspace.issuers, {}, seed) == seed) {
     contracts.emplace(seed, 0);
     // A seed spelled the way a repo calls it through its proxy is also the
     // proxied contract.
@@ -857,7 +857,10 @@ Workspace load_workspace(const std::filesystem::path& root) {
   if (const auto env = manifest.find("env"); env != manifest.end()) {
     workspace.env = parse_env_providers(*env, workspace.errors);
   }
-  for (auto& problem : contract_declaration_errors(workspace.databases, workspace.env, members)) {
+  if (const auto issuers = manifest.find("issuers"); issuers != manifest.end()) {
+    workspace.issuers = parse_claim_issuers(*issuers, workspace.errors);
+  }
+  for (auto& problem : contract_declaration_errors(workspace.databases, workspace.env, workspace.issuers, members)) {
     workspace.errors.push_back(std::move(problem));
   }
   if (!workspace.errors.empty()) {
@@ -865,6 +868,7 @@ Workspace load_workspace(const std::filesystem::path& root) {
     workspace.prefixes.clear();
     workspace.databases.clear();
     workspace.env.clear();
+    workspace.issuers.clear();
   }
   return workspace;
 }
@@ -889,6 +893,9 @@ nlohmann::json workspace_manifest_json(const Workspace& workspace) {
   }
   if (!workspace.env.empty()) {
     manifest["env"] = env_providers_json(workspace.env);
+  }
+  if (!workspace.issuers.empty()) {
+    manifest["issuers"] = claim_issuers_json(workspace.issuers);
   }
   return manifest;
 }
