@@ -66,6 +66,7 @@ struct ReconciliationResult {
     SemanticCache& cache,
     const GraphSnapshot& graph);
 
+// Atomic; throws FileWriteError (atomic_write.hpp) if the file cannot be fully written.
 void write_semantic_cache(const SemanticCache& cache, const std::filesystem::path& path);
 [[nodiscard]] SemanticCache read_semantic_cache(const std::filesystem::path& path);
 

@@ -1,3 +1,4 @@
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/change_context.hpp"
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/daemon_endpoint.hpp"
@@ -162,8 +163,7 @@ int run_build(const Args& args) {
   // Sidecar stats.json (durable, diffable) deliberately kept out of graph.json
   // so the Graphify node-link parity golden stays byte-identical.
   std::filesystem::create_directories(args.output);
-  std::ofstream stats_out(args.output / "stats.json", std::ios::binary);
-  stats_out << cgraph::build_stats_json(result.stats).dump(2);
+  cgraph::write_file_atomically(args.output / "stats.json", cgraph::build_stats_json(result.stats).dump(2));
 
   std::cerr << "processed " << result.file_count << " files, wrote exports to " << args.output << '\n';
   std::cerr << "build: " << cgraph::build_stats_summary(result.stats) << '\n';
@@ -447,7 +447,7 @@ int run_seam_gen(int argc, char** argv) {
 
   std::filesystem::create_directories(out_dir);
   const auto out_file = out_dir / "chunk_00.json";
-  std::ofstream(out_file) << cgraph::to_json(result.fragment).dump(2) << '\n';
+  cgraph::write_file_atomically(out_file, cgraph::to_json(result.fragment).dump(2) + '\n');
   std::cerr << "seam gen: wrote " << out_file << " (" << result.fragment.nodes.size()
             << " nodes, " << result.fragment.edges.size() << " edges)\n";
   return 0;
@@ -506,7 +506,7 @@ int run_workspace_init(int argc, char** argv) {
   }
 
   const auto manifest = workspace.root / std::filesystem::path(std::string(cgraph::kWorkspaceFile));
-  std::ofstream(manifest) << cgraph::workspace_manifest_json(workspace).dump(2) << '\n';
+  cgraph::write_file_atomically(manifest, cgraph::workspace_manifest_json(workspace).dump(2) + '\n');
   std::cerr << "workspace init: wrote " << manifest << " (" << workspace.repos.size() << " repos)\n";
   for (const auto& repo : workspace.repos) {
     std::cerr << "  " << repo.name << "  " << repo.root.generic_string() << '\n';
@@ -649,7 +649,7 @@ int run_seam_discover(int argc, char** argv) {
   }
   std::filesystem::create_directories(out_dir);
   const auto out_file = out_dir / "chunk_00.json";
-  std::ofstream(out_file) << cgraph::to_json(result.fragment).dump(2) << '\n';
+  cgraph::write_file_atomically(out_file, cgraph::to_json(result.fragment).dump(2) + '\n');
   std::cerr << "seam discover: wrote " << out_file << " (" << result.fragment.nodes.size() << " nodes, "
             << result.fragment.edges.size() << " edges)\n";
   return 0;
@@ -767,10 +767,10 @@ int run_seam_fuse(int argc, char** argv) {
   }
 
   std::filesystem::create_directories(out_dir);
-  std::ofstream(out_dir / "graph.json") << cgraph::to_node_link_json(fused.graph).dump(2) << '\n';
-  std::ofstream(out_dir / "graph.html") << cgraph::export_graph_html(fused.graph);
+  cgraph::write_file_atomically(out_dir / "graph.json", cgraph::to_node_link_json(fused.graph).dump(2) + '\n');
+  cgraph::write_file_atomically(out_dir / "graph.html", cgraph::export_graph_html(fused.graph));
   // Marker: tells graphd to serve this dir as a static read-only seam graph.
-  std::ofstream(out_dir / cgraph::kSeamMarkerFile) << "cgraph seam fuse output\n";
+  cgraph::write_file_atomically(out_dir / cgraph::kSeamMarkerFile, "cgraph seam fuse output\n");
   std::cerr << "seam fuse: wrote " << (out_dir / "graph.html") << " (" << fused.graph.nodes.size()
             << " nodes, " << fused.graph.edges.size() << " edges)\n";
   return 0;
@@ -1170,9 +1170,7 @@ int run_drain_command(int argc, char** argv) {
   return 0;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
   if (argc > 1) {
     const std::string first = argv[1];
     if (first == "change-context") return run_change_context(argc, argv);
@@ -1245,6 +1243,19 @@ int main(int argc, char** argv) {
     return 2;
   }
   return run_build(args);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // Every output file goes through write_file_atomically: a full disk or any
+  // other failed write leaves no truncated file behind and must not exit 0.
+  try {
+    return run(argc, argv);
+  } catch (const cgraph::FileWriteError& error) {
+    std::cerr << "cgraph: " << error.what() << '\n';
+    return 1;
+  }
 }
 
 int version_main() {

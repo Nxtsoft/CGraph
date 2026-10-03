@@ -8,6 +8,12 @@
 #include <vector>
 #include <iterator>
 #include <fstream>
+#include <csignal>
+#include <string>
+
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace {
 
@@ -24,6 +30,17 @@ cgraph::GraphSnapshot sample_graph() {
   graph.build_state = cgraph::BuildState::DeterministicReady;
   graph.cache_hit_rate = 0.5;
   return graph;
+}
+
+// True when `directory` holds a temp file (the persist helper names them
+// `<name>.<pid>.<n>.tmp`).
+bool has_temp_file(const std::filesystem::path& directory) {
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    if (entry.path().filename().string().ends_with(".tmp")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -165,7 +182,6 @@ int main() {
   const auto blocked_path = root / "blocked-graph.json";
   std::filesystem::create_directories(blocked_path);           // destination is a directory...
   std::ofstream(blocked_path / "keep.txt") << "last known good";  // ...and non-empty
-  const auto temp_path = root / "blocked-graph.json.tmp";
   if (cgraph::persist_graph_snapshot(deterministic, blocked_path)) {
     return 1;  // must fail: cannot atomically replace a non-empty directory
   }
@@ -173,8 +189,42 @@ int main() {
       !std::filesystem::exists(blocked_path / "keep.txt")) {
     return 1;  // the prior data must survive the failed persist untouched
   }
-  if (std::filesystem::exists(temp_path)) {
+  if (has_temp_file(root)) {
     return 1;  // the orphan temp must be cleaned up, not left behind
+  }
+
+  // Durability on a full disk: a write that fails part-way must not replace the
+  // last-known-good graph.json with a truncated one. A forked child with a tiny
+  // RLIMIT_FSIZE (SIGXFSZ ignored, so write() fails with EFBIG) truncates the
+  // temp file mid-write exactly like a full disk; persist must report failure
+  // and leave both the good file and no temp behind.
+  const auto good_path = root / "good-graph.json";
+  std::ofstream(good_path) << "last known good\n";
+  const pid_t child = ::fork();
+  if (child == 0) {
+    std::signal(SIGXFSZ, SIG_IGN);
+    rlimit limit{};
+    ::getrlimit(RLIMIT_FSIZE, &limit);
+    limit.rlim_cur = 64;
+    if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      ::_exit(2);
+    }
+    ::_exit(cgraph::persist_graph_snapshot(deterministic, good_path) ? 1 : 0);
+  }
+  int child_status = 0;
+  ::waitpid(child, &child_status, 0);
+  if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    return 1;  // a truncated write must be reported as a failed persist
+  }
+  {
+    std::ifstream input(good_path);
+    const std::string kept((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (kept != "last known good\n") {
+      return 1;  // the last-known-good graph must survive a failed persist
+    }
+  }
+  if (has_temp_file(root)) {
+    return 1;
   }
 
   std::filesystem::remove_all(root);

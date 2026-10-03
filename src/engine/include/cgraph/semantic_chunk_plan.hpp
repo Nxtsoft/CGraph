@@ -62,6 +62,7 @@ struct SemanticChunkPlanOptions {
     SemanticChunkPlanOptions options = {},
     SemanticStatIndex* stat_index = nullptr);
 
+// Atomic; throws FileWriteError (atomic_write.hpp) if the file cannot be fully written.
 void write_semantic_stat_index(const SemanticStatIndex& index, const std::filesystem::path& path);
 [[nodiscard]] SemanticStatIndex read_semantic_stat_index(const std::filesystem::path& path);
 

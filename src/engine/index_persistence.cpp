@@ -1,9 +1,12 @@
 #include "cgraph/index_persistence.hpp"
 
+#include "cgraph/atomic_write.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <fstream>
+#include <iostream>
 #include <system_error>
 #include <unordered_map>
 
@@ -78,25 +81,11 @@ bool write_index_manifest(const IndexManifest& manifest, const std::filesystem::
     std::filesystem::create_directories(path.parent_path(), error);
     error.clear();
   }
-  const auto temp_path = path.string() + ".tmp";
-  {
-    std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
-    if (!output) {
-      return false;
-    }
-    output << written.dump();
-    if (!output) {
-      return false;
-    }
+  if (const auto failure = try_write_file_atomically(path, written.dump(), WriteDurability::Durable); !failure.empty()) {
+    std::cerr << "graphd: " << failure << '\n';
+    return false;
   }
-  std::filesystem::rename(temp_path, path, error);
-  if (!error) {
-    return true;
-  }
-  std::filesystem::remove(path, error);
-  error.clear();
-  std::filesystem::rename(temp_path, path, error);
-  return !error;
+  return true;
 }
 
 std::optional<IndexManifest> read_index_manifest(const std::filesystem::path& path) {

@@ -1,5 +1,6 @@
 #include "cgraph/daemon_ops.hpp"
 
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/contracts.hpp"
 #include "cgraph/engine.hpp"
 
@@ -1954,12 +1955,8 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
     return error_response("checkpoint path escapes the memory directory");
   }
   const auto content = "# " + title + "\n\n" + body + "\n";
-  {
-    std::ofstream out(path, std::ios::binary);
-    if (!out) {
-      return error_response("failed to write checkpoint body: " + path.generic_string());
-    }
-    out << content;
+  if (const auto failure = try_write_file_atomically(path, content); !failure.empty()) {
+    return error_response("checkpoint body: " + failure);
   }
   // Span the whole body so the existing snippet machinery (read_source_snippet)
   // surfaces it on recall / graph_context. Bounded by kMaxSnippetLines downstream.
@@ -2011,12 +2008,8 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
   // live snapshot node below is only the immediate, in-session copy.
   const auto sidecar = std::filesystem::path(path).replace_extension(".json");
   const auto sidecar_contents = to_json(fragment).dump(2) + '\n';
-  {
-    std::ofstream out(sidecar, std::ios::binary);
-    if (!out) {
-      return error_response("failed to write checkpoint sidecar: " + sidecar.generic_string());
-    }
-    out << sidecar_contents;
+  if (const auto failure = try_write_file_atomically(sidecar, sidecar_contents); !failure.empty()) {
+    return error_response("checkpoint sidecar: " + failure);
   }
 
   mutate_graph_snapshot(state, [&](GraphSnapshot& current) {
