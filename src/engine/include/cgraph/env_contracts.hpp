@@ -45,11 +45,38 @@
 
 #include <tree_sitter/api.h>
 
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace cgraph {
+
+// Held while one JavaScript/TypeScript file is extracted: what each block,
+// switch, function body and the program binds is read once per scope instead
+// of on every lookup of a typed env object (each `Enum.MEMBER` walked the whole
+// module before). Scopes nest; each covers one file on its thread. Without one
+// every lookup reads the scopes it passes afresh, with the same result.
+class EnvContractsFileScope {
+ public:
+  EnvContractsFileScope();
+  ~EnvContractsFileScope();
+  EnvContractsFileScope(const EnvContractsFileScope&) = delete;
+  EnvContractsFileScope& operator=(const EnvContractsFileScope&) = delete;
+
+ private:
+  struct Index;
+  std::unique_ptr<Index> index_;
+};
+
+// Test hook: how many scope binding tables and factory-function body walks
+// this thread has done, so a test can prove a held scope reads each once.
+struct EnvLookupCounts {
+  std::size_t tables = 0;
+  std::size_t factory_walks = 0;
+};
+[[nodiscard]] EnvLookupCounts env_lookup_counts();
 
 // One handler per grammar, called from that language's extra_walk on every
 // node. `fragment` is the file's fragment so far: a module-level variable is

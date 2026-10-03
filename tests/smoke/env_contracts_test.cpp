@@ -6,6 +6,7 @@
 #include "cgraph/contracts.hpp"
 #include "cgraph/detect.hpp"
 #include "cgraph/javascript_extractor.hpp"
+#include "cgraph/language_config.hpp"
 #include "cgraph/normalize.hpp"
 #include "cgraph/python_extractor.hpp"
 
@@ -36,35 +37,9 @@ namespace {
   return facts;
 }
 
-[[nodiscard]] bool expect(std::string_view what, const std::set<std::string>& facts,
-                          const std::set<std::string>& expected) {
-  if (facts == expected) {
-    return true;
-  }
-  std::cerr << what << ": got\n";
-  for (const auto& fact : facts) std::cerr << "  " << fact << '\n';
-  std::cerr << "expected\n";
-  for (const auto& fact : expected) std::cerr << "  " << fact << '\n';
-  return false;
-}
-
-[[nodiscard]] std::string id(std::string_view file, std::string_view symbol = {}) {
-  return cgraph::make_id(symbol.empty() ? std::string(file) : std::string(file) + ":" + std::string(symbol));
-}
-
-}  // namespace
-
-int main() {
-  bool orphan = false;
-  // Every language reports before the exit, so a failure shows them all.
-  bool failed = false;
-
-  // TypeScript: direct reads, destructuring, subscripts and typed env objects.
-  // A module-level const the extractor made no node for reads from the file; an
-  // object-valued one is the reader. Writes, computed names, a `let`, a
-  // shadowing parameter and a lower-case member of a typed object read nothing.
-  {
-    const auto result = cgraph::extract_typescript({.source_file = "src/config.ts", .relative_path = "src/config.ts", .source = R"ts(
+// The JavaScript and TypeScript sources, also replayed without the per-file
+// binding cache to prove it changes nothing.
+constexpr std::string_view kConfigTs = R"ts(
 import { Value } from '@sinclair/typebox/value'
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 function loadConfig() {
@@ -98,7 +73,84 @@ export function viaParsed() {
   const { PARSED_A } = parsed;
   return parsed.PARSED_B;
 }
-)ts"});
+)ts";
+constexpr std::string_view kEnvJs = R"js(
+const url = process.env.API_URL;
+const { DB_HOST } = process.env;
+function client() { return process.env['CLIENT_KEY']; }
+module.exports = { url, client };
+)js";
+constexpr std::string_view kShadowTs = R"ts(
+function loadConfig() { return Value.Decode(envSchema, process.env) }
+const env = loadConfig()
+export function letShadow(p: any) { let env = p.cfg; return env.LET_SHADOWED }
+export function forHead(list: any[]) { for (const env of list) { use(env.FOR_SHADOWED) } }
+export function caught() { try { run() } catch (env) { return env.CATCH_SHADOWED } }
+export function varHoisted(p: any) { if (p) { var env = p } return env.VAR_SHADOWED }
+export function destructured(p: any) { const { env } = p; return env.DESTRUCTURED_SHADOWED }
+export function classShadow() { class env { static CLASS_SHADOWED = 1 } return env.CLASS_SHADOWED }
+export function reads() { return env.MODULE_READ }
+)ts";
+constexpr std::string_view kImportedTs = R"ts(
+import { env } from './env'
+export function a() { return env.IMPORTED_NAME }
+)ts";
+constexpr std::string_view kSwitchEnumTs = R"ts(
+function loadConfig() { return Value.Decode(envSchema, process.env) }
+const env = loadConfig()
+export function switchLet(k: number, p: any) {
+  switch (k) {
+    case 1:
+      let env = p.cfg
+      return env.SWITCH_LET_SHADOWED
+    default:
+      return 0
+  }
+}
+export function switchOtherCase(k: number, p: any) {
+  switch (k) {
+    case 1:
+      const env = p.cfg
+      break
+    case 2:
+      return env.SWITCH_CASE_SHADOWED
+  }
+}
+export function inSwitch(k: number) { switch (k) { case 1: const cfg = 1; return env.IN_SWITCH_READ } }
+export function afterSwitch(k: number) { switch (k) { case 1: { let env = 1 } } return env.AFTER_SWITCH_READ }
+export function enumShadow() { enum env { ENUM_SHADOWED } return env.ENUM_SHADOWED }
+export function constEnumShadow() { if (1) { const enum env { CONST_ENUM_SHADOWED } use(env.CONST_ENUM_SHADOWED) } }
+)ts";
+
+[[nodiscard]] bool expect(std::string_view what, const std::set<std::string>& facts,
+                          const std::set<std::string>& expected) {
+  if (facts == expected) {
+    return true;
+  }
+  std::cerr << what << ": got\n";
+  for (const auto& fact : facts) std::cerr << "  " << fact << '\n';
+  std::cerr << "expected\n";
+  for (const auto& fact : expected) std::cerr << "  " << fact << '\n';
+  return false;
+}
+
+[[nodiscard]] std::string id(std::string_view file, std::string_view symbol = {}) {
+  return cgraph::make_id(symbol.empty() ? std::string(file) : std::string(file) + ":" + std::string(symbol));
+}
+
+}  // namespace
+
+int main() {
+  bool orphan = false;
+  // Every language reports before the exit, so a failure shows them all.
+  bool failed = false;
+
+  // TypeScript: direct reads, destructuring, subscripts and typed env objects.
+  // A module-level const the extractor made no node for reads from the file; an
+  // object-valued one is the reader. Writes, computed names, a `let`, a
+  // shadowing parameter and a lower-case member of a typed object read nothing.
+  {
+    const auto result = cgraph::extract_typescript({.source_file = "src/config.ts", .relative_path = "src/config.ts", .source = kConfigTs});
     const auto file = id("src/config.ts");
     const std::set<std::string> expected{
         file + "|env:NEXT_PUBLIC_API_URL",
@@ -277,12 +329,7 @@ server.port=${PORT:8080}
 
   // Plain JavaScript reads the same way.
   {
-    const auto result = cgraph::extract_javascript({.source_file = "lib/env.js", .relative_path = "lib/env.js", .source = R"js(
-const url = process.env.API_URL;
-const { DB_HOST } = process.env;
-function client() { return process.env['CLIENT_KEY']; }
-module.exports = { url, client };
-)js"});
+    const auto result = cgraph::extract_javascript({.source_file = "lib/env.js", .relative_path = "lib/env.js", .source = kEnvJs});
     const std::set<std::string> expected{
         id("lib/env.js") + "|env:API_URL",
         id("lib/env.js") + "|env:DB_HOST",
@@ -297,26 +344,111 @@ module.exports = { url, client };
   // `const` shadows it: `let`, `var` (hoisted from a nested block), a for-head,
   // a `catch` parameter, a class, a destructured `const`, an import.
   {
-    const auto result = cgraph::extract_typescript({.source_file = "src/shadow.ts", .relative_path = "src/shadow.ts", .source = R"ts(
-function loadConfig() { return Value.Decode(envSchema, process.env) }
-const env = loadConfig()
-export function letShadow(p: any) { let env = p.cfg; return env.LET_SHADOWED }
-export function forHead(list: any[]) { for (const env of list) { use(env.FOR_SHADOWED) } }
-export function caught() { try { run() } catch (env) { return env.CATCH_SHADOWED } }
-export function varHoisted(p: any) { if (p) { var env = p } return env.VAR_SHADOWED }
-export function destructured(p: any) { const { env } = p; return env.DESTRUCTURED_SHADOWED }
-export function classShadow() { class env { static CLASS_SHADOWED = 1 } return env.CLASS_SHADOWED }
-export function reads() { return env.MODULE_READ }
-)ts"});
+    const auto result = cgraph::extract_typescript({.source_file = "src/shadow.ts", .relative_path = "src/shadow.ts", .source = kShadowTs});
     const std::set<std::string> expected{id("src/shadow.ts", "reads") + "|env:MODULE_READ"};
     if (!expect("typescript shadowing", env_facts(result, orphan), expected)) {
       failed = true;
     }
-    const auto imported = cgraph::extract_typescript({.source_file = "src/imported.ts", .relative_path = "src/imported.ts", .source = R"ts(
-import { env } from './env'
-export function a() { return env.IMPORTED_NAME }
-)ts"});
+    const auto imported = cgraph::extract_typescript({.source_file = "src/imported.ts", .relative_path = "src/imported.ts", .source = kImportedTs});
     if (!expect("typescript import", env_facts(imported, orphan), {})) {
+      failed = true;
+    }
+  }
+
+  // A `let` / `const` directly in a `switch` case (no braces: one scope for
+  // the whole switch) and a local TS `enum` shadow the module env `const` too.
+  {
+    const auto result = cgraph::extract_typescript(
+        {.source_file = "src/switch.ts", .relative_path = "src/switch.ts", .source = kSwitchEnumTs});
+    const std::set<std::string> expected{
+        id("src/switch.ts", "inSwitch") + "|env:IN_SWITCH_READ",
+        id("src/switch.ts", "afterSwitch") + "|env:AFTER_SWITCH_READ",
+    };
+    if (!expect("typescript switch and enum shadowing", env_facts(result, orphan), expected)) {
+      failed = true;
+    }
+  }
+
+  // extract_* hold an EnvContractsFileScope, so each scope's bindings are read
+  // once per file; without one every lookup reads them afresh. Both give the
+  // same env facts on every JavaScript / TypeScript case above.
+  {
+    struct Case {
+      cgraph::DetectedLanguage language;
+      std::string_view path;
+      std::string_view source;
+    };
+    for (const auto& [language, path, source] : {
+             Case{cgraph::DetectedLanguage::TypeScript, "src/config.ts", kConfigTs},
+             Case{cgraph::DetectedLanguage::JavaScript, "lib/env.js", kEnvJs},
+             Case{cgraph::DetectedLanguage::TypeScript, "src/shadow.ts", kShadowTs},
+             Case{cgraph::DetectedLanguage::TypeScript, "src/imported.ts", kImportedTs},
+             Case{cgraph::DetectedLanguage::TypeScript, "src/switch.ts", kSwitchEnumTs},
+             Case{cgraph::DetectedLanguage::Tsx, "src/switch.tsx", kSwitchEnumTs},
+         }) {
+      const cgraph::ExtractionContext context{
+          .source_file = std::string(path), .relative_path = std::string(path), .source = source};
+      const auto cached = language == cgraph::DetectedLanguage::JavaScript ? cgraph::extract_javascript(context)
+                          : language == cgraph::DetectedLanguage::Tsx      ? cgraph::extract_tsx(context)
+                                                                           : cgraph::extract_typescript(context);
+      auto config = language == cgraph::DetectedLanguage::JavaScript ? cgraph::javascript_language_config()
+                    : language == cgraph::DetectedLanguage::Tsx      ? cgraph::tsx_language_config()
+                                                                     : cgraph::typescript_language_config();
+      const TSLanguage* grammar = cgraph::tree_sitter_language_for(language);
+      cgraph::intern_node_symbols(config, grammar);
+      const auto uncached = cgraph::extract_with_config(grammar, config, context);
+      const auto env_only = [&](const cgraph::ExtractionResult& result) {
+        auto facts = env_facts(result, orphan);
+        std::erase_if(facts, [](const std::string& fact) { return fact.find("|env:") == std::string::npos; });
+        return facts;
+      };
+      const auto cached_facts = env_only(cached);
+      if (cached_facts.empty() && path != "src/imported.ts") {
+        std::cerr << path << ": no env facts to compare\n";
+        failed = true;
+      }
+      if (!expect(std::string(path) + " cached vs uncached", cached_facts, env_only(uncached))) {
+        failed = true;
+      }
+    }
+  }
+
+  // The scope is what makes lookups linear: with it each scope's tables are
+  // built once and `loadConfig`'s body is read once for all 80 reads of
+  // `env.X`; without it every read rebuilds the tables it passes and re-reads
+  // the factory. Same facts either way.
+  {
+    std::string source = "function loadConfig() { const env = Value.Decode(envSchema, process.env); return env }\n"
+                         "const env = loadConfig()\n";
+    constexpr int kFunctions = 40;
+    for (int index = 0; index < kFunctions; ++index) {
+      const auto n = std::to_string(index);
+      source += "export function f" + n + "() { if (1) { use(env.A_" + n + ") } return env.B_" + n + " }\n";
+    }
+    const cgraph::ExtractionContext context{.source_file = "src/many.ts", .relative_path = "src/many.ts", .source = source};
+    const auto before = cgraph::env_lookup_counts();
+    const auto cached = cgraph::extract_typescript(context);
+    const auto middle = cgraph::env_lookup_counts();
+    auto config = cgraph::typescript_language_config();
+    const TSLanguage* grammar = cgraph::tree_sitter_language_for(cgraph::DetectedLanguage::TypeScript);
+    cgraph::intern_node_symbols(config, grammar);
+    const auto uncached = cgraph::extract_with_config(grammar, config, context);
+    const auto after = cgraph::env_lookup_counts();
+    const auto cached_tables = middle.tables - before.tables;
+    const auto cached_walks = middle.factory_walks - before.factory_walks;
+    const auto uncached_tables = after.tables - middle.tables;
+    const auto uncached_walks = after.factory_walks - middle.factory_walks;
+    // Per function: its body block, its hoisted vars and the `if` block; plus
+    // the program's two tables.
+    if (cached_walks != 1 || cached_tables > 3 * kFunctions + 2 || uncached_walks < 2 * kFunctions ||
+        uncached_tables <= cached_tables) {
+      std::cerr << "env scope cache: cached tables " << cached_tables << " walks " << cached_walks
+                << ", uncached tables " << uncached_tables << " walks " << uncached_walks << '\n';
+      failed = true;
+    }
+    auto facts = env_facts(cached, orphan);
+    if (facts.size() != 2 * kFunctions || facts != env_facts(uncached, orphan)) {
+      std::cerr << "env scope cache: " << facts.size() << " cached facts, or cached and uncached differ\n";
       failed = true;
     }
   }

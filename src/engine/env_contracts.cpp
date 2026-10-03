@@ -7,8 +7,11 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <map>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace cgraph {
 namespace {
@@ -121,14 +124,16 @@ void placeholders(std::string_view text, Emit&& each) {
   return text == "process.env" || text == "import.meta.env" || text == "Bun.env";
 }
 
-// True when the binding pattern `node` (an identifier, a destructuring pattern,
-// a parameter list, an import clause) binds `name` at any depth.
-[[nodiscard]] bool binds_parameter(const TSNode& node, std::string_view name, std::string_view source) {
+// Calls `each(name)` for every name the binding pattern `node` (an
+// identifier, a destructuring pattern, a parameter list, an import clause)
+// binds at any depth, until `each` returns true; true when it did.
+template <typename Each>
+bool any_bound(const TSNode& node, std::string_view source, Each&& each) {
   if (ts_node_is_null(node)) {
     return false;
   }
   const auto type = type_of(node);
-  if ((type == "identifier" || type == "shorthand_property_identifier_pattern") && node_text(node, source) == name) {
+  if ((type == "identifier" || type == "shorthand_property_identifier_pattern") && each(node_text(node, source))) {
     return true;
   }
   // Only the binding side: `{ key: binding }`, `binding = default`, a TS
@@ -138,16 +143,20 @@ void placeholders(std::string_view text, Emit&& each) {
                      : type == "required_parameter" || type == "optional_parameter"   ? "pattern"
                                                                                       : nullptr;
   if (only != nullptr) {
-    const TSNode side = field(node, only);
-    return !ts_node_is_null(side) && binds_parameter(side, name, source);
+    return any_bound(field(node, only), source, each);
   }
   for (std::uint32_t index = 0; index < ts_node_named_child_count(node); ++index) {
     const TSNode child = ts_node_named_child(node, index);
-    if (type_of(child) != "type_annotation" && binds_parameter(child, name, source)) {
+    if (type_of(child) != "type_annotation" && any_bound(child, source, each)) {
       return true;
     }
   }
   return false;
+}
+
+// True when the binding pattern `node` binds `name` at any depth.
+[[nodiscard]] bool binds_parameter(const TSNode& node, std::string_view name, std::string_view source) {
+  return any_bound(node, source, [&](const std::string& bound) { return bound == name; });
 }
 
 [[nodiscard]] bool function_binds(const TSNode& function, std::string_view name, std::string_view source) {
@@ -161,85 +170,163 @@ void placeholders(std::string_view text, Emit&& each) {
   return type_of(function) == "function_expression" && field_text(function, "name", source) == name;
 }
 
-// True when a `var` anywhere under `scope` (not inside a nested function) binds
-// `name`: `var` hoists to the enclosing function or the program.
-[[nodiscard]] bool hoisted_var(const TSNode& scope, std::string_view name, std::string_view source) {
+[[nodiscard]] bool is_function_scope(std::string_view type) {
+  return is_function_node(type) || type == "function" || type == "generator_function";
+}
+
+// Every name a `var` anywhere under `scope` (not inside a nested function)
+// binds: `var` hoists to the enclosing function or the program.
+void collect_hoisted(const TSNode& scope, std::string_view source, std::unordered_set<std::string>& names) {
   if (ts_node_is_null(scope)) {
-    return false;
+    return;
   }
   for (std::uint32_t index = 0; index < ts_node_named_child_count(scope); ++index) {
     const TSNode child = ts_node_named_child(scope, index);
     const auto type = type_of(child);
-    if (is_function_node(type) || type == "function" || type == "generator_function") {
+    if (is_function_scope(type)) {
       continue;
     }
     if (type == "variable_declaration") {
       for (std::uint32_t slot = 0; slot < ts_node_named_child_count(child); ++slot) {
-        if (binds_parameter(field(ts_node_named_child(child, slot), "name"), name, source)) {
-          return true;
-        }
+        any_bound(field(ts_node_named_child(child, slot), "name"), source, [&](std::string bound) {
+          names.insert(std::move(bound));
+          return false;
+        });
       }
     }
-    if (hoisted_var(child, name, source)) {
-      return true;
-    }
+    collect_hoisted(child, source, names);
   }
-  return false;
 }
 
-// What a statement directly inside a block or the program binds `name` to.
-enum class Bound { kNo, kOther, kConst, kFunction };
+// What a statement directly inside a block or the program binds a name to.
+enum class Bound { kOther, kConst, kFunction };
 
-[[nodiscard]] Bound statement_binds(TSNode statement, std::string_view name, std::string_view source,
-                                    TSNode& binding) {
+struct Binding {
+  Bound bound = Bound::kOther;
+  TSNode node{};  // the `const` declarator or function declaration
+};
+
+// Calls `each(name, binding)` for every name `statement` binds, in source
+// order.
+template <typename Each>
+void statement_bindings(TSNode statement, std::string_view source, Each&& each) {
   if (type_of(statement) == "export_statement") {
     statement = field(statement, "declaration");
   }
   const auto type = type_of(statement);
-  if ((type == "function_declaration" || type == "generator_function_declaration") &&
-      field_text(statement, "name", source) == name) {
-    binding = statement;
-    return Bound::kFunction;
+  if (type == "function_declaration" || type == "generator_function_declaration") {
+    each(field_text(statement, "name", source), Binding{.bound = Bound::kFunction, .node = statement});
+    return;
   }
-  if ((type == "class_declaration" || type == "abstract_class_declaration") &&
-      field_text(statement, "name", source) == name) {
-    return Bound::kOther;
+  if (type == "class_declaration" || type == "abstract_class_declaration" || type == "enum_declaration") {
+    each(field_text(statement, "name", source), Binding{});
+    return;
   }
   if (type == "import_statement") {
-    const TSNode clause = named_child_of_type(statement, "import_clause");
-    return !ts_node_is_null(clause) && binds_parameter(clause, name, source) ? Bound::kOther : Bound::kNo;
+    any_bound(named_child_of_type(statement, "import_clause"), source, [&](std::string bound) {
+      each(std::move(bound), Binding{});
+      return false;
+    });
+    return;
   }
   if (type != "lexical_declaration" && type != "variable_declaration") {
-    return Bound::kNo;
+    return;
   }
   const bool constant = type == "lexical_declaration" && ts_node_child_count(statement) > 0 &&
                         node_text(ts_node_child(statement, 0), source) == "const";
   for (std::uint32_t slot = 0; slot < ts_node_named_child_count(statement); ++slot) {
     const TSNode declarator = ts_node_named_child(statement, slot);
-    const TSNode bound = field(declarator, "name");
-    if (type_of(declarator) != "variable_declarator" || !binds_parameter(bound, name, source)) {
+    if (type_of(declarator) != "variable_declarator") {
       continue;
     }
-    if (constant && type_of(bound) == "identifier") {
-      binding = declarator;
-      return Bound::kConst;
-    }
-    return Bound::kOther;  // `let`, `var`, or a destructured `const { name }`
+    const TSNode pattern = field(declarator, "name");
+    // `let`, `var`, or a destructured `const { name }` proves nothing.
+    const Binding binding = constant && type_of(pattern) == "identifier"
+                                ? Binding{.bound = Bound::kConst, .node = declarator}
+                                : Binding{};
+    any_bound(pattern, source, [&](std::string bound) {
+      each(std::move(bound), binding);
+      return false;
+    });
   }
-  return Bound::kNo;
+}
+
+// What each block-like scope of one file binds, built once per scope: the
+// first binding of each name among its statements, and for a function body
+// or the program the names its `var`s hoist. `env_values` remembers whether a
+// `const` declarator's value or a function's returns are a typed env object,
+// per hop count (the hop bound can change the answer), so N reads of `env.X`
+// through `const env = loadConfig()` read `loadConfig`'s body once.
+struct EnvFileIndex {
+  std::unordered_map<const void*, std::unordered_map<std::string, Binding>> blocks;
+  std::unordered_map<const void*, std::unordered_set<std::string>> hoisted;
+  std::map<std::pair<const void*, int>, bool> env_values;
+};
+
+thread_local EnvFileIndex* current_env_index = nullptr;
+thread_local EnvLookupCounts lookup_counts;
+
+// The statements directly in a block-like scope: a program or statement
+// block's children, or every case's statements of a switch (one scope).
+template <typename Each>
+void scope_statements(const TSNode& scope, Each&& each) {
+  for (std::uint32_t index = 0; index < ts_node_named_child_count(scope); ++index) {
+    const TSNode child = ts_node_named_child(scope, index);
+    const auto type = type_of(child);
+    if (type_of(scope) != "switch_body") {
+      each(child);
+    } else if (type == "switch_case" || type == "switch_default") {
+      const TSNode value = field(child, "value");
+      for (std::uint32_t slot = 0; slot < ts_node_named_child_count(child); ++slot) {
+        if (const TSNode statement = ts_node_named_child(child, slot); !ts_node_eq(statement, value)) {
+          each(statement);
+        }
+      }
+    }
+  }
+}
+
+[[nodiscard]] const std::unordered_map<std::string, Binding>& block_bindings(const TSNode& scope,
+                                                                            std::string_view source,
+                                                                            EnvFileIndex& index) {
+  const auto [slot, fresh] = index.blocks.try_emplace(scope.id);
+  if (fresh) {
+    ++lookup_counts.tables;
+    scope_statements(scope, [&](const TSNode& statement) {
+      statement_bindings(statement, source, [&](std::string name, const Binding& binding) {
+        slot->second.try_emplace(std::move(name), binding);  // the first binding of a name decides
+      });
+    });
+  }
+  return slot->second;
+}
+
+[[nodiscard]] bool hoisted_var(const TSNode& scope, std::string_view name, std::string_view source,
+                               EnvFileIndex& index) {
+  if (ts_node_is_null(scope)) {
+    return false;
+  }
+  const auto [slot, fresh] = index.hoisted.try_emplace(scope.id);
+  if (fresh) {
+    ++lookup_counts.tables;
+    collect_hoisted(scope, source, slot->second);
+  }
+  return slot->second.contains(std::string(name));
 }
 
 // The `const name = …` declarator or `function name` declaration the
 // identifier `name` at `from` refers to, innermost scope first. Any other
 // binding of the name on the way out (a `let` or `var`, a parameter, a
-// for-head, a `catch`, a class, an import, a destructured `const`) shadows
-// whatever is further out and proves nothing: null. Null too when nothing in
-// the file binds it.
+// for-head, a `catch`, a class, an enum, an import, a destructured `const`)
+// shadows whatever is further out and proves nothing: null. Null too when
+// nothing in the file binds it.
 [[nodiscard]] TSNode find_binding(const TSNode& from, std::string_view name, std::string_view source) {
+  EnvFileIndex scratch;
+  EnvFileIndex& index = current_env_index != nullptr ? *current_env_index : scratch;
   for (TSNode scope = ts_node_parent(from); !ts_node_is_null(scope); scope = ts_node_parent(scope)) {
     const auto scope_type = type_of(scope);
-    if (is_function_node(scope_type) || scope_type == "function" || scope_type == "generator_function") {
-      if (function_binds(scope, name, source) || hoisted_var(field(scope, "body"), name, source)) {
+    if (is_function_scope(scope_type)) {
+      if (function_binds(scope, name, source) || hoisted_var(field(scope, "body"), name, source, index)) {
         return TSNode{};
       }
       continue;
@@ -258,22 +345,14 @@ enum class Bound { kNo, kOther, kConst, kFunction };
       }
       continue;
     }
-    if (scope_type != "program" && scope_type != "statement_block") {
+    if (scope_type != "program" && scope_type != "statement_block" && scope_type != "switch_body") {
       continue;
     }
-    for (std::uint32_t index = 0; index < ts_node_named_child_count(scope); ++index) {
-      TSNode binding;
-      switch (statement_binds(ts_node_named_child(scope, index), name, source, binding)) {
-        case Bound::kNo:
-          break;
-        case Bound::kOther:
-          return TSNode{};
-        case Bound::kConst:
-        case Bound::kFunction:
-          return binding;
-      }
+    const auto& bindings = block_bindings(scope, source, index);
+    if (const auto found = bindings.find(std::string(name)); found != bindings.end()) {
+      return found->second.bound == Bound::kOther ? TSNode{} : found->second.node;
     }
-    if (scope_type == "program" && hoisted_var(scope, name, source)) {
+    if (scope_type == "program" && hoisted_var(scope, name, source, index)) {
       return TSNode{};
     }
   }
@@ -305,6 +384,7 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   if (ts_node_is_null(body)) {
     return false;
   }
+  ++lookup_counts.factory_walks;
   std::vector<TSNode> returns;
   if (type_of(body) == "statement_block") {
     collect_returns(body, returns);
@@ -314,6 +394,22 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   return !returns.empty() && std::ranges::all_of(returns, [&](const TSNode& returned) {
     return !ts_node_is_null(returned) && is_js_env_value(returned, source, hops);
   });
+}
+
+// `compute()` for the binding `node` at `hops`, once per file under an
+// EnvContractsFileScope.
+template <typename Compute>
+[[nodiscard]] bool remembered(const TSNode& node, int hops, Compute&& compute) {
+  if (current_env_index == nullptr) {
+    return compute();
+  }
+  const std::pair<const void*, int> key{node.id, hops};
+  if (const auto found = current_env_index->env_values.find(key); found != current_env_index->env_values.end()) {
+    return found->second;
+  }
+  const bool value = compute();
+  current_env_index->env_values.emplace(key, value);
+  return value;
 }
 
 // True for a value whose keys are environment variable names: an env object
@@ -333,7 +429,9 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   const auto type = type_of(value);
   if (type == "identifier") {
     const TSNode binding = find_binding(value, node_text(value, source), source);
-    return type_of(binding) == "variable_declarator" && is_js_env_value(field(binding, "value"), source, hops + 1);
+    return type_of(binding) == "variable_declarator" && remembered(binding, hops + 1, [&] {
+             return is_js_env_value(field(binding, "value"), source, hops + 1);
+           });
   }
   if (type != "call_expression") {
     return false;
@@ -355,7 +453,7 @@ void collect_returns(const TSNode& node, std::vector<TSNode>& out) {
   const auto function_type = type_of(function);
   return (function_type == "function_declaration" || function_type == "arrow_function" ||
           function_type == "function_expression" || function_type == "function") &&
-         returns_env(function, source, hops + 1);
+         remembered(function, hops + 1, [&] { return returns_env(function, source, hops + 1); });
 }
 
 // The env object a member or subscript reads from: true and `typed` false for
@@ -442,6 +540,20 @@ void value_annotation_reads(const TSNode& node, const ExtractionContext& context
 }
 
 }  // namespace
+
+struct EnvContractsFileScope::Index {
+  EnvFileIndex env;
+  EnvFileIndex* previous = nullptr;
+};
+
+EnvContractsFileScope::EnvContractsFileScope() : index_(std::make_unique<Index>()) {
+  index_->previous = current_env_index;
+  current_env_index = &index_->env;
+}
+
+EnvContractsFileScope::~EnvContractsFileScope() { current_env_index = index_->previous; }
+
+EnvLookupCounts env_lookup_counts() { return lookup_counts; }
 
 bool is_env_variable_name(std::string_view name) {
   if (name.empty() || !(std::isalpha(static_cast<unsigned char>(name.front())) || name.front() == '_')) {
