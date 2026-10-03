@@ -136,18 +136,15 @@ std::string add_symbol_node(
   // `explain` about a function by that id, so it must not move because a struct
   // one line up has a member that normalizes the same way. Relocate the field
   // instead, carrying its `defines` edge with it.
-  const auto held_by_field = std::ranges::find_if(fragment.nodes, [&](const Node& existing) {
-    return existing.id == make_id(seed) && existing.kind == "field";
-  });
-  if (held_by_field != fragment.nodes.end()) {
-    const auto displaced = held_by_field->id;
-    held_by_field->id = unique_node_id(
-        displaced + ":" + held_by_field->label,
-        held_by_field->source_location.value_or(SourceLocation{}),
-        fragment);
+  if (const auto held_by_field = find_node_by_id(fragment, make_id(seed), "field");
+      held_by_field != fragment.nodes.size()) {
+    const auto displaced = fragment.nodes[held_by_field].id;
+    set_node_id(fragment, held_by_field,
+                unique_node_id(displaced + ":" + fragment.nodes[held_by_field].label,
+                               fragment.nodes[held_by_field].source_location.value_or(SourceLocation{}), fragment));
     for (auto& edge : fragment.edges) {
       if (edge.target == displaced) {
-        edge.target = held_by_field->id;
+        edge.target = fragment.nodes[held_by_field].id;
       }
     }
   }
@@ -474,6 +471,7 @@ ExtractionResult extract_with_config(
   if (source_path.has_parent_path() && source_path.parent_path().has_filename()) {
     file_label = source_path.parent_path().filename().string() + "/" + file_label;
   }
+  const NodeIdIndexScope node_ids(result.fragment);
   const auto file_id = make_id(ctx.relative_path);
   result.fragment.nodes.push_back(Node{
       .id = file_id,

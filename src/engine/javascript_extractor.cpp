@@ -151,8 +151,7 @@ std::string reading_scope_id(const TSNode& node, const ExtractionContext& contex
       continue;
     }
     auto id = make_id(context.relative_path + ":" + field_text(ancestor, "name", context.source));
-    const bool noded = std::ranges::any_of(fragment.nodes, [&](const Node& candidate) { return candidate.id == id; });
-    return noded ? id : make_id(context.relative_path);
+    return node_id_taken(fragment, id) ? id : make_id(context.relative_path);
   }
   return make_id(context.relative_path);
 }

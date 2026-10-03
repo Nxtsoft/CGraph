@@ -106,9 +106,14 @@ void append_codepoint(std::string& output, utf8proc_int32_t codepoint) {
   return output;
 }
 
+thread_local std::size_t make_id_count = 0;
+
 }  // namespace
 
+std::size_t make_id_calls() { return make_id_count; }
+
 std::string make_id(std::string_view input) {
+  ++make_id_count;
   constexpr auto nfkc_options = static_cast<utf8proc_option_t>(
       UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_COMPAT);
   constexpr auto casefold_options = static_cast<utf8proc_option_t>(
