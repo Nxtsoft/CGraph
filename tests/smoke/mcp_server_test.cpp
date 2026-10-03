@@ -3,7 +3,11 @@
 #include <nlohmann/json.hpp>
 
 #include <cmath>
+#include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
+#include <system_error>
 
 int main() {
   nlohmann::json forwarded;
@@ -253,6 +257,41 @@ int main() {
   if (ctx_with_root.contains("error") || forwarded["op"] != "context" ||
       forwarded["params"]["expected_content_root"] != "abc123") {
     return 1;
+  }
+
+  // A forwarder that throws (a filesystem error reaching the daemon) fails that
+  // one request with a JSON-RPC error naming the path; it must not escape and
+  // abort the stdio loop that serves every later request.
+  const cgraph::McpForwarder throwing_forwarder = [](const nlohmann::json&) -> nlohmann::json {
+    throw std::filesystem::filesystem_error("cannot create directories", std::filesystem::path("/ro/daemon-dir"),
+                                            std::make_error_code(std::errc::permission_denied));
+  };
+  const auto thrown = cgraph::handle_mcp_request(
+      nlohmann::json{{"jsonrpc", "2.0"},
+                     {"id", 15},
+                     {"method", "tools/call"},
+                     {"params", {{"name", "graph_query"}, {"arguments", {{"q", "alpha"}}}}}},
+      throwing_forwarder);
+  if (thrown["id"] != 15 || thrown["error"]["code"] != -32603 ||
+      thrown["error"]["message"].get<std::string>().find("/ro/daemon-dir") == std::string::npos) {
+    return 1;
+  }
+
+  // Parseable requests of the wrong shape are Invalid Request, not a nlohmann
+  // type_error escaping to the stdio loop. A readable id is echoed so the host
+  // can match the error to its call; otherwise the id is null.
+  const std::vector<std::pair<nlohmann::json, nlohmann::json>> malformed_cases{
+      {nlohmann::json(5), nullptr},
+      {nlohmann::json::array({1}), nullptr},
+      {nlohmann::json{{"jsonrpc", "2.0"}, {"id", 16}, {"method", 7}}, 16},
+      {nlohmann::json{{"jsonrpc", "2.0"}, {"id", "s17"}, {"method", "tools/call"}, {"params", 5}}, "s17"},
+      {nlohmann::json{{"jsonrpc", "2.0"}, {"id", {{"bad", 1}}}, {"method", 7}}, nullptr},
+  };
+  for (const auto& [malformed, expected_id] : malformed_cases) {
+    const auto invalid = cgraph::handle_mcp_request(malformed, forwarder);
+    if (invalid["id"] != expected_id || invalid["error"]["code"] != -32600) {
+      return 1;
+    }
   }
 
   return 0;

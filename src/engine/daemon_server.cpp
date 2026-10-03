@@ -1,6 +1,7 @@
 #include "cgraph/daemon_server.hpp"
 
 #include "cgraph/atomic_write.hpp"
+#include "cgraph/cli_support.hpp"
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
@@ -164,6 +165,19 @@ std::optional<nlohmann::json> request_over_unix_socket(const std::filesystem::pa
 #else
 
 namespace {
+
+// Runs `cleanup` when the scope exits, by return or by exception.
+template <typename Cleanup>
+class ScopeExit {
+ public:
+  explicit ScopeExit(Cleanup cleanup) : cleanup_(std::move(cleanup)) {}
+  ~ScopeExit() { cleanup_(); }
+  ScopeExit(const ScopeExit&) = delete;
+  ScopeExit& operator=(const ScopeExit&) = delete;
+
+ private:
+  Cleanup cleanup_;
+};
 
 // Sentinel returned by open_listen_socket when a healthy daemon already serves
 // this root: the caller should exit cleanly (0) rather than treat it as an error.
@@ -804,23 +818,37 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   std::atomic<bool> initial_build_done{false};
   state.watching = watch_code && options.build_graph_on_start;
 
+  // Set when the serve loop or a worker thread fails with an exception: the
+  // failure is logged, the loop stops, and the daemon exits 1 after the same
+  // cleanup as a normal shutdown. An exception must never leave a worker
+  // thread (std::terminate) or unwind past a joinable one (std::terminate).
+  std::atomic<bool> fatal_error{false};
+  const auto record_fatal = [&](std::string_view where, const std::exception& error) {
+    std::cerr << "graphd: " << where << " failed: " << describe_exception(error) << '\n';
+    fatal_error.store(true);
+  };
+
   // Build on a worker thread so the accept loop below starts serving at once.
   // rescan() locks graph_mutex; status/query answer from the empty snapshot until
   // the build publishes the real one.
   std::thread build_thread;
   if (options.build_graph_on_start) {
     build_thread = std::thread([&] {
-      if (watch_code) {
-        (void)code_watcher.poll(FileWatcherClock::now());  // prime: baseline only, no events
+      try {
+        if (watch_code) {
+          (void)code_watcher.poll(FileWatcherClock::now());  // prime: baseline only, no events
+        }
+        if (!try_load_persisted()) {
+          (void)rescan();
+        }
+        // Plan enrichment after the initial build/load to populate current health.
+        // Later doc/media changes, drop ingests, and code-dependency reconciliation
+        // request another plan from the persisted stat/hash index.
+        request_refresh();
+        initial_build_done.store(true);  // hands the watcher to the serve loop
+      } catch (const std::exception& error) {
+        record_fatal("initial build", error);
       }
-      if (!try_load_persisted()) {
-        (void)rescan();
-      }
-      // Plan enrichment after the initial build/load to populate current health.
-      // Later doc/media changes, drop ingests, and code-dependency reconciliation
-      // request another plan from the persisted stat/hash index.
-      request_refresh();
-      initial_build_done.store(true);  // hands the watcher to the serve loop
     });
   }
 
@@ -836,8 +864,30 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         }
         refresh_requested = false;
       }
-      run_enrichment_refresh();
+      try {
+        run_enrichment_refresh();
+      } catch (const std::exception& error) {
+        record_fatal("enrichment refresh", error);
+        return;
+      }
     }
+  });
+
+  // However this scope exits -- a normal shutdown, or an exception from the
+  // post-loop flush -- join both workers (they capture locals by reference)
+  // and release the endpoint.
+  const ScopeExit stop_workers([&] {
+    if (build_thread.joinable()) {
+      build_thread.join();
+    }
+    {
+      const std::scoped_lock lock(refresh_mutex);
+      refresh_stop = true;
+    }
+    refresh_cv.notify_one();
+    enrichment_worker.join();
+    ::close(listen_fd);
+    (void)cleanup_daemon_endpoint(socket_path);
   });
 
   (void)drop_watcher.poll(FileWatcherClock::now());  // prime: existing drops are already overlaid
@@ -846,168 +896,172 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
 
   auto last_activity = FileWatcherClock::now();
   auto last_code_poll = FileWatcherClock::now();
-  while (!state.shutdown_requested) {
-    fd_set read_set;
-    FD_ZERO(&read_set);
-    FD_SET(listen_fd, &read_set);
-    timeval timeout{};
-    timeout.tv_usec = static_cast<int>(
-        std::chrono::duration_cast<std::chrono::microseconds>(options.drop_poll_interval).count() % 1'000'000);
-    timeout.tv_sec = static_cast<time_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(options.drop_poll_interval).count());
+  try {
+    while (!state.shutdown_requested && !fatal_error.load()) {
+      fd_set read_set;
+      FD_ZERO(&read_set);
+      FD_SET(listen_fd, &read_set);
+      timeval timeout{};
+      timeout.tv_usec = static_cast<int>(
+          std::chrono::duration_cast<std::chrono::microseconds>(options.drop_poll_interval).count() % 1'000'000);
+      timeout.tv_sec = static_cast<time_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(options.drop_poll_interval).count());
 
-    const int ready = ::select(listen_fd + 1, &read_set, nullptr, nullptr, &timeout);
-    if (ready < 0) {
-      if (errno == EINTR) {
-        continue;
+      const int ready = ::select(listen_fd + 1, &read_set, nullptr, nullptr, &timeout);
+      if (ready < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        std::cerr << "graphd: select() failed: " << std::strerror(errno) << '\n';
+        break;
       }
-      std::cerr << "graphd: select() failed: " << std::strerror(errno) << '\n';
-      break;
-    }
 
-    // Ingest any debounced fragment drops discovered since the last tick. Not
-    // polled until the initial build publishes: the build thread holds
-    // graph_mutex across semantic replay (which can block on a source read), so
-    // taking it here would wedge the accept loop -- the exact hang the persist
-    // step's try_to_lock avoids. Drops that land mid-build stay pending in the
-    // watcher and are picked up on the first post-build poll; the build's own
-    // rebuild_final_overlay already discovers on-disk drops directly.
-    if (const auto events = (!options.build_graph_on_start || initial_build_done.load())
-                                ? drop_watcher.poll(FileWatcherClock::now())
-                                : std::vector<SemanticFragmentDropEvent>{};
-        !events.empty()) {
-      const std::scoped_lock lock(graph_mutex);  // serialize with the build/rescan thread
-      // Mark the batch in-flight so a concurrent `status` reports enrichment as
-      // running; the scope clears the running count on exit and request_refresh
-      // recomputes the steady state below.
-      const EnrichmentRunningScope running(state, events.size());
-      rebuild_final_overlay(&events);
-      request_refresh();
-      last_activity = FileWatcherClock::now();
-    }
-
-    // Fold live code changes into the graph. Each watcher poll walks the project
-    // tree, so it runs on its own (slower) cadence than the drop poll, and only
-    // once the initial build has published a baseline.
-    if (watch_code && initial_build_done.load() &&
-        FileWatcherClock::now() - last_code_poll >= options.code_poll_interval) {
-      last_code_poll = FileWatcherClock::now();
-      const auto events = code_watcher.poll(last_code_poll);
-      bool code_changed = false;
-      std::vector<FileWatchEvent> semantic_source_events;
-      for (const auto& event : events) {
-        if (event.change == FileWatchChange::Overflow || event.kind == WatchedFileKind::Code) {
-          code_changed = true;
-        } else {
-          semantic_source_events.push_back(event);
-        }
-      }
-      if (code_changed) {
-        // Neighborhood dedup keeps each incremental update fast, but it skips
-        // the fuzzy-duplicate merges a full pass makes elsewhere in the graph,
-        // so the node set drifts above the canonical build's. Reconciling with
-        // a full dedup every Nth update bounds that drift; an explicit `update`
-        // op or a restart rescan also reconverges it.
-        constexpr std::size_t kFullDedupReconcileEvery = 5;
-        const std::scoped_lock lock(graph_mutex);
-        IncrementalUpdateResult result;
-        DaemonState hydration_state;
-        const bool hydration = !index_hydrated.load();
-        if (!hydration) {
-          result = apply_incremental_code_updates(
-              state, index, events, IncrementalDedupPolicy{.full_reconcile_every = kFullDedupReconcileEvery});
-        } else {
-          // First edit after a fast-load restart: hydrate the index with one
-          // full rescan (a per-file rebuild here would wipe the graph), staged
-          // like every rescan so readers never see an intermediate; subsequent
-          // events go incremental.
-          result = full_stat_index_rescan(hydration_state, index, identity.project_root);
-        }
-        for (const auto& warning : result.warnings) {
-          std::cerr << "graphd: " << warning << '\n';
-        }
-        if (result.applied) {
-          if (hydration) {
-            {
-              const std::scoped_lock enrichment_lock(state.enrichment_mutex);
-              state.unextracted = hydration_state.unextracted;
-              state.route_resolution = hydration_state.route_resolution;
-              state.last_files_cache_hit = hydration_state.last_files_cache_hit;
-              state.last_extract_mean_ms = hydration_state.last_extract_mean_ms;
-            }
-            index_hydrated.store(true);
-            deterministic_graph = *read_graph_snapshot(hydration_state);
-          } else {
-            deterministic_graph = *read_graph_snapshot(state);
-          }
-          rebuild_final_overlay();
-          request_refresh();    // code dependencies may have requeued semantic sources
-          ++state.incremental_updates;
-          mark_graph_dirty(lifecycle, DaemonClock::now());
-          std::cerr << "graphd: incremental update (" << result.files_reextracted << " re-extracted, "
-                    << result.files_removed << " removed" << (result.full_rescan ? ", full rescan" : "") << ")\n";
-        }
-        last_activity = FileWatcherClock::now();  // active editing keeps the daemon alive
-      }
-      if (!semantic_source_events.empty()) {
-        const std::scoped_lock lock(graph_mutex);
-        for (const auto& event : semantic_source_events) {
-          stat_index.erase(normalize_semantic_source_path(event.path));
-        }
-        ++stat_index_revision;
-        persist_stat_index(stat_index, stat_index_path);
-        rebuild_final_overlay();
+      // Ingest any debounced fragment drops discovered since the last tick. Not
+      // polled until the initial build publishes: the build thread holds
+      // graph_mutex across semantic replay (which can block on a source read), so
+      // taking it here would wedge the accept loop -- the exact hang the persist
+      // step's try_to_lock avoids. Drops that land mid-build stay pending in the
+      // watcher and are picked up on the first post-build poll; the build's own
+      // rebuild_final_overlay already discovers on-disk drops directly.
+      if (const auto events = (!options.build_graph_on_start || initial_build_done.load())
+                                  ? drop_watcher.poll(FileWatcherClock::now())
+                                  : std::vector<SemanticFragmentDropEvent>{};
+          !events.empty()) {
+        const std::scoped_lock lock(graph_mutex);  // serialize with the build/rescan thread
+        // Mark the batch in-flight so a concurrent `status` reports enrichment as
+        // running; the scope clears the running count on exit and request_refresh
+        // recomputes the steady state below.
+        const EnrichmentRunningScope running(state, events.size());
+        rebuild_final_overlay(&events);
         request_refresh();
         last_activity = FileWatcherClock::now();
       }
-    }
 
-    // Re-persist graph + manifest once incremental changes have aged past the
-    // persist interval, so a crash loses at most that window. try_to_lock: the
-    // initial build (or a long overlay replay) holds graph_mutex, and the serve
-    // loop must keep answering from the current snapshot while it runs -- a
-    // skipped persist is retried on the next loop pass.
-    bool persisted_incremental = false;
-    {
-      const std::unique_lock<std::mutex> lock(graph_mutex, std::try_to_lock);
-      if (lock.owns_lock()) {
-        persisted_incremental =
-            persist_if_due(deterministic_graph, lifecycle, lifecycle_config, DaemonClock::now());
-        if (persisted_incremental) {
-          persist_manifest();
+      // Fold live code changes into the graph. Each watcher poll walks the project
+      // tree, so it runs on its own (slower) cadence than the drop poll, and only
+      // once the initial build has published a baseline.
+      if (watch_code && initial_build_done.load() &&
+          FileWatcherClock::now() - last_code_poll >= options.code_poll_interval) {
+        last_code_poll = FileWatcherClock::now();
+        const auto events = code_watcher.poll(last_code_poll);
+        bool code_changed = false;
+        std::vector<FileWatchEvent> semantic_source_events;
+        for (const auto& event : events) {
+          if (event.change == FileWatchChange::Overflow || event.kind == WatchedFileKind::Code) {
+            code_changed = true;
+          } else {
+            semantic_source_events.push_back(event);
+          }
+        }
+        if (code_changed) {
+          // Neighborhood dedup keeps each incremental update fast, but it skips
+          // the fuzzy-duplicate merges a full pass makes elsewhere in the graph,
+          // so the node set drifts above the canonical build's. Reconciling with
+          // a full dedup every Nth update bounds that drift; an explicit `update`
+          // op or a restart rescan also reconverges it.
+          constexpr std::size_t kFullDedupReconcileEvery = 5;
+          const std::scoped_lock lock(graph_mutex);
+          IncrementalUpdateResult result;
+          DaemonState hydration_state;
+          const bool hydration = !index_hydrated.load();
+          if (!hydration) {
+            result = apply_incremental_code_updates(
+                state, index, events, IncrementalDedupPolicy{.full_reconcile_every = kFullDedupReconcileEvery});
+          } else {
+            // First edit after a fast-load restart: hydrate the index with one
+            // full rescan (a per-file rebuild here would wipe the graph), staged
+            // like every rescan so readers never see an intermediate; subsequent
+            // events go incremental.
+            result = full_stat_index_rescan(hydration_state, index, identity.project_root);
+          }
+          for (const auto& warning : result.warnings) {
+            std::cerr << "graphd: " << warning << '\n';
+          }
+          if (result.applied) {
+            if (hydration) {
+              {
+                const std::scoped_lock enrichment_lock(state.enrichment_mutex);
+                state.unextracted = hydration_state.unextracted;
+                state.route_resolution = hydration_state.route_resolution;
+                state.last_files_cache_hit = hydration_state.last_files_cache_hit;
+                state.last_extract_mean_ms = hydration_state.last_extract_mean_ms;
+              }
+              index_hydrated.store(true);
+              deterministic_graph = *read_graph_snapshot(hydration_state);
+            } else {
+              deterministic_graph = *read_graph_snapshot(state);
+            }
+            rebuild_final_overlay();
+            request_refresh();    // code dependencies may have requeued semantic sources
+            ++state.incremental_updates;
+            mark_graph_dirty(lifecycle, DaemonClock::now());
+            std::cerr << "graphd: incremental update (" << result.files_reextracted << " re-extracted, "
+                      << result.files_removed << " removed" << (result.full_rescan ? ", full rescan" : "") << ")\n";
+          }
+          last_activity = FileWatcherClock::now();  // active editing keeps the daemon alive
+        }
+        if (!semantic_source_events.empty()) {
+          const std::scoped_lock lock(graph_mutex);
+          for (const auto& event : semantic_source_events) {
+            stat_index.erase(normalize_semantic_source_path(event.path));
+          }
+          ++stat_index_revision;
+          persist_stat_index(stat_index, stat_index_path);
+          rebuild_final_overlay();
+          request_refresh();
+          last_activity = FileWatcherClock::now();
         }
       }
-    }
-    if (persisted_incremental) {
-      std::cerr << "graphd: persisted incremental graph state\n";
-    }
 
-    if (ready == 0) {
-      // A non-positive idle timeout disables idle shutdown entirely: the daemon
-      // stays resident (and watching) until an explicit shutdown op or signal.
-      if (options.idle_timeout > std::chrono::seconds::zero() &&
-          FileWatcherClock::now() - last_activity >= options.idle_timeout) {
-        std::cerr << "graphd: idle timeout, shutting down\n";
+      // Re-persist graph + manifest once incremental changes have aged past the
+      // persist interval, so a crash loses at most that window. try_to_lock: the
+      // initial build (or a long overlay replay) holds graph_mutex, and the serve
+      // loop must keep answering from the current snapshot while it runs -- a
+      // skipped persist is retried on the next loop pass.
+      bool persisted_incremental = false;
+      {
+        const std::unique_lock<std::mutex> lock(graph_mutex, std::try_to_lock);
+        if (lock.owns_lock()) {
+          persisted_incremental =
+              persist_if_due(deterministic_graph, lifecycle, lifecycle_config, DaemonClock::now());
+          if (persisted_incremental) {
+            persist_manifest();
+          }
+        }
+      }
+      if (persisted_incremental) {
+        std::cerr << "graphd: persisted incremental graph state\n";
+      }
+
+      if (ready == 0) {
+        // A non-positive idle timeout disables idle shutdown entirely: the daemon
+        // stays resident (and watching) until an explicit shutdown op or signal.
+        if (options.idle_timeout > std::chrono::seconds::zero() &&
+            FileWatcherClock::now() - last_activity >= options.idle_timeout) {
+          std::cerr << "graphd: idle timeout, shutting down\n";
+          break;
+        }
+        continue;  // no connection this tick; keep polling drops
+      }
+
+      const int conn = ::accept(listen_fd, nullptr, nullptr);
+      if (conn < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
         break;
       }
-      continue;  // no connection this tick; keep polling drops
-    }
-
-    const int conn = ::accept(listen_fd, nullptr, nullptr);
-    if (conn < 0) {
-      if (errno == EINTR) {
-        continue;
+      last_activity = FileWatcherClock::now();
+      apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
+      // The thin client uses one connection per request: read it, answer it, close.
+      const ScopeExit close_conn([conn] { ::close(conn); });
+      if (const auto request = read_frame(conn)) {
+        const auto response = handle_daemon_request(state, *request);
+        (void)write_frame(conn, response);
       }
-      break;
     }
-    last_activity = FileWatcherClock::now();
-    apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
-    // The thin client uses one connection per request: read it, answer it, close.
-    if (const auto request = read_frame(conn)) {
-      const auto response = handle_daemon_request(state, *request);
-      (void)write_frame(conn, response);
-    }
-    ::close(conn);
+  } catch (const std::exception& error) {
+    record_fatal("serve loop", error);
   }
 
   if (build_thread.joinable()) {
@@ -1015,7 +1069,9 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   }
   // Flush any deterministic incremental state whose persist interval had not
   // elapsed. Semantic cache and memory sidecars are written on their own paths.
-  if (lifecycle.graph_dirty) {
+  // Skipped after a failure: the index may be half-updated, and a manifest
+  // persisted from it could let the next start fast-load a mismatched graph.
+  if (lifecycle.graph_dirty && !fatal_error.load()) {
     const std::scoped_lock lock(graph_mutex);
     persist_graph_and_manifest();
     std::cerr << "graphd: persisted incremental graph state on exit\n";
@@ -1034,15 +1090,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       std::cerr << "graphd: op-stats ledger flush failed (non-fatal)\n";
     }
   }
-  {
-    const std::scoped_lock lock(refresh_mutex);
-    refresh_stop = true;
-  }
-  refresh_cv.notify_one();
-  enrichment_worker.join();  // also captures locals by reference; join before scope exit
-  ::close(listen_fd);
-  (void)cleanup_daemon_endpoint(socket_path);
-  return 0;
+  return fatal_error.load() ? 1 : 0;  // stop_workers joins the workers and releases the endpoint
 }
 
 std::optional<nlohmann::json> request_over_unix_socket(

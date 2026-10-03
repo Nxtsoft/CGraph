@@ -295,10 +295,8 @@ namespace {
   return {};
 }
 
-}  // namespace
-
-nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder,
-                                  const McpChangeContext& change_context_runner) {
+[[nodiscard]] nlohmann::json respond(const nlohmann::json& request, const McpForwarder& forwarder,
+                                     const McpChangeContext& change_context_runner) {
   const auto id = request.value("id", nlohmann::json(nullptr));
   const auto method = request.value("method", std::string{});
   if (request.value("jsonrpc", std::string{}) != "2.0" || method.empty()) {
@@ -342,7 +340,14 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
     return error_response(id, -32603, "missing daemon forwarder");
   }
 
-  const auto daemon_response = forwarder(daemon_request);
+  // A forwarder that throws (a filesystem or runtime failure reaching the
+  // daemon) fails this request only; the stdio loop keeps serving.
+  nlohmann::json daemon_response;
+  try {
+    daemon_response = forwarder(daemon_request);
+  } catch (const std::exception& error) {
+    return error_response(id, -32603, error.what());
+  }
   if (!daemon_response.value("ok", false)) {
     if (name == "graph_report") {
       if (const auto hint = report_upgrade_hint(daemon_response)) {
@@ -352,6 +357,30 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
     return error_response(id, -32603, daemon_response.value("error", std::string{"daemon request failed"}));
   }
   return response(id, text_content(daemon_response.value("result", nlohmann::json::object())));
+}
+
+}  // namespace
+
+nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder,
+                                  const McpChangeContext& change_context_runner) {
+  // A parseable line of the wrong shape (`5`, `[1]`, a non-string "method" or
+  // non-object "params") makes nlohmann throw on the first typed read. That is
+  // an Invalid Request for this line only; the stdio loop keeps serving. The
+  // response echoes the request's id when it is readable (an object member
+  // that is a string, number or null) so the host can match it to its call;
+  // otherwise the id is null, as JSON-RPC 2.0 requires.
+  try {
+    return respond(request, forwarder, change_context_runner);
+  } catch (const nlohmann::json::exception& error) {
+    nlohmann::json id = nullptr;
+    if (request.is_object()) {
+      if (const auto it = request.find("id");
+          it != request.end() && (it->is_string() || it->is_number() || it->is_null())) {
+        id = *it;
+      }
+    }
+    return error_response(id, -32600, std::string{"invalid JSON-RPC request: "} + error.what());
+  }
 }
 
 }  // namespace cgraph

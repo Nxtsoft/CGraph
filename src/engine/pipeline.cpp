@@ -26,7 +26,7 @@ namespace cgraph {
 namespace {
 
 void write_text(const std::filesystem::path& path, std::string_view contents) {
-  std::filesystem::create_directories(path.parent_path());
+  create_output_directories(path.parent_path());
   write_file_atomically(path, contents);
 }
 
@@ -121,7 +121,7 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
 
 void write_exports(const GraphSnapshot& graph, const std::filesystem::path& output_dir,
                    const std::filesystem::path& project_root) {
-  std::filesystem::create_directories(output_dir);
+  create_output_directories(output_dir);
   write_text(output_dir / "graph.json", to_node_link_json(graph).dump(2));
   // A tenth sidecar, deliberately NOT part of graph.json: consumers need to
   // tell "deliberately ignored" from "failed to extract", and graph.json is a

@@ -178,7 +178,7 @@ SemanticChunkPlan plan_semantic_chunks(
 }
 
 void write_semantic_stat_index(const SemanticStatIndex& index, const std::filesystem::path& path) {
-  std::filesystem::create_directories(path.parent_path());
+  create_output_directories(path.parent_path());
   // Emit in sorted key order so the file is deterministic across writes.
   std::vector<std::string> keys;
   keys.reserve(index.size());
