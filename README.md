@@ -289,8 +289,9 @@ is not read from the proxy's code: it is built at run time from the handler's pa
 declared, not guessed.
 
 Contracts other than endpoints are recorded by extractors as `provides_contract` /
-`uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`, `env:<NAME>`, and tables and
-graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do not all join alike:
+`uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`, `env:<NAME>`, DynamoDB tables
+as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
+`label:<database>:<name>`. They do not all join alike:
 
 - **Claims and non-standard headers** (`x-tenant-id`) join like endpoints, by id. A standard HTTP
   header (`authorization`, `content-type`, any IANA permanent field name, `x-request-id`,
@@ -325,6 +326,16 @@ graph labels as `table:<database>:<name>` / `label:<database>:<name>`. They do n
   in `.cypher` files (`.cql` is not detected: Cassandra uses it too) and in strings opening with
   `MATCH` / `OPTIONAL MATCH` / `MERGE` / `CREATE (` / `UNWIND` uses the labels, and a relationship
   only when its start node's label is known.
+- **DynamoDB tables** (`src/engine/dynamo_contracts.cpp`) join by name with no declaration: a
+  table's name is its whole address in an AWS account, and it is never a `table:`, so it cannot
+  meet a Postgres table of the same name. In TypeScript/JavaScript files that import the DynamoDB
+  SDK, a write (`PutItemCommand`, `UpdateItemCommand`, `DeleteItemCommand`, lib-dynamodb
+  `PutCommand`, DocumentClient `put` / `update` / `delete`, ...) provides `dynamo:<name>` and a read
+  (`GetItemCommand`, `QueryCommand`, `ScanCommand`, `get` / `query` / `scan`) uses it. The name is a
+  literal `TableName`, the default in `process.env.X || 'name'`, or a same-file `const` holding
+  either; the env variables are kept as the node's `env`. One variable read with two defaults names
+  two tables (`turing-agents-dev` and `wiki-agent-memory` stay apart). `this.tableName`, parameters,
+  env reads with no default, batch requests and test files record nothing.
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 

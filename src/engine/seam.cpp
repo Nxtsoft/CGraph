@@ -913,7 +913,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
                                     " consumed endpoints joined at the proxied path");
   }
   if (other_matched + other_used_only + other_provided_only > 0) {
-    result.resolution_log.push_back("other contracts (tables, graph labels, headers, claims, env): matched " +
+    result.resolution_log.push_back("other contracts (tables, graph labels, headers, claims, env, DynamoDB tables): matched " +
                                     std::to_string(other_matched) + "; " + std::to_string(other_used_only) +
                                     " used with no provider among these graphs; " +
                                     std::to_string(other_provided_only) + " provided with no user");

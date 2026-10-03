@@ -62,13 +62,16 @@
 //                  or uses it (a query, a client setting the header, a decoder
 //                  reading the claim), context = "<kind>:<name>" with kind one
 //                  of `table`, `label` (a graph database node label or
-//                  relationship type), `header`, `claim`, `env`, and name as the
+//                  relationship type), `header`, `claim`, `env`, `dynamo` (a
+//                  DynamoDB table, dynamo_contracts.hpp), and name as the
 //                  code spells it. For `table` and `label` target_label is the
 //                  database the extractor knows the name lives in, empty when
 //                  it knows none (the usual case: code rarely proves which
 //                  database a connection reaches). For a `header` provider it
 //                  is kBoundHeaderRead when the framework binds the read to a
-//                  request itself, else empty; it is ignored otherwise.
+//                  request itself, else empty. For `dynamo` it is the env
+//                  variables whose default the name is (`X,Y`), kept as the
+//                  node's `env` property. It is ignored otherwise.
 //                  A header provider that is not bound provides only when
 //                  something reaches its function: a CALLS, imports or
 //                  references edge, or a route's `handled_by`, from code
@@ -86,7 +89,7 @@
 // contract in two repos' graphs is the same id:
 //
 //   table:<database>:<name>   label:<database>:<name>
-//   header:<name lowercased>  claim:<name>  env:<name>
+//   header:<name lowercased>  claim:<name>  env:<name>  dynamo:<name>
 //
 // A table or label with no known database is `table:local:<name>`: local to
 // its repo, never the same node as another repo's `table:local:<name>` (two
@@ -98,6 +101,9 @@
 // standard HTTP header (`authorization`, `content-type`) or a standard JWT
 // claim (`exp`, `email`) never does: every service uses those for its own
 // reasons. Claim facts come only from provably-JWT code (claim_contracts.hpp).
+// A DynamoDB table (`dynamo:<name>`, case-sensitive) is its own kind, never a
+// `table:`, and crosses by name: its name is its whole address in an AWS
+// account, with no database between to declare.
 // is_bridged_contract says which ids cross repositories as they are.
 //
 // Extractors normalize names before emitting a fact: an unquoted SQL
@@ -171,14 +177,14 @@ inline constexpr std::string_view kBoundHeaderRead = "bound";
                                                      std::string_view database = {});
 
 // The kind of a contract id (`endpoint`, `table`, `label`, `header`, `claim`,
-// `env`), empty when `id` is no contract id.
+// `env`, `dynamo`), empty when `id` is no contract id.
 [[nodiscard]] std::string_view contract_kind_of(std::string_view id);
 
 // True for an id that is the same contract in every repository's graph by
-// itself: every endpoint, a claim outside the standard set below, a header
-// outside the standard set below, and a table or label in a named database. A
-// `table:local:` / `label:local:` id, every `env:` id, a standard claim and
-// a standard header are not: a table or env variable crosses only where a
+// itself: every endpoint and DynamoDB table, a claim outside the standard set
+// below, a header outside the standard set below, and a table or label in a
+// named database. A `table:local:` / `label:local:` id, every `env:` id, a
+// standard claim and a standard header are not: a table or env variable crosses only where a
 // declaration says so (contract_declarations.hpp crossing_id, which every
 // cross-repo matcher uses), a standard claim or header never.
 [[nodiscard]] bool is_bridged_contract(std::string_view id);

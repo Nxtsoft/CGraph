@@ -16,6 +16,7 @@ add_library(cgraph_engine STATIC
   cpp_extractor.cpp
   data_contracts.cpp
   detect.cpp
+  dynamo_contracts.cpp
   endpoint_prefixes.cpp
   contract_declarations.cpp
   engine.cpp

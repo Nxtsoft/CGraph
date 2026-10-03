@@ -564,7 +564,7 @@ int test_generic_contracts(const fs::path& root) {
     }
   }
   const auto other_line = std::ranges::any_of(plain.resolution_log, [](const std::string& line) {
-    return line.starts_with("other contracts (tables, graph labels, headers, claims, env): matched 1;");
+    return line.starts_with("other contracts (tables, graph labels, headers, claims, env, DynamoDB tables): matched 1;");
   });
   if (!other_line) {
     std::cerr << "discover: other contracts are not logged\n";

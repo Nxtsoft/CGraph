@@ -1,6 +1,7 @@
 #include "cgraph/javascript_extractor.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/dynamo_contracts.hpp"
 #include "cgraph/env_contracts.hpp"
 #include "cgraph/header_contracts.hpp"
 #include "cgraph/http_consumers.hpp"
@@ -887,6 +888,7 @@ void js_extra_walk(const TSNode& node, const ExtractionContext& context, const s
   url_const_handler(node, context, raw_relations);
   http_call_handler(node, context, function_scope_id, fragment, raw_relations);
   js_header_contracts(node, context, function_scope_id, fragment, raw_relations);
+  js_dynamo_contracts(node, context, function_scope_id, fragment, raw_relations);
 }
 
 // TS primitive/builtin type names that never become a `references` target.
