@@ -275,5 +275,16 @@ int main() {
     return 1;
   }
 
+  // Parseable requests of the wrong shape are Invalid Request (id null), not a
+  // nlohmann type_error escaping to the stdio loop.
+  for (const auto& malformed : {nlohmann::json(5), nlohmann::json::array({1}),
+                                nlohmann::json{{"jsonrpc", "2.0"}, {"id", 16}, {"method", 7}},
+                                nlohmann::json{{"jsonrpc", "2.0"}, {"id", 17}, {"method", "tools/call"}, {"params", 5}}}) {
+    const auto invalid = cgraph::handle_mcp_request(malformed, forwarder);
+    if (!invalid["id"].is_null() || invalid["error"]["code"] != -32600) {
+      return 1;
+    }
+  }
+
   return 0;
 }

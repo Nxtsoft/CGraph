@@ -13,6 +13,7 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <system_error>
 #include <thread>
 
 #include <fcntl.h>
@@ -1153,6 +1154,49 @@ int main() {
            "coverage: graph.json stayed deterministic-only across the refused update");
 
     fs::remove_all(cov_root);
+  }
+
+  // An exception inside the daemon -- here the project root's parent losing
+  // search permission, so the rescan's weakly_canonical(root) throws a
+  // filesystem_error -- must stop the daemon with exit 1 and release its
+  // endpoint. It must not escape a worker thread or unwind past a joinable
+  // one, either of which calls std::terminate (abort, exit 134). Skipped as
+  // root, which bypasses directory permissions.
+  if (::geteuid() != 0) {
+    const auto fatal_parent = fs::temp_directory_path() / "cgraph_daemon_fatal_test";
+    const auto fatal_root = fatal_parent / "proj";
+    std::error_code restore_error;  // a run that aborted mid-test left the parent at 000
+    fs::permissions(fatal_parent, fs::perms::owner_all, fs::perm_options::replace, restore_error);
+    fs::remove_all(fatal_parent);
+    write_file(fatal_root / "src" / "fatal.ts", "export function fatalTarget() { return 1; }\n");
+    const auto fatal_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(fatal_root));
+    fs::remove(fatal_socket);
+
+    cgraph::DaemonServerOptions fatal_options;
+    fatal_options.idle_timeout = std::chrono::seconds(60);
+    fatal_options.code_poll_interval = std::chrono::milliseconds(0);
+    fatal_options.drop_poll_interval = std::chrono::milliseconds(20);
+
+    // Serve loop: an `update` whose rescan throws.
+    int loop_rc = -1;
+    std::thread loop_server([&] { loop_rc = cgraph::run_daemon_server(fatal_root, fatal_options); });
+    expect(ok, wait_for_label(fatal_socket, "fatalTarget", "fatalTarget", true),
+           "fatal: initial build published the graph");
+    expect(ok, ::chmod(fatal_parent.c_str(), 0) == 0, "fatal: removed search permission on the root's parent");
+    (void)cgraph::request_over_unix_socket(fatal_socket, cgraph::make_request("update", {{"path", "."}}));
+    loop_server.join();
+    expect(ok, loop_rc == 1, "fatal: a serve-loop exception exits run_daemon_server with 1");
+    expect(ok, !fs::exists(fatal_socket), "fatal: serve-loop failure released the endpoint");
+
+    // Build thread: the initial build itself throws.
+    int build_rc = -1;
+    std::thread build_server([&] { build_rc = cgraph::run_daemon_server(fatal_root, fatal_options); });
+    build_server.join();
+    expect(ok, build_rc == 1, "fatal: an initial-build exception exits run_daemon_server with 1");
+    expect(ok, !fs::exists(fatal_socket), "fatal: initial-build failure released the endpoint");
+
+    expect(ok, ::chmod(fatal_parent.c_str(), 0700) == 0, "fatal: restored the root's parent");
+    fs::remove_all(fatal_parent);
   }
 
   fs::remove_all(root);

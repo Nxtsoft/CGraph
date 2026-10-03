@@ -2,6 +2,7 @@ add_library(cgraph_engine STATIC
   analysis.cpp
   atomic_write.cpp
   change_context.cpp
+  cli_support.cpp
   daemon_endpoint.cpp
   daemon_server.cpp
   configured_extractors.cpp

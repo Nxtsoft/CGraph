@@ -1,4 +1,5 @@
 #include "cgraph/atomic_write.hpp"
+#include "cgraph/cli_support.hpp"
 #include "cgraph/change_context.hpp"
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/daemon_endpoint.hpp"
@@ -142,14 +143,14 @@ int run_change_context(int argc, char** argv) {
       else if (arg == "--expected-base-content-root") params["expected_base_content_root"] = value;
       else if (arg == "--expected-target-content-root") params["expected_target_content_root"] = value;
       else if (arg == "--budget" || arg == "--max-depth") {
-        std::size_t consumed = 0;
-        const auto number = std::stoll(value, &consumed);
-        if (consumed != value.size()) throw std::invalid_argument("invalid numeric argument");
-        params[arg == "--budget" ? "budget" : "max_depth"] = number;
+        params[arg == "--budget" ? "budget" : "max_depth"] = cgraph::integer_flag<long long>(arg, value);
       } else throw std::invalid_argument("unknown argument: " + arg);
     }
     std::cout << cgraph::change_context_across_workspace(params, cgraph::ClientRequest{}).dump() << '\n';
     return 0;
+  } catch (const cgraph::UsageError& error) {
+    std::cout << nlohmann::json{{"error", error.what()}}.dump() << '\n';
+    return 2;
   } catch (const std::exception& error) {
     std::cout << nlohmann::json{{"error", error.what()}}.dump() << '\n';
     return 1;
@@ -210,13 +211,12 @@ int run_enrich_ingest(const Args& args) {
     return cgraph::parse_iso8601_utc(midnight);
   }
   if (spec.size() > 1 && (spec.back() == 'h' || spec.back() == 'd')) {
-    try {
-      const long n = std::stol(spec.substr(0, spec.size() - 1));
-      const auto hours = std::chrono::hours(spec.back() == 'd' ? n * 24 : n);
-      return cgraph::WallClock::now() - hours;
-    } catch (...) {
+    const auto n = cgraph::parse_integer<long>(std::string_view(spec).substr(0, spec.size() - 1));
+    if (!n) {
       return std::nullopt;
     }
+    const auto hours = std::chrono::hours(spec.back() == 'd' ? *n * 24 : *n);
+    return cgraph::WallClock::now() - hours;
   }
   return cgraph::parse_iso8601_utc(spec);
 }
@@ -330,17 +330,17 @@ int run_report(int argc, char** argv) {
     } else if (arg == "--group-by" && has_value) {
       request.params["group_by"] = argv[++index];
     } else if (arg == "--depth" && has_value) {
-      request.params["depth"] = std::stoi(argv[++index]);
+      request.params["depth"] = cgraph::integer_flag<int>(arg, argv[++index]);
     } else if (arg == "--budget" && has_value) {
-      request.params["budget"] = std::stoll(argv[++index]);
+      request.params["budget"] = cgraph::integer_flag<long long>(arg, argv[++index]);
     } else if (arg == "--threshold" && has_value) {
-      request.params["threshold"] = std::stod(argv[++index]);
+      request.params["threshold"] = cgraph::number_flag(arg, argv[++index]);
     } else if (arg == "--min-members" && has_value) {
-      request.params["min_members"] = std::stoi(argv[++index]);
+      request.params["min_members"] = cgraph::integer_flag<int>(arg, argv[++index]);
     } else if (arg == "--min-tokens" && has_value) {
-      request.params["min_tokens"] = std::stoi(argv[++index]);
+      request.params["min_tokens"] = cgraph::integer_flag<int>(arg, argv[++index]);
     } else if (arg == "--hops" && has_value) {
-      request.params["hops"] = std::stoi(argv[++index]);
+      request.params["hops"] = cgraph::integer_flag<int>(arg, argv[++index]);
     } else if (arg == "--include-tests") {
       request.params["include_tests"] = true;
     } else if (arg == "--daemon" && has_value) {
@@ -910,7 +910,7 @@ std::filesystem::path supervisor_config_path() {
     } else if (arg == "--cgraph" && index + 1 < argc) {
       config.cgraph_binary = argv[++index];
     } else if (arg == "--interval" && index + 1 < argc) {
-      config.reconcile_interval_seconds = std::stoi(argv[++index]);
+      config.reconcile_interval_seconds = cgraph::integer_flag<int>(arg, argv[++index]);
     } else {
       std::cerr << "cgraph daemon: unknown argument: " << arg << '\n';
       return false;
@@ -1111,9 +1111,9 @@ int run_drain_command(int argc, char** argv) {
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];
     if (arg == "--interval" && index + 1 < argc) {
-      config.interval_seconds = std::stoi(argv[++index]);
+      config.interval_seconds = cgraph::integer_flag<int>(arg, argv[++index]);
     } else if (arg == "--chunk-cap" && index + 1 < argc) {
-      config.chunk_cap = std::stoi(argv[++index]);
+      config.chunk_cap = cgraph::integer_flag<int>(arg, argv[++index]);
     } else if (arg == "--script" && index + 1 < argc) {
       config.script_path = argv[++index];
     } else if (arg == "--launch-agents-dir" && index + 1 < argc) {
@@ -1250,14 +1250,19 @@ int run(int argc, char** argv) {
 int main(int argc, char** argv) {
   // Every output file goes through write_file_atomically: a full disk or any
   // other failed write leaves no truncated file behind and must not exit 0.
-  // One handler reports every failure the same way: cgraph::FileWriteError
-  // (names the file and the OS reason), std::filesystem::filesystem_error
-  // (what() names the path(s)), and any other std::exception. An escaped
-  // exception would instead abort with a core dump (exit 134).
+  // A malformed flag value is a usage error (exit 2). Any other exception is
+  // reported with its type (a filesystem_error's what() also names the
+  // path(s)) and exits 1; escaping main would abort with a core dump (134).
   try {
     return run(argc, argv);
-  } catch (const std::exception& error) {
+  } catch (const cgraph::UsageError& error) {
     std::cerr << "cgraph: " << error.what() << '\n';
+    return 2;
+  } catch (const cgraph::FileWriteError& error) {
+    std::cerr << "cgraph: " << error.what() << '\n';
+    return 1;
+  } catch (const std::exception& error) {
+    std::cerr << "cgraph: " << cgraph::describe_exception(error) << '\n';
     return 1;
   }
 }

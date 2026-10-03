@@ -1,3 +1,4 @@
+#include "cgraph/cli_support.hpp"
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/mcp_server.hpp"
 
@@ -69,7 +70,7 @@ int main(int argc, char** argv) {
   try {
     return run(argc, argv);
   } catch (const std::exception& error) {
-    std::cerr << "cgraph-mcp: " << error.what() << '\n';
+    std::cerr << "cgraph-mcp: " << cgraph::describe_exception(error) << '\n';
     return 1;
   }
 }

@@ -1,3 +1,4 @@
+#include "cgraph/cli_support.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/daemon_server.hpp"
@@ -41,7 +42,7 @@ int run(int argc, char** argv) {
       continue;
     }
     if (arg == "--idle-timeout" && index + 1 < argc) {
-      idle_timeout = std::chrono::seconds(std::stoll(argv[++index]));
+      idle_timeout = std::chrono::seconds(cgraph::integer_flag<long long>(arg, argv[++index]));
       continue;
     }
     if (arg == "--no-watch") {
@@ -103,13 +104,18 @@ int run(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  // A failure the server does not handle itself (e.g. a filesystem_error
-  // creating the socket directory, or an unreadable --idle-timeout) is logged
-  // and exits non-zero; an escaped exception would abort with a core dump.
+  // A malformed flag value is a usage error (exit 2). Setup failures outside
+  // the serve loop (e.g. a filesystem_error creating the socket directory) are
+  // logged with their type and exit 1; an escaped exception would abort with a
+  // core dump. Failures inside the serve loop and its worker threads are
+  // handled by run_daemon_server itself, which shuts down cleanly and returns 1.
   try {
     return run(argc, argv);
-  } catch (const std::exception& error) {
+  } catch (const cgraph::UsageError& error) {
     std::cerr << "graphd: " << error.what() << '\n';
+    return 2;
+  } catch (const std::exception& error) {
+    std::cerr << "graphd: " << cgraph::describe_exception(error) << '\n';
     return 1;
   }
 }

@@ -204,6 +204,14 @@ int main(int argc, char** argv) {
     std::cout << "cli_main_test: read-only --out case skipped (running as root)\n";
   }
 
+  // A malformed numeric flag is a usage error (exit 2) naming the flag and the
+  // value; std::stoi threw std::invalid_argument and aborted (134).
+  run = run_cgraph(cgraph, {"report", "modules", "--root", fixture.string(), "--depth", "abc"}, kUnlimited);
+  expect(ok, run.exit_code == 2, "report --depth abc exits 2 (got " + std::to_string(run.exit_code) + "): " +
+                                     run.stderr_text);
+  expect(ok, contains(run.stderr_text, "cgraph: --depth expects an integer, got 'abc'"),
+         "report --depth abc names the flag and value: " + run.stderr_text);
+
   fs::remove_all(root);
   if (ok) {
     std::cout << "cli_main_test: ok\n";

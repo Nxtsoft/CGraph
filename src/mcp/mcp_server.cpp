@@ -295,10 +295,8 @@ namespace {
   return {};
 }
 
-}  // namespace
-
-nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder,
-                                  const McpChangeContext& change_context_runner) {
+[[nodiscard]] nlohmann::json respond(const nlohmann::json& request, const McpForwarder& forwarder,
+                                     const McpChangeContext& change_context_runner) {
   const auto id = request.value("id", nlohmann::json(nullptr));
   const auto method = request.value("method", std::string{});
   if (request.value("jsonrpc", std::string{}) != "2.0" || method.empty()) {
@@ -359,6 +357,21 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
     return error_response(id, -32603, daemon_response.value("error", std::string{"daemon request failed"}));
   }
   return response(id, text_content(daemon_response.value("result", nlohmann::json::object())));
+}
+
+}  // namespace
+
+nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder,
+                                  const McpChangeContext& change_context_runner) {
+  // A parseable line of the wrong shape (`5`, `[1]`, a non-string "method" or
+  // non-object "params") makes nlohmann throw on the first typed read. That is
+  // an Invalid Request for this line only (JSON-RPC 2.0: id is null when it
+  // could not be determined); the stdio loop keeps serving.
+  try {
+    return respond(request, forwarder, change_context_runner);
+  } catch (const nlohmann::json::exception& error) {
+    return error_response(nullptr, -32600, std::string{"invalid JSON-RPC request: "} + error.what());
+  }
 }
 
 }  // namespace cgraph

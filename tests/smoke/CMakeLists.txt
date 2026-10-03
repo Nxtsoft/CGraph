@@ -829,6 +829,32 @@ add_test(NAME cgraph_cli_main_test
     $<TARGET_FILE:cgraph>
     "${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/one_shot")
 
+add_executable(cgraph_mcp_main_test
+  mcp_main_test.cpp)
+
+target_link_libraries(cgraph_mcp_main_test
+  PRIVATE
+    nlohmann_json::nlohmann_json)
+
+cgraph_set_warnings(cgraph_mcp_main_test)
+cgraph_enable_sanitizers(cgraph_mcp_main_test)
+
+add_test(NAME cgraph_mcp_main_test
+  COMMAND cgraph_mcp_main_test
+    $<TARGET_FILE:cgraph-mcp>)
+
+add_executable(cgraph_cli_support_test
+  cli_support_test.cpp)
+
+target_link_libraries(cgraph_cli_support_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_cli_support_test)
+cgraph_enable_sanitizers(cgraph_cli_support_test)
+
+add_test(NAME cgraph_cli_support_test COMMAND cgraph_cli_support_test)
+
 add_executable(cgraph_atomic_write_test
   atomic_write_test.cpp)
 

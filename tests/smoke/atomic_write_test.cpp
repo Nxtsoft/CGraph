@@ -203,6 +203,31 @@ int main() {
   }
   expect(ok, threw, "write_file_atomically throws FileWriteError naming the path");
 
+  // create_output_directories: an empty path is the current directory (no-op),
+  // an existing directory is fine, nested missing ones are created, and a
+  // read-only parent raises FileWriteError in write_file_atomically's style --
+  // never a std::filesystem::filesystem_error.
+  cgraph::create_output_directories({});
+  cgraph::create_output_directories(root);
+  const auto nested = root / "a" / "b";
+  cgraph::create_output_directories(nested);
+  expect(ok, fs::is_directory(nested), "create_output_directories creates missing parents");
+  if (::geteuid() != 0) {  // root bypasses directory permissions
+    const auto read_only = root / "read-only";
+    fs::create_directories(read_only);
+    fs::permissions(read_only, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+    const auto blocked = read_only / "out";
+    std::string message;
+    try {
+      cgraph::create_output_directories(blocked);
+    } catch (const cgraph::FileWriteError& error) {
+      message = error.what();
+    }
+    expect(ok, message == "failed to write " + blocked.string() + ": cannot create directory (Permission denied)",
+           ("create_output_directories under a read-only parent throws FileWriteError: " + message).c_str());
+    fs::permissions(read_only, fs::perms::owner_all, fs::perm_options::replace);
+  }
+
   fs::remove_all(root);
   if (ok) {
     std::cout << "atomic_write_test: ok\n";
