@@ -162,6 +162,9 @@ constexpr std::array<std::string_view, 45> kStandardJwtClaims = {
     "sub", "sub_jwk", "updated_at", "website", "zoneinfo",
 };
 
+// The RFC 7519 section 4.1 registered claim names, sorted for binary search.
+constexpr std::array<std::string_view, 7> kRegisteredJwtClaims = {"aud", "exp", "iat", "iss", "jti", "nbf", "sub"};
+
 // `table` and `label` live in a database; the other kinds are global names.
 [[nodiscard]] bool database_scoped(std::string_view kind) { return kind == "table" || kind == "label"; }
 
@@ -212,6 +215,8 @@ bool is_database_local_contract(std::string_view id) {
 std::span<const std::string_view> standard_jwt_claims() { return kStandardJwtClaims; }
 
 bool is_standard_jwt_claim(std::string_view name) { return std::ranges::binary_search(kStandardJwtClaims, name); }
+
+bool is_registered_jwt_claim(std::string_view name) { return std::ranges::binary_search(kRegisteredJwtClaims, name); }
 
 bool is_bridged_contract(std::string_view id) {
   const auto kind = contract_kind_of(id);

@@ -97,7 +97,10 @@
 // crosses only where a declaration names the service it addresses, and a
 // standard HTTP header (`authorization`, `content-type`) or a standard JWT
 // claim (`exp`, `email`) never does: every service uses those for its own
-// reasons. Claim facts come only from provably-JWT code (claim_contracts.hpp).
+// reasons. Where a declaration names the repos whose tokens one issuer mints,
+// their claims cross between those repos only, at `claim:<issuer>:<name>`
+// (every name but the RFC 7519 registered ones). Claim facts come only from
+// provably-JWT code (claim_contracts.hpp).
 // is_bridged_contract says which ids cross repositories as they are.
 //
 // Extractors normalize names before emitting a fact: an unquoted SQL
@@ -180,7 +183,8 @@ inline constexpr std::string_view kBoundHeaderRead = "bound";
 // `table:local:` / `label:local:` id, every `env:` id, a standard claim and
 // a standard header are not: a table or env variable crosses only where a
 // declaration says so (contract_declarations.hpp crossing_id, which every
-// cross-repo matcher uses), a standard claim or header never.
+// cross-repo matcher uses), a standard header never, and a claim of a repo
+// in a declared issuer only at that issuer's `claim:<issuer>:<name>`.
 [[nodiscard]] bool is_bridged_contract(std::string_view id);
 
 // True for a lowercased header name every service uses for its own reasons
@@ -200,6 +204,12 @@ inline constexpr std::string_view kBoundHeaderRead = "bound";
 [[nodiscard]] bool is_standard_jwt_claim(std::string_view name);
 // The sorted table behind is_standard_jwt_claim.
 [[nodiscard]] std::span<const std::string_view> standard_jwt_claims();
+
+// True for the RFC 7519 section 4.1 registered claims (`iss`, `sub`, `aud`,
+// `exp`, `nbf`, `iat`, `jti`): the token's own envelope, never a value one
+// service hands another. Inside a declared issuer (contract_declarations.hpp)
+// every other claim crosses between its members, OpenID Connect ones included.
+[[nodiscard]] bool is_registered_jwt_claim(std::string_view name);
 
 // True for a `table:local:` or `label:local:` id.
 [[nodiscard]] bool is_database_local_contract(std::string_view id);

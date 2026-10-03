@@ -210,7 +210,7 @@ bool fail(SeamResult& result, std::string message) {
 SeamFuseResult fuse_seam(const Fragment& seam,
                          const std::vector<std::pair<std::string, GraphSnapshot>>& services,
                          std::span<const EndpointPrefix> prefixes, std::span<const ContractDatabase> databases,
-                         std::span<const EnvProvider> env) {
+                         std::span<const EnvProvider> env, std::span<const ClaimIssuer> issuers) {
   SeamFuseResult result;
   result.ok = true;
 
@@ -240,9 +240,10 @@ SeamFuseResult fuse_seam(const Fragment& seam,
   // Scope every service-local id by its service; contract ids are shared on
   // purpose, since that is where a provider and its consumers meet: the ids
   // crossing_id gives, the spelling discover_seam joined them at. A
-  // `table:local:` id or an undeclared env id is a service's own.
+  // `table:local:` id, an undeclared env id or a standard claim is a
+  // service's own.
   auto scoped = [&](const std::string& service, const std::string& id) {
-    if (auto shared = crossing_id(databases, env, service, id)) {
+    if (auto shared = crossing_id(databases, env, issuers, service, id)) {
       return std::move(*shared);
     }
     return id.starts_with("service:") || id.starts_with("schema:") || service.empty() ? id : service + "::" + id;
@@ -296,6 +297,8 @@ SeamFuseResult fuse_seam(const Fragment& seam,
       tagged.id = scoped(name, node.id);
       if (declared_contract_id(databases, name, node.id)) {
         tagged.properties["database"] = declared_database(databases, name)->name;  // was `local`
+      } else if (const auto scoped_claim = issuer_claim(issuers, tagged.id)) {
+        tagged.properties["issuer"] = scoped_claim->issuer->name;
       }
       tagged.properties["community"] = name;
       tagged.properties.try_emplace("service", name);
@@ -355,11 +358,13 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     add_edge({.source = scoped(service->second, edge.source), .target = scoped(service->second, edge.target),
               .relation = edge.relation});
   }
-  // A contract discover joined under a declaration (`--env`, `--database`)
-  // must be held under one of its spellings by every service the seam says
-  // provides or uses it; fused without the same declarations, that service's
-  // node would be scoped away from the seam's id and the join would silently
-  // split, so it is refused, as an unjoined proxied endpoint is.
+  // A seam contract other than an endpoint must be held under one of its
+  // spellings by every service the seam says provides or uses it. When it is
+  // not, discover and fuse were given different declarations (`--env`,
+  // `--database`, `--issuer`, in either direction: a declaration only discover
+  // had, or only fuse has), that service's node would be scoped away from the
+  // seam's id and the join would silently split, so it is refused, as an
+  // unjoined proxied endpoint is.
   std::unordered_map<std::string, std::unordered_set<std::string>> held;  // service -> its node ids
   for (const auto& [name, graph] : services) {
     auto& ids = held[name];
@@ -374,12 +379,14 @@ SeamFuseResult fuse_seam(const Fragment& seam,
     if (service == edge.properties.end() || kind.empty() || kind == "endpoint" || !held.contains(service->second)) {
       continue;
     }
-    const auto spellings = contract_spellings(databases, env, service->second, edge.source);
+    const auto spellings = contract_spellings(databases, env, issuers, service->second, edge.source);
     const auto& ids = held.at(service->second);
     if (std::ranges::none_of(spellings, [&](const std::string& id) { return ids.contains(id); })) {
       undeclared.push_back("seam contract " + edge.source + " (" + edge.relation + " in " + service->second +
-                           ") was joined by discover under a declaration fuse was not given; pass fuse the same " +
-                           (kind == "env" ? "--env" : "--database") + " as discover");
+                           ") is held by " + service->second +
+                           " under none of the ids fuse's declarations give it; discover and fuse were given different " +
+                           (kind == "env" ? "--env" : kind == "claim" ? "--issuer" : "--database") +
+                           " declarations, pass both the same");
     }
   }
   if (!undeclared.empty()) {
@@ -640,7 +647,7 @@ Node code_ref_shadow(const std::string& graph_name, const SeamNode& node) {
 
 SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesystem::path>>& graphs,
                          std::span<const EndpointPrefix> prefixes, std::span<const ContractDatabase> databases,
-                         std::span<const EnvProvider> env) {
+                         std::span<const EnvProvider> env, std::span<const ClaimIssuer> issuers) {
   SeamResult result;
   result.ok = true;
   if (graphs.empty()) {
@@ -689,6 +696,8 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
   std::vector<std::size_t> mapped_per_prefix(prefixes.size(), 0);
   // Repo-local tables and labels each declared database joined, for the log.
   std::vector<std::size_t> mapped_per_database(databases.size(), 0);
+  // Members' claims each declared issuer joined, for the log.
+  std::vector<std::size_t> mapped_per_issuer(issuers.size(), 0);
 
   for (const auto& [name, graph] : loaded) {
     Node service;
@@ -736,7 +745,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
       // Every contract that crosses repositories joins here (crossing_id): a
       // repo-local table or label only under a database its repo declares, an
       // env variable only when declared.
-      const auto shared = crossing_id(databases, env, name, node.id);
+      const auto shared = crossing_id(databases, env, issuers, name, node.id);
       if (!shared) {
         continue;
       }
@@ -755,7 +764,11 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
           endpoint.properties[key] = value->second;
         }
       }
-      if (*shared != node.id) {  // a member's repo-local table, joined at its database's id
+      if (const auto scoped_claim = *shared != node.id ? issuer_claim(issuers, *shared) : std::nullopt) {
+        // a member's claim, joined at its issuer's id
+        endpoint.properties["issuer"] = scoped_claim->issuer->name;
+        ++mapped_per_issuer[static_cast<std::size_t>(scoped_claim->issuer - issuers.data())];
+      } else if (*shared != node.id) {  // a member's repo-local table, joined at its database's id
         const auto* database = declared_database(databases, name);
         endpoint.properties["database"] = database->name;
         ++mapped_per_database[static_cast<std::size_t>(database - databases.data())];
@@ -926,6 +939,14 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
     result.resolution_log.push_back("database " + databases[slot].name + " (" + members + "): " +
                                     std::to_string(mapped_per_database[slot]) +
                                     " repo-local tables and labels joined at the database's id");
+  }
+  for (std::size_t slot = 0; slot < issuers.size(); ++slot) {
+    std::string members;
+    for (const auto& repo : issuers[slot].repos) {
+      members += (members.empty() ? "" : ",") + repo;
+    }
+    result.resolution_log.push_back("issuer " + issuers[slot].name + " (" + members + "): " +
+                                    std::to_string(mapped_per_issuer[slot]) + " claims joined at the issuer's id");
   }
   if (!documented_by.empty()) {
     // Contract drift: what the documents say against what the code serves.

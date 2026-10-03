@@ -396,7 +396,7 @@ Json cross_service_rows(const CrossServiceAsk& scope, const TouchedContracts& to
   };
   std::vector<Ordered> ordered, local;
   for (const auto& [id, entry] : touched) {
-    auto crossing = crossing_id(workspace.databases, workspace.env, enclosing.home, id);
+    auto crossing = crossing_id(workspace.databases, workspace.env, workspace.issuers, enclosing.home, id);
     (crossing ? ordered : local).push_back(Ordered{.id = id, .entry = &entry, .crossing = std::move(crossing)});
   }
   std::ranges::stable_sort(ordered, [](const auto& a, const auto& b) { return a.entry->rank < b.entry->rank; });
@@ -424,8 +424,9 @@ Json cross_service_rows(const CrossServiceAsk& scope, const TouchedContracts& to
       for (const auto& repo : workspace.repos) {
         if (repo.name == enclosing.home) continue;
         // Every spelling the member may hold the contract under: the crossing
-        // id, and its own `table:local:` id inside the same database.
-        for (const auto& id : contract_spellings(workspace.databases, workspace.env, repo.name, *crossing)) {
+        // id, its own `table:local:` id inside the same database, its own
+        // `claim:<name>` inside the same issuer.
+        for (const auto& id : contract_spellings(workspace.databases, workspace.env, workspace.issuers, repo.name, *crossing)) {
           if (unreachable.contains(repo.name)) break;
           std::string error;
           // Direct callers of what this change serves (CONSUMES), and the handler

@@ -68,13 +68,16 @@ struct SeamResult {
 // `table:local:<name>` / `label:local:<name>` as `table:<database>:<name>` so
 // members of one database meet; an undeclared repo-local table or label, an
 // undeclared env name and a standard header are left out of the seam. `env`
-// makes the declared service the provider of `env:<NAME>` (`SERVED_BY`). The
-// endpoint log lines are unchanged; other contracts get their own lines, only
-// when there are any.
+// makes the declared service the provider of `env:<NAME>` (`SERVED_BY`).
+// `issuers` spell a member's `claim:<name>` as `claim:<issuer>:<name>` (its
+// `issuer` property the issuer's name) so members of one issuer meet, and
+// never meet a repo outside it. The endpoint log lines are unchanged; other
+// contracts, databases and issuers get their own lines, only when there are
+// any.
 [[nodiscard]] SeamResult discover_seam(
     const std::vector<std::pair<std::string, std::filesystem::path>>& graphs,
     std::span<const EndpointPrefix> prefixes = {}, std::span<const ContractDatabase> databases = {},
-    std::span<const EnvProvider> env = {});
+    std::span<const EnvProvider> env = {}, std::span<const ClaimIssuer> issuers = {});
 
 // Result of fusing a seam fragment with its service graphs into one view graph.
 struct SeamFuseResult {
@@ -99,15 +102,17 @@ struct SeamFuseResult {
 // services; every other id, a `table:local:` or undeclared `env:` one
 // included, is scoped to its service. With `databases`, a declared member's
 // `table:local:<name>` becomes the seam's `table:<database>:<name>` (its
-// `database` property too); with `env`, a declared `env:<NAME>` is shared.
+// `database` property too); with `env`, a declared `env:<NAME>` is shared;
+// with `issuers`, a member's `claim:<name>` becomes `claim:<issuer>:<name>`.
 // The declarations must be the ones discover joined the seam under: a seam
 // contract whose `HANDLED_BY` / `CONSUMED_AT` service holds it under none of
 // the ids these declarations give (contract_spellings) fails loud, naming the
-// missing `--env` / `--database`, rather than splitting the join.
+// `--env` / `--database` / `--issuer` discover and fuse disagree on (either
+// side may hold the extra one), rather than splitting the join.
 [[nodiscard]] SeamFuseResult fuse_seam(
     const Fragment& seam,
     const std::vector<std::pair<std::string, GraphSnapshot>>& services,
     std::span<const EndpointPrefix> prefixes = {}, std::span<const ContractDatabase> databases = {},
-    std::span<const EnvProvider> env = {});
+    std::span<const EnvProvider> env = {}, std::span<const ClaimIssuer> issuers = {});
 
 }  // namespace cgraph
