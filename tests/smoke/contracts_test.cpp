@@ -1477,7 +1477,6 @@ int test_generic_contract_facts() {
   return 0;
 }
 
-// The standard claim table is sorted and unique (binary search depends on it).
 // DynamoDB tables (dynamo_contracts.hpp): their own kind, never a `table:`;
 // writers provide, readers use; the id is the case-sensitive name with no
 // database and crosses repositories by itself; the env variables a name is the
@@ -1555,6 +1554,7 @@ int test_dynamo_contract_facts() {
   return 0;
 }
 
+// The standard claim table is sorted and unique (binary search depends on it).
 int test_standard_jwt_claims() {
   const auto table = cgraph::standard_jwt_claims();
   for (std::size_t i = 1; i < table.size(); ++i) {

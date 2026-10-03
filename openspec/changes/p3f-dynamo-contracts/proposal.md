@@ -28,3 +28,4 @@ The tables track (#162) left DynamoDB out: putting a DynamoDB table under `table
 - Batch and transaction requests (`BatchWriteItem`, `TransactWriteItems`), keyed by table names inside the request.
 - Item keys (`PK` `PREF#...`, `SK` `GOOGLE_TOKENS` vs `GMAIL_TOKENS`): the T35 sort-key mismatch is item-level and out of scope.
 - Imported table-name constants.
+- Follow-up: an optional AWS account / region declaration. Today a `dynamo:` name joins every supplied repo that names it, whatever account each runs in (two services in different accounts each with a `sessions` table would join).

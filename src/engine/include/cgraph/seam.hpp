@@ -63,7 +63,8 @@ struct SeamResult {
 //
 // Every other contract that crosses repositories (crossing_id,
 // contract_declarations.hpp: tables and graph labels in a named database,
-// non-standard headers, claims, declared env names) joins the same way, with
+// non-standard headers, claims, declared env names, DynamoDB tables) joins the
+// same way, with
 // the same four edges and its own kind. `databases` spell a declared member's
 // `table:local:<name>` / `label:local:<name>` as `table:<database>:<name>` so
 // members of one database meet; an undeclared repo-local table or label, an

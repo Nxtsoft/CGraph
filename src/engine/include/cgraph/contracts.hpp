@@ -11,7 +11,8 @@
 
 // Contract discovery (CGR-13): the wire contracts a repo provides and consumes,
 // found in its own source rather than typed into a seam spec: HTTP
-// endpoints, tables, graph labels, headers, JWT claims and env names. Extraction records raw facts as RawRelation entries:
+// endpoints, tables, graph labels, headers, JWT claims, env names and DynamoDB
+// tables. Extraction records raw facts as RawRelation entries:
 //
 //   "route"        source_id = the inline handler's function node, target_label =
 //                  the module-level identifier of the router chain it is
@@ -103,7 +104,10 @@
 // reasons. Claim facts come only from provably-JWT code (claim_contracts.hpp).
 // A DynamoDB table (`dynamo:<name>`, case-sensitive) is its own kind, never a
 // `table:`, and crosses by name: its name is its whole address in an AWS
-// account, with no database between to declare.
+// account, with no database between to declare. Nothing in code says which
+// account or region a service uses, so one name in two accounts (two services
+// each with their own `sessions` table) joins too; an account declaration is a
+// recorded follow-up (dynamo_contracts.hpp).
 // is_bridged_contract says which ids cross repositories as they are.
 //
 // Extractors normalize names before emitting a fact: an unquoted SQL

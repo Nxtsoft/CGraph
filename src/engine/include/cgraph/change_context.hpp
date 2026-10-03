@@ -32,7 +32,7 @@ struct CrossServiceContract {
 using CrossServiceContracts = std::map<std::string, CrossServiceContract>;
 
 // The contracts (contracts.hpp: endpoints, tables, graph labels, headers,
-// claims, env names) one snapshot's changed code touches, added to `touched`.
+// claims, env names, DynamoDB tables) one snapshot's changed code touches, added to `touched`.
 // `reached` is trace_impact from the changed symbols with `dependents`. A
 // contract the change serves: one it changed (rank 0), one whose provider it
 // reached (the last step is handled_by) or one a changed file contains (rank

@@ -1602,6 +1602,7 @@ ExtractionResult extract_javascript(const ExtractionContext& context) {
   intern_node_symbols(config, tree_sitter_javascript());
   const HttpConsumerFileScope http_consumers;
   const HeaderContractsFileScope header_contracts;
+  const DynamoContractsFileScope dynamo_contracts;
   return extract_with_config(tree_sitter_javascript(), config, context);
 }
 
@@ -1610,6 +1611,7 @@ ExtractionResult extract_typescript(const ExtractionContext& context) {
   intern_node_symbols(config, tree_sitter_typescript());
   const HttpConsumerFileScope http_consumers;
   const HeaderContractsFileScope header_contracts;
+  const DynamoContractsFileScope dynamo_contracts;
   return extract_with_config(tree_sitter_typescript(), config, context);
 }
 
@@ -1618,6 +1620,7 @@ ExtractionResult extract_tsx(const ExtractionContext& context) {
   intern_node_symbols(config, tree_sitter_tsx());
   const HttpConsumerFileScope http_consumers;
   const HeaderContractsFileScope header_contracts;
+  const DynamoContractsFileScope dynamo_contracts;
   return extract_with_config(tree_sitter_tsx(), config, context);
 }
 

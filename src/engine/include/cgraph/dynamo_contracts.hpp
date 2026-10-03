@@ -10,6 +10,12 @@
 // account and the table to declare. So a `dynamo:` id bridges repositories by
 // name, as a non-standard header does, with no declaration.
 //
+// Caveat: nothing in code says which AWS account or region a service talks to,
+// so a `dynamo:` name joins every repository given to a workspace or seam that
+// names it, whatever account each runs in: two services in different accounts
+// each with a `sessions` table would join. An optional account declaration
+// (like `databases` for SQL tables) is a recorded follow-up.
+//
 // Who provides: DynamoDB has no migration that owns a table's shape, and the
 // probe repos define none of the shared table in code; the items in it are
 // what a writer puts there. A call that WRITES the table provides it
@@ -23,7 +29,10 @@
 //             `createTable`;
 //   uses      v3 `GetItemCommand`, `QueryCommand`, `ScanCommand`, lib-dynamodb
 //             `GetCommand`; DocumentClient `get`, `query`, `scan`, v2
-//             `getItem`.
+//             `getItem`; paginators `paginateQuery` / `paginateScan`, whose
+//             second argument holds `TableName`.
+//
+// A command may be named off a namespace import (`new ddb.PutItemCommand(...)`).
 //
 // The call's first argument must be an object literal with a `TableName`
 // property, and the file must import the DynamoDB SDK (`@aws-sdk/client-dynamodb`,
@@ -41,7 +50,7 @@
 //     `wiki-agent-memory`) name two tables and never join;
 //   - an identifier naming a module-level `const` of the same file whose value
 //     is one of the above, unless a parameter or local of an enclosing scope
-//     shadows it.
+//     binds the same name, plainly or destructured (`({ TABLE }) => ...`).
 // Anything else (`this.tableName`, a parameter, an imported constant, an env
 // read with no default) records nothing. A name must be a valid DynamoDB table
 // name (`[A-Za-z0-9_.-]`, 3 to 255 characters); it is case-sensitive.
@@ -55,11 +64,28 @@
 
 #include <tree_sitter/api.h>
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace cgraph {
+
+// Held while one JavaScript/TypeScript file is extracted: the file's SDK imports
+// and module constants are read once, on its first DynamoDB call, instead of
+// per call. Scopes nest; each covers one file on its thread. Without one each
+// call reads the file itself.
+class DynamoContractsFileScope {
+ public:
+  DynamoContractsFileScope();
+  ~DynamoContractsFileScope();
+  DynamoContractsFileScope(const DynamoContractsFileScope&) = delete;
+  DynamoContractsFileScope& operator=(const DynamoContractsFileScope&) = delete;
+
+ private:
+  struct Index;
+  std::unique_ptr<Index> index_;
+};
 
 // True for a valid DynamoDB table name: 3 to 255 of `[A-Za-z0-9_.-]`.
 [[nodiscard]] bool is_dynamo_table_name(std::string_view name);

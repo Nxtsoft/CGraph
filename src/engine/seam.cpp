@@ -750,7 +750,7 @@ SeamResult discover_seam(const std::vector<std::pair<std::string, std::filesyste
       endpoint.id = *shared;
       endpoint.label = node.label;
       endpoint.kind = node.kind;
-      for (const auto* key : {"method", "path", "name", "database"}) {
+      for (const auto* key : {"method", "path", "name", "database", "env"}) {
         if (const auto value = node.properties.find(key); value != node.properties.end()) {
           endpoint.properties[key] = value->second;
         }

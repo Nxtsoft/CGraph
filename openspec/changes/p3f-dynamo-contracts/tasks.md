@@ -17,3 +17,12 @@
 - [x] 3.2 Full suite.
 - [x] 3.3 Probe: eight graphs against bin-v0.8.0; no node or edge lost or changed except clustering-derived properties; every new fact hand-checked.
 - [x] 3.4 Seam discover/fuse and scorer: T34, T35 link; no previously linked edge lost.
+
+## 4. Review round 1 (PR #168)
+
+- [x] 4.1 Caveat in README, `dynamo_contracts.hpp` and `contracts.hpp`: a `dynamo:` name joins every supplied repo whatever AWS account or region; account declaration recorded as a follow-up; README says Python boto3 is not read.
+- [x] 4.2 Seam discover copies `env` onto the joined node (`seam_test` `test_dynamo_contracts`, which also joins `dynamo:` across two repo graphs and fuses it).
+- [x] 4.3 Kind lists in `workspace.hpp`, `seam.hpp`, `change_context.hpp`, `contracts.hpp` name DynamoDB tables.
+- [x] 4.4 `contracts_test`: the standard-claim comment back above its function.
+- [x] 4.5 `DynamoContractsFileScope`: the file's imports and constants are read once per file.
+- [x] 4.6 `paginateQuery` / `paginateScan` (TableName in the second argument), namespaced commands (`new ddb.PutItemCommand`), destructured parameters and locals shadow a module constant; tests for each fail on the round-0 code.

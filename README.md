@@ -335,7 +335,11 @@ as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
   literal `TableName`, the default in `process.env.X || 'name'`, or a same-file `const` holding
   either; the env variables are kept as the node's `env`. One variable read with two defaults names
   two tables (`turing-agents-dev` and `wiki-agent-memory` stay apart). `this.tableName`, parameters,
-  env reads with no default, batch requests and test files record nothing.
+  env reads with no default, batch requests and test files record nothing. Python (boto3) is not
+  read. Caveat: nothing in code says which AWS account or region a service uses, so a `dynamo:`
+  name joins every repository given to the workspace or seam that names it, whatever account each
+  runs in: two services in different accounts that each have a `sessions` table would join. An
+  optional account declaration is a recorded follow-up.
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 

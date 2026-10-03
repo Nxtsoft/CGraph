@@ -111,6 +111,35 @@ export async function remember(client: any) {
                  });
   }
 
+  // Paginators read the table named in their second argument; a command
+  // named off a namespace import counts like an imported one.
+  {
+    const std::string file = "src/history.ts";
+    const auto result = typescript(file, R"ts(
+import * as ddb from '@aws-sdk/client-dynamodb';
+import { paginateQuery, paginateScan } from '@aws-sdk/lib-dynamodb';
+const HISTORY = process.env.HISTORY_TABLE || 'chat-history';
+export async function* pages(client: any) {
+  yield* paginateQuery({ client }, { TableName: HISTORY, KeyConditionExpression: 'PK = :pk' });
+}
+export async function* everything(client: any) {
+  yield* paginateScan({ client, pageSize: 25 }, { TableName: 'chat-archive' });
+}
+export async function record(client: any) {
+  await client.send(new ddb.PutItemCommand({ TableName: HISTORY, Item: {} }));
+}
+export async function* wrongSlot(client: any) {
+  yield* paginateQuery({ client, TableName: 'not-the-input' }, {});
+}
+)ts");
+    ok &= expect("paginators and namespaced commands", dynamo_facts(result),
+                 {
+                     "uses|" + id(file, "pages") + "|dynamo:chat-history|HISTORY_TABLE",
+                     "uses|" + id(file, "everything") + "|dynamo:chat-archive|",
+                     "provides|" + id(file, "record") + "|dynamo:chat-history|HISTORY_TABLE",
+                 });
+  }
+
   // lib-dynamodb commands and DocumentClient methods (v3 `DynamoDBDocument`,
   // v2 `require('aws-sdk')`): put/update/delete provide, get/query/scan use.
   {
@@ -157,7 +186,7 @@ async function putOrder(order) {
   }
 
   // Not facts: a table held on `this`, a parameter, a constant shadowed by a
-  // parameter or a local, a non-env fallback, an env read with no default, an
+  // parameter or a local (plain or destructured), a non-env fallback, an env read with no default, an
   // interpolated template, a name DynamoDB refuses, a batch request, and a
   // method with no TableName.
   {
@@ -177,6 +206,15 @@ export async function byParameter(doc: any, tableName: string) {
 }
 export async function shadowedByParameter(doc: any, TABLE: string) {
   await doc.send(new PutCommand({ TableName: TABLE, Item: {} }));
+}
+export async function shadowedByDestructuredParameter(doc: any, { TABLE }: { TABLE: string }) {
+  await doc.send(new PutCommand({ TableName: TABLE, Item: {} }));
+}
+export const shadowedByArrowPattern = async ([TABLE]: string[], doc: any) =>
+  doc.send(new GetCommand({ TableName: TABLE, Key: {} }));
+export async function shadowedByDestructuredLocal(doc: any, config: any) {
+  const { TABLE } = config;
+  return doc.send(new GetCommand({ TableName: TABLE, Key: {} }));
 }
 export async function shadowedByLocal(doc: any) {
   const TABLE = pick();

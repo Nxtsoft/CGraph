@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -33,6 +34,8 @@ constexpr std::array<std::string_view, 4> kReadCommands = {"GetItemCommand", "Qu
 constexpr std::array<std::string_view, 7> kWriteMethods = {"put",     "update",     "delete",     "putItem",
                                                            "updateItem", "deleteItem", "createTable"};
 constexpr std::array<std::string_view, 4> kReadMethods = {"get", "query", "scan", "getItem"};
+// v3 paginators: `paginateQuery({ client }, { TableName, ... })` reads.
+constexpr std::array<std::string_view, 2> kReadPaginators = {"paginateQuery", "paginateScan"};
 constexpr std::array<std::string_view, 4> kSdkModules = {"@aws-sdk/client-dynamodb", "@aws-sdk/lib-dynamodb",
                                                          "aws-sdk/clients/dynamodb", "aws-sdk"};
 
@@ -175,6 +178,9 @@ struct FileIndex {
   return index;
 }
 
+// The index of the file being extracted, built on its first DynamoDB call.
+thread_local std::optional<FileIndex>* current_index = nullptr;
+
 // The file's root, which index_file reads. Done only for a call that already
 // passes TableName and a DynamoDB command or method, so a file pays for it only
 // where it talks to DynamoDB.
@@ -185,14 +191,36 @@ struct FileIndex {
   return node;
 }
 
+// Whether a binding pattern (a parameter list, a declarator's name) binds
+// `name`: an identifier anywhere in it, destructured (`({ TABLE })`,
+// `[TABLE]`, `{ a: TABLE }`) or not. An identifier in a default value
+// (`{ a = TABLE }`) counts too, which can only make a read record nothing.
+[[nodiscard]] bool binds(const TSNode& pattern, const std::string& name, std::string_view source) {
+  std::vector<TSNode> stack{pattern};
+  while (!stack.empty()) {
+    const TSNode node = stack.back();
+    stack.pop_back();
+    if (ts_node_is_null(node)) {
+      continue;
+    }
+    const auto type = type_of(node);
+    if ((type == "identifier" || type == "shorthand_property_identifier_pattern") && node_text(node, source) == name) {
+      return true;
+    }
+    const auto count = ts_node_named_child_count(node);
+    for (std::uint32_t i = 0; i < count; ++i) {
+      stack.push_back(ts_node_named_child(node, i));
+    }
+  }
+  return false;
+}
+
 // Whether a parameter or local of a scope enclosing `node` is named `name`.
 [[nodiscard]] bool shadowed(const TSNode& node, const std::string& name, std::string_view source) {
   for (TSNode scope = ts_node_parent(node); !ts_node_is_null(scope); scope = ts_node_parent(scope)) {
     const auto type = type_of(scope);
     if (js_syntax::is_function_node(type)) {
-      std::vector<std::string> parameters;
-      js_syntax::parameter_names(scope, source, parameters);
-      if (std::ranges::find(parameters, name) != parameters.end()) {
+      if (binds(field(scope, "parameters"), name, source) || binds(field(scope, "parameter"), name, source)) {
         return true;
       }
     } else if (type == "statement_block") {
@@ -204,8 +232,7 @@ struct FileIndex {
         }
         const auto declarators = ts_node_named_child_count(statement);
         for (std::uint32_t j = 0; j < declarators; ++j) {
-          const TSNode declared = field(ts_node_named_child(statement, j), "name");
-          if (type_of(declared) == "identifier" && node_text(declared, source) == name) {
+          if (binds(field(ts_node_named_child(statement, j), "name"), name, source)) {
             return true;
           }
         }
@@ -257,6 +284,18 @@ struct FileIndex {
 
 }  // namespace
 
+struct DynamoContractsFileScope::Index {
+  std::optional<FileIndex> file;
+  std::optional<FileIndex>* previous = nullptr;
+};
+
+DynamoContractsFileScope::DynamoContractsFileScope() : index_(std::make_unique<Index>()) {
+  index_->previous = current_index;
+  current_index = &index_->file;
+}
+
+DynamoContractsFileScope::~DynamoContractsFileScope() { current_index = index_->previous; }
+
 bool is_dynamo_table_name(std::string_view name) {
   return name.size() >= 3 && name.size() <= 255 && std::ranges::all_of(name, [](char ch) {
            return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' ||
@@ -275,32 +314,42 @@ void js_dynamo_contracts(const TSNode& node, const ExtractionContext& context, c
   if (type_of(arguments) != "arguments" || ts_node_named_child_count(arguments) == 0) {
     return;
   }
-  const TSNode value = table_name_value(unwrap_expression(ts_node_named_child(arguments, 0)), source);
-  if (ts_node_is_null(value)) {
+  // The operation: a command class (`PutItemCommand`, or `ddb.PutItemCommand`
+  // off a namespace import), a paginator function or a client method.
+  const TSNode callee = unwrap_expression(field(node, type == "new_expression" ? "constructor" : "function"));
+  const auto operation = type_of(callee) == "member_expression" ? node_text(field(callee, "property"), source)
+                                                                 : node_text(callee, source);
+  bool writes = false;
+  std::uint32_t input = 0;  // the argument holding `TableName`
+  if (type == "new_expression") {
+    if (!listed(kWriteCommands, operation) && !listed(kReadCommands, operation)) {
+      return;
+    }
+    writes = listed(kWriteCommands, operation);
+  } else if (listed(kReadPaginators, operation)) {
+    input = 1;  // `paginateQuery({ client }, { TableName })`
+  } else {
+    if (type_of(callee) != "member_expression" || (!listed(kWriteMethods, operation) && !listed(kReadMethods, operation))) {
+      return;
+    }
+    writes = listed(kWriteMethods, operation);
+  }
+  if (ts_node_named_child_count(arguments) <= input) {
     return;
   }
-  bool writes = false;
-  if (type == "new_expression") {
-    const auto command = node_text(field(node, "constructor"), source);
-    if (!listed(kWriteCommands, command) && !listed(kReadCommands, command)) {
-      return;
-    }
-    writes = listed(kWriteCommands, command);
-  } else {
-    const TSNode callee = unwrap_expression(field(node, "function"));
-    if (type_of(callee) != "member_expression") {
-      return;
-    }
-    const auto method = node_text(field(callee, "property"), source);
-    if (!listed(kWriteMethods, method) && !listed(kReadMethods, method)) {
-      return;
-    }
-    writes = listed(kWriteMethods, method);
+  const TSNode value = table_name_value(unwrap_expression(ts_node_named_child(arguments, input)), source);
+  if (ts_node_is_null(value)) {
+    return;
   }
   if (is_test_source_path(context.relative_path)) {
     return;  // a test's table is a fixture
   }
-  const auto index = index_file(root_of(node), source);
+  std::optional<FileIndex> scratch;  // no file scope: read the file for this call alone
+  auto& slot = current_index != nullptr ? *current_index : scratch;
+  if (!slot) {
+    slot = index_file(root_of(node), source);
+  }
+  const auto& index = *slot;
   if (!index.imports_sdk) {
     return;
   }
