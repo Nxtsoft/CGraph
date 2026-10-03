@@ -1,6 +1,6 @@
 // End-to-end coverage of the cgraph-mcp stdio loop (src/mcp/main.cpp): a
 // parseable line of the wrong JSON-RPC shape is answered with Invalid Request
-// (-32600, id null) and the loop keeps serving the next line. Before, nlohmann
+// (-32600; the request's id when readable, else null) and the loop keeps serving the next line. Before, nlohmann
 // threw on the first typed read and the uncaught exception aborted the server.
 
 #include <nlohmann/json.hpp>
@@ -99,13 +99,15 @@ int main(int argc, char** argv) {
     responses.push_back(nlohmann::json::parse(line, nullptr, false));
   }
   expect(ok, responses.size() == 4, "one response per request line: " + run.stdout_text);
-  for (std::size_t index = 0; index < 3 && index < responses.size(); ++index) {
+  // `5` and `[1]` carry no readable id (null); the object's id 3 is echoed.
+  const std::vector<nlohmann::json> expected_ids{nullptr, nullptr, 3};
+  for (std::size_t index = 0; index < expected_ids.size() && index < responses.size(); ++index) {
     const auto& response = responses[index];
     expect(ok,
-           response.is_object() && response.value("jsonrpc", std::string{}) == "2.0" && response["id"].is_null() &&
-               response["error"]["code"] == -32600,
-           "malformed line " + std::to_string(index + 1) + " answered with Invalid Request, id null: " +
-               response.dump());
+           response.is_object() && response.value("jsonrpc", std::string{}) == "2.0" &&
+               response["id"] == expected_ids[index] && response["error"]["code"] == -32600,
+           "malformed line " + std::to_string(index + 1) + " answered with Invalid Request, id " +
+               expected_ids[index].dump() + ": " + response.dump());
   }
   if (responses.size() == 4) {
     const auto& listed = responses[3];

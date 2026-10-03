@@ -5,6 +5,8 @@
 #include <cmath>
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 #include <system_error>
 
 int main() {
@@ -275,13 +277,19 @@ int main() {
     return 1;
   }
 
-  // Parseable requests of the wrong shape are Invalid Request (id null), not a
-  // nlohmann type_error escaping to the stdio loop.
-  for (const auto& malformed : {nlohmann::json(5), nlohmann::json::array({1}),
-                                nlohmann::json{{"jsonrpc", "2.0"}, {"id", 16}, {"method", 7}},
-                                nlohmann::json{{"jsonrpc", "2.0"}, {"id", 17}, {"method", "tools/call"}, {"params", 5}}}) {
+  // Parseable requests of the wrong shape are Invalid Request, not a nlohmann
+  // type_error escaping to the stdio loop. A readable id is echoed so the host
+  // can match the error to its call; otherwise the id is null.
+  const std::vector<std::pair<nlohmann::json, nlohmann::json>> malformed_cases{
+      {nlohmann::json(5), nullptr},
+      {nlohmann::json::array({1}), nullptr},
+      {nlohmann::json{{"jsonrpc", "2.0"}, {"id", 16}, {"method", 7}}, 16},
+      {nlohmann::json{{"jsonrpc", "2.0"}, {"id", "s17"}, {"method", "tools/call"}, {"params", 5}}, "s17"},
+      {nlohmann::json{{"jsonrpc", "2.0"}, {"id", {{"bad", 1}}}, {"method", 7}}, nullptr},
+  };
+  for (const auto& [malformed, expected_id] : malformed_cases) {
     const auto invalid = cgraph::handle_mcp_request(malformed, forwarder);
-    if (!invalid["id"].is_null() || invalid["error"]["code"] != -32600) {
+    if (invalid["id"] != expected_id || invalid["error"]["code"] != -32600) {
       return 1;
     }
   }

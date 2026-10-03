@@ -66,8 +66,8 @@ int main() {
                                             std::make_error_code(std::errc::permission_denied));
   } catch (const std::exception& error) {
     const auto text = cgraph::describe_exception(error);
-    expect(ok, text.starts_with("std::filesystem::") && text.find("filesystem_error: ") != std::string::npos &&
-                   text.find("[/x]") != std::string::npos,
+    // The namespace is library-specific (libc++: std::__1::__fs::filesystem::).
+    expect(ok, text.find("filesystem_error: ") != std::string::npos && text.find("[/x]") != std::string::npos,
            "describe_exception names filesystem_error and keeps the path: " + text);
   }
 

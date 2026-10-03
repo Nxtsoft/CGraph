@@ -365,12 +365,21 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
                                   const McpChangeContext& change_context_runner) {
   // A parseable line of the wrong shape (`5`, `[1]`, a non-string "method" or
   // non-object "params") makes nlohmann throw on the first typed read. That is
-  // an Invalid Request for this line only (JSON-RPC 2.0: id is null when it
-  // could not be determined); the stdio loop keeps serving.
+  // an Invalid Request for this line only; the stdio loop keeps serving. The
+  // response echoes the request's id when it is readable (an object member
+  // that is a string, number or null) so the host can match it to its call;
+  // otherwise the id is null, as JSON-RPC 2.0 requires.
   try {
     return respond(request, forwarder, change_context_runner);
   } catch (const nlohmann::json::exception& error) {
-    return error_response(nullptr, -32600, std::string{"invalid JSON-RPC request: "} + error.what());
+    nlohmann::json id = nullptr;
+    if (request.is_object()) {
+      if (const auto it = request.find("id");
+          it != request.end() && (it->is_string() || it->is_number() || it->is_null())) {
+        id = *it;
+      }
+    }
+    return error_response(id, -32600, std::string{"invalid JSON-RPC request: "} + error.what());
   }
 }
 

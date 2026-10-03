@@ -6,7 +6,9 @@
 #include <memory>
 #include <typeinfo>
 
+#if !defined(_MSC_VER)
 #include <cxxabi.h>
+#endif
 
 namespace cgraph {
 
@@ -24,11 +26,16 @@ double number_flag(std::string_view flag, std::string_view value) {
 }
 
 std::string describe_exception(const std::exception& error) {
+#if defined(_MSC_VER)
+  // MSVC's type_info::name() is already human-readable ("class std::out_of_range").
+  return std::string(typeid(error).name()) + ": " + error.what();
+#else
   const char* mangled = typeid(error).name();
   int status = 0;
   const std::unique_ptr<char, decltype(&std::free)> demangled(
       abi::__cxa_demangle(mangled, nullptr, nullptr, &status), &std::free);
   return std::string(status == 0 && demangled ? demangled.get() : mangled) + ": " + error.what();
+#endif
 }
 
 }  // namespace cgraph
