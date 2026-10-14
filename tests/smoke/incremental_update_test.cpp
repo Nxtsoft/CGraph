@@ -301,5 +301,38 @@ int main() {
       return 1;
     }
   }
+
+  // A file whose extraction crashed is indexed with no source hash (CGR-18), so
+  // the next update over the same unchanged content extracts it again instead
+  // of reporting a cache hit on an empty fragment.
+  {
+    const auto retry_root = std::filesystem::temp_directory_path() / "cgraph-incremental-update-retry";
+    std::filesystem::remove_all(retry_root);
+    std::filesystem::create_directories(retry_root);
+    cgraph::DaemonState retry_state;
+    cgraph::IncrementalGraphIndex retry_index;
+    retry_index.project_root = retry_root;
+    const auto gamma = retry_root / "gamma.py";
+    write_file(gamma, "class Gamma:\n    pass\n");
+    cgraph::FileWatchEvent gamma_event[] = {
+        {.path = gamma, .change = cgraph::FileWatchChange::Created, .kind = cgraph::WatchedFileKind::Code}};
+    (void)cgraph::apply_incremental_code_updates(retry_state, retry_index, gamma_event);
+
+    // What a crashed extraction leaves in the index: a warning, no nodes, no hash.
+    cgraph::ExtractionResult crashed;
+    crashed.fragment.warnings.push_back("failed to extract gamma.py: extractor crashed");
+    retry_index.files[cgraph::incremental_file_key(gamma)] = std::move(crashed);
+
+    cgraph::FileWatchEvent gamma_touched[] = {
+        {.path = gamma, .change = cgraph::FileWatchChange::Modified, .kind = cgraph::WatchedFileKind::Code}};
+    const auto retried = cgraph::apply_incremental_code_updates(retry_state, retry_index, gamma_touched);
+    const auto retried_graph = cgraph::read_graph_snapshot(retry_state);
+    const bool recovered = retried.files_reextracted == 1 && retried.files_cache_hit == 0 && retried_graph &&
+                           has_node_label(*retried_graph, "Gamma");
+    std::filesystem::remove_all(retry_root);
+    if (!recovered) {
+      return 2;
+    }
+  }
   return 0;
 }

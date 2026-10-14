@@ -4,6 +4,8 @@
 #include "cgraph/extractor.hpp"
 
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -15,6 +17,19 @@ namespace cgraph {
 // climbs above the root.
 [[nodiscard]] ExtractionResult extract_detected_file(const DetectedFile& file,
                                                      const std::filesystem::path& project_root);
+
+// The per-language extractor `extract_detected_file` runs on a file's source.
+// It defaults to `extract_configured_language`; the overload below takes one so
+// a test can make an extractor throw.
+using LanguageExtractor =
+    std::function<std::optional<ExtractionResult>(DetectedLanguage, const ExtractionContext&)>;
+
+// A failed extraction (any exception, including the extractor's) returns no
+// nodes, a warning, and an EMPTY source_sha256: the hash marks content as
+// already extracted, so it is only recorded once extraction has completed.
+[[nodiscard]] ExtractionResult extract_detected_file(const DetectedFile& file,
+                                                     const std::filesystem::path& project_root,
+                                                     const LanguageExtractor& extractor);
 
 // Extracts every file concurrently across a bounded worker pool and returns the
 // results in input order. The sequence is identical to calling
