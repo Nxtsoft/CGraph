@@ -87,8 +87,9 @@ using TreePtr = std::unique_ptr<TSTree, TreeDeleter>;
 // directly under the program (optionally behind an `export`). Every other arrow
 // (a handler defined inside a component, an inline `.map(x => f(x))` callback,
 // a JSX `onClick={() => ...}`) is a boundary: Graphify never seeds those bodies,
-// so the calls inside them are dropped rather than attributed to the enclosing
-// component. Matching this is what brings same-file call counts to parity.
+// so it gets no node and is no function scope. Its calls are not dropped: they
+// are attributed to the enclosing caller (see walk_node's call scope), because a
+// closure's calls are calls its enclosing code makes.
 [[nodiscard]] bool is_module_level_arrow(const TSNode& node) {
   if (const std::string_view type = ts_node_type(node); type != "arrow_function") {
     return false;
@@ -165,6 +166,7 @@ void add_raw_call(
     const LanguageConfig& config,
     const ExtractionContext& context,
     const std::string& caller_id,
+    bool in_closure,
     std::vector<RawCall>& raw_calls) {
   std::string label;
   std::string qualifier;
@@ -250,6 +252,7 @@ void add_raw_call(
       .is_member_call = is_member_call || has_receiver_field,
       .receiver_label = std::move(receiver_label),
       .qualifier = std::move(qualifier),
+      .in_closure = in_closure,
   });
 }
 
@@ -296,6 +299,7 @@ void walk_node(
     const std::string& scope_id,
     std::string_view scope_kind,
     const std::string& function_scope_id,
+    const std::string& call_scope_id,
     Fragment& fragment,
     std::vector<RawCall>& raw_calls,
     std::vector<RawRelation>& raw_relations,
@@ -320,10 +324,13 @@ void walk_node(
   // it is the caller for any call found beneath it. Graphify attributes calls
   // strictly to enclosing function bodies (never a file, class, or type scope),
   // so a call with no enclosing function is dropped rather than hung off a file
-  // or type node.
+  // or type node. `child_call_scope` is the caller for calls and equals the
+  // function scope everywhere except inside a boundary arrow (below), whose
+  // calls still belong to the code that wrote the closure.
   std::string child_scope = scope_id;
   std::string_view child_kind = scope_kind;
   std::string child_function_scope = function_scope_id;
+  std::string child_call_scope = call_scope_id;
   if (contains_symbol(config.symbols.class_nodes, symbol) &&
       (!config.class_requires_body || first_child_by_fields(node, config.body_fields).has_value())) {
     if (auto id = add_symbol_node(node, config, context, "class", fragment); !id.empty()) {
@@ -354,11 +361,18 @@ void walk_node(
     // `nested_function_scope` (an HTTP route's inline handler). Every other
     // arrow — a handler defined inside a component, an inline `.map(x => f(x))`
     // callback, a JSX `onClick={() => …}` — is a local: Graphify emits no node
-    // for it and seeds no call scope, so we neither create a node nor attribute
-    // its calls (the body is a boundary).
+    // for it and seeds no function scope, so we create no node and contract
+    // readers see no enclosing function. Its calls go to the enclosing caller.
     const bool nested_scope = config.nested_function_scope && config.nested_function_scope(node, context);
     if (std::string_view(ts_node_type(node)) == "arrow_function" && !is_module_level_arrow(node) && !nested_scope) {
       child_function_scope.clear();
+      // The calls in a closure (`Effect.try({ try: () => f() })`, `.then(r =>
+      // f(r))`, `it('x', () => f())`) are calls the enclosing code makes, so
+      // they keep the enclosing caller. With no enclosing function the
+      // language names one (a module-level binding, a class, the file).
+      if (child_call_scope.empty() && config.closure_call_scope) {
+        child_call_scope = config.closure_call_scope(node, context, scope_id, scope_kind, fragment);
+      }
     } else {
       auto id = add_symbol_node(node, config, context, "function", fragment);
       if (!id.empty()) {
@@ -387,6 +401,7 @@ void walk_node(
         child_kind = "function";
       }
       child_function_scope = std::move(id);
+      child_call_scope = child_function_scope;
     }
   }
   // Type-level declarations (TS interfaces, type aliases, enums). They carry a
@@ -409,12 +424,13 @@ void walk_node(
   if (contains_symbol(config.symbols.import_nodes, symbol) && config.import_handler) {
     config.import_handler(node, context, fragment);
   }
-  // Only calls that sit inside a function/method body become CALLS edges. A
-  // call at file scope (module-level invocation) or inside a class/type scope
-  // has no enclosing function and is dropped, matching Graphify's function-body
-  // seeding.
-  if (!child_function_scope.empty() && contains_symbol(config.symbols.call_nodes, symbol)) {
-    add_raw_call(node, config, context, child_function_scope, raw_calls);
+  // Only calls that sit inside a function/method body, or inside a closure the
+  // language gave a caller, become CALLS edges. Any other call at file scope
+  // (module-level invocation) or inside a class/type scope has no caller and is
+  // dropped, matching Graphify's function-body seeding.
+  if (!child_call_scope.empty() && contains_symbol(config.symbols.call_nodes, symbol)) {
+    // A call scope that is not the function scope was handed down into a closure.
+    add_raw_call(node, config, context, child_call_scope, child_call_scope != child_function_scope, raw_calls);
   }
   if (config.extra_walk) {
     config.extra_walk(node, context, child_function_scope, fragment, raw_calls, raw_relations);
@@ -422,7 +438,7 @@ void walk_node(
 
   const auto child_count = ts_node_child_count(node);
   for (std::uint32_t index = 0; index < child_count; ++index) {
-    walk_node(ts_node_child(node, index), config, context, child_scope, child_kind, child_function_scope, fragment, raw_calls, raw_relations, depth + 1);
+    walk_node(ts_node_child(node, index), config, context, child_scope, child_kind, child_function_scope, child_call_scope, fragment, raw_calls, raw_relations, depth + 1);
   }
 }
 
@@ -485,7 +501,7 @@ ExtractionResult extract_with_config(
   // The file is the structural root (owns `contains` edges) but not a call
   // scope, so the function-scope seed is empty: top-level calls are dropped
   // until the walk enters a function body.
-  walk_node(ts_tree_root_node(tree.get()), config, ctx, file_id, "file", /*function_scope_id=*/{}, result.fragment, result.raw_calls, result.raw_relations, /*depth=*/0);
+  walk_node(ts_tree_root_node(tree.get()), config, ctx, file_id, "file", /*function_scope_id=*/{}, /*call_scope_id=*/{}, result.fragment, result.raw_calls, result.raw_relations, /*depth=*/0);
   // JWT claims need the finished fragment (field and function nodes name the facts' sources).
   extract_claim_contracts(ts_tree_root_node(tree.get()), config.name, ctx, result.fragment, result.raw_relations);
   // Tables and graph labels in string literals, Neo4j entities, Drizzle query

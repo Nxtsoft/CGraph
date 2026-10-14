@@ -709,6 +709,71 @@ int test_library_qualified_calls() {
 // METHOD (tier 2b) -- but not when the bare name is one every standard library
 // defines. `v.size()` must not reach the project's only method named `size`,
 // while `r.Match()` (issue #44) still does. The same-file tier is untouched.
+// A closure's call (RawCall::in_closure) binds only on evidence: its own file,
+// an import, or a receiver naming the class. The bare-name tiers -- a unique
+// project label with no import, a unique method for an unknown receiver -- are
+// refused for it (CGR-26), while the identical call outside a closure resolves
+// exactly as before.
+int test_closure_calls_resolve_on_evidence() {
+  const auto caller = cgraph::make_id("/p/ui.ts:Dialog");
+  const auto ui_file = cgraph::make_id("ui.ts");
+  const auto lib_file = cgraph::make_id("lib.ts");
+  const auto on_open = cgraph::make_id("/p/decoys.ts:onOpenChange");
+  const auto store = cgraph::make_id("/p/decoys.ts:Store");
+  const auto store_delete = cgraph::make_id("/p/decoys.ts:Store::delete");
+  const auto fetch_items = cgraph::make_id("/p/lib.ts:fetchItems");
+  const auto local = cgraph::make_id("/p/ui.ts:local");
+
+  const auto make_graph = [&] {
+    cgraph::GraphSnapshot graph;
+    graph.nodes.push_back({.id = caller, .label = "Dialog", .source_file = "/p/ui.ts", .kind = "function"});
+    graph.nodes.push_back({.id = local, .label = "local", .source_file = "/p/ui.ts", .kind = "function"});
+    graph.nodes.push_back({.id = ui_file, .label = "ui.ts", .source_file = "/p/ui.ts", .kind = "file"});
+    graph.nodes.push_back({.id = lib_file, .label = "lib.ts", .source_file = "/p/lib.ts", .kind = "file"});
+    graph.nodes.push_back({.id = on_open, .label = "onOpenChange", .source_file = "/p/decoys.ts", .kind = "function"});
+    graph.nodes.push_back({.id = store, .label = "Store", .source_file = "/p/decoys.ts", .kind = "class"});
+    graph.nodes.push_back({.id = store_delete, .label = "delete", .source_file = "/p/decoys.ts", .kind = "function"});
+    graph.nodes.push_back({.id = fetch_items, .label = "fetchItems", .source_file = "/p/lib.ts", .kind = "function"});
+    graph.edges.push_back({.source = store, .target = store_delete, .relation = "method"});
+    graph.edges.push_back({.source = ui_file, .target = lib_file, .relation = "imports_from"});
+    return graph;
+  };
+  const auto calls_for = [&](bool in_closure) {
+    return std::vector<cgraph::RawCall>{
+        {.caller_id = caller, .callee_label = "onOpenChange", .source_file = "/p/ui.ts", .in_closure = in_closure},
+        {.caller_id = caller, .callee_label = "delete", .source_file = "/p/ui.ts", .is_member_call = true,
+         .in_closure = in_closure},
+        {.caller_id = caller, .callee_label = "fetchItems", .source_file = "/p/ui.ts", .in_closure = in_closure},
+        {.caller_id = caller, .callee_label = "local", .source_file = "/p/ui.ts", .in_closure = in_closure},
+    };
+  };
+
+  auto closure_graph = make_graph();
+  cgraph::CallResolution closure_outcomes;
+  cgraph::resolve_raw_calls(closure_graph, calls_for(true), &closure_outcomes);
+  // Evidence binds: the imported module's function and the same-file sibling.
+  if (!has_edge(closure_graph, caller, fetch_items, "CALLS") || !has_edge(closure_graph, caller, local, "CALLS")) {
+    return 1;
+  }
+  // Bare-name guesses do not.
+  if (has_edge(closure_graph, caller, on_open, "CALLS") || has_edge(closure_graph, caller, store_delete, "CALLS")) {
+    return 1;
+  }
+  if (closure_outcomes.dropped_closure_guess != 2 || !closure_outcomes.balances()) {
+    return 1;
+  }
+
+  // The same calls outside a closure keep today's resolution, guesses included.
+  auto body_graph = make_graph();
+  cgraph::CallResolution body_outcomes;
+  cgraph::resolve_raw_calls(body_graph, calls_for(false), &body_outcomes);
+  if (!has_edge(body_graph, caller, on_open, "CALLS") || !has_edge(body_graph, caller, store_delete, "CALLS") ||
+      body_outcomes.dropped_closure_guess != 0 || !body_outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
 int test_library_member_names() {
   const auto caller = cgraph::make_id("/p/use.cpp:use");
   const auto stats = cgraph::make_id("/p/stats.hpp:Stats");
@@ -945,6 +1010,10 @@ int main() {
   }
   if (test_qualified_scope() != 0) {
     std::fprintf(stderr, "FAIL test_qualified_scope\n");
+    return 1;
+  }
+  if (test_closure_calls_resolve_on_evidence() != 0) {
+    std::cerr << "closure calls resolved on a bare-name guess\n";
     return 1;
   }
   if (test_library_member_names() != 0) {

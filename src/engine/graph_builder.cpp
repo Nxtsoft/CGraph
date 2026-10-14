@@ -974,6 +974,9 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
     std::string target_id;
     auto confidence = Confidence::Extracted;
     bool same_file_hit = false;
+    // The candidate came from a bare name match with nothing else behind it (no
+    // same file, no import, no receiver naming its class). See in_closure below.
+    bool name_guess = false;
     // Sibling targets beyond target_id, filled only for an overload set: the
     // call edges to EVERY member, because any of them may be the callee.
     std::span<const std::string> overload_rest;
@@ -1109,6 +1112,8 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
             ++tally.dropped_ambiguous;
             continue;
           }
+        } else {
+          name_guess = true;
         }
       } else {
         target_id = targets->second.front();
@@ -1123,6 +1128,7 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
             (symbols != imported_symbols.end() && symbols->second.contains(target_id)) ||
             (modules != imported_modules.end() && modules->second.contains(callee_file_id));
         confidence = has_import_evidence ? Confidence::Extracted : Confidence::Inferred;
+        name_guess = !has_import_evidence;
       }
     }
 
@@ -1251,6 +1257,21 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       // A member call that missed its own file and did not uniquely name a
       // method: the receiver type is unknown, so no wider guess applies.
       ++tally.dropped_unknown;
+      continue;
+    }
+    // A closure's call binds only on evidence. Closures are where a function's
+    // parameters, destructured props and hook setters are called (`reject(e)`,
+    // `onOpenChange(false)`, `setStatus(s)`), and a project declaration that
+    // merely shares the name is not what the call means. On turing-webapp the
+    // most frequent such guesses bound @testing-library's `render` to an error
+    // boundary's `render` method, `params.delete('q')` on URLSearchParams to an
+    // API client's `delete`, and a destructured `onOpenChange` prop to an
+    // unrelated function.
+    if (raw_call.in_closure && (name_guess || member_method_hit)) {
+      if (overload_counted) {
+        --tally.resolved_overload_first;  // the set produced no edge after all
+      }
+      ++tally.dropped_closure_guess;
       continue;
     }
     // A qualified callee names its scope outright, and that is evidence about

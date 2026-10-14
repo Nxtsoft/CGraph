@@ -480,6 +480,22 @@ struct RouteRegistration {
   return !route_handler_name(node, context).empty();
 }
 
+// The caller of a closure's calls when no function or method encloses it (see
+// LanguageConfig::closure_call_scope). In a class body that is the class: a
+// field arrow (`handle = () => f()`) is the class's own code. Elsewhere it is
+// the module-level binding the closure is written into, when that binding is a
+// node (`export const ServiceLive = Layer.succeed(Tag, { merge: () =>
+// Effect.try({ try: () => f() }) })`), else the file -- which is what owns a
+// test file's `describe` / `it` callbacks.
+[[nodiscard]] std::string closure_call_scope(const TSNode& node, const ExtractionContext& context,
+                                             const std::string& scope_id, std::string_view scope_kind,
+                                             const Fragment& fragment) {
+  if (scope_kind == "class") {
+    return scope_id;
+  }
+  return reading_scope_id(node, context, /*function_scope_id=*/{}, fragment);
+}
+
 // Relative specifiers ("./x", "../y") resolve against the importing file's
 // directory so every file importing the same module lands on one shared module
 // hub node; bare package specifiers ("react") are already shared by name.
@@ -1565,6 +1581,7 @@ void ts_member_handler(const TSNode& node, const ExtractionContext& context,
       .extra_walk = js_extra_walk,
       .relation_handler = ts_relation_handler,
       .nested_function_scope = is_route_handler,
+      .closure_call_scope = closure_call_scope,
   };
 }
 
