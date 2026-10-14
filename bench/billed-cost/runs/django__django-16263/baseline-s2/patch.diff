@@ -1,0 +1,51 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce1..248f9ba 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -545,11 +545,46 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def strip_unused_annotations(self):
++        """
++        Remove annotations that can't affect the result of a count() query,
++        i.e. those not referenced by ordering.
++        """
++        if (
++            not self.annotations
++            or self.group_by not in (None, True)
++            or self.is_sliced
++            or self.distinct
++            or self.combinator
++            or self.where.contains_aggregate
++        ):
++            return
++        used = set()
++        for item in self.order_by:
++            if isinstance(item, str):
++                used.add(item.lstrip("-"))
++            else:
++                return
++        if self.extra_order_by:
++            return
++        kept = {a: v for a, v in self.annotations.items() if a in used}
++        if len(kept) == len(self.annotations):
++            return
++        for alias in set(self.annotations) - set(kept):
++            del self.annotations[alias]
++        if self.annotation_select_mask is not None:
++            self.set_annotation_mask(set(self.annotation_select_mask) & set(kept))
++        if self.group_by is True and not any(
++            a.contains_aggregate for a in kept.values()
++        ):
++            self.group_by = None
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        obj.strip_unused_annotations()
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 

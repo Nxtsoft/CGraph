@@ -1,0 +1,43 @@
+diff --git a/django/contrib/auth/__init__.py b/django/contrib/auth/__init__.py
+index 155330c..9dec30e 100644
+--- a/django/contrib/auth/__init__.py
++++ b/django/contrib/auth/__init__.py
+@@ -202,6 +202,19 @@ def get_user(request):
+                 session_hash_verified = session_hash and constant_time_compare(
+                     session_hash, user.get_session_auth_hash()
+                 )
++                if not session_hash_verified and session_hash:
++                    # Fall back to older secret keys, upgrading the hash.
++                    if hasattr(user, "_get_session_auth_hash"):
++                        for fallback_secret in settings.SECRET_KEY_FALLBACKS:
++                            if constant_time_compare(
++                                session_hash,
++                                user._get_session_auth_hash(secret=fallback_secret),
++                            ):
++                                session_hash_verified = True
++                                request.session[
++                                    HASH_SESSION_KEY
++                                ] = user.get_session_auth_hash()
++                                break
+                 if not session_hash_verified:
+                     request.session.flush()
+                     user = None
+diff --git a/django/contrib/auth/base_user.py b/django/contrib/auth/base_user.py
+index 5ee30bf..f75577d 100644
+--- a/django/contrib/auth/base_user.py
++++ b/django/contrib/auth/base_user.py
+@@ -135,10 +135,14 @@ class AbstractBaseUser(models.Model):
+         """
+         Return an HMAC of the password field.
+         """
++        return self._get_session_auth_hash()
++
++    def _get_session_auth_hash(self, secret=None):
+         key_salt = "django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash"
+         return salted_hmac(
+             key_salt,
+             self.password,
++            secret=secret,
+             algorithm="sha256",
+         ).hexdigest()
+ 

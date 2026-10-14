@@ -1,0 +1,32 @@
+diff --git a/django/db/models/expressions.py b/django/db/models/expressions.py
+index 90d9011..cb05c98 100644
+--- a/django/db/models/expressions.py
++++ b/django/db/models/expressions.py
+@@ -1253,7 +1253,7 @@ class OrderBy(BaseExpression):
+         self.descending = True
+ 
+ 
+-class Window(Expression):
++class Window(SQLiteNumericMixin, Expression):
+     template = '%(expression)s OVER (%(window)s)'
+     # Although the main expression may either be an aggregate or an
+     # expression with an aggregate function, the GROUP BY that will
+@@ -1298,6 +1298,18 @@ class Window(Expression):
+     def set_source_expressions(self, exprs):
+         self.source_expression, self.partition_by, self.order_by, self.frame = exprs
+ 
++    def as_sqlite(self, compiler, connection):
++        if isinstance(self.output_field, fields.DecimalField):
++            # Casting only the source expression results in invalid SQL, so
++            # compile it as a float and cast the whole window expression.
++            copy = self.copy()
++            source_expressions = copy.get_source_expressions()
++            source_expressions[0] = source_expressions[0].copy()
++            source_expressions[0].output_field = fields.FloatField()
++            copy.set_source_expressions(source_expressions)
++            return super(Window, copy).as_sqlite(compiler, connection)
++        return self.as_sql(compiler, connection)
++
+     def as_sql(self, compiler, connection, template=None):
+         connection.ops.check_expression_support(self)
+         if not connection.features.supports_over_clause:

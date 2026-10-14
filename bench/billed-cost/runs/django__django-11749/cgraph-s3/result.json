@@ -1,0 +1,125 @@
+{
+  "instance_id": "django__django-11749",
+  "repo": "django/django",
+  "arm": "cgraph",
+  "seed": 3,
+  "model": "claude-sonnet-5-5",
+  "exit_code": 0,
+  "timed_out": false,
+  "sandbox": "/var/tmp/cgr29/w/f6bcf6eb6edb96b0",
+  "wall_s": 12.4,
+  "graphd_stopped": 0,
+  "patch_bytes": 1056,
+  "init_tools": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskStop",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+    "mcp__plugin_cgraph_cgraph__graph_change_context",
+    "mcp__plugin_cgraph_cgraph__graph_context",
+    "mcp__plugin_cgraph_cgraph__graph_explain",
+    "mcp__plugin_cgraph_cgraph__graph_impact",
+    "mcp__plugin_cgraph_cgraph__graph_path",
+    "mcp__plugin_cgraph_cgraph__graph_query",
+    "mcp__plugin_cgraph_cgraph__graph_recall",
+    "mcp__plugin_cgraph_cgraph__graph_remember",
+    "mcp__plugin_cgraph_cgraph__graph_report",
+    "mcp__plugin_cgraph_cgraph__graph_shutdown",
+    "mcp__plugin_cgraph_cgraph__graph_status",
+    "mcp__plugin_cgraph_cgraph__graph_update"
+  ],
+  "init_mcp_servers": [
+    {
+      "name": "plugin:cgraph:cgraph",
+      "status": "connected",
+      "source": "plugin"
+    }
+  ],
+  "init_model": "claude-sonnet-5-5",
+  "result_subtype": "success",
+  "is_error": false,
+  "total_cost_usd": 0.051955100000000004,
+  "num_turns": 4,
+  "duration_ms": 10999,
+  "duration_api_ms": 10635,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 8688,
+    "cache_read_input_tokens": 66871,
+    "output_tokens": 1050,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 8688,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 232,
+        "cache_read_input_tokens": 19219,
+        "cache_creation_input_tokens": 446,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 446
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "model_usage": {
+    "claude-sonnet-5-5": {
+      "inputTokens": 8,
+      "outputTokens": 1050,
+      "cacheReadInputTokens": 66871,
+      "cacheCreationInputTokens": 8688,
+      "webSearchRequests": 0,
+      "costUSD": 0.051955100000000004,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 0,
+      "canonicalModel": "claude-sonnet-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "tool_calls": {
+    "Bash": 2,
+    "Edit": 1
+  },
+  "tool_calls_total": 3,
+  "cgraph_tool_calls": 0,
+  "skill_calls": 0,
+  "eval_status": "resolved",
+  "resolved": true
+}

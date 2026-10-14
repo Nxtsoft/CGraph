@@ -1,0 +1,19 @@
+diff --git a/sklearn/ensemble/_iforest.py b/sklearn/ensemble/_iforest.py
+index 4d6c1c3..a00303e 100644
+--- a/sklearn/ensemble/_iforest.py
++++ b/sklearn/ensemble/_iforest.py
+@@ -345,7 +345,13 @@ class IsolationForest(OutlierMixin, BaseBagging):
+             return self
+ 
+         # else, define offset_ wrt contamination parameter
+-        self.offset_ = np.percentile(self.score_samples(X), 100.0 * self.contamination)
++        # Score the already validated training data directly to avoid
++        # re-validating X (which would warn about feature names).
++        X_scoring = X.tocsr() if issparse(X) else X
++        self.offset_ = np.percentile(
++            -self._compute_chunked_score_samples(X_scoring),
++            100.0 * self.contamination,
++        )
+ 
+         return self
+ 

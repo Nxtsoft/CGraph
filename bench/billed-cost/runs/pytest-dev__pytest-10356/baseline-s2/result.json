@@ -1,0 +1,106 @@
+{
+  "instance_id": "pytest-dev__pytest-10356",
+  "repo": "pytest-dev/pytest",
+  "arm": "baseline",
+  "seed": 2,
+  "model": "claude-sonnet-5-5",
+  "exit_code": 0,
+  "timed_out": false,
+  "sandbox": "/var/tmp/cgr29/w/76106f029644e8ae",
+  "wall_s": 14.1,
+  "graphd_stopped": 0,
+  "patch_bytes": 1867,
+  "init_tools": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskStop",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write"
+  ],
+  "init_mcp_servers": [],
+  "init_model": "claude-sonnet-5-5",
+  "result_subtype": "success",
+  "is_error": false,
+  "total_cost_usd": 0.057699600000000004,
+  "num_turns": 3,
+  "duration_ms": 12747,
+  "duration_api_ms": 12302,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 9679,
+    "cache_read_input_tokens": 49016,
+    "output_tokens": 1407,
+    "output_tokens_details": {
+      "thinking_tokens": 193
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 9679,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 344,
+        "cache_read_input_tokens": 19434,
+        "cache_creation_input_tokens": 1222,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1222
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "model_usage": {
+    "claude-sonnet-5-5": {
+      "inputTokens": 6,
+      "outputTokens": 1407,
+      "cacheReadInputTokens": 49016,
+      "cacheCreationInputTokens": 9679,
+      "webSearchRequests": 0,
+      "costUSD": 0.057699600000000004,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 193,
+      "canonicalModel": "claude-sonnet-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "tool_calls": {
+    "Bash": 2
+  },
+  "tool_calls_total": 2,
+  "cgraph_tool_calls": 0,
+  "skill_calls": 0,
+  "eval_status": "ambiguous_failure:no_tests_collected",
+  "resolved": false
+}

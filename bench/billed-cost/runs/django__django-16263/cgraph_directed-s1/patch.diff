@@ -1,0 +1,23 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce1..962e721 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -550,6 +550,18 @@ class Query(BaseExpression):
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        if (
++            obj.annotations
++            and obj.group_by is None
++            and not obj.is_sliced
++            and not obj.distinct
++            and not obj.combinator
++            and not obj.where.contains_aggregate
++        ):
++            # Annotations aren't needed to count rows; filters have already
++            # inlined any annotations they reference.
++            obj.annotations = {}
++            obj.set_annotation_mask(())
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 

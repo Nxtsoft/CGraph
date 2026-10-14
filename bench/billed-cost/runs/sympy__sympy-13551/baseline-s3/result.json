@@ -1,0 +1,107 @@
+{
+  "instance_id": "sympy__sympy-13551",
+  "repo": "sympy/sympy",
+  "arm": "baseline",
+  "seed": 3,
+  "model": "claude-sonnet-5-5",
+  "exit_code": 0,
+  "timed_out": false,
+  "sandbox": "/var/tmp/cgr29/w/b71bcb88786f9e69",
+  "wall_s": 15.4,
+  "graphd_stopped": 0,
+  "patch_bytes": 1229,
+  "init_tools": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskStop",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write"
+  ],
+  "init_mcp_servers": [],
+  "init_model": "claude-sonnet-5-5",
+  "result_subtype": "success",
+  "is_error": false,
+  "total_cost_usd": 0.0635362,
+  "num_turns": 4,
+  "duration_ms": 14057,
+  "duration_api_ms": 13600,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 9572,
+    "cache_read_input_tokens": 66922,
+    "output_tokens": 1854,
+    "output_tokens_details": {
+      "thinking_tokens": 699
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 9572,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 332,
+        "cache_read_input_tokens": 19988,
+        "cache_creation_input_tokens": 561,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 561
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "model_usage": {
+    "claude-sonnet-5-5": {
+      "inputTokens": 8,
+      "outputTokens": 1854,
+      "cacheReadInputTokens": 66922,
+      "cacheCreationInputTokens": 9572,
+      "webSearchRequests": 0,
+      "costUSD": 0.0635362,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 699,
+      "canonicalModel": "claude-sonnet-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "tool_calls": {
+    "Bash": 2,
+    "Edit": 1
+  },
+  "tool_calls_total": 3,
+  "cgraph_tool_calls": 0,
+  "skill_calls": 0,
+  "eval_status": "resolved",
+  "resolved": true
+}

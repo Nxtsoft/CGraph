@@ -1,0 +1,46 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 8419dc0..4ac68d8 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -263,10 +263,14 @@ class Query(BaseExpression):
+         elif len(self.annotation_select) == 1:
+             return next(iter(self.annotation_select.values())).output_field
+ 
++    _implicit_annotation_mask = False
++
+     @property
+     def has_select_fields(self):
+         return bool(
+-            self.select or self.annotation_select_mask or self.extra_select_mask
++            self.select
++            or (self.annotation_select_mask and not self._implicit_annotation_mask)
++            or self.extra_select_mask
+         )
+ 
+     @cached_property
+@@ -1115,7 +1119,10 @@ class Query(BaseExpression):
+         if select:
+             self.append_annotation_mask([alias])
+         else:
++            # Without an explicit selection, the mask only hides the alias.
++            implicit = not self.has_select_fields
+             self.set_annotation_mask(set(self.annotation_select).difference({alias}))
++            self._implicit_annotation_mask = implicit
+         self.annotations[alias] = annotation
+ 
+     def resolve_expression(self, query, *args, **kwargs):
+@@ -2363,11 +2370,14 @@ class Query(BaseExpression):
+             self.annotation_select_mask = None
+         else:
+             self.annotation_select_mask = set(names)
++        self._implicit_annotation_mask = False
+         self._annotation_select_cache = None
+ 
+     def append_annotation_mask(self, names):
+         if self.annotation_select_mask is not None:
++            implicit = self._implicit_annotation_mask
+             self.set_annotation_mask(self.annotation_select_mask.union(names))
++            self._implicit_annotation_mask = implicit
+ 
+     def set_extra_mask(self, names):
+         """

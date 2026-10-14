@@ -1,0 +1,17 @@
+diff --git a/sympy/simplify/sqrtdenest.py b/sympy/simplify/sqrtdenest.py
+index f0b7653..836ff1d 100644
+--- a/sympy/simplify/sqrtdenest.py
++++ b/sympy/simplify/sqrtdenest.py
+@@ -157,7 +157,11 @@ def _sqrt_match(p):
+     elif p.is_Add:
+         pargs = sorted(p.args, key=default_sort_key)
+         if all((x**2).is_Rational for x in pargs):
+-            r, b, a = split_surds(p)
++            try:
++                r, b, a = split_surds(p)
++            except IndexError:
++                # no surds to split, so nothing to denest
++                return []
+             res = a, b, r
+             return list(res)
+         # to make the process canonical, the argument is included in the tuple

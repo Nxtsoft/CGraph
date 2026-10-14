@@ -1,0 +1,31 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce1..ea47521 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -492,6 +492,26 @@ class Query(BaseExpression):
+                         self.model._meta.pk.get_col(inner_query.get_initial_alias()),
+                     )
+                 inner_query.default_cols = False
++                # Mask existing annotations that aren't needed by the
++                # aggregates pulled up to the outer query. Filters inline
++                # annotations and ordering is cleared so they don't need to
++                # be selected.
++                needed = set(added_aggregate_names)
++                stack = [
++                    self.annotations[name]
++                    for name in added_aggregate_names
++                    if name in self.annotations
++                ]
++                while stack:
++                    expr = stack.pop()
++                    if isinstance(expr, Ref):
++                        needed.add(expr.refs)
++                    stack.extend(
++                        e for e in expr.get_source_expressions() if e is not None
++                    )
++                inner_query.set_annotation_mask(
++                    [a for a in inner_query.annotation_select if a in needed]
++                )
+ 
+             relabels = {t: "subquery" for t in inner_query.alias_map}
+             relabels[None] = "subquery"

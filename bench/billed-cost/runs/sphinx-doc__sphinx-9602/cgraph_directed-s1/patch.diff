@@ -1,0 +1,29 @@
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index 9875a9f..7e9fda7 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -178,9 +178,23 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+     try:
+         tree = ast_parse(annotation)
+         result = unparse(tree)
++        literal_depth = 0  # bracket depth inside Literal[...]
++        after_literal = False
+         for i, node in enumerate(result):
++            is_bracket = isinstance(node, addnodes.desc_sig_punctuation)
++            if is_bracket and node.astext() == '[':
++                if literal_depth or after_literal:
++                    literal_depth += 1
++            elif is_bracket and node.astext() == ']':
++                if literal_depth:
++                    literal_depth -= 1
++            after_literal = False
++            if literal_depth:
++                continue
+             if isinstance(node, nodes.Text) and node.strip():
+-                result[i] = type_to_xref(str(node), env)
++                text = str(node)
++                result[i] = type_to_xref(text, env)
++                after_literal = text.split('.')[-1] == 'Literal'
+         return result
+     except SyntaxError:
+         return [type_to_xref(annotation, env)]

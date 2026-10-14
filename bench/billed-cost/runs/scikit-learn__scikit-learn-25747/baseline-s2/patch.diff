@@ -1,0 +1,25 @@
+diff --git a/sklearn/pipeline.py b/sklearn/pipeline.py
+index 94d9465..3de5761 100644
+--- a/sklearn/pipeline.py
++++ b/sklearn/pipeline.py
+@@ -928,7 +928,7 @@ def _fit_one(transformer, X, y, weight, message_clsname="", message=None, **fit_
+         return transformer.fit(X, y, **fit_params)
+ 
+ 
+-class FeatureUnion(TransformerMixin, _BaseComposition):
++class FeatureUnion(TransformerMixin, _BaseComposition, auto_wrap_output_keys=None):
+     """Concatenates results of multiple transformer objects.
+ 
+     This estimator applies a list of transformer objects in parallel to the
+@@ -1046,7 +1046,10 @@ class FeatureUnion(TransformerMixin, _BaseComposition):
+         self : estimator instance
+             Estimator instance.
+         """
+-        super().set_output(transform=transform)
++        if transform is not None:
++            if not hasattr(self, "_sklearn_output_config"):
++                self._sklearn_output_config = {}
++            self._sklearn_output_config["transform"] = transform
+         for _, step, _ in self._iter():
+             _safe_set_output(step, transform=transform)
+         return self

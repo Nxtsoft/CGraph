@@ -1,0 +1,12 @@
+diff --git a/sympy/core/assumptions.py b/sympy/core/assumptions.py
+index ce4dd30..1d2f86c 100644
+--- a/sympy/core/assumptions.py
++++ b/sympy/core/assumptions.py
+@@ -164,6 +164,7 @@
+ 
+     'integer        ->  rational',
+     'rational       ->  real',
++    'rational       ->  finite',
+     'rational       ->  algebraic',
+     'algebraic      ->  complex',
+     'real           ->  complex',
