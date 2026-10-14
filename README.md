@@ -774,6 +774,9 @@ daemons that are still building. A file that only imports a routes file claims n
   "hooks": [{"type": "command", "command": "/path/to/CGraph/integrations/hooks/cgraph-pre-edit.sh"}]}]}}
 ```
 
+The [Claude Code plugin](#claude-code-plugin) already registers this hook; if you installed the
+plugin, do not also add `cgraph-pre-edit.sh` to your settings, or every edit runs the lookup twice.
+
 The same lookup is `cgraph-client --root REPO cross-service '{"file": "src/routes.ts"}'`.
 
 Useful environment variables: `CGRAPH_CLIENT` (client executable), `CGRAPH_PROJECT_ROOT` (project root), `CGRAPH_DAEMON` (daemon path), `CGRAPH_INTERVAL_SECONDS` (always-on interval, default `30`), `CGRAPH_REFRESH_ON_START` (`0` to skip the initial update), `CGRAPH_ONCE` (`1` to run one status check and exit). Run the always-on reference loop:

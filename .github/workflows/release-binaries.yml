@@ -69,5 +69,7 @@ jobs:
             || gh release create "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" \
                  --title "Binaries ${{ inputs.tag }}" \
                  --notes "Prebuilt release binaries (cgraph, graphd, cgraph-client, cgraph-mcp)."
+          # No --clobber: launchers pin each asset's SHA-256 (integrations/launcher/
+          # release.json), so replacing a published asset would break every install.
           gh release upload "${{ inputs.tag }}" "cgraph-${{ matrix.platform }}.tar.gz" \
-            --repo "$GITHUB_REPOSITORY" --clobber
+            --repo "$GITHUB_REPOSITORY"
