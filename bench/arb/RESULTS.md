@@ -36,7 +36,7 @@ loss.
 | What | Value |
 |---|---|
 | CGraph engine | Release bin-v0.8.3. `cgraph --version` reports `cgraph-native 0.1.0 (269048a)`, and all 427 rows record `engine_revision` 269048a. |
-| Harness | This directory at the commit that adds this file (branch `cgr-24-arb-adapter`, based on main `42d8501`). |
+| Harness | `bench/arb` at commit `c1520dc` (branch `cgr-24-arb-adapter`, based on main `42d8501`); the scored run used exactly this code. |
 | ARB code | github.com/eyuansu62/agent-retrieval-bench @ `07014c986f3deadb1548c62b32c0ffbe6a81465d` |
 | ARB data | huggingface.co/datasets/eyuansu71/agent_retrieval_bench @ `5901e1ee3aff048290db72edf9c63bc498b79ea3`. Releases: v2_code2test, v2_comment2context, v2_trace2code, v2_edit2ripple, v2_abstention. ARB's `download-benchmark` verifies their sha256. |
 | Machine | Linux x86-64, CPU only, Python 3.13.5, `run.sh --jobs 4` |
