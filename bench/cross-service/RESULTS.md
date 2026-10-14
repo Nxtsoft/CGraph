@@ -116,3 +116,49 @@ What each tool did:
 
 Raw outputs of a run: `<work>/predictions/*.jsonl`, `<work>/results.md`, `<work>/results.json`
 (with every false positive and miss per tool).
+
+## Results: CGraph with gRPC and topic contracts (CGR-28 part B)
+
+`cgraph --version`: `cgraph-native 0.1.0 (bin-v0.9.1-5-gc848cf8)`, run with
+`run.sh --skip-baselines`; GitNexus and codebase-memory-mcp rows are the bin-v0.9.1 run above
+(their output does not depend on CGraph; same pinned corpus and tool versions).
+
+Contract level:
+
+| Kind | CGraph P / R | GitNexus P / R | codebase-memory-mcp P / R | CGraph beats both on P and R? |
+|---|---|---|---|---|
+| gRPC (36) | **1.00 / 1.00** (36 of 36) | 0.00 / 0.00 (0 of 80) | n/a / 0.00 (0 predicted) | yes |
+| topic (9) | **1.00 / 0.78** (7 of 7) | 0.33 / 0.22 (2 of 6) | n/a / 0.00 | yes |
+| HTTP (57) | n/a / 0.00 (0 predicted) | 0.14 / 0.02 (1 of 7) | n/a / 0.00 | **no**: GitNexus has 1 edge, CGraph 0 |
+| all (102) | 1.00 / 0.42 (43 of 43) | 0.03 / 0.03 (3 of 93) | n/a / 0.00 | |
+
+Service level: gRPC 25 of 25 pairs (P 1.00), topic 7 of 7 (R 0.78); GitNexus 0.32 / 0.28 and
+0.33 / 0.22; codebase-memory-mcp 0 / 0.
+
+Per system: boutique 20/29, otel-demo 16/31, sock-shop 1/36, kafka-saga 4/4, kafka-orders 2/2,
+every predicted edge correct.
+
+Misses:
+
+- **Topic, 2:** otel-demo `checkout` produces `orders` through `Topic: kafka.Topic`, a package
+  variable of another package set by `getTopic()` (env read or `"orders"`); a name returned by a
+  function in another package is not read. Its consumers (`accounting`, `fraud-detection`) are
+  found.
+- **HTTP, 57:** CGraph still reads no Go `net/http` / gorilla/mux routes, Next.js pages-router API
+  routes, Rust actix-web, Ruby Sinatra or PHP Slim routes, no locust clients, and no JavaScript
+  `request` calls whose host comes from another file, so no HTTP edge here has both sides. This
+  is the gate CGR-28 does not meet; it needs route coverage, not contract kinds.
+
+Caveats:
+
+- This corpus was used while writing the gRPC and topic extraction, so it is not a held-out test.
+  Out-of-corpus checks run on jaegertracing/jaeger (`6ea438c`), dotnet/eShop (`dc7ea49`) and
+  rabbitmq/rabbitmq-tutorials (`88b985d`): every gRPC and topic fact listed and read at its
+  source line. They found the look-alike Go clients (`tracing.NewHTTPClient`,
+  `*esclient.ILMClient`, otlp's `NewGRPCClient`) that the generated-stub and call-shape guards now
+  refuse; eShop's WebApp -> Basket.API gRPC calls (3 methods) and the tutorials' queues
+  (`hello`, `task_queue`, `rpc_queue` across Python, Node, Go, .NET, Spring) are found.
+- Facts with no counterpart do not make edges but are in the graphs: Python servicers in
+  boutique also define the health methods `Check` / `Watch` in the service class, so
+  `EmailService/Check`, `EmailService/Watch`, `RecommendationService/Check` and
+  `RecommendationService/Watch` are provided (no client calls them).

@@ -19,3 +19,12 @@
 - [x] 3.2 Full suite.
 - [x] 3.3 Over-link diff: the four private probe repos give identical graphs (node and edge sets) and an identical seam to bin-v0.9.1; jaegertracing/jaeger, dotnet/eShop and rabbitmq/rabbitmq-tutorials: every new grpc/topic fact listed and checked at source; two Go look-alike client shapes found and guarded.
 - [x] 3.4 Public benchmark (`bench/cross-service/run.sh`): gRPC 36/36 at precision 1.00, topics 7/9 at precision 1.00; results in `bench/cross-service/RESULTS.md`.
+
+## 4. Review round 1
+
+- [x] 4.1 Go clients need a generated-stub import path (go-redis `NewClusterClient` / `UniversalClient` refused), Python stubs a grpc import, JavaScript `<S>Client` an import from a relative or generated path.
+- [x] 4.2 The per-file index lives in `MessagingContractsFileScope`, held by every extractor that calls a handler, instead of a `thread_local` keyed on the buffer's address and ends (stale after an in-place edit of the same size); the tree is collected with an explicit stack.
+- [x] 4.3 A name also bound to a non-client type or object is ambiguous; a parameter shadows a same-named file binding; a Go type registered for two services provides nothing.
+- [x] 4.4 `grpc_server` / `grpc_handler` added to graph_builder's raw-relation skip list.
+- [x] 4.5 Header: C++ servers only when the override is defined in the class body; file-level source for any Python / C# call outside a function.
+- [x] 4.6 Tests for each: go-redis, two-service registration, a parameter, an S3 client in a grpc file, an ambiguous C# name, the same buffer edited in place, a 20000-term expression.
