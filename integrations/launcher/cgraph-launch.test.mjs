@@ -1,7 +1,7 @@
 // Exercises the launcher against the real GitHub release named in release.json.
 // Run: node --test integrations/launcher/
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,7 +23,7 @@ function run(launcher, args, env) {
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
-    child.on("exit", (code) => resolve({ code, stdout, stderr }));
+    child.on("exit", (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
 }
 
@@ -71,4 +71,28 @@ test("an executable outside the release set is refused before any download", asy
   assert.equal(r.code, 1);
   assert.match(r.stderr, /usage: cgraph-launch\.mjs/);
   assert.deepEqual(fs.readdirSync(cache), []);
+});
+
+test("an executable killed by SIGTERM makes the launcher die of SIGTERM, not exit 0", async (t) => {
+  const cache = tempDir(t);
+  const launcher = path.join(here, "cgraph-launch.mjs");
+  // Unpack once, then serve: cgraph-mcp waits on stdin, which stays open here.
+  await run(launcher, ["cgraph", "--help"], { CGRAPH_CACHE_DIR: cache });
+  const child = spawn(process.execPath, [launcher, "cgraph-mcp"], {
+    env: { ...process.env, CGRAPH_CACHE_DIR: cache },
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  t.after(() => child.stdin.end());
+  const mcp = path.join(cache, release.tag, platformKey(), "cgraph-mcp");
+  let pid;
+  for (let i = 0; i < 100 && pid === undefined; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    const ps = spawnSync("pgrep", ["-f", "-P", String(child.pid), mcp], { encoding: "utf8" });
+    pid = ps.stdout.trim().split("\n").filter(Boolean).map(Number)[0];
+  }
+  assert.ok(pid, "cgraph-mcp started under the launcher");
+  const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+  process.kill(pid, "SIGTERM");
+  const { code, signal } = await exited;
+  assert.ok(signal === "SIGTERM" || code === 143, `launcher ended with code ${code}, signal ${signal}`);
 });

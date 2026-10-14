@@ -128,12 +128,19 @@ export async function main(argv) {
     fail(error.message);
   }
   const child = spawn(executablePath(dir, name), args, { stdio: "inherit" });
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.on(signal, () => child.kill(signal));
+  const forward = (signal) => child.kill(signal);
+  const forwarded = ["SIGINT", "SIGTERM", "SIGHUP"];
+  for (const signal of forwarded) {
+    process.on(signal, forward);
   }
   child.on("error", (error) => fail(`cannot start ${name}: ${error.message}`));
   child.on("exit", (code, signal) => {
     if (signal) {
+      // Die of the same signal so the caller sees what the executable saw; with
+      // the forwarder still installed, Node would catch it and exit 0.
+      for (const s of forwarded) {
+        process.removeListener(s, forward);
+      }
       process.kill(process.pid, signal);
       return;
     }
