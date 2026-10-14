@@ -1067,6 +1067,18 @@ target_compile_definitions(cgraph_change_context_test PRIVATE
 cgraph_set_warnings(cgraph_change_context_test)
 cgraph_enable_sanitizers(cgraph_change_context_test)
 add_test(NAME cgraph_change_context_test COMMAND cgraph_change_context_test)
+add_executable(cgraph_body_index_test
+  body_index_test.cpp)
+
+target_link_libraries(cgraph_body_index_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_body_index_test)
+cgraph_enable_sanitizers(cgraph_body_index_test)
+
+add_test(NAME cgraph_body_index_test COMMAND cgraph_body_index_test)
+
 add_executable(cgraph_fingerprint_test
   fingerprint_test.cpp)
 

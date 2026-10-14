@@ -679,6 +679,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     // initial build, the empty/building) snapshot until rebuild_final_overlay
     // publishes the fused deterministic+overlay result in one step.
     DaemonState scan_state;
+    // Staged on the served snapshot (never visible to readers) so the
+    // rescan's publish re-tokenizes only the files whose bytes or spans
+    // changed (body_index.hpp) instead of every file.
+    scan_state.graph_snapshot = read_graph_snapshot(state);
     const auto result = full_stat_index_rescan(scan_state, index, identity.project_root);
     if (result.applied) {
       {
@@ -741,6 +745,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       return false;
     }
     auto graph = *read_graph_snapshot(persisted_state);
+    graph.code_generation = next_code_generation();  // source hashes attached below change the code identity
     graph.content_root = manifest->content_root;
     graph.source_hashes.reserve(manifest->files.size());
     for (const auto& entry : manifest->files) {
@@ -748,7 +753,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         graph.source_hashes[incremental_file_key(entry.path)] = entry.sha256;
       }
     }
-    deterministic_graph = std::move(graph);
+    // Publish once more through the staged state so the canonical
+    // deterministic graph carries a body index verified for its own code
+    // generation. Assigning the bare copy would leave the load's empty index
+    // attached, and every overlay publish (rebuild_final_overlay) would
+    // re-index the whole tree until the first code edit.
+    publish_graph_snapshot(persisted_state, std::move(graph));
+    deterministic_graph = *read_graph_snapshot(persisted_state);
     // The persisted graph does not hydrate extraction fragments, but its file
     // entries were just content-verified and remain the canonical manifest
     // source until the first full rescan. Without this cache hydration, a later
@@ -921,6 +932,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
           // full rescan (a per-file rebuild here would wipe the graph), staged
           // like every rescan so readers never see an intermediate; subsequent
           // events go incremental.
+          hydration_state.graph_snapshot = read_graph_snapshot(state);  // body-index reuse, as in rescan
           result = full_stat_index_rescan(hydration_state, index, identity.project_root);
         }
         for (const auto& warning : result.warnings) {

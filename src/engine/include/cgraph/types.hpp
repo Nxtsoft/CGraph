@@ -2,7 +2,9 @@
 
 #include "cgraph/content_root.hpp"
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,6 +12,8 @@
 #include <vector>
 
 namespace cgraph {
+
+class BodyIndex;
 
 using Properties = std::unordered_map<std::string, std::string>;
 
@@ -98,6 +102,12 @@ struct Fragment {
   std::unordered_map<std::string, FunctionFingerprint> fingerprints;
 };
 
+// A process-unique, never-reused value; see GraphSnapshot::code_generation.
+[[nodiscard]] inline std::uint64_t next_code_generation() {
+  static std::atomic<std::uint64_t> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 struct GraphSnapshot {
   std::vector<Node> nodes;
   std::vector<Edge> edges;
@@ -114,6 +124,20 @@ struct GraphSnapshot {
   // function fingerprints, keyed by node id. An id that dedup later removed
   // simply has no node; readers skip it.
   std::unordered_map<std::string, FunctionFingerprint> fingerprints;
+  // Runtime-only like source_hashes: BM25 over each code symbol's source span
+  // (body_index.hpp), attached by publish_graph_snapshot and shared by every
+  // copy of this snapshot. Null until published.
+  std::shared_ptr<const BodyIndex> body_index;
+  // Identity of this snapshot's code content: its code nodes, their spans and
+  // their source hashes. Every constructed snapshot draws a fresh value and a
+  // copy keeps it, so a copy that only adds overlay, memory, or enrichment
+  // nodes (mutate_graph_snapshot, semantic replay) still says "same code" and
+  // publishing it reuses `body_index` without touching a node. Code that edits
+  // code nodes or code source hashes on a copy MUST assign a fresh
+  // next_code_generation(), or the body index goes stale.
+  std::uint64_t code_generation = next_code_generation();
+  // The code_generation `body_index` was last verified against; 0 = never.
+  std::uint64_t body_index_generation = 0;
 };
 
 }  // namespace cgraph
