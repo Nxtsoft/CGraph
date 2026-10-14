@@ -109,24 +109,27 @@ The interactive viewer used to run an O(N²) force simulation in the browser on 
 
 CGraph has been scored on [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882): 427
 samples from 25 repositories, each checked out at its base commit, scored with the
-benchmark's own metric code. The table covers all 345 positive samples, using release
-bin-v0.8.3.
+benchmark's own metric code. The table covers all 345 positive samples.
 
 | Method | Recall@20 | MRR | BCY@8k |
 | --- | ---: | ---: | ---: |
-| CGraph | 0.5726 | 0.2356 | 0.3790 |
+| CGraph bin-v0.9.1 (name + code-text search) | 0.6362 | 0.2787 | 0.4319 |
+| CGraph bin-v0.8.3 (name search only) | 0.5726 | 0.2356 | 0.3790 |
 | RepoMap (published) | 0.6333 | 0.2158 | 0.3788 |
 | RepoMap (rerun on this harness) | 0.6311 | 0.2156 | 0.3846 |
 | Qwen3-Embedding-8B (published) | 0.7029 | 0.2336 | 0.3732 |
 | Qwen3-Embedding-4B (published) | 0.6306 | 0.2379 | 0.3409 |
 | BM25 (published) | 0.4452 | 0.1520 | 0.2051 |
 
-How CGraph compares:
+How bin-v0.9.1 compares:
 
-- **Recall@20.** CGraph's Recall@20 is below RepoMap, the two Qwen3 embedding models and
-  pplx-embed. It is above nomic-embed-code, jina-code-embeddings, Lexical and BM25.
-- **BCY@8k.** CGraph is level with RepoMap, within run-to-run noise of about 0.006.
-- **MRR.** CGraph's MRR is between RepoMap's and Qwen3-Embedding-4B's.
+- **Recall@20.** Level with RepoMap (the difference is inside run-to-run noise of about
+  0.006). Below Qwen3-Embedding-8B. Above the other published single methods.
+- **MRR.** Higher than every published single method.
+- **BCY@8k.** Higher than every published single method, by more than the noise floor.
+- **Against the paper's fusion of Qwen3-Embedding-8B and RepoMap**, on the 287-sample core
+  it reports: CGraph's MRR is higher (0.281 vs 0.271); its Recall@20 (0.633 vs 0.733) and
+  BCY@8k (0.440 vs 0.488) are lower.
 - **Abstention.** CGraph does not abstain on no-gold samples.
 
 Per-task tables, pins, the noise floor and caveats are in
@@ -466,13 +469,13 @@ the plugin's data directory. It needs `node` and `tar` on `PATH`.
 Download the current Linux x64 release and build your first graph:
 
 ```sh
-mkdir -p "$HOME/.local/lib/cgraph/bin-v0.9.0" "$HOME/.local/bin"
-curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-linux-x64.tar.gz \
-  -o "$HOME/.local/lib/cgraph/bin-v0.9.0/cgraph.tar.gz"
-tar -xzf "$HOME/.local/lib/cgraph/bin-v0.9.0/cgraph.tar.gz" \
-  -C "$HOME/.local/lib/cgraph/bin-v0.9.0"
+mkdir -p "$HOME/.local/lib/cgraph/bin-v0.9.1" "$HOME/.local/bin"
+curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.1/cgraph-linux-x64.tar.gz \
+  -o "$HOME/.local/lib/cgraph/bin-v0.9.1/cgraph.tar.gz"
+tar -xzf "$HOME/.local/lib/cgraph/bin-v0.9.1/cgraph.tar.gz" \
+  -C "$HOME/.local/lib/cgraph/bin-v0.9.1"
 for name in cgraph graphd cgraph-client cgraph-mcp; do
-  ln -sf "$HOME/.local/lib/cgraph/bin-v0.9.0/$name" "$HOME/.local/bin/$name"
+  ln -sf "$HOME/.local/lib/cgraph/bin-v0.9.1/$name" "$HOME/.local/bin/$name"
 done
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -484,16 +487,16 @@ Open `cgraph-out/graph.html` in a browser (`open cgraph-out/graph.html` on macOS
 
 ## Install & Setup
 
-Release `bin-v0.9.0` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
+Release `bin-v0.9.1` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
 
 | Platform | Architecture | Archive |
 | --- | --- | --- |
-| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-linux-x64.tar.gz) |
-| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-linux-arm64.tar.gz) |
-| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-macos-arm64.tar.gz) |
-| macOS | Intel / x86_64 | [`cgraph-macos-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-macos-x64.tar.gz) |
+| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.1/cgraph-linux-x64.tar.gz) |
+| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.1/cgraph-linux-arm64.tar.gz) |
+| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.1/cgraph-macos-arm64.tar.gz) |
+| macOS | Intel / x86_64 | [`cgraph-macos-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.1/cgraph-macos-x64.tar.gz) |
 
-Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.9.0` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
+Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.9.1` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
 
 ### Build from source
 
@@ -590,8 +593,8 @@ Claude Code sets `CLAUDE_PROJECT_DIR` per session, so a single registration work
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.9.0/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.9.0/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.9.1/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.9.1/graphd
 ```
 
 Or commit a project-scoped `.mcp.json` at the repo root to share it with collaborators:
@@ -600,8 +603,8 @@ Or commit a project-scoped `.mcp.json` at the repo root to share it with collabo
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/home/you/.local/lib/cgraph/bin-v0.9.0/cgraph-mcp",
-      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.9.0/graphd"]
+      "command": "/home/you/.local/lib/cgraph/bin-v0.9.1/cgraph-mcp",
+      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.9.1/graphd"]
     }
   }
 }
@@ -615,16 +618,16 @@ Codex does not set `CLAUDE_PROJECT_DIR`, so the server falls back to the working
 
 ```sh
 codex mcp add cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.9.0/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.9.0/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.9.1/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.9.1/graphd
 ```
 
 …or edit `~/.codex/config.toml` directly (add `"--root", "/abs/path/to/your/project"` to `args` to pin a project regardless of working directory):
 
 ```toml
 [mcp_servers.cgraph]
-command = "/home/you/.local/lib/cgraph/bin-v0.9.0/cgraph-mcp"
-args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.9.0/graphd"]
+command = "/home/you/.local/lib/cgraph/bin-v0.9.1/cgraph-mcp"
+args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.9.1/graphd"]
 ```
 
 Restart Codex and run `/mcp` in the TUI to confirm.
