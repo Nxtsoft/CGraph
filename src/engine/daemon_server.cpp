@@ -753,7 +753,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         graph.source_hashes[incremental_file_key(entry.path)] = entry.sha256;
       }
     }
-    deterministic_graph = std::move(graph);
+    // Publish once more through the staged state so the canonical
+    // deterministic graph carries a body index verified for its own code
+    // generation. Assigning the bare copy would leave the load's empty index
+    // attached, and every overlay publish (rebuild_final_overlay) would
+    // re-index the whole tree until the first code edit.
+    publish_graph_snapshot(persisted_state, std::move(graph));
+    deterministic_graph = *read_graph_snapshot(persisted_state);
     // The persisted graph does not hydrate extraction fragments, but its file
     // entries were just content-verified and remain the canonical manifest
     // source until the first full rescan. Without this cache hydration, a later

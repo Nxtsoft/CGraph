@@ -1059,6 +1059,36 @@ int main() {
       return 236;
     }
 
+    // Why types.hpp says code edits on a copy MUST take a new code_generation:
+    // the generation, not the nodes, decides reuse. Shrinking worker's span to
+    // drop its "sleep(backoffDelay)" line on a copy that keeps the generation
+    // republishes the stale index (the dropped words still find worker);
+    // assigning a fresh generation re-cuts the span and they no longer do.
+    const auto sleep_query = [&](cgraph::DaemonState& st) {
+      return cgraph::handle_daemon_request(
+          st, cgraph::make_request("context", {{"q", "sleep delay"}, {"budget", 5000}}))["result"]["focus"];
+    };
+    if (sleep_query(s).value("id", std::string{}) != "worker") {
+      return 240;
+    }
+    auto respanned = *cgraph::read_graph_snapshot(s);
+    for (auto& node : respanned.nodes) {
+      if (node.id == "worker") {
+        node.source_location->end_line = 5;
+      }
+    }
+    const auto unchanged_generation = respanned;
+    cgraph::publish_graph_snapshot(s, unchanged_generation);
+    if (cgraph::read_graph_snapshot(s)->body_index != index_before ||
+        sleep_query(s).value("id", std::string{}) != "worker") {
+      return 241;  // same generation: the index is reused as is, stale by contract
+    }
+    respanned.code_generation = cgraph::next_code_generation();
+    cgraph::publish_graph_snapshot(s, respanned);
+    if (cgraph::read_graph_snapshot(s)->body_index == index_before || !sleep_query(s).is_null()) {
+      return 242;  // a fresh generation re-indexes: the cut line's words are gone
+    }
+
     // An edit republished through the single-writer path is searchable at
     // once; the replaced body is not.
     g.source_hashes[retry_go.lexically_normal().generic_string()] = write_retry(
