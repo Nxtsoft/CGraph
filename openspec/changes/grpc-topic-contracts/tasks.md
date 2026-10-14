@@ -28,3 +28,12 @@
 - [x] 4.4 `grpc_server` / `grpc_handler` added to graph_builder's raw-relation skip list.
 - [x] 4.5 Header: C++ servers only when the override is defined in the class body; file-level source for any Python / C# call outside a function.
 - [x] 4.6 Tests for each: go-redis, two-service registration, a parameter, an S3 client in a grpc file, an ambiguous C# name, the same buffer edited in place, a 20000-term expression.
+
+## 5. Review round 2
+
+- [x] 5.1 Topic names: any non-literal binding of a name in the file (parameters in any form, bare arrow and destructured parameters, loop variables, patterns, rebindings such as `topic := cfg.Topic`) makes it read as nothing; tests for Go, TypeScript and Python shapes.
+- [x] 5.2 gRPC client names: any binding that is no gRPC client constructor (another call or constructor, an untyped parameter) makes the name no client; a name bound to another name is a client only when that name is one; tests for Go, Python, TypeScript, Java and C#.
+- [x] 5.3 Topic ids carry the broker (`topic:<broker>:<name>`); `predict_cgraph.py` keys topics by name for scoring; a seam test shows a Kafka topic and an SQS queue of one name do not join.
+- [x] 5.4 gRPC look-alikes: relative imports alone are no generated stub; `new a.B(x, y)` needs `a` bound to `loadPackageDefinition(...)`; Java `<S>Grpc` must be imported or named in code; Python stubs and servicers need a `*_pb2_grpc` module; C# clients need `Grpc.*` or a `Grpc` namespace, servers a `ServerCallContext` parameter or the same; C++ servers a `ServerContext*` parameter; connect-go packages, channelz and OTLP services excluded.
+- [x] 5.5 Broker receivers: kafkajs on `.producer()` / `.consumer()`, amqplib on `.createChannel()`, Python Kafka consumers and pika channels, C# `IConsumer` / `IProducer` / channels, Go amqp `Channel` and sarama consumers; Java receivers must be declared only as the broker client.
+- [x] 5.6 Spec MODIFIED scenarios use neutral names.

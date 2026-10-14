@@ -94,7 +94,7 @@
 //
 //   table:<database>:<name>   label:<database>:<name>
 //   header:<name lowercased>  claim:<name>  env:<name>  dynamo:<name>
-//   grpc:<Service>/<Method>  topic:<name>
+//   grpc:<Service>/<Method>  topic:<broker>:<name>
 //
 // A table or label with no known database is `table:local:<name>`: local to
 // its repo, never the same node as another repo's `table:local:<name>` (two

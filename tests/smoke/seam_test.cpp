@@ -699,25 +699,32 @@ int test_dynamo_contracts(const fs::path& root) {
 
 // gRPC methods and topics join repositories by name with no declaration: cart
 // serves `grpc:CartService/GetCart` and web calls it; checkout produces
-// `topic:orders`, accounting and fraud consume it. Fuse shares both ids.
+// `topic:kafka:orders`, accounting and fraud consume it; mailer's
+// `topic:sqs:orders` is another broker's queue and joins nobody. Fuse shares
+// the ids.
 int test_messaging_contracts(const fs::path& root) {
   const auto cart = contract_graph(root, "mcart", {{"provides_contract", "GetCart", "grpc:CartService/GetCart", ""}});
   const auto web = contract_graph(root, "mweb", {{"uses_contract", "getCart", "grpc:CartService/GetCart", ""}});
-  const auto checkout = contract_graph(root, "mcheckout", {{"provides_contract", "sendOrder", "topic:orders", ""}});
-  const auto accounting = contract_graph(root, "maccounting", {{"uses_contract", "consume", "topic:orders", ""}});
-  const auto fraud = contract_graph(root, "mfraud", {{"uses_contract", "main", "topic:orders", ""}});
+  const auto checkout = contract_graph(root, "mcheckout", {{"provides_contract", "sendOrder", "topic:kafka:orders", ""}});
+  const auto accounting = contract_graph(root, "maccounting", {{"uses_contract", "consume", "topic:kafka:orders", ""}});
+  const auto fraud = contract_graph(root, "mfraud", {{"uses_contract", "main", "topic:kafka:orders", ""}});
+  // An SQS queue of the same name is another broker's: it joins nobody.
+  const auto mailer = contract_graph(root, "mmailer", {{"uses_contract", "poll", "topic:sqs:orders", ""}});
   const std::vector<std::pair<std::string, fs::path>> graphs{
-      {"mcart", cart}, {"mweb", web}, {"mcheckout", checkout}, {"maccounting", accounting}, {"mfraud", fraud}};
+      {"mcart", cart}, {"mweb", web}, {"mcheckout", checkout}, {"maccounting", accounting}, {"mfraud", fraud},
+      {"mmailer", mailer}};
   const auto seam = cgraph::discover_seam(graphs);
   const auto* method = find_node(seam.fragment, "grpc:CartService/GetCart");
-  const auto* topic = find_node(seam.fragment, "topic:orders");
+  const auto* topic = find_node(seam.fragment, "topic:kafka:orders");
   if (!seam.ok || method == nullptr || method->kind != "grpc" || topic == nullptr || topic->kind != "topic" ||
       !has_edge(seam.fragment, "grpc:CartService/GetCart", "service:mcart", "SERVED_BY") ||
       !has_edge(seam.fragment, "service:mweb", "grpc:CartService/GetCart", "CONSUMES") ||
       !has_edge(seam.fragment, "grpc:CartService/GetCart", "mweb_getCart", "CONSUMED_AT") ||
-      !has_edge(seam.fragment, "topic:orders", "service:mcheckout", "SERVED_BY") ||
-      !has_edge(seam.fragment, "service:maccounting", "topic:orders", "CONSUMES") ||
-      !has_edge(seam.fragment, "service:mfraud", "topic:orders", "CONSUMES")) {
+      !has_edge(seam.fragment, "topic:kafka:orders", "service:mcheckout", "SERVED_BY") ||
+      !has_edge(seam.fragment, "service:maccounting", "topic:kafka:orders", "CONSUMES") ||
+      !has_edge(seam.fragment, "service:mfraud", "topic:kafka:orders", "CONSUMES") ||
+      has_edge(seam.fragment, "service:mmailer", "topic:kafka:orders", "CONSUMES") ||
+      has_edge(seam.fragment, "topic:sqs:orders", "service:mcheckout", "SERVED_BY")) {
     std::cerr << "discover: a gRPC method or a topic did not join its provider and consumers by name\n";
     return 1;
   }
@@ -729,11 +736,12 @@ int test_messaging_contracts(const fs::path& root) {
   };
   const std::vector<std::pair<std::string, cgraph::GraphSnapshot>> services{
       {"mcart", snapshot(cart)}, {"mweb", snapshot(web)}, {"mcheckout", snapshot(checkout)},
-      {"maccounting", snapshot(accounting)}, {"mfraud", snapshot(fraud)}};
+      {"maccounting", snapshot(accounting)}, {"mfraud", snapshot(fraud)},
+      {"mmailer", snapshot(mailer)}};
   const auto fused = cgraph::fuse_seam(seam.fragment, services);
   if (!fused.ok || !has_snapshot_edge(fused.graph, "mweb::mweb_getCart", "grpc:CartService/GetCart", "CONSUMES") ||
       !has_snapshot_edge(fused.graph, "grpc:CartService/GetCart", "mcart::mcart_GetCart", "handled_by") ||
-      !has_snapshot_edge(fused.graph, "mfraud::mfraud_main", "topic:orders", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "mfraud::mfraud_main", "topic:kafka:orders", "CONSUMES") ||
       find_in(fused.graph, "mweb::grpc:CartService/GetCart") != nullptr) {
     for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
     std::cerr << "fuse: a gRPC method or topic is not one shared node\n";

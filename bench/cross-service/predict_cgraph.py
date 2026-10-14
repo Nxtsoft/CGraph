@@ -3,7 +3,8 @@
     python3 predict_cgraph.py <system> <seam-out-dir>      (JSON lines on stdout)
 
 A contract node with SERVED_BY edges is provided by those services; a CONSUMES edge from a
-service node is a use. Every (consumer, provider) pair of different services is one edge.
+service node is a use. Every (consumer, provider) pair of different services is one edge. A topic
+id is `topic:<broker>:<name>`; its key here is the name, as the ground truth spells it.
 """
 import collections
 import json
@@ -26,6 +27,8 @@ def main():
     rows = set()
     for contract, served_by in providers.items():
         kind, key = contract.split(":", 1)
+        if kind == "topic":
+            key = key.split(":", 1)[1]  # `topic:<broker>:<name>`: the ground truth keys topics by name
         for consumer in consumers.get(contract, ()):
             for provider in served_by:
                 if consumer != provider:

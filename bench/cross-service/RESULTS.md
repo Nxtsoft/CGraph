@@ -138,6 +138,10 @@ Service level: gRPC 25 of 25 pairs (P 1.00), topic 7 of 7 (R 0.78); GitNexus 0.3
 Per system: boutique 20/29, otel-demo 16/31, sock-shop 1/36, kafka-saga 4/4, kafka-orders 2/2,
 every predicted edge correct.
 
+Topic contracts are `topic:<broker>:<name>`; `predict_cgraph.py` keys them by name, as the ground
+truth does. Review round 2 (broker ids, stricter name resolution and client recognition) left these
+numbers unchanged.
+
 Misses:
 
 - **Topic, 2:** otel-demo `checkout` produces `orders` through `Topic: kafka.Topic`, a package

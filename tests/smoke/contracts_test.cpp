@@ -1532,7 +1532,7 @@ int test_messaging_contract_facts() {
       fact("grpc_handler", other, "server", "Other\npb", "/proj/m/catalog/catalog.go"),
       fact("grpc_handler", elsewhere, "productCatalog", "GetProduct\npb", "/proj/m/other/ads.go"),
       fact("uses_contract", load, "", "grpc:ProductCatalogService/GetProduct", "/proj/m/web/cart.ts"),
-      fact("provides_contract", publish, "", "topic:orders", "/proj/m/web/cart.ts"),
+      fact("provides_contract", publish, "", "topic:kafka:orders", "/proj/m/web/cart.ts"),
   };
   cgraph::resolve_contracts(graph, facts, &built.stats);
   const auto* method = node_of(graph, "grpc:ProductCatalogService/GetProduct");
@@ -1548,9 +1548,9 @@ int test_messaging_contract_facts() {
       return fail("a handler of an unregistered type minted a gRPC method: " + node.id);
     }
   }
-  const auto* topic = node_of(graph, "topic:orders");
-  if (topic == nullptr || topic->kind != "topic" || !has_edge(graph, "topic:orders", publish, "handled_by") ||
-      !cgraph::is_bridged_contract("topic:orders") || !cgraph::is_bridged_contract("grpc:ProductCatalogService/GetProduct")) {
+  const auto* topic = node_of(graph, "topic:kafka:orders");
+  if (topic == nullptr || topic->kind != "topic" || !has_edge(graph, "topic:kafka:orders", publish, "handled_by") ||
+      !cgraph::is_bridged_contract("topic:kafka:orders") || !cgraph::is_bridged_contract("grpc:ProductCatalogService/GetProduct")) {
     return fail("a topic is handled_by its producer, and both kinds bridge repositories by name");
   }
   return 0;

@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string>
 #include <string_view>
@@ -180,24 +181,41 @@ enum class Lang { Go, Java, Kotlin, CSharp, Cpp, Python, Js };
 
 struct FileIndex {
   bool built = false;
-  // name -> the literal values it is bound to, or names it is bound to (one hop)
+  // name -> the literal values it is bound to
   std::unordered_map<std::string, std::set<std::string>> values;
+  // names with any binding that is not a literal or an env default: a
+  // parameter (any form), a loop variable, a destructuring pattern, a
+  // rebinding to another name or expression. Such a name reads as nothing.
+  std::set<std::string> tainted;
+  // name -> names it is bound to (gRPC clients only: `this.stub = stub`)
   std::unordered_map<std::string, std::set<std::string>> aliases;
   // name -> the gRPC services of the clients it is bound to
   std::unordered_map<std::string, std::set<std::string>> clients;
-  // name -> the declared (or constructing) simple type name
-  std::unordered_map<std::string, std::set<std::string>> types;
+  // names with a binding that is no gRPC client: another type, another
+  // constructor or call (`client := dynamodb.NewFromConfig(cfg)`), an untyped
+  // parameter. Such a name is never a client.
+  std::set<std::string> non_clients;
+  // name -> the types it is declared with, and the constructors or calls it is
+  // assigned from (`producer = KafkaProducer(...)`, `channel = conn.channel()`)
+  std::unordered_map<std::string, std::set<std::string>> declared;
+  std::unordered_map<std::string, std::set<std::string>> constructed;
   // Python class -> the gRPC service its servicer base names
   std::unordered_map<std::string, std::string> servicers;
   std::string imports;  // the file's import texts, newline-joined
-  // C# `using A = X.<S>.<S>Client;`: A -> S
+  // C# `using A = X.<S>.<S>Client;`: A -> S; the aliases whose target names
+  // a `Grpc` namespace
   std::unordered_map<std::string, std::string> using_aliases;
-  bool grpc_import = false;
-  // Go package alias / JavaScript imported name -> the path it is imported from
+  std::set<std::string> grpc_aliases;
+  bool grpc_import = false;      // JavaScript: `@grpc/grpc-js` or `grpc`
+  bool csharp_grpc = false;      // C#: `using Grpc.*`
+  // Go package alias / JavaScript or Python imported name -> the path it is
+  // imported from
   std::unordered_map<std::string, std::string> import_paths;
-  // names also bound to a declared type or a constructed object that is no
-  // client (`HttpClient _client` beside a `CurrencyServiceClient _client`)
-  std::set<std::string> non_clients;
+  // Java: `<S>Grpc` classes the code names (an import or an identifier, never
+  // a comment)
+  std::set<std::string> grpc_classes;
+  // JavaScript: names bound to a `grpc.loadPackageDefinition(...)` result
+  std::set<std::string> proto_roots;
 };
 
 // The path segment an import path names a package by: its last, or the one
@@ -216,11 +234,13 @@ struct FileIndex {
 }
 
 // True for an import path generated protobuf code lives under: a segment
-// naming proto / grpc (`genproto`, `proto-gen`, `grpc_health_v1`) or a `pb`
-// package (`pb`, `oteldemopb`), or (JavaScript) a relative path.
+// naming proto / grpc (`genproto`, `proto-gen`, `grpc_health_v1`, `../protos/demo`)
+// or a `pb` package (`pb`, `oteldemopb`). A connect-go package (`greetv1connect`)
+// is Connect's HTTP client, not a gRPC stub.
 [[nodiscard]] bool is_generated_stub_path(std::string_view path) {
-  if (path.starts_with('.')) {
-    return true;
+  const auto cut = path.rfind('/');
+  if ((cut == std::string_view::npos ? path : path.substr(cut + 1)).ends_with("connect")) {
+    return false;
   }
   std::size_t start = 0;
   while (start <= path.size()) {
@@ -236,13 +256,17 @@ struct FileIndex {
   return false;
 }
 
+// A Python module of generated gRPC code: `demo_pb2_grpc`, `protos.cart_pb2_grpc`.
+[[nodiscard]] bool is_python_grpc_module(std::string_view module) { return module.ends_with("_pb2_grpc"); }
+
 // The name an expression binds or reads: an identifier, or the last member of
 // `this.x`, `self.x`, `cs.cartSvcClient`, `_x`.
 [[nodiscard]] std::string bound_name(TSNode node, std::string_view source) {
   node = unwrap(node);
   const auto type = type_of(node);
   if (type == "identifier" || type == "simple_identifier" || type == "field_identifier" ||
-      type == "property_identifier" || type == "shorthand_property_identifier_pattern") {
+      type == "property_identifier" || type == "shorthand_property_identifier_pattern" ||
+      type == "shorthand_property_identifier") {
     return text(node, source);
   }
   for (const char* name : {"field", "attribute", "property", "name"}) {
@@ -284,11 +308,23 @@ struct FileIndex {
   return std::string(last_segment(spelled));
 }
 
+// The leftmost name of a member chain: `shopProto.hipstershop.CurrencyService` is `shopProto`.
+[[nodiscard]] std::string chain_root(TSNode node, std::string_view source) {
+  node = unwrap(node);
+  while (type_of(node) == "member_expression") {
+    node = field(node, "object");
+  }
+  return type_of(node) == "identifier" ? text(node, source) : std::string{};
+}
+
 // The service a gRPC client constructor names, empty when `node` is none.
 [[nodiscard]] std::string client_constructor_service(TSNode node, std::string_view source, Lang lang,
                                                      const FileIndex* index) {
   node = unwrap(node);
   const auto type = type_of(node);
+  if (index == nullptr) {
+    return {};
+  }
   if (lang == Lang::Go && type == "call_expression") {
     const auto callee = field(node, "function");
     const auto args = named_children(field(node, "arguments"));
@@ -296,7 +332,7 @@ struct FileIndex {
       return {};
     }
     const auto name = text(field(callee, "field"), source);
-    if (!name.starts_with("New") || index == nullptr) {
+    if (!name.starts_with("New")) {
       return {};
     }
     const auto package = index->import_paths.find(text(field(callee, "operand"), source));
@@ -306,11 +342,14 @@ struct FileIndex {
     return strip_suffix(std::string_view(name).substr(3), "Client");
   }
   if (lang == Lang::Java && type == "method_invocation") {
+    // `.withDeadlineAfter(...)` and the like chained on the stub (a loop: the
+    // chain can be long).
+    while (text(field(node, "name"), source).starts_with("with") && !ts_node_is_null(field(node, "object")) &&
+           type_of(unwrap(field(node, "object"))) == "method_invocation") {
+      node = unwrap(field(node, "object"));
+    }
     const auto name = text(field(node, "name"), source);
     const auto object = field(node, "object");
-    if (name.starts_with("with") && !ts_node_is_null(object)) {
-      return client_constructor_service(object, source, lang, index);
-    }
     if (!name.starts_with("new") || !name.ends_with("Stub") || ts_node_is_null(object)) {
       return {};
     }
@@ -321,18 +360,34 @@ struct FileIndex {
     if (type_of(created) != "qualified_name") {
       return {};
     }
+    const auto spelled = text(created, source);
+    if (!index->csharp_grpc && spelled.find("Grpc") == std::string::npos) {
+      return {};
+    }
     const auto qualifier = std::string(last_segment(text(field(created, "qualifier"), source)));
     const auto name = text(field(created, "name"), source);
     return name == qualifier + "Client" ? qualifier : std::string{};
   }
   if (lang == Lang::Python && type == "call") {
-    if (index == nullptr || index->imports.find("grpc") == std::string::npos) {
+    // `<module>.<S>Stub(...)` off a `*_pb2_grpc` module, or `<S>Stub(...)`
+    // imported from one.
+    const auto callee = field(node, "function");
+    std::string owner;
+    if (type_of(callee) == "attribute") {
+      owner = text(field(callee, "object"), source);
+      if (const auto imported = index->import_paths.find(owner); imported != index->import_paths.end()) {
+        owner = imported->second;
+      }
+    } else if (type_of(callee) == "identifier") {
+      const auto imported = index->import_paths.find(text(callee, source));
+      owner = imported == index->import_paths.end() ? std::string{} : imported->second;
+    }
+    if (!is_python_grpc_module(owner)) {
       return {};
     }
-    const auto callee = std::string(last_segment(text(field(node, "function"), source)));
-    return strip_suffix(callee, "Stub");
+    return strip_suffix(last_segment(text(callee, source)), "Stub");
   }
-  if (lang == Lang::Js && type == "new_expression" && index != nullptr && index->grpc_import) {
+  if (lang == Lang::Js && type == "new_expression" && index->grpc_import) {
     const auto constructor = field(node, "constructor");
     if (type_of(constructor) == "identifier") {
       const auto imported = index->import_paths.find(text(constructor, source));
@@ -341,7 +396,10 @@ struct FileIndex {
       }
       return strip_suffix(text(constructor, source), "Client");
     }
-    if (type_of(constructor) == "member_expression" && named_children(field(node, "arguments")).size() >= 2) {
+    // `new pkg.hipstershop.CurrencyService(address, credentials)` off a
+    // `grpc.loadPackageDefinition(...)` result.
+    if (type_of(constructor) == "member_expression" && named_children(field(node, "arguments")).size() >= 2 &&
+        index->proto_roots.contains(chain_root(constructor, source))) {
       const auto name = text(field(constructor, "property"), source);
       return is_upper_initial(name) ? name : std::string{};
     }
@@ -353,7 +411,7 @@ struct FileIndex {
 // `<S>.<S>Client`, Java `<S>[Blocking|Future|BlockingV2]Stub` in a file that
 // names `<S>Grpc`, TypeScript `<S>Client` in a file importing grpc.
 [[nodiscard]] std::string client_type_service(TSNode node, std::string_view source, Lang lang,
-                                              const FileIndex& index, std::string_view file_source) {
+                                              const FileIndex& index) {
   node = unwrap(node);
   if (lang == Lang::Go) {
     // A generated client is an interface, held by value: `*pkg.XClient` and
@@ -370,9 +428,12 @@ struct FileIndex {
   if (lang == Lang::CSharp) {
     if (type_of(node) == "identifier") {
       const auto alias = index.using_aliases.find(text(node, source));
-      return alias == index.using_aliases.end() ? std::string{} : alias->second;
+      return alias == index.using_aliases.end() || (!index.csharp_grpc && !index.grpc_aliases.contains(alias->first))
+                 ? std::string{}
+                 : alias->second;
     }
-    if (type_of(node) != "qualified_name") {
+    if (type_of(node) != "qualified_name" ||
+        (!index.csharp_grpc && text(node, source).find("Grpc") == std::string::npos)) {
       return {};
     }
     const auto qualifier = std::string(last_segment(text(field(node, "qualifier"), source)));
@@ -382,7 +443,7 @@ struct FileIndex {
     const auto name = simple_type(node, source);
     for (const std::string_view suffix : {"BlockingV2Stub", "BlockingStub", "FutureStub", "Stub"}) {
       auto service = strip_suffix(name, suffix);
-      if (!service.empty() && file_source.find(service + "Grpc") != std::string_view::npos) {
+      if (!service.empty() && index.grpc_classes.contains(service + "Grpc")) {
         return service;
       }
     }
@@ -399,63 +460,100 @@ struct FileIndex {
   return {};
 }
 
+[[nodiscard]] bool is_null_literal(TSNode node, std::string_view source) {
+  const auto spelled = text(unwrap(node), source);
+  return spelled == "None" || spelled == "null" || spelled == "nil" || spelled == "undefined";
+}
+
 void bind_value(FileIndex& index, const std::string& name, TSNode value, std::string_view source) {
-  if (name.empty() || ts_node_is_null(value)) {
-    return;
-  }
   if (auto literal = string_value(value, source)) {
     index.values[name].insert(*literal);
   } else if (auto fallback = env_default(value, source)) {
     index.values[name].insert(*fallback);
-  } else if (auto alias = bound_name(value, source); !alias.empty() && alias != name) {
-    index.aliases[name].insert(alias);
+  } else {
+    index.tainted.insert(name);
   }
 }
 
+// A binding of `name`: a declared type, a value, or both.
 void bind_name(FileIndex& index, const std::string& name, TSNode type_node, TSNode value, std::string_view source,
-          Lang lang, std::string_view file_source) {
+               Lang lang) {
   if (name.empty()) {
     return;
   }
   if (!ts_node_is_null(type_node)) {
-    auto service = client_type_service(type_node, source, lang, index, file_source);
+    auto service = client_type_service(type_node, source, lang, index);
     if (!service.empty()) {
       index.clients[name].insert(service);
     }
-    if (auto simple = simple_type(type_node, source); !simple.empty()) {
-      index.types[name].insert(simple);
-      if (service.empty() && simple != "var" && simple != "auto") {
+    if (auto simple = simple_type(type_node, source); !simple.empty() && simple != "var" && simple != "auto") {
+      index.declared[name].insert(simple);
+      if (service.empty()) {
         index.non_clients.insert(name);
       }
     }
   }
-  if (!ts_node_is_null(value)) {
-    const auto service = client_constructor_service(value, source, lang, &index);
-    if (!service.empty()) {
-      index.clients[name].insert(service);
+  if (ts_node_is_null(value) || is_null_literal(value, source)) {
+    return;
+  }
+  const auto service = client_constructor_service(value, source, lang, &index);
+  const auto unwrapped = unwrap(value);
+  const auto value_type = type_of(unwrapped);
+  if (!service.empty()) {
+    index.clients[name].insert(service);
+  } else if (const auto alias = bound_name(unwrapped, source); !alias.empty() &&
+             (value_type == "identifier" || value_type == "simple_identifier" || value_type == "field_access" ||
+              value_type == "member_expression" || value_type == "member_access_expression" ||
+              value_type == "attribute" || value_type == "selector_expression")) {
+    if (alias != name) index.aliases[name].insert(alias);  // decided once every binding is read
+  } else {
+    index.non_clients.insert(name);
+  }
+  if (text(unwrapped, source).find("loadPackageDefinition") != std::string::npos) {
+    index.proto_roots.insert(name);
+  }
+  // The constructor or call a name is assigned from types it:
+  // `producer = KafkaProducer(...)`, `channel = conn.channel()`,
+  // `const producer = kafka.producer()`.
+  if (value_type == "call" || value_type == "call_expression" || value_type == "object_creation_expression" ||
+      value_type == "new_expression" || value_type == "method_invocation" || value_type == "invocation_expression") {
+    auto callee = field(unwrapped, "function");
+    if (ts_node_is_null(callee)) callee = field(unwrapped, "constructor");
+    if (value_type == "object_creation_expression") callee = field(unwrapped, "type");
+    if (value_type == "method_invocation") callee = field(unwrapped, "name");
+    if (ts_node_is_null(callee)) {
+      const auto children = named_children(unwrapped);  // Kotlin: the callee is the first child
+      if (!children.empty()) callee = children.front();
     }
-    const auto unwrapped = unwrap(value);
-    if (service.empty() &&
-        (type_of(unwrapped) == "object_creation_expression" || type_of(unwrapped) == "new_expression")) {
-      index.non_clients.insert(name);
+    if (auto simple = simple_type(callee, source); !simple.empty()) {
+      index.constructed[name].insert(simple);
     }
-    // The constructor a name is assigned from types it (Python, Kotlin and
-    // JavaScript have no declared type): `producer = KafkaProducer(...)`.
-    if (type_of(unwrapped) == "call" || type_of(unwrapped) == "object_creation_expression" ||
-        type_of(unwrapped) == "new_expression") {
-      auto callee = field(unwrapped, "function");
-      if (ts_node_is_null(callee)) callee = field(unwrapped, "type");
-      if (ts_node_is_null(callee)) callee = field(unwrapped, "constructor");
-      if (auto simple = simple_type(callee, source); !simple.empty()) {
-        index.types[name].insert(simple);
-      }
+  }
+  bind_value(index, name, value, source);
+}
+
+// Every identifier under `node` (patterns, parameter lists, loop targets):
+// names a binding we cannot read a value for.
+void taint_names(const TSNode& node, FileIndex& index, std::string_view source, bool untyped_parameter) {
+  std::vector<TSNode> stack{node};
+  while (!stack.empty()) {
+    const auto current = stack.back();
+    stack.pop_back();
+    const auto type = type_of(current);
+    if (type == "identifier" || type == "simple_identifier" || type == "shorthand_property_identifier_pattern") {
+      const auto name = text(current, source);
+      index.tainted.insert(name);
+      if (untyped_parameter) index.non_clients.insert(name);
+      continue;
     }
-    bind_value(index, name, value, source);
+    for (const auto& child : named_children(current)) stack.push_back(child);
   }
 }
 
-// Go `import pb "x/genproto"` (alias or package name -> path) and JavaScript
-// `import { CartServiceClient } from '../protos/demo'` (local name -> path).
+// Go `import pb "x/genproto"` (alias or package name -> path), JavaScript
+// `import { CartServiceClient } from '../protos/demo'` and Python
+// `from protos import cart_pb2_grpc` / `import demo_pb2_grpc as g`
+// (local name -> path).
 void record_import_paths(const TSNode& node, FileIndex& index, std::string_view source, Lang lang) {
   std::vector<TSNode> stack{node};
   while (!stack.empty()) {
@@ -488,6 +586,26 @@ void record_import_paths(const TSNode& node, FileIndex& index, std::string_view 
       }
       continue;
     }
+    if (lang == Lang::Python && (type == "import_statement" || type == "import_from_statement")) {
+      const auto module = type == "import_from_statement" ? text(field(current, "module_name"), source) : std::string{};
+      for (const auto& child : named_children(current)) {
+        if (ts_node_eq(child, field(current, "module_name"))) continue;
+        std::string imported;
+        std::string local;
+        if (type_of(child) == "aliased_import") {
+          imported = text(field(child, "name"), source);
+          local = text(field(child, "alias"), source);
+        } else if (type_of(child) == "dotted_name") {
+          imported = text(child, source);
+          local = std::string(last_segment(imported));
+          if (type == "import_statement") local = imported;
+        } else {
+          continue;
+        }
+        index.import_paths[local] = module.empty() ? imported : module + "." + imported;
+      }
+      continue;
+    }
     for (const auto& child : named_children(current)) stack.push_back(child);
   }
 }
@@ -497,21 +615,57 @@ void record_import_paths(const TSNode& node, FileIndex& index, std::string_view 
 bool collect_node(const TSNode& node, FileIndex& index, std::string_view source, Lang lang) {
   const auto type = type_of(node);
   if (type.find("import") != std::string_view::npos || type == "using_directive") {
-    index.imports += text(node, source);
+    const auto spelled = text(node, source);
+    index.imports += spelled;
     index.imports += '\n';
     record_import_paths(node, index, source, lang);
+    if (lang == Lang::Java) {
+      // `import com.acme.cart.CartServiceGrpc;` names the class.
+      for (const auto part : std::views::split(std::string_view(spelled), '.')) {
+        auto segment = std::string(part.begin(), part.end());
+        while (!segment.empty() && (segment.back() == ';' || std::isspace(static_cast<unsigned char>(segment.back())))) {
+          segment.pop_back();
+        }
+        if (segment.ends_with("Grpc")) index.grpc_classes.insert(segment);
+      }
+    }
     if (lang == Lang::CSharp && type == "using_directive") {
+      if (spelled.find("using Grpc.") != std::string::npos) index.csharp_grpc = true;
       const auto alias = field(node, "name");
       for (const auto& target : named_children(node)) {
         if (!ts_node_is_null(alias) && type_of(target) == "qualified_name") {
           const auto qualifier = std::string(last_segment(text(field(target, "qualifier"), source)));
           if (text(field(target, "name"), source) == qualifier + "Client") {
             index.using_aliases[text(alias, source)] = qualifier;
+            if (text(target, source).find("Grpc") != std::string::npos) index.grpc_aliases.insert(text(alias, source));
           }
         }
       }
     }
     return false;
+  }
+  // Bindings whose value cannot be read: patterns and loop targets.
+  if (type == "object_pattern" || type == "array_pattern" || type == "pattern_list" || type == "tuple_pattern" ||
+      type == "list_pattern") {
+    taint_names(node, index, source, false);
+    return false;
+  }
+  if (type == "for_statement" || type == "for_in_statement" || type == "for_in_clause" || type == "range_clause" ||
+      type == "enhanced_for_statement" || type == "for_each_statement") {
+    for (const char* target : {"left", "name"}) {
+      if (const auto bound = field(node, target); !ts_node_is_null(bound)) taint_names(bound, index, source, false);
+    }
+    if (lang == Lang::Kotlin) {
+      for (const auto& child : named_children(node)) {
+        if (type_of(child) == "variable_declaration") taint_names(child, index, source, false);
+      }
+    }
+  }
+  // An arrow function's bare parameter (`topic => ...`).
+  if (type == "arrow_function") {
+    if (const auto parameter = field(node, "parameter"); !ts_node_is_null(parameter)) {
+      taint_names(parameter, index, source, true);
+    }
   }
   switch (lang) {
     case Lang::Go:
@@ -522,8 +676,8 @@ bool collect_node(const TSNode& node, FileIndex& index, std::string_view source,
         const auto type_node = field(node, "type");
         for (const auto& child : names) {
           if (type_of(child) == "identifier") {
-            bind_name(index, text(child, source), type_node, values.size() == 1 ? values.front() : TSNode{}, source, lang,
-                 source);
+            bind_name(index, text(child, source), type_node, values.size() == 1 ? values.front() : TSNode{}, source,
+                      lang);
           }
         }
       } else if (type == "short_var_declaration" || type == "assignment_statement") {
@@ -531,19 +685,27 @@ bool collect_node(const TSNode& node, FileIndex& index, std::string_view source,
         const auto right = named_children(field(node, "right"));
         if (left.size() == right.size()) {
           for (std::size_t i = 0; i < left.size(); ++i) {
-            bind_name(index, bound_name(left[i], source), {}, right[i], source, lang, source);
+            bind_name(index, bound_name(left[i], source), {}, right[i], source, lang);
           }
+        } else if (right.size() == 1 && !left.empty()) {
+          // `c, err := sarama.NewConsumer(...)`: the first name takes the call.
+          bind_name(index, bound_name(left[0], source), {}, right[0], source, lang);
+          for (std::size_t i = 1; i < left.size(); ++i) taint_names(left[i], index, source, false);
+        } else {
+          for (const auto& name : left) taint_names(name, index, source, false);
         }
       } else if (type == "keyed_element") {
         const auto key = field(node, "key");
-        bind_name(index, bound_name(ts_node_is_null(key) ? TSNode{} : named_children(key).empty() ? key : named_children(key).front(),
-                               source),
-             {}, field(node, "value"), source, lang, source);
+        const auto key_children = named_children(key);
+        bind_name(index, bound_name(key_children.empty() ? key : key_children.front(), source), {}, field(node, "value"),
+                  source, lang);
       } else if (type == "field_declaration" || type == "parameter_declaration") {
         const auto type_node = field(node, "type");
         for (const auto& child : named_children(node)) {
           if (type_of(child) == "field_identifier" || type_of(child) == "identifier") {
-            bind_name(index, text(child, source), type_node, {}, source, lang, source);
+            const auto name = text(child, source);
+            bind_name(index, name, type_node, {}, source, lang);
+            if (type == "parameter_declaration") index.tainted.insert(name);
           }
         }
       }
@@ -553,13 +715,22 @@ bool collect_node(const TSNode& node, FileIndex& index, std::string_view source,
         const auto type_node = field(node, "type");
         for (const auto& child : named_children(node)) {
           if (type_of(child) == "variable_declarator") {
-            bind_name(index, text(field(child, "name"), source), type_node, field(child, "value"), source, lang, source);
+            bind_name(index, text(field(child, "name"), source), type_node, field(child, "value"), source, lang);
           }
         }
-      } else if (type == "formal_parameter") {
-        bind_name(index, text(field(node, "name"), source), field(node, "type"), {}, source, lang, source);
+      } else if (type == "formal_parameter" || type == "catch_formal_parameter") {
+        const auto name = text(field(node, "name"), source);
+        bind_name(index, name, field(node, "type"), {}, source, lang);
+        index.tainted.insert(name);
+      } else if (type == "inferred_parameters" || type == "lambda_expression") {
+        if (const auto parameters = field(node, "parameters"); !ts_node_is_null(parameters) &&
+                                                               type_of(parameters) != "formal_parameters") {
+          taint_names(parameters, index, source, true);
+        }
       } else if (type == "assignment_expression") {
-        bind_name(index, bound_name(field(node, "left"), source), {}, field(node, "right"), source, lang, source);
+        bind_name(index, bound_name(field(node, "left"), source), {}, field(node, "right"), source, lang);
+      } else if (type == "identifier" || type == "type_identifier") {
+        if (const auto spelled = text(node, source); spelled.ends_with("Grpc")) index.grpc_classes.insert(spelled);
       }
       break;
     case Lang::Kotlin:
@@ -575,7 +746,10 @@ bool collect_node(const TSNode& node, FileIndex& index, std::string_view source,
             value = child;
           }
         }
-        bind_name(index, name, {}, value, source, lang, source);
+        bind_name(index, name, {}, value, source, lang);
+      } else if (type == "function_value_parameters" || type == "lambda_parameters" ||
+                 type == "class_parameter") {
+        taint_names(node, index, source, false);
       }
       break;
     case Lang::CSharp:
@@ -588,23 +762,49 @@ bool collect_node(const TSNode& node, FileIndex& index, std::string_view source,
           for (const auto& part : parts) {
             if (!ts_node_eq(part, field(child, "name")) && type_of(part) != "bracketed_argument_list") value = part;
           }
-          bind_name(index, text(field(child, "name"), source), type_node, value, source, lang, source);
+          bind_name(index, text(field(child, "name"), source), type_node, value, source, lang);
         }
       } else if (type == "parameter") {
-        bind_name(index, text(field(node, "name"), source), field(node, "type"), {}, source, lang, source);
+        const auto name = text(field(node, "name"), source);
+        bind_name(index, name, field(node, "type"), {}, source, lang);
+        index.tainted.insert(name);
       } else if (type == "property_declaration") {
-        bind_name(index, text(field(node, "name"), source), field(node, "type"), field(node, "value"), source, lang, source);
+        bind_name(index, text(field(node, "name"), source), field(node, "type"), field(node, "value"), source, lang);
       } else if (type == "assignment_expression") {
-        bind_name(index, bound_name(field(node, "left"), source), {}, field(node, "right"), source, lang, source);
+        bind_name(index, bound_name(field(node, "left"), source), {}, field(node, "right"), source, lang);
+      } else if (type == "foreach_statement") {
+        if (const auto bound = field(node, "left"); !ts_node_is_null(bound)) taint_names(bound, index, source, false);
       }
       break;
     case Lang::Python:
       if (type == "assignment") {
-        bind_name(index, bound_name(field(node, "left"), source), field(node, "type"), field(node, "right"), source, lang,
-             source);
+        const auto left = field(node, "left");
+        if (type_of(left) == "pattern_list" || type_of(left) == "tuple_pattern") {
+          taint_names(left, index, source, true);
+        } else {
+          bind_name(index, bound_name(left, source), field(node, "type"), field(node, "right"), source, lang);
+        }
+      } else if (type == "parameters" || type == "lambda_parameters") {
+        taint_names(node, index, source, true);
+        return false;
+      } else if (type == "as_pattern") {
+        if (const auto alias = field(node, "alias"); !ts_node_is_null(alias)) taint_names(alias, index, source, true);
       } else if (type == "class_definition") {
         const auto name = text(field(node, "name"), source);
         for (const auto& base : named_children(field(node, "superclasses"))) {
+          // `(cart_pb2_grpc.CartServiceServicer)` off a `*_pb2_grpc` module,
+          // or a `CartServiceServicer` imported from one.
+          std::string module;
+          if (type_of(base) == "attribute") {
+            module = text(field(base, "object"), source);
+            if (const auto imported = index.import_paths.find(module); imported != index.import_paths.end()) {
+              module = imported->second;
+            }
+          } else if (const auto imported = index.import_paths.find(text(base, source));
+                     imported != index.import_paths.end()) {
+            module = imported->second;
+          }
+          if (!is_python_grpc_module(module)) continue;
           if (auto service = strip_suffix(last_segment(text(base, source)), "Servicer"); !service.empty()) {
             index.servicers[name] = service;
           }
@@ -613,11 +813,32 @@ bool collect_node(const TSNode& node, FileIndex& index, std::string_view source,
       break;
     case Lang::Js:
       if (type == "variable_declarator" || type == "public_field_definition" || type == "field_definition") {
-        bind_name(index, text(field(node, "name"), source), field(node, "type"), field(node, "value"), source, lang, source);
+        const auto name_node = field(node, "name");
+        if (type_of(name_node) == "object_pattern" || type_of(name_node) == "array_pattern") {
+          taint_names(name_node, index, source, true);
+        } else {
+          bind_name(index, text(name_node, source), field(node, "type"), field(node, "value"), source, lang);
+        }
       } else if (type == "required_parameter" || type == "optional_parameter") {
-        bind_name(index, text(field(node, "pattern"), source), field(node, "type"), {}, source, lang, source);
+        const auto pattern = field(node, "pattern");
+        const auto type_node = field(node, "type");
+        if (type_of(pattern) == "identifier") {
+          bind_name(index, text(pattern, source), type_node, {}, source, lang);
+        }
+        taint_names(pattern, index, source, ts_node_is_null(type_node));
+      } else if (type == "formal_parameters") {
+        // JavaScript (no type annotations): every parameter name.
+        for (const auto& child : named_children(node)) {
+          if (type_of(child) != "required_parameter" && type_of(child) != "optional_parameter") {
+            taint_names(child, index, source, true);
+          }
+        }
+      } else if (type == "catch_clause") {
+        if (const auto parameter = field(node, "parameter"); !ts_node_is_null(parameter)) {
+          taint_names(parameter, index, source, true);
+        }
       } else if (type == "assignment_expression") {
-        bind_name(index, bound_name(field(node, "left"), source), {}, field(node, "right"), source, lang, source);
+        bind_name(index, bound_name(field(node, "left"), source), {}, field(node, "right"), source, lang);
       } else if (type == "call_expression" && text(field(node, "function"), source) == "require") {
         index.imports += text(node, source);
         index.imports += '\n';
@@ -672,16 +893,18 @@ FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang
     }
   }
   collect(root, index, context.source, lang);
-  // One hop through names bound to names: `const TOPIC = DEFAULT_TOPIC`.
-  for (const auto& [name, targets] : index.aliases) {
-    for (const auto& target : targets) {
-      if (const auto found = index.values.find(target); found != index.values.end()) {
-        auto copy = found->second;
-        index.values[name].insert(copy.begin(), copy.end());
-      }
-      if (const auto found = index.clients.find(target); found != index.clients.end()) {
-        auto copy = found->second;
-        index.clients[name].insert(copy.begin(), copy.end());
+  // A client name bound to another name (`this.stub = stub`) is a client only
+  // when every name it is bound to is one; else it is no client.
+  for (int pass = 0; pass < 3; ++pass) {
+    for (const auto& [name, targets] : index.aliases) {
+      for (const auto& target : targets) {
+        const auto found = index.clients.find(target);
+        if (found == index.clients.end() || index.non_clients.contains(target)) {
+          index.non_clients.insert(name);
+        } else {
+          auto copy = found->second;
+          index.clients[name].insert(copy.begin(), copy.end());
+        }
       }
     }
   }
@@ -713,41 +936,9 @@ FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang
   return std::ranges::any_of(modules, [&](std::string_view module) { return index.imports.find(module) != std::string::npos; });
 }
 
-// True when `node` is a plain name that a parameter of an enclosing function
-// declares: `def forward(topic): producer.send(topic, ...)` reads its argument,
-// not a same-named binding elsewhere in the file.
-[[nodiscard]] bool shadowed_by_parameter(TSNode node, const std::string& name, std::string_view source) {
-  node = unwrap(node);
-  const auto type = type_of(node);
-  if (type != "identifier" && type != "simple_identifier") {
-    return false;
-  }
-  for (auto up = parent(node); !ts_node_is_null(up); up = parent(up)) {
-    auto parameters = field(up, "parameters");
-    if (ts_node_is_null(parameters)) {
-      for (const auto& child : named_children(up)) {
-        if (type_of(child) == "function_value_parameters") parameters = child;
-      }
-    }
-    if (ts_node_is_null(parameters)) {
-      continue;
-    }
-    std::vector<TSNode> stack{parameters};
-    while (!stack.empty()) {
-      const auto current = stack.back();
-      stack.pop_back();
-      const auto current_type = type_of(current);
-      if ((current_type == "identifier" || current_type == "simple_identifier") && text(current, source) == name) {
-        return true;
-      }
-      for (const auto& child : named_children(current)) stack.push_back(child);
-    }
-  }
-  return false;
-}
-
 // The one value a name argument reads: a literal, an env default, or a name
-// bound to exactly one value in the file.
+// every binding of which in the file is that one literal (never a parameter,
+// a loop variable, a pattern or another expression).
 [[nodiscard]] std::optional<std::string> name_value(TSNode node, std::string_view source, const FileIndex& index) {
   if (auto literal = string_value(node, source)) {
     return literal;
@@ -757,7 +948,7 @@ FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang
   }
   const auto name = bound_name(node, source);
   if (const auto found = index.values.find(name); !name.empty() && found != index.values.end() &&
-                                                  found->second.size() == 1 && !shadowed_by_parameter(node, name, source)) {
+                                                  found->second.size() == 1 && !index.tainted.contains(name)) {
     return *found->second.begin();
   }
   return std::nullopt;
@@ -776,16 +967,22 @@ FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang
   return {};
 }
 
+// True when the receiver is a broker client of one of `types`: every type the
+// file declares the name with is one of them, or (no declaration) a
+// constructor or call it is assigned from is. A name the file also declares
+// as something else (`KafkaTemplate template` and `JmsTemplate template`) is not.
 [[nodiscard]] bool receiver_typed(TSNode receiver, std::string_view source, const FileIndex& index,
                                   std::initializer_list<std::string_view> types) {
   const auto name = bound_name(receiver, source);
-  const auto found = index.types.find(name);
-  if (name.empty() || found == index.types.end()) {
+  if (name.empty()) {
     return false;
   }
-  return std::ranges::any_of(found->second, [&](const std::string& type) {
-    return std::ranges::find(types, std::string_view(type)) != types.end();
-  });
+  const auto listed = [&](const std::string& type) { return std::ranges::find(types, std::string_view(type)) != types.end(); };
+  if (const auto declared = index.declared.find(name); declared != index.declared.end()) {
+    return std::ranges::all_of(declared->second, listed);
+  }
+  const auto constructed = index.constructed.find(name);
+  return constructed != index.constructed.end() && std::ranges::any_of(constructed->second, listed);
 }
 
 void emit(std::vector<RawRelation>& out, std::string_view relation, const std::string& source_id,
@@ -815,8 +1012,10 @@ void emit_grpc(std::vector<RawRelation>& out, std::string_view relation, const s
   emit(out, relation, source_id, "grpc:" + std::string(service) + "/" + name, context);
 }
 
+// `topic:<broker>:<name>`: a Kafka topic and an SQS queue of one name are two
+// contracts (`kafka`, `rabbitmq`, `sqs`, `sns`, `pubsub`, `jms`).
 void emit_topic(std::vector<RawRelation>& out, std::string_view relation, const std::string& source_id,
-                const std::optional<std::string>& name, const ExtractionContext& context) {
+                std::string_view broker, const std::optional<std::string>& name, const ExtractionContext& context) {
   if (!name) {
     return;
   }
@@ -824,7 +1023,7 @@ void emit_topic(std::vector<RawRelation>& out, std::string_view relation, const 
   // `amq.*` is RabbitMQ's reserved space (`amq.rabbitmq.reply-to`): the
   // broker's own queues and exchanges, never one service's contract with another.
   if (is_topic_name(topic) && !topic.starts_with("amq.")) {
-    emit(out, relation, source_id, "topic:" + topic, context);
+    emit(out, relation, source_id, "topic:" + std::string(broker) + ":" + topic, context);
   }
 }
 
@@ -1025,7 +1224,11 @@ MessagingContractsFileScope::MessagingContractsFileScope() : index_(std::make_un
 MessagingContractsFileScope::~MessagingContractsFileScope() { current_index = index_->previous; }
 
 bool is_standard_grpc_service(std::string_view service) {
-  return service == "Health" || service == "ServerReflection";
+  // gRPC's own (health, reflection, channelz) and OpenTelemetry's OTLP
+  // collector services: every service exports through them for its own reasons.
+  static constexpr std::array<std::string_view, 7> kStandard = {
+      "Health", "ServerReflection", "Channelz", "TraceService", "MetricsService", "LogsService", "ProfilesService"};
+  return std::ranges::find(kStandard, service) != kStandard.end();
 }
 
 std::string grpc_method_name(std::string_view name) {
@@ -1105,11 +1308,11 @@ void go_messaging_contracts(const TSNode& node, const ExtractionContext& context
       if (type_of(element) != "keyed_element") continue;
       const auto key = text(field(element, "key"), source);
       if (key == "Topic") {
-        emit_topic(out, produces ? kProvides : kUses, function_scope_id, name_value(field(element, "value"), source, index),
-                   context);
+        emit_topic(out, produces ? kProvides : kUses, function_scope_id, "kafka",
+                   name_value(field(element, "value"), source, index), context);
       } else if (key == "GroupTopics" && consumes) {
         for (const auto& topic : name_list(field(element, "value"), source, index)) {
-          emit_topic(out, kUses, function_scope_id, topic, context);
+          emit_topic(out, kUses, function_scope_id, "kafka", topic, context);
         }
       }
     }
@@ -1143,19 +1346,27 @@ void go_messaging_contracts(const TSNode& node, const ExtractionContext& context
   }
   const bool kafka = imports_any(index, {"sarama", "segmentio/kafka-go", "confluent-kafka-go"});
   const bool amqp = imports_any(index, {"amqp091-go", "streadway/amqp"});
-  if (kafka && method == "ConsumePartition" && !args.empty()) {
-    emit_topic(out, kUses, function_scope_id, name_value(args[0], source, index), context);
-  } else if (kafka && method == "Consume" && args.size() == 3) {
-    for (const auto& topic : name_list(args[1], source, index)) emit_topic(out, kUses, function_scope_id, topic, context);
-  } else if (kafka && method == "SubscribeTopics" && !args.empty()) {
-    for (const auto& topic : name_list(args[0], source, index)) emit_topic(out, kUses, function_scope_id, topic, context);
-  } else if (amqp && (method == "Publish" || method == "PublishWithContext")) {
+  if (kafka && method == "ConsumePartition" && !args.empty() &&
+      receiver_typed(receiver, source, index, {"Consumer", "NewConsumer", "NewConsumerFromClient"})) {
+    emit_topic(out, kUses, function_scope_id, "kafka", name_value(args[0], source, index), context);
+  } else if (kafka && method == "Consume" && args.size() == 3 &&
+             receiver_typed(receiver, source, index, {"ConsumerGroup", "NewConsumerGroup", "NewConsumerGroupFromClient"})) {
+    for (const auto& topic : name_list(args[1], source, index)) {
+      emit_topic(out, kUses, function_scope_id, "kafka", topic, context);
+    }
+  } else if (kafka && method == "SubscribeTopics" && !args.empty() &&
+             receiver_typed(receiver, source, index, {"Consumer", "NewConsumer"})) {
+    for (const auto& topic : name_list(args[0], source, index)) {
+      emit_topic(out, kUses, function_scope_id, "kafka", topic, context);
+    }
+  } else if (amqp && (method == "Publish" || method == "PublishWithContext") &&
+             receiver_typed(receiver, source, index, {"Channel"})) {
     const std::size_t at = method == "Publish" ? 0 : 1;
     if (args.size() > at + 1 && string_value(args[at], source) == std::optional<std::string>("")) {
-      emit_topic(out, kProvides, function_scope_id, name_value(args[at + 1], source, index), context);
+      emit_topic(out, kProvides, function_scope_id, "rabbitmq", name_value(args[at + 1], source, index), context);
     }
-  } else if (amqp && method == "Consume" && args.size() == 7) {
-    emit_topic(out, kUses, function_scope_id, name_value(args[0], source, index), context);
+  } else if (amqp && method == "Consume" && args.size() == 7 && receiver_typed(receiver, source, index, {"Channel"})) {
+    emit_topic(out, kUses, function_scope_id, "rabbitmq", name_value(args[0], source, index), context);
   }
 }
 
@@ -1243,7 +1454,10 @@ void java_messaging_contracts(const TSNode& node, const ExtractionContext& conte
                           (sqs && (key.empty() || key == "value" || key == "queueNames")) ||
                           (jms && key == "destination");
       if (!topics) continue;
-      for (const auto& topic : name_list(value, source, index)) emit_topic(out, kUses, function_scope_id, topic, context);
+      const std::string_view broker = kafka ? "kafka" : rabbit ? "rabbitmq" : sqs ? "sqs" : "jms";
+      for (const auto& topic : name_list(value, source, index)) {
+        emit_topic(out, kUses, function_scope_id, broker, topic, context);
+      }
     }
     return;
   }
@@ -1251,7 +1465,7 @@ void java_messaging_contracts(const TSNode& node, const ExtractionContext& conte
   if (type == "object_creation_expression") {
     if (simple_type(field(node, "type"), source) == "ProducerRecord" && !args.empty() &&
         imports_any(index, {"org.apache.kafka"})) {
-      emit_topic(out, kProvides, function_scope_id, name_value(args[0], source, index), context);
+      emit_topic(out, kProvides, function_scope_id, "kafka", name_value(args[0], source, index), context);
     }
     return;
   }
@@ -1265,18 +1479,23 @@ void java_messaging_contracts(const TSNode& node, const ExtractionContext& conte
     }
   }
   if (ts_node_is_null(receiver) || args.empty()) return;
-  if (method == "send" && receiver_typed(receiver, source, index, {"KafkaTemplate", "ReactiveKafkaProducerTemplate", "SqsTemplate"})) {
-    emit_topic(out, kProvides, function_scope_id, name_value(args[0], source, index), context);
+  if (method == "send" && receiver_typed(receiver, source, index, {"KafkaTemplate", "ReactiveKafkaProducerTemplate"})) {
+    emit_topic(out, kProvides, function_scope_id, "kafka", name_value(args[0], source, index), context);
+  } else if (method == "send" && receiver_typed(receiver, source, index, {"SqsTemplate"})) {
+    emit_topic(out, kProvides, function_scope_id, "sqs", name_value(args[0], source, index), context);
   } else if ((method == "convertAndSend" || method == "send") && args.size() == 2 &&
              receiver_typed(receiver, source, index, {"RabbitTemplate", "AmqpTemplate", "RabbitMessagingTemplate"})) {
-    emit_topic(out, kProvides, function_scope_id, name_value(args[0], source, index), context);
-  } else if (method == "subscribe" && receiver_typed(receiver, source, index, {"KafkaConsumer", "Consumer"})) {
-    for (const auto& topic : name_list(args[0], source, index)) emit_topic(out, kUses, function_scope_id, topic, context);
+    emit_topic(out, kProvides, function_scope_id, "rabbitmq", name_value(args[0], source, index), context);
+  } else if (method == "subscribe" && receiver_typed(receiver, source, index, {"KafkaConsumer", "Consumer"}) &&
+             imports_any(index, {"org.apache.kafka"})) {
+    for (const auto& topic : name_list(args[0], source, index)) {
+      emit_topic(out, kUses, function_scope_id, "kafka", topic, context);
+    }
   } else if ((method == "stream" || method == "table" || method == "globalTable") &&
              receiver_typed(receiver, source, index, {"StreamsBuilder"})) {
-    emit_topic(out, kUses, function_scope_id, name_value(args[0], source, index), context);
+    emit_topic(out, kUses, function_scope_id, "kafka", name_value(args[0], source, index), context);
   } else if (method == "setQueueNames" && imports_any(index, {"org.springframework.amqp"})) {
-    for (const auto& arg : args) emit_topic(out, kUses, function_scope_id, name_value(arg, source, index), context);
+    for (const auto& arg : args) emit_topic(out, kUses, function_scope_id, "rabbitmq", name_value(arg, source, index), context);
   }
 }
 
@@ -1299,9 +1518,11 @@ void kotlin_messaging_contracts(const TSNode& node, const ExtractionContext& con
   const auto args = arguments_of(node);
   if (args.empty()) return;
   if (name == "subscribe") {
-    for (const auto& topic : name_list(args[0], source, index)) emit_topic(out, kUses, function_scope_id, topic, context);
+    for (const auto& topic : name_list(args[0], source, index)) {
+      emit_topic(out, kUses, function_scope_id, "kafka", topic, context);
+    }
   } else {
-    emit_topic(out, kProvides, function_scope_id, name_value(args[0], source, index), context);
+    emit_topic(out, kProvides, function_scope_id, "kafka", name_value(args[0], source, index), context);
   }
 }
 
@@ -1325,10 +1546,20 @@ void csharp_messaging_contracts(const TSNode& node, const ExtractionContext& con
     }
     const auto owner = parent(parent(node));
     if (!overrides || type_of(owner) != "class_declaration") return;
+    const auto& server_index = file_index(node, context, Lang::CSharp);
+    // A generated handler takes the call's `ServerCallContext`; else the file
+    // must use `Grpc.*` or spell the base through a `Grpc` namespace.
+    bool call_context = false;
+    for (const auto& parameter : named_children(field(node, "parameters"))) {
+      if (simple_type(field(parameter, "type"), source) == "ServerCallContext") call_context = true;
+    }
     for (const auto& child : named_children(owner)) {
       if (type_of(child) != "base_list") continue;
       for (const auto& base : named_children(child)) {
-        if (type_of(base) != "qualified_name") continue;
+        if (type_of(base) != "qualified_name" ||
+            (!call_context && !server_index.csharp_grpc && text(base, source).find("Grpc") == std::string::npos)) {
+          continue;
+        }
         const auto service = std::string(last_segment(text(field(base, "qualifier"), source)));
         if (text(field(base, "name"), source) == service + "Base") {
           emit_grpc(out, kProvides, scope, service, text(field(node, "name"), source), context);
@@ -1352,13 +1583,16 @@ void csharp_messaging_contracts(const TSNode& node, const ExtractionContext& con
   }
   if (args.empty()) return;
   if (imports_any(index, {"Confluent.Kafka"})) {
-    if (method == "Subscribe") {
-      for (const auto& topic : name_list(args[0], source, index)) emit_topic(out, kUses, scope, topic, context);
-    } else if (method == "Produce" || method == "ProduceAsync") {
-      emit_topic(out, kProvides, scope, name_value(args[0], source, index), context);
+    if (method == "Subscribe" && receiver_typed(receiver, source, index, {"IConsumer", "Consumer"})) {
+      for (const auto& topic : name_list(args[0], source, index)) emit_topic(out, kUses, scope, "kafka", topic, context);
+    } else if ((method == "Produce" || method == "ProduceAsync") &&
+               receiver_typed(receiver, source, index, {"IProducer", "Producer"})) {
+      emit_topic(out, kProvides, scope, "kafka", name_value(args[0], source, index), context);
     }
   }
-  if (imports_any(index, {"RabbitMQ.Client"})) {
+  if (imports_any(index, {"RabbitMQ.Client"}) &&
+      receiver_typed(receiver, source, index,
+                     {"IModel", "IChannel", "CreateModel", "CreateChannel", "CreateChannelAsync"})) {
     const auto plain = positional(args, source);
     if (method == "BasicPublish" || method == "BasicPublishAsync") {
       auto exchange = keyword(args, "exchange", source);
@@ -1369,12 +1603,12 @@ void csharp_messaging_contracts(const TSNode& node, const ExtractionContext& con
       const bool default_exchange = string_value(exchange, source) == std::optional<std::string>("") ||
                                     spelled == "string.Empty" || spelled == "String.Empty";
       if (!ts_node_is_null(exchange) && !ts_node_is_null(key) && default_exchange) {
-        emit_topic(out, kProvides, scope, name_value(key, source, index), context);
+        emit_topic(out, kProvides, scope, "rabbitmq", name_value(key, source, index), context);
       }
     } else if (method == "BasicConsume" || method == "BasicConsumeAsync") {
       auto queue = keyword(args, "queue", source);
       if (ts_node_is_null(queue) && !plain.empty()) queue = plain[0];
-      if (!ts_node_is_null(queue)) emit_topic(out, kUses, scope, name_value(queue, source, index), context);
+      if (!ts_node_is_null(queue)) emit_topic(out, kUses, scope, "rabbitmq", name_value(queue, source, index), context);
     }
   }
 }
@@ -1409,7 +1643,16 @@ void cpp_messaging_contracts(const TSNode& node, const ExtractionContext& contex
   for (const auto& child : named_children(declarator)) {
     if (type_of(child) == "virtual_specifier" && text(child, source) == "override") overrides = true;
   }
-  if (overrides) {
+  // A generated handler takes the call's `ServerContext*` (`grpc::ServerContext`):
+  // `folly::Service::start()` and `base::Service::Run()` do not.
+  bool server_context = false;
+  for (const auto& parameter : named_children(field(declarator, "parameters"))) {
+    if (simple_type(field(parameter, "type"), source) == "ServerContext" ||
+        text(field(parameter, "type"), source).ends_with("ServerContext")) {
+      server_context = true;
+    }
+  }
+  if (overrides && server_context) {
     emit_grpc(out, kProvides, function_scope_id, service, text(field(declarator, "declarator"), source), context);
   }
 }
@@ -1448,7 +1691,7 @@ void python_messaging_contracts(const TSNode& node, const ExtractionContext& con
   const auto callee_name = std::string(last_segment(text(callee, source)));
   const bool kafka = imports_any(index, {"kafka", "aiokafka", "confluent_kafka"});
   if (kafka && (callee_name == "KafkaConsumer" || callee_name == "AIOKafkaConsumer")) {
-    for (const auto& arg : plain) emit_topic(out, kUses, scope, name_value(arg, source, index), context);
+    for (const auto& arg : plain) emit_topic(out, kUses, scope, "kafka", name_value(arg, source, index), context);
     return;
   }
   if (type_of(callee) != "attribute") return;
@@ -1464,44 +1707,48 @@ void python_messaging_contracts(const TSNode& node, const ExtractionContext& con
       return;
     }
   }
-  if (kafka && method == "subscribe") {
+  if (kafka && method == "subscribe" &&
+      receiver_typed(receiver, source, index, {"KafkaConsumer", "AIOKafkaConsumer", "Consumer", "DeserializingConsumer"})) {
     auto topics = keyword(args, "topics", source);
     if (ts_node_is_null(topics) && !plain.empty()) topics = plain[0];
     if (!ts_node_is_null(topics)) {
-      for (const auto& topic : name_list(topics, source, index)) emit_topic(out, kUses, scope, topic, context);
+      for (const auto& topic : name_list(topics, source, index)) emit_topic(out, kUses, scope, "kafka", topic, context);
     }
   } else if (kafka && (method == "send" || method == "send_and_wait" || method == "produce") && !plain.empty() &&
-             receiver_typed(receiver, source, index, {"KafkaProducer", "AIOKafkaProducer", "Producer"})) {
-    emit_topic(out, kProvides, scope, name_value(plain[0], source, index), context);
-  } else if (imports_any(index, {"pika"}) && method == "basic_publish") {
+             receiver_typed(receiver, source, index,
+                            {"KafkaProducer", "AIOKafkaProducer", "Producer", "SerializingProducer"})) {
+    emit_topic(out, kProvides, scope, "kafka", name_value(plain[0], source, index), context);
+  } else if (imports_any(index, {"pika"}) && method == "basic_publish" &&
+             receiver_typed(receiver, source, index, {"channel"})) {
     auto exchange = keyword(args, "exchange", source);
     auto key = keyword(args, "routing_key", source);
     if (ts_node_is_null(exchange) && !plain.empty()) exchange = plain[0];
     if (ts_node_is_null(key) && plain.size() > 1) key = plain[1];
     if (!ts_node_is_null(exchange) && !ts_node_is_null(key) &&
         string_value(exchange, source) == std::optional<std::string>("")) {
-      emit_topic(out, kProvides, scope, name_value(key, source, index), context);
+      emit_topic(out, kProvides, scope, "rabbitmq", name_value(key, source, index), context);
     }
-  } else if (imports_any(index, {"pika"}) && method == "basic_consume") {
+  } else if (imports_any(index, {"pika"}) && method == "basic_consume" &&
+             receiver_typed(receiver, source, index, {"channel"})) {
     auto queue = keyword(args, "queue", source);
     if (ts_node_is_null(queue) && !plain.empty()) queue = plain[0];
-    if (!ts_node_is_null(queue)) emit_topic(out, kUses, scope, name_value(queue, source, index), context);
+    if (!ts_node_is_null(queue)) emit_topic(out, kUses, scope, "rabbitmq", name_value(queue, source, index), context);
   } else if (imports_any(index, {"boto3"}) && (method == "send_message" || method == "send_message_batch" ||
                                                 method == "receive_message")) {
     const auto url = keyword(args, "QueueUrl", source);
     if (!ts_node_is_null(url)) {
-      emit_topic(out, method == "receive_message" ? kUses : kProvides, scope, name_value(url, source, index),
+      emit_topic(out, method == "receive_message" ? kUses : kProvides, scope, "sqs", name_value(url, source, index),
                  context);
     }
   } else if (imports_any(index, {"boto3"}) && method == "publish" && !ts_node_is_null(keyword(args, "TopicArn", source))) {
-    emit_topic(out, kProvides, scope, name_value(keyword(args, "TopicArn", source), source, index), context);
+    emit_topic(out, kProvides, scope, "sns", name_value(keyword(args, "TopicArn", source), source, index), context);
   } else if (imports_any(index, {"pubsub"}) && (method == "publish" || method == "create_subscription")) {
     auto topic = method == "publish" ? (plain.empty() ? TSNode{} : plain[0]) : keyword(args, "topic", source);
     topic = unwrap(topic);
     if (type_of(topic) == "call" && last_segment(text(field(topic, "function"), source)) == "topic_path") {
       const auto parts = positional(arguments_of(topic), source);
       if (parts.size() == 2) {
-        emit_topic(out, method == "publish" ? kProvides : kUses, scope, name_value(parts[1], source, index),
+        emit_topic(out, method == "publish" ? kProvides : kUses, scope, "pubsub", name_value(parts[1], source, index),
                    context);
       }
     }
@@ -1538,12 +1785,12 @@ void js_messaging_contracts(const TSNode& node, const ExtractionContext& context
          constructor == "ReceiveMessageCommand")) {
       const auto url = object_member(args[0], "QueueUrl");
       if (!ts_node_is_null(url)) {
-        emit_topic(out, constructor == "ReceiveMessageCommand" ? kUses : kProvides, scope,
+        emit_topic(out, constructor == "ReceiveMessageCommand" ? kUses : kProvides, scope, "sqs",
                    name_value(url, source, index), context);
       }
     } else if (imports_any(index, {"@aws-sdk/client-sns"}) && constructor == "PublishCommand") {
       const auto arn = object_member(args[0], "TopicArn");
-      if (!ts_node_is_null(arn)) emit_topic(out, kProvides, scope, name_value(arn, source, index), context);
+      if (!ts_node_is_null(arn)) emit_topic(out, kProvides, scope, "sns", name_value(arn, source, index), context);
     }
     return;
   }
@@ -1581,22 +1828,27 @@ void js_messaging_contracts(const TSNode& node, const ExtractionContext& context
     }
   }
   if (args.empty()) return;
-  if (imports_any(index, {"kafkajs"}) && (method == "send" || method == "subscribe")) {
+  // kafkajs: a producer (`kafka.producer()`) sends, a consumer (`kafka.consumer(...)`) subscribes.
+  const bool kafkajs_producer = method == "send" && receiver_typed(receiver, source, index, {"producer"});
+  const bool kafkajs_consumer = method == "subscribe" && receiver_typed(receiver, source, index, {"consumer"});
+  // amqplib: a channel (`conn.createChannel()`).
+  const bool amqp_channel = receiver_typed(receiver, source, index, {"createChannel", "createConfirmChannel"});
+  if (imports_any(index, {"kafkajs"}) && (kafkajs_producer || kafkajs_consumer)) {
     const auto topic = object_member(args[0], "topic");
     if (!ts_node_is_null(topic)) {
-      emit_topic(out, method == "send" ? kProvides : kUses, scope, name_value(topic, source, index), context);
+      emit_topic(out, method == "send" ? kProvides : kUses, scope, "kafka", name_value(topic, source, index), context);
     }
     const auto topics = object_member(args[0], "topics");
     if (method == "subscribe" && !ts_node_is_null(topics)) {
-      for (const auto& name : name_list(topics, source, index)) emit_topic(out, kUses, scope, name, context);
+      for (const auto& name : name_list(topics, source, index)) emit_topic(out, kUses, scope, "kafka", name, context);
     }
-  } else if (imports_any(index, {"amqplib", "amqp-connection-manager"})) {
+  } else if (imports_any(index, {"amqplib", "amqp-connection-manager"}) && amqp_channel) {
     if (method == "sendToQueue") {
-      emit_topic(out, kProvides, scope, name_value(args[0], source, index), context);
+      emit_topic(out, kProvides, scope, "rabbitmq", name_value(args[0], source, index), context);
     } else if (method == "consume") {
-      emit_topic(out, kUses, scope, name_value(args[0], source, index), context);
+      emit_topic(out, kUses, scope, "rabbitmq", name_value(args[0], source, index), context);
     } else if (method == "publish" && args.size() >= 2 && string_value(args[0], source) == std::optional<std::string>("")) {
-      emit_topic(out, kProvides, scope, name_value(args[1], source, index), context);
+      emit_topic(out, kProvides, scope, "rabbitmq", name_value(args[1], source, index), context);
     }
   } else if (imports_any(index, {"@google-cloud/pubsub"}) && type_of(unwrap(receiver)) == "call_expression") {
     const auto inner = unwrap(receiver);
@@ -1607,9 +1859,9 @@ void js_messaging_contracts(const TSNode& node, const ExtractionContext& context
       return;
     }
     if (method == "publish" || method == "publishMessage" || method == "publishJSON") {
-      emit_topic(out, kProvides, scope, name_value(inner_args[0], source, index), context);
+      emit_topic(out, kProvides, scope, "pubsub", name_value(inner_args[0], source, index), context);
     } else if (method == "subscription" || method == "createSubscription") {
-      emit_topic(out, kUses, scope, name_value(inner_args[0], source, index), context);
+      emit_topic(out, kUses, scope, "pubsub", name_value(inner_args[0], source, index), context);
     }
   }
 }

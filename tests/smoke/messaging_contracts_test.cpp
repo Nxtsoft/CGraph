@@ -60,10 +60,10 @@ int main() {
 
   // Ids and bridging: both kinds cross repositories by name.
   ok &= cgraph::contract_id("grpc", "CartService/GetCart") == std::optional<std::string>("grpc:CartService/GetCart");
-  ok &= cgraph::contract_id("topic", "orders") == std::optional<std::string>("topic:orders");
+  ok &= cgraph::contract_id("topic", "kafka:orders") == std::optional<std::string>("topic:kafka:orders");
   ok &= cgraph::contract_kind_of("grpc:CartService/GetCart") == "grpc";
-  ok &= cgraph::contract_kind_of("topic:orders") == "topic";
-  ok &= cgraph::is_bridged_contract("grpc:CartService/GetCart") && cgraph::is_bridged_contract("topic:orders");
+  ok &= cgraph::contract_kind_of("topic:kafka:orders") == "topic";
+  ok &= cgraph::is_bridged_contract("grpc:CartService/GetCart") && cgraph::is_bridged_contract("topic:kafka:orders");
   ok &= cgraph::grpc_method_name("getCart") == "GetCart";
   ok &= cgraph::topic_name_from_address("https://sqs.us-east-1.amazonaws.com/123456789012/orders-queue") ==
         "orders-queue";
@@ -211,14 +211,14 @@ func consume(c sarama.Consumer, g sarama.ConsumerGroup, ch *amqp.Channel) {
 )go");
     ok &= expect("go topics", facts(result),
                  {
-                     "provides|produce|topic:orders",
-                     "provides|produce|topic:payments",
-                     "uses|consume|topic:stock",
-                     "uses|consume|topic:audit",
-                     "uses|consume|topic:refunds",
-                     "uses|consume|topic:orders",
-                     "provides|consume|topic:tasks",
-                     "uses|consume|topic:emails",
+                     "provides|produce|topic:kafka:orders",
+                     "provides|produce|topic:kafka:payments",
+                     "uses|consume|topic:kafka:stock",
+                     "uses|consume|topic:kafka:audit",
+                     "uses|consume|topic:kafka:refunds",
+                     "uses|consume|topic:kafka:orders",
+                     "provides|consume|topic:rabbitmq:tasks",
+                     "uses|consume|topic:rabbitmq:emails",
                  });
   }
 
@@ -273,13 +273,13 @@ class AdServiceImpl extends demo.AdServiceGrpc.AdServiceImplBase {
                      "provides|getAds|grpc:AdService/GetAds",
                      "uses|getAds|grpc:ProductCatalogService/ListProducts",
                      "uses|getAds|grpc:CurrencyService/Convert",
-                     "provides|pickAds|topic:orders",
-                     "provides|pickAds|topic:shipping-task",
-                     "uses|onOrder|topic:orders",
-                     "uses|onShipment|topic:a-queue",
-                     "uses|onShipment|topic:shipping-task",
-                     "uses|stream|topic:payment-orders",
-                     "uses|listen|topic:shipping-task",
+                     "provides|pickAds|topic:kafka:orders",
+                     "provides|pickAds|topic:rabbitmq:shipping-task",
+                     "uses|onOrder|topic:kafka:orders",
+                     "uses|onShipment|topic:rabbitmq:a-queue",
+                     "uses|onShipment|topic:rabbitmq:shipping-task",
+                     "uses|stream|topic:kafka:payment-orders",
+                     "uses|listen|topic:rabbitmq:shipping-task",
                  });
   }
 
@@ -298,7 +298,7 @@ fun main() {
     producer.send(ProducerRecord("fraud-alerts", key, value))
 }
 )kt");
-    ok &= expect("kotlin", facts(result), {"uses|main|topic:orders", "provides|main|topic:fraud-alerts"});
+    ok &= expect("kotlin", facts(result), {"uses|main|topic:kafka:orders", "provides|main|topic:kafka:fraud-alerts"});
     const auto plain = configured(cgraph::DetectedLanguage::Kotlin, "other/main.kt", R"kt(
 fun main() { bus.subscribe(listOf("orders")) }
 )kt");
@@ -310,6 +310,7 @@ fun main() { bus.subscribe(listOf("orders")) }
   {
     const auto result = configured(cgraph::DetectedLanguage::CSharp, "src/services/CartService.cs", R"cs(
 using Confluent.Kafka;
+using Grpc.Core;
 using RabbitMQ.Client;
 using GrpcBasketClient = eShop.Basket.API.Grpc.Basket.BasketClient;
 
@@ -322,6 +323,9 @@ public class CartService : Oteldemo.CartService.CartServiceBase
 {
     private static readonly string TopicName = Environment.GetEnvironmentVariable("KAFKA_TOPIC") ?? "orders";
     private readonly CurrencyService.CurrencyServiceClient _currency;
+    private readonly IConsumer<string, byte[]> _consumer;
+    private readonly IProducer<string, string> producer;
+    private readonly IChannel channel;
 
     public override async Task<Empty> AddItem(AddItemRequest request, ServerCallContext context)
     {
@@ -348,10 +352,10 @@ public class CartService : Oteldemo.CartService.CartServiceBase
                      "provides|AddItem|grpc:CartService/AddItem",
                      "uses|AddItem|grpc:PaymentService/Charge",
                      "uses|AddItem|grpc:CurrencyService/Convert",
-                     "uses|Helper|topic:orders",
-                     "provides|Helper|topic:audit",
-                     "provides|Helper|topic:hello",
-                     "uses|Helper|topic:task_queue",
+                     "uses|Helper|topic:kafka:orders",
+                     "provides|Helper|topic:kafka:audit",
+                     "provides|Helper|topic:rabbitmq:hello",
+                     "uses|Helper|topic:rabbitmq:task_queue",
                  });
   }
 
@@ -409,18 +413,21 @@ class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
     def _private(self, request, context):
         return None
 
-def publish(channel):
+channel = pika.BlockingConnection().channel()
+topic = "audit"
+
+def publish():
     producer = KafkaProducer(bootstrap_servers="k")
     producer.send(ORDERS, b"x")
     channel.basic_publish(exchange="", routing_key="tasks", body=b"x")
     channel.basic_publish(exchange="events", routing_key="tasks.created", body=b"x")
     sock.send("not-a-topic")
 
-def forward(ORDERS):
+def forward(topic):
     relay = KafkaProducer(bootstrap_servers="k")
-    relay.send(ORDERS, b"x")
+    relay.send(topic, b"x")
 
-def consume(channel):
+def consume():
     consumer = KafkaConsumer("payments", "refunds", group_id="g")
     channel.basic_consume(queue="emails", on_message_callback=cb)
 
@@ -440,12 +447,12 @@ class Holder:
                      "provides|ListRecommendations|grpc:RecommendationService/ListRecommendations",
                      "uses|ListRecommendations|grpc:ProductCatalogService/ListProducts",
                      "uses|ListRecommendations|grpc:CartService/GetCart",
-                     "provides|publish|topic:orders",
-                     "provides|publish|topic:tasks",
-                     "uses|consume|topic:payments",
-                     "uses|consume|topic:refunds",
-                     "uses|consume|topic:emails",
-                     "provides|recommendation_server.py|topic:hello",
+                     "provides|publish|topic:kafka:orders",
+                     "provides|publish|topic:rabbitmq:tasks",
+                     "uses|consume|topic:kafka:payments",
+                     "uses|consume|topic:kafka:refunds",
+                     "uses|consume|topic:rabbitmq:emails",
+                     "provides|recommendation_server.py|topic:rabbitmq:hello",
                  });
     const std::string test_file = "tests/test_server.py";
     const auto test = cgraph::extract_python({.source_file = test_file, .relative_path = test_file, .source = R"py(
@@ -480,7 +487,10 @@ import { S3Client } from '@aws-sdk/client-s3';
 const s3 = new S3Client({});
 export function put(cmd: any) { return s3.send(cmd); }
 
-export async function produce(producer: any, consumer: any) {
+const kafka = new Kafka({ brokers: ['kafka:9092'] });
+const producer = kafka.producer();
+const consumer = kafka.consumer({ groupId: 'g' });
+export async function produce() {
   await producer.send({ topic: 'orders', messages: [] });
   await consumer.subscribe({ topics: ['payments', 'refunds'] });
 }
@@ -490,9 +500,9 @@ export async function produce(producer: any, consumer: any) {
                      "uses|getCart|grpc:CartService/GetCart",
                      "provides|serve|grpc:CurrencyService/GetSupportedCurrencies",
                      "provides|serve|grpc:CurrencyService/Convert",
-                     "provides|produce|topic:orders",
-                     "uses|produce|topic:payments",
-                     "uses|produce|topic:refunds",
+                     "provides|produce|topic:kafka:orders",
+                     "uses|produce|topic:kafka:payments",
+                     "uses|produce|topic:kafka:refunds",
                  });
     const std::string sdk = "lib/s3.ts";
     const auto plain = cgraph::extract_typescript({.source_file = sdk, .relative_path = sdk, .source = R"ts(
@@ -537,19 +547,259 @@ public class B
     const auto first = cgraph::extract_python({.source_file = file, .relative_path = file, .source = buffer});
     buffer.replace(buffer.find("orders-v1"), 9, "orders-v2");
     const auto second = cgraph::extract_python({.source_file = file, .relative_path = file, .source = buffer});
-    ok &= expect("first extraction", facts(first), {"provides|publish|topic:orders-v1"});
-    ok &= expect("second extraction", facts(second), {"provides|publish|topic:orders-v2"});
+    ok &= expect("first extraction", facts(first), {"provides|publish|topic:kafka:orders-v1"});
+    ok &= expect("second extraction", facts(second), {"provides|publish|topic:kafka:orders-v2"});
   }
 
   // A file whose tree is far deeper than a worker stack allows a recursion to
   // go (a generated 20000-term expression) is read without one.
   {
-    std::string deep = "public class Gen {\n  private readonly CartService.CartServiceClient _cart;\n"
+    std::string deep = "using Grpc.Core;\npublic class Gen {\n  private readonly CartService.CartServiceClient _cart;\n"
                        "  private readonly int x = 1";
     for (int term = 0; term < 20000; ++term) deep += " + 1";
     deep += ";\n  public void F() { _cart.GetCart(req); }\n}\n";
     const auto result = configured(cgraph::DetectedLanguage::CSharp, "src/Gen.cs", deep);
     ok &= expect("deep file", facts(result), {"uses|F|grpc:CartService/GetCart"});
+  }
+
+  // A topic name with any binding that is not a literal reads as nothing,
+  // whatever its shape: a Go rebinding (`topic := cfg.Topic`), a TypeScript
+  // bare arrow parameter or destructured parameter, a Python loop variable.
+  {
+    const auto go = configured(cgraph::DetectedLanguage::Go, "relay/main.go", R"go(
+package main
+
+import "github.com/IBM/sarama"
+
+const topic = "orders"
+
+func relay(cfg Config) {
+	topic := cfg.Topic
+	msg := &sarama.ProducerMessage{Topic: topic}
+	_ = msg
+}
+)go");
+    ok &= expect("go rebinding", facts(go), {});
+    const std::string ts_file = "src/arrow.ts";
+    const auto ts = cgraph::extract_typescript({.source_file = ts_file, .relative_path = ts_file, .source = R"ts(
+import { Kafka } from 'kafkajs';
+const producer = new Kafka({ brokers: [] }).producer();
+const topic = 'orders';
+export const fwd = topic => producer.send({ topic: topic, messages: [] });
+export function fwd2({ topic }) {
+  return producer.send({ topic: topic, messages: [] });
+}
+)ts"});
+    ok &= expect("ts arrow and destructured parameters", facts(ts), {});
+    const std::string py_file = "bridge/relay.py";
+    const auto py = cgraph::extract_python({.source_file = py_file, .relative_path = py_file, .source = R"py(
+from confluent_kafka import Producer
+name = "orders"
+producer = Producer({})
+def fanout(names, payload):
+    for name in names:
+        producer.produce(name, payload)
+)py"});
+    ok &= expect("python loop variable", facts(py), {});
+  }
+
+  // A gRPC client name the file also binds to something else (another call,
+  // another SDK's client) is no client, in any language.
+  {
+    const auto go = configured(cgraph::DetectedLanguage::Go, "svc/main.go", R"go(
+package main
+
+import (
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	pb "example.com/svc/genproto"
+)
+
+func callCart(ctx context.Context, conn *grpc.ClientConn) {
+	client := pb.NewCartServiceClient(conn)
+	client.GetCart(ctx, &pb.GetCartRequest{})
+}
+
+func readItem(ctx context.Context, cfg aws.Config, in *dynamodb.GetItemInput) {
+	client := dynamodb.NewFromConfig(cfg)
+	client.GetItem(ctx, in)
+}
+)go");
+    ok &= expect("go client rebound", facts(go), {});
+    const std::string py_file = "svc/client.py";
+    const auto py = cgraph::extract_python({.source_file = py_file, .relative_path = py_file, .source = R"py(
+import boto3
+from protos import cart_pb2_grpc
+
+def get_cart(channel):
+    client = cart_pb2_grpc.CartServiceStub(channel)
+    return client.GetCart(None)
+
+def fetch_object(key):
+    client = boto3.client("s3")
+    return client.get_object(Bucket="b", Key=key)
+)py"});
+    ok &= expect("python client rebound", facts(py), {});
+    const std::string ts_file = "src/svc.ts";
+    const auto ts = cgraph::extract_typescript({.source_file = ts_file, .relative_path = ts_file, .source = R"ts(
+import * as grpc from '@grpc/grpc-js';
+import { createClient } from 'redis';
+import { CartServiceClient } from '../protos/demo';
+export function cart() {
+  const client = new CartServiceClient('a', grpc.credentials.createInsecure());
+  return client.getCart({}, () => {});
+}
+export async function cache() {
+  const client = createClient();
+  return client.get('k');
+}
+)ts"});
+    ok &= expect("ts client rebound", facts(ts), {});
+    const auto java = configured(cgraph::DetectedLanguage::Java, "src/main/java/com/acme/Clients.java", R"java(
+package com.acme;
+import com.acme.cart.CartServiceGrpc;
+import java.net.http.HttpClient;
+public class Clients {
+  public void cart(ManagedChannel channel) {
+    var client = CartServiceGrpc.newBlockingStub(channel);
+    client.getCart(null);
+  }
+  public void http() throws Exception {
+    var client = HttpClient.newHttpClient();
+    client.send(null, null);
+  }
+}
+)java");
+    ok &= expect("java client rebound", facts(java), {});
+    const auto cs = configured(cgraph::DetectedLanguage::CSharp, "Svc/Clients.cs", R"cs(
+using System.Net.Http;
+using Grpc.Net.Client;
+public class Clients
+{
+    private readonly IHttpClientFactory _factory;
+    public async Task Greet(GrpcChannel channel)
+    {
+        var client = new Greeter.GreeterClient(channel);
+        await client.SayHelloAsync(new HelloRequest());
+    }
+    public async Task Fetch()
+    {
+        var client = _factory.CreateClient("backend");
+        await client.GetAsync("http://backend/x");
+    }
+}
+)cs");
+    ok &= expect("csharp client rebound", facts(cs), {});
+  }
+
+  // Look-alikes: a relative import that is no generated stub, a Java `<S>Grpc`
+  // only in a comment, a Python `<X>Stub` defined in the file, C# SDK clients
+  // without gRPC, a C++ `::Service` base whose overrides take no
+  // ServerContext, connect-go clients, the OTLP and channelz services; and
+  // broker look-alikes: a kafkajs-importing file's `res.send({ topic })`, a
+  // non-channel `consume`, a redis `subscribe` in a Kafka-importing file, a
+  // JmsTemplate parameter named like a KafkaTemplate field.
+  {
+    const std::string ts_file = "src/checkout.ts";
+    const auto ts = cgraph::extract_typescript({.source_file = ts_file, .relative_path = ts_file, .source = R"ts(
+import * as grpc from '@grpc/grpc-js';
+import { Kafka } from 'kafkajs';
+import amqp from 'amqplib';
+import { PaymentClient } from './payment-client';
+import { Queue } from './jobs';
+const jobs = new Queue();
+export async function checkout(res: any) {
+  const payments = new PaymentClient('http://payments');
+  await payments.charge(1);
+  res.send({ topic: 'status-page' });
+  jobs.consume('thumbnails', () => {});
+  const conn = await amqp.connect('amqp://rabbit');
+  const channel = await conn.createChannel();
+  channel.sendToQueue('emails', Buffer.from('x'));
+}
+)ts"});
+    ok &= expect("ts look-alikes", facts(ts), {"provides|checkout|topic:rabbitmq:emails"});
+    const auto java = configured(cgraph::DetectedLanguage::Java, "src/main/java/com/acme/PaymentGateway.java", R"java(
+package com.acme;
+/** Fallback until we migrate to the generated PaymentGrpc client. */
+public class PaymentGateway {
+  private final PaymentStub stub;
+  public void pay(long cents) { stub.charge(cents); }
+}
+)java");
+    ok &= expect("java Grpc in a comment", facts(java), {});
+    const auto jms = configured(cgraph::DetectedLanguage::Java, "src/main/java/com/acme/Messaging.java", R"java(
+package com.acme;
+import org.springframework.jms.core.JmsTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
+public class Messaging {
+  private KafkaTemplate<String, String> template;
+  public void publishJms(JmsTemplate template, String body) {
+    template.send("invoices", s -> s.createTextMessage(body));
+  }
+}
+)java");
+    ok &= expect("java template collision", facts(jms), {});
+    const std::string py_file = "svc/fakes.py";
+    const auto py = cgraph::extract_python({.source_file = py_file, .relative_path = py_file, .source = R"py(
+import redis
+from confluent_kafka import Producer
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+class PaymentStub:
+    def charge(self, amount):
+        return {"ok": True}
+def pay(amount):
+    gateway = PaymentStub()
+    return gateway.charge(amount)
+pubsub = redis.Redis().pubsub()
+pubsub.subscribe("notifications")
+)py"});
+    ok &= expect("python look-alikes", facts(py), {});
+    const auto cs = configured(cgraph::DetectedLanguage::CSharp, "Svc/Sdk.cs", R"cs(
+using Azure.Storage.Blobs;
+public class Sdk
+{
+    private readonly Elastic.Clients.Elasticsearch.ElasticsearchClient _search;
+    public async Task Run()
+    {
+        await _search.PingAsync();
+        var stripe = new Stripe.StripeClient("sk");
+        await stripe.RequestAsync(null);
+    }
+}
+)cs");
+    ok &= expect("csharp sdk clients", facts(cs), {});
+    const auto cpp = configured(cgraph::DetectedLanguage::Cpp, "src/handler.cc", R"cpp(
+class GreeterImpl final : public helloworld::Greeter::Service {
+  grpc::Status SayHello(grpc::ServerContext* ctx, const HelloRequest* req, HelloReply* reply) override { return {}; }
+};
+class Ingest : public folly::Service {
+  void start() override {}
+};
+class Worker : public base::Service {
+  void Run() override {}
+};
+)cpp");
+    ok &= expect("cpp service look-alikes", facts(cpp), {"provides|SayHello|grpc:Greeter/SayHello"});
+    const auto go = configured(cgraph::DetectedLanguage::Go, "svc/main.go", R"go(
+package main
+
+import (
+	"example.com/svc/gen/proto/greet/v1/greetv1connect"
+	channelzgrpc "google.golang.org/grpc/channelz/grpc_channelz_v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+)
+
+type app struct {
+	greeter greetv1connect.GreetServiceClient
+}
+
+func (a *app) hello(ctx context.Context, conn *grpc.ClientConn) {
+	a.greeter.Greet(ctx, nil)
+	channelzgrpc.NewChannelzClient(conn).GetTopChannels(ctx, nil)
+	coltracepb.NewTraceServiceClient(conn).Export(ctx, nil)
+}
+)go");
+    ok &= expect("go connect, channelz, otlp", facts(go), {});
   }
 
   if (!ok) {
