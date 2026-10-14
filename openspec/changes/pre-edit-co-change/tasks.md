@@ -12,8 +12,12 @@
 
 - [x] 2.1 `pre_edit_hook_output`: line ranges from `old_string` (every occurrence for
       `replace_all`, each edit of a MultiEdit, none for Write), the repository root without a
-      workspace, the files section within `kHookTokenBudget` (800) after the services section.
-- [x] 2.2 The thin client waits for a building graph on `co-change` like other graph reads.
+      workspace; the files section first, then the services section, the whole message within
+      `kHookTokenBudget` (800), service rows outranking files (`pre_edit_context`).
+- [x] 2.2 The hook asks only daemons already running (`ClientRequest::spawn = false`), never
+      waits for a build, and shares one deadline across every ask (`ClientRequest::deadline`,
+      enforced with poll() on the socket by `request_over_unix_socket`); `CGRAPH_HOOK_WAIT_MS`
+      (default 250) sets it, and past it the hook prints nothing. Malformed input exits 0.
 
 ## 3. Tests
 
@@ -22,7 +26,10 @@
       op and its required `id`.
 - [x] 3.2 `client_runtime_test`: an Edit with its text lists `src/page.ts: calls `loadStats``
       before the services section; an Edit whose text is not in the file leaves only the services;
-      a repository in no workspace gets the files section within the budget.
+      a repository in no workspace gets the files section within the budget; a repository with
+      no daemon is silent in under 100 ms and nothing is started or written; a running daemon
+      answers; a SIGSTOP'd daemon is given up on at the deadline; 60 long service rows stay
+      within 800 tokens with the rest counted.
 
 ## 4. Measurement
 

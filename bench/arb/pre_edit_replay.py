@@ -14,7 +14,12 @@ The simulated edit comes from the query, never from the labels:
 * edit2ripple: each hunk header of ``anchor_diff`` names the base lines the
   change replaced; each becomes one ``old_string`` (a MultiEdit when there are
   several hunks).
-* comment2context: the review comment's ``line`` in ``given_file``.
+* comment2context: the review comment's ``line`` in ``given_file``. GitHub
+  numbers that line on the pull request's head side, and the snapshot is the
+  base, so it is moved by the offset of the comment's own diff hunk
+  (``@@ -old,n +new,m @@``: ``line + old - new``). The hunks ARB ships are cut
+  short before the commented line, so the shift inside the hunk is unknown;
+  a sample whose mapped line falls outside the base file is skipped.
 
 An ``old_string`` that occurs more than once in the file is widened a line at a
 time until it is unique, as Claude Code's Edit tool requires. Each snapshot gets
@@ -46,6 +51,7 @@ import cgraph_eval
 import snapshots
 
 TASKS = ("edit2ripple", "comment2context")
+HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 LISTED_RE = re.compile(r"^- (.+?): ", re.MULTILINE)
 
 
@@ -60,7 +66,8 @@ def unique_old_string(lines: list[str], first: int, last: int, text: str) -> str
         first, last = max(1, first - 1), min(len(lines), last + 1)
 
 
-def hook_input(sample: dict[str, Any], root: Path) -> tuple[str, dict[str, Any]] | None:
+def hook_input(sample: dict[str, Any], root: Path) -> tuple[str, dict[str, Any]] | str:
+    """The edited file and the hook input for the sample's edit, or why there is none."""
     query = sample.get("query") or {}
     if sample["task_type"] == "edit2ripple":
         path = query.get("anchor_file")
@@ -71,11 +78,17 @@ def hook_input(sample: dict[str, Any], root: Path) -> tuple[str, dict[str, Any]]
     else:
         path = query.get("given_file") or query.get("path")
         line = query.get("line")
-        spans = [(int(line), int(line))] if isinstance(line, int) else []
+        header = HUNK_HEADER_RE.match(query.get("diff_hunk_context") or "")
+        if not isinstance(line, int) or header is None:
+            return "comment has no line or no diff hunk header"
+        base_line = line + int(header.group(1)) - int(header.group(2))
+        spans = [(base_line, base_line)]
     if not path or not spans or not (root / path).is_file():
-        return None
+        return "edited file or edited lines not in the snapshot"
     text = (root / path).read_text(encoding="utf-8", errors="replace")
     lines = text.split("\n")
+    if any(lo < 1 or hi > len(lines) for lo, hi in spans):
+        return "edited line outside the base file"
     edits = []
     for lo, hi in spans:
         old = unique_old_string(lines, lo, hi, text)
@@ -123,8 +136,8 @@ def replay_snapshot(args, baseline, count_tokens, repo: str, sha: str, jobs: lis
             simulated = hook_input(sample, root)
             gold_all = baseline.target_gold_files(sample)
             row: dict[str, Any] = {"sample_id": sample["id"], "task_type": task, "repo": repo, "base_commit": sha}
-            if simulated is None:
-                row.update({"skipped": "anchor file or edited lines not in the snapshot"})
+            if isinstance(simulated, str):
+                row.update({"skipped": simulated})
                 out.append((task, row))
                 continue
             edited, payload = simulated
@@ -171,7 +184,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "samples": len(rows),
         "scored": len(scored),
-        "skipped": [row["sample_id"] for row in rows if "skipped" in row],
+        "skipped": {row["sample_id"]: row["skipped"] for row in rows if "skipped" in row},
         "no_gold_beyond_edited_file": sum(1 for row in rows if "hit" in row and not row["gold_files"]),
         "with_injection_hit": hits,
         "with_injection_hit_rate": hits / len(scored) if scored else 0.0,
