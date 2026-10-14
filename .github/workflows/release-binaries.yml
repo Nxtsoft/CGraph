@@ -29,6 +29,9 @@ jobs:
             platform: linux-arm64
           - os: macos-latest
             platform: macos-arm64
+          # GitHub's last x86_64 macOS image; Intel runners end with it (fall 2027).
+          - os: macos-15-intel
+            platform: macos-x64
 
     steps:
       - uses: actions/checkout@v4
