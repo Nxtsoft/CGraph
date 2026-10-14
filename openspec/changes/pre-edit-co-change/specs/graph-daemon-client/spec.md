@@ -11,3 +11,11 @@ The daemon SHALL serve a `co-change` op taking `id` (a file node id, required), 
 #### Scenario: A method edit names the method
 - **WHEN** the lines fall inside a method of a class
 - **THEN** `edited` names the method, not the class
+
+### Requirement: The daemon skips requests whose client has gone
+After reading a request frame, the daemon SHALL check whether the client has already hung up and, if it has, SHALL NOT compute or answer the request and SHALL count it in `status` `ops.abandoned`. A client that is still connected SHALL be answered as before.
+
+#### Scenario: An abandoned query is not computed
+- **GIVEN** a daemon busy with another connection
+- **WHEN** a client sends a whole `query` frame and closes before the daemon reads it
+- **THEN** `ops.abandoned` grows by one, the query count does not change, and a later live query is answered

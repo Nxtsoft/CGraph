@@ -7,6 +7,8 @@
       depth-2 dependents, one pass over nodes to resolve them (four node passes in all); name-based test/source pairing;
       interleave of callers, tests and linked, capped by `limit`.
 - [x] 1.2 `co-change` daemon op (`DaemonOp::CoChange`, op name, root-pinnable, `id` required).
+- [x] 1.3 The serve loop skips a request whose client hung up after sending it (`peer_hung_up`),
+      counting it in `ops.abandoned`; `daemon_server_test` covers it.
 
 ## 2. Hook
 

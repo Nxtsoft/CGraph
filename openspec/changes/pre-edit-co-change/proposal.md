@@ -43,6 +43,11 @@ repository was shown nothing.
   it, so a daemon that is busy (a rescan holds its serve loop) or stopped costs the edit the
   deadline and no more. `CGRAPH_HOOK_WAIT_MS` sets it for the whole hook (default 250 ms, was a
   3000 ms wait per cold daemon); past it the hook prints nothing. No build is waited for.
+- **A request whose client has gone is not computed.** After reading a frame the daemon polls the
+  connection (`POLLRDHUP`; a `MSG_PEEK` read of 0 bytes where that flag is absent); if the client
+  has hung up (a hook that gave up while the daemon was busy), the request is skipped and counted
+  in `status` `ops.abandoned` instead of being computed, so abandoned asks do not delay the ones
+  behind them. A live client is answered as before.
 - **A client that gives up no longer kills the daemon.** The daemon's write of an answer to a client
   that has hung up raised SIGPIPE and the daemon died (exit 141; found once clients started giving
   up at a deadline). Frames are now sent with `MSG_NOSIGNAL` (`SO_NOSIGPIPE` where that flag is
@@ -56,23 +61,24 @@ repository was shown nothing.
 
 Offline replay, every ARB edit2ripple and comment2context sample that `cgraph_eval.py` scores
 (138), with the hook as shipped (one 250 ms deadline, no spawn). A comment2context comment line is
-on GitHub's head side; the replay moves it to the base snapshot by its diff hunk's offset and skips
-the sample when that falls outside the base file (5), when the comment has no hunk header (2), or
-when `given_file` is not in the snapshot (3): 10 skipped, 128 scored.
+on GitHub's head side; the replay moves it to the base snapshot by its diff hunk's offset, clamped to
+the hunk's base range (38 samples by the offset alone, 37 clamped: comments on added lines land on
+the base lines the hunk replaced). It skips a sample with no hunk header (2) or whose `given_file` is
+not in the snapshot (3): 5 skipped, 133 scored.
 Command: `bench/arb/pre_edit_replay.py --jobs 1 --latency-repeats 5 --keep-snapshots`. The
 before row is the bin-v0.9.1 release on the earlier sample set (135 scored; it names no file on any).
 
 | | before (bin-v0.9.1) | after |
 |---|---:|---:|
 | samples where the hook names >= 1 gold file, edit2ripple | 0 / 58 | 26 / 58 (44.8%) |
-| same, comment2context | 0 / 77 | 22 / 70 (31.4%) |
-| same, overall | 0 / 135 | 48 / 128 (37.5%) |
-| samples shown no gold file before the edit (miss-all proxy) | 100% | 62.5% (down 37.5 points) |
-| silent samples (of which: the deadline passed on the first call after the daemon reported ready) | 135 | 8 (5) |
+| same, comment2context | 0 / 77 | 29 / 75 (38.7%) |
+| same, overall | 0 / 135 | 55 / 133 (41.4%) |
+| samples shown no gold file before the edit (miss-all proxy) | 100% | 58.6% (down 41.4 points) |
+| silent samples (of which: the deadline passed on the first call after the daemon reported ready) | 135 | 4 (1) |
 | injected tokens per edit, p50 / p95 / max (4 chars per token) | 0 | 118 / 158 / 263 |
 | max injected tokens, ARB `regex_code_tokenizer_v1` | 0 | 256 |
-| warm hook latency (median of 5 reruns per sample), p50 / p95 / max | 3.8 / 6.7 / 7.7 ms | 15.8 / 83.2 / 107.0 ms |
-| first call after the daemon reports ready, p95 / max | 6.7 / 7.7 ms | 209 / 255 ms |
+| warm hook latency (median of 5 reruns per sample), p50 / p95 / max | 3.8 / 6.7 / 7.7 ms | 19.1 / 86.5 / 93.1 ms |
+| first call after the daemon reports ready, p95 / max | 6.7 / 7.7 ms | 136 / 255 ms |
 
 The hook on a scratch copy of the huggingface/transformers snapshot (108,602 nodes), an Edit of
 `modeling_utils.py` through the reviewer's `hook.sh`:
@@ -80,10 +86,10 @@ The hook on a scratch copy of the huggingface/transformers snapshot (108,602 nod
 | scenario | result |
 |---|---|
 | no daemon running (9 inputs, malformed ones included) | all exit 0, silent, 5-17 ms; no daemon started, no `cgraph-out/` written |
-| warm daemon, 20 edits | 19 answered in 89-118 ms (616-byte context), 1 silent at 258 ms |
-| full rescan in progress, an edit every 200 ms for 20 s | 77 edits, all silent, p50 12 ms, max 259 ms |
-| incremental update after touching a source file, 10 edits | all answered, 95-142 ms |
-| daemon stopped (SIGSTOP), 3 edits | silent at 258-259 ms each; the daemon stayed alive after SIGCONT (the next edit, while it worked through the abandoned requests, was silent at 256 ms) |
+| warm daemon, 20 edits | 19 answered in 86-139 ms (616-byte context), 1 silent at 258 ms |
+| full rescan in progress, an edit every 200 ms for 20 s | 77 edits, all silent, p50 12 ms, max 260 ms |
+| incremental update after touching a source file, 10 edits | all answered, 90-118 ms |
+| daemon stopped (SIGSTOP), 3 edits | silent at 257-259 ms each; after SIGCONT the daemon skipped the 3 abandoned requests (`status` `ops.abandoned` 3), and 5 edits 2 s later were answered in 86-167 ms |
 
 Live check: headless Claude Code 2.1.296 (`--model sonnet`, clean `HOME` and `CLAUDE_CONFIG_DIR`),
 with the plugin installed from this branch through `claude plugin marketplace add
@@ -127,10 +133,14 @@ agent did not open it. The missing step is the agent acting on the hint, not fin
   - an Edit whose text is not in the file leaves only the services section;
   - a MultiEdit in a repository that no workspace lists names `src/use.ts` and `src/helper.test.ts`,
     says nothing about services, and stays within the budget.
+- `daemon_server_test.cpp`: while a stalled peer holds the serve loop, a client sends a whole
+  `query` and hangs up; the daemon counts it as abandoned and does not compute it (the query count
+  is unchanged), and a live client's query is then computed and answered.
 - Each of these mutations makes a test fail: no innermost filter, the first relation names the
   reason, no test pairing, no root outside a workspace, Edits treated as whole-file writes, the
   hook allowed to spawn, no deadline on the socket (the test hangs), `write` instead of
-  `send(MSG_NOSIGNAL)` (the daemon dies of signal 13).
+  `send(MSG_NOSIGNAL)` (the daemon dies of signal 13), no check for a hung-up client (three
+  `daemon_server_test` expectations fail).
 
 ## Non-goals
 

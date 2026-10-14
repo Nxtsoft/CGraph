@@ -179,9 +179,40 @@ using Deadline = std::optional<std::chrono::steady_clock::time_point>;
   return decode_frame(frame);
 }
 
+// Whether the client on `conn` has already hung up (a hook that gave up at its
+// deadline while this request waited in the queue). The thin client never
+// half-closes: it writes its frame and reads the answer, so a hang-up seen
+// right after its frame was read means nobody will read the answer.
+[[nodiscard]] bool peer_hung_up(int conn) {
+#ifdef POLLRDHUP
+  pollfd entry{.fd = conn, .events = POLLIN | POLLRDHUP, .revents = 0};
+  return ::poll(&entry, 1, 0) > 0 && (entry.revents & (POLLHUP | POLLRDHUP | POLLERR)) != 0;
+#else
+  pollfd entry{.fd = conn, .events = POLLIN, .revents = 0};
+  if (::poll(&entry, 1, 0) <= 0) return false;
+  if ((entry.revents & (POLLHUP | POLLERR)) != 0) return true;
+  char byte = 0;
+  return (entry.revents & POLLIN) != 0 && ::recv(conn, &byte, 1, MSG_PEEK | MSG_DONTWAIT) == 0;
+#endif
+}
+
 [[nodiscard]] bool write_frame(int fd, const nlohmann::json& payload, const Deadline& deadline = {}) {
   const auto frame = encode_frame(payload);
   return write_all(fd, frame.data(), frame.size(), deadline);
+}
+
+// The thin client uses one connection per request: read it, answer it. A
+// request whose client has already gone is counted and not computed, so
+// abandoned asks do not hold up the ones behind them.
+void answer_connection(DaemonState& state, int conn) {
+  if (const auto request = read_frame(conn)) {
+    if (peer_hung_up(conn)) {
+      ++state.op_stats.abandoned;
+      return;
+    }
+    const auto response = handle_daemon_request(state, *request);
+    (void)write_frame(conn, response);
+  }
 }
 
 #endif  // !_WIN32
@@ -333,10 +364,7 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
     }
     last_activity = FileWatcherClock::now();
     apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
-    if (const auto request = read_frame(conn)) {
-      const auto response = handle_daemon_request(state, *request);
-      (void)write_frame(conn, response);
-    }
+    answer_connection(state, conn);
     ::close(conn);
   }
   ::close(listen_fd);
@@ -1054,11 +1082,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
     last_activity = FileWatcherClock::now();
     apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
-    // The thin client uses one connection per request: read it, answer it, close.
-    if (const auto request = read_frame(conn)) {
-      const auto response = handle_daemon_request(state, *request);
-      (void)write_frame(conn, response);
-    }
+    answer_connection(state, conn);
     ::close(conn);
   }
 

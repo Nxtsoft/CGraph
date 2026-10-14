@@ -17,9 +17,12 @@ The simulated edit comes from the query, never from the labels:
 * comment2context: the review comment's ``line`` in ``given_file``. GitHub
   numbers that line on the pull request's head side, and the snapshot is the
   base, so it is moved by the offset of the comment's own diff hunk
-  (``@@ -old,n +new,m @@``: ``line + old - new``). The hunks ARB ships are cut
-  short before the commented line, so the shift inside the hunk is unknown;
-  a sample whose mapped line falls outside the base file is skipped.
+  (``@@ -old,n +new,m @@``: ``line + old - new``) and clamped to the hunk's
+  base range ``[old, old + max(n, 1) - 1]``: a comment on lines the change
+  added lands on the base lines the hunk replaced. The hunks ARB ships are cut
+  short before the commented line, so the shift inside the hunk is unknown.
+  Each row records ``line_mapping`` (``offset`` or ``clamped``); a sample whose
+  line still falls outside the base file is skipped.
 
 An ``old_string`` that occurs more than once in the file is widened a line at a
 time until it is unique, as Claude Code's Edit tool requires. Each snapshot gets
@@ -51,7 +54,7 @@ import cgraph_eval
 import snapshots
 
 TASKS = ("edit2ripple", "comment2context")
-HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,\d+)? @@")
 LISTED_RE = re.compile(r"^- (.+?): ", re.MULTILINE)
 
 
@@ -66,9 +69,11 @@ def unique_old_string(lines: list[str], first: int, last: int, text: str) -> str
         first, last = max(1, first - 1), min(len(lines), last + 1)
 
 
-def hook_input(sample: dict[str, Any], root: Path) -> tuple[str, dict[str, Any]] | str:
-    """The edited file and the hook input for the sample's edit, or why there is none."""
+def hook_input(sample: dict[str, Any], root: Path) -> tuple[str, dict[str, Any], str | None] | str:
+    """The edited file, the hook input for the sample's edit and how a comment line was mapped,
+    or why there is none."""
     query = sample.get("query") or {}
+    mapping = None
     if sample["task_type"] == "edit2ripple":
         path = query.get("anchor_file")
         spans = []
@@ -81,7 +86,11 @@ def hook_input(sample: dict[str, Any], root: Path) -> tuple[str, dict[str, Any]]
         header = HUNK_HEADER_RE.match(query.get("diff_hunk_context") or "")
         if not isinstance(line, int) or header is None:
             return "comment has no line or no diff hunk header"
-        base_line = line + int(header.group(1)) - int(header.group(2))
+        old_start = int(header.group(1))
+        old_end = old_start + max(int(header.group(2) or 1), 1) - 1
+        shifted = line + old_start - int(header.group(3))
+        base_line = min(max(shifted, old_start), old_end)
+        mapping = "offset" if base_line == shifted else "clamped"
         spans = [(base_line, base_line)]
     if not path or not spans or not (root / path).is_file():
         return "edited file or edited lines not in the snapshot"
@@ -97,9 +106,9 @@ def hook_input(sample: dict[str, Any], root: Path) -> tuple[str, dict[str, Any]]
     file_path = str((root / path).resolve())
     if len(edits) == 1:
         return path, {"hook_event_name": "PreToolUse", "tool_name": "Edit",
-                      "tool_input": {"file_path": file_path, **edits[0]}}
+                      "tool_input": {"file_path": file_path, **edits[0]}}, mapping
     return path, {"hook_event_name": "PreToolUse", "tool_name": "MultiEdit",
-                  "tool_input": {"file_path": file_path, "edits": edits}}
+                  "tool_input": {"file_path": file_path, "edits": edits}}, mapping
 
 
 def run_hook(bin_dir: Path, payload: dict[str, Any]) -> tuple[float, str]:
@@ -140,13 +149,14 @@ def replay_snapshot(args, baseline, count_tokens, repo: str, sha: str, jobs: lis
                 row.update({"skipped": simulated})
                 out.append((task, row))
                 continue
-            edited, payload = simulated
+            edited, payload, mapping = simulated
             gold = [path for path in gold_all if path != edited]
             elapsed_ms, context = run_hook(args.cgraph_bin_dir, payload)
             repeats = [run_hook(args.cgraph_bin_dir, payload)[0] for _ in range(args.latency_repeats)]
             listed = LISTED_RE.findall(context.split("\n\n")[0]) if context.startswith("cgraph: files likely") else []
             row.update({
                 "edited_file": edited,
+                "line_mapping": mapping,
                 "tool_name": payload["tool_name"],
                 "gold_files": gold,
                 "injected_files": listed,
@@ -192,6 +202,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "no_injection_hit_rate": 0.0,
         "no_injection_miss_all_rate": 1.0,
         "silent": sum(1 for row in scored if not row["injected_files"]),
+        "line_mapping": {kind: sum(1 for row in scored if row.get("line_mapping") == kind) for kind in ("offset", "clamped")},
         "injected_files_mean": statistics.fmean(len(row["injected_files"]) for row in scored) if scored else 0.0,
         "tokens_estimate_p50": percentile(tokens, 0.5),
         "tokens_estimate_p95": percentile(tokens, 0.95),
