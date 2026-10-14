@@ -679,6 +679,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     // initial build, the empty/building) snapshot until rebuild_final_overlay
     // publishes the fused deterministic+overlay result in one step.
     DaemonState scan_state;
+    // Staged on the served snapshot (never visible to readers) so the
+    // rescan's publish re-tokenizes only the files whose bytes or spans
+    // changed (body_index.hpp) instead of every file.
+    scan_state.graph_snapshot = read_graph_snapshot(state);
     const auto result = full_stat_index_rescan(scan_state, index, identity.project_root);
     if (result.applied) {
       {
@@ -921,6 +925,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
           // full rescan (a per-file rebuild here would wipe the graph), staged
           // like every rescan so readers never see an intermediate; subsequent
           // events go incremental.
+          hydration_state.graph_snapshot = read_graph_snapshot(state);  // body-index reuse, as in rescan
           result = full_stat_index_rescan(hydration_state, index, identity.project_root);
         }
         for (const auto& warning : result.warnings) {

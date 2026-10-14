@@ -3,6 +3,7 @@
 #include "cgraph/content_root.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,6 +11,8 @@
 #include <vector>
 
 namespace cgraph {
+
+class BodyIndex;
 
 using Properties = std::unordered_map<std::string, std::string>;
 
@@ -114,6 +117,10 @@ struct GraphSnapshot {
   // function fingerprints, keyed by node id. An id that dedup later removed
   // simply has no node; readers skip it.
   std::unordered_map<std::string, FunctionFingerprint> fingerprints;
+  // Runtime-only like source_hashes: BM25 over each code symbol's source span
+  // (body_index.hpp), attached by publish_graph_snapshot and shared by every
+  // copy of this snapshot. Null until published.
+  std::shared_ptr<const BodyIndex> body_index;
 };
 
 }  // namespace cgraph

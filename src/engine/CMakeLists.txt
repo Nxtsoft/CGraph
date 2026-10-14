@@ -1,6 +1,7 @@
 add_library(cgraph_engine STATIC
   analysis.cpp
   atomic_write.cpp
+  body_index.cpp
   change_context.cpp
   daemon_endpoint.cpp
   daemon_server.cpp

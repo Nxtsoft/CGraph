@@ -1,6 +1,7 @@
 #include "cgraph/daemon_ops.hpp"
 
 #include "cgraph/atomic_write.hpp"
+#include "cgraph/body_index.hpp"
 #include "cgraph/contracts.hpp"
 #include "cgraph/engine.hpp"
 
@@ -199,48 +200,6 @@ void add_source_location(nlohmann::json& brief, const Node& node) {
   return brief;
 }
 
-// Lowercased alphanumeric terms, breaking camelCase and snake_case and keeping
-// terms of length >= 3. Mirrors the offline harness's relevance value
-// (research/select.py::_terms) so the knapsack scorer matches what step A validated.
-[[nodiscard]] std::unordered_set<std::string> lexical_terms(std::string_view text) {
-  std::unordered_set<std::string> terms;
-  std::string word;
-  const auto flush = [&]() {
-    if (word.empty()) {
-      return;
-    }
-    std::string sub;
-    const auto push_sub = [&]() {
-      if (sub.size() >= 3) {
-        terms.insert(sub);
-      }
-      sub.clear();
-    };
-    for (std::size_t i = 0; i < word.size(); ++i) {
-      const auto ch = static_cast<unsigned char>(word[i]);
-      const bool upper = std::isupper(ch) != 0;
-      const bool prev_upper = i > 0 && std::isupper(static_cast<unsigned char>(word[i - 1])) != 0;
-      const bool next_lower =
-          i + 1 < word.size() && std::islower(static_cast<unsigned char>(word[i + 1])) != 0;
-      if (i > 0 && upper && (!prev_upper || next_lower)) {
-        push_sub();
-      }
-      sub.push_back(static_cast<char>(std::tolower(ch)));
-    }
-    push_sub();
-    word.clear();
-  };
-  for (const char c : text) {
-    if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
-      word.push_back(c);
-    } else {
-      flush();
-    }
-  }
-  flush();
-  return terms;
-}
-
 // Fraction of query terms also present in the node label (0..1).
 [[nodiscard]] double query_term_overlap(const std::unordered_set<std::string>& query_terms,
                                         std::string_view label) {
@@ -276,37 +235,6 @@ constexpr std::size_t kSameFileCandidateCap = 5;
 // never a substring of a symbol label — still resolves a focal node instead of
 // returning empty. A query that shares no term with any label yields no match, so
 // a genuinely off-topic request stays an honest zero hit.
-// One-shot suffix-strip stemming for seed matching, so a query inflection
-// ("packing", "resolves", "imports") matches the code identifier it names
-// ("pack", "resolve", "import"). Deliberately light: a single strip from a
-// fixed suffix list, and the stem must keep >= 4 chars so short roots stay
-// exact -- doubled-consonant gerunds ("running" -> "runn") are accepted misses
-// rather than reasons for a heavier stemmer. Used ONLY by lexical_matches
-// below; lexical_terms itself, the adaptive gather gate, and the knapsack
-// value keep exact-match semantics. Measured on the committed fixture:
-// +1.4 to +3.5 end-to-end recall points at every budget, and the share of
-// rows whose grade-2 anchor is lexically reachable at all rises 0.733 -> 0.747
-// (research/beyond-lexical).
-[[nodiscard]] std::string stem_term(const std::string& term) {
-  static constexpr std::string_view kSuffixes[] = {"ing", "tion", "sion", "ers", "ies",
-                                                   "ed",  "es",   "al",   "er",  "s"};
-  for (const auto suffix : kSuffixes) {
-    if (term.size() >= suffix.size() + 4 && term.ends_with(suffix)) {
-      return term.substr(0, term.size() - suffix.size());
-    }
-  }
-  return term;
-}
-
-[[nodiscard]] std::unordered_set<std::string> stem_terms(const std::unordered_set<std::string>& terms) {
-  std::unordered_set<std::string> out;
-  out.reserve(terms.size());
-  for (const auto& term : terms) {
-    out.insert(stem_term(term));
-  }
-  return out;
-}
-
 [[nodiscard]] std::vector<const Node*> lexical_matches(
     const GraphSnapshot& graph, const std::unordered_set<std::string>& raw_query_terms) {
   std::vector<std::pair<double, const Node*>> scored;
@@ -382,6 +310,91 @@ constexpr std::size_t kSameFileCandidateCap = 5;
     out.push_back(node);
   }
   return out;
+}
+
+// Body-ranked symbols a prose query fuses with its label matches. Seeds come
+// from the top few fused ranks, so a deeper list only lets a symbol that both
+// rankings place moderately high climb past one only a single ranking likes.
+constexpr std::size_t kBodyCandidateCount = 100;
+// Reciprocal-rank-fusion constant (the k = 60 of Cormack, Clarke and Buettcher,
+// SIGIR 2009): rank-only fusion, so BM25 body scores and idf-overlap label
+// scores never need a shared scale.
+constexpr double kRrfK = 60.0;
+
+// A query with whitespace is prose -- an issue sentence, a review comment, a
+// stack trace -- and names behavior more often than a symbol; a single token is
+// identifier-like and stays on the label path, where an exact or substring
+// symbol name already resolves.
+[[nodiscard]] bool is_prose_query(std::string_view needle) {
+  return needle.find_first_of(" \t\r\n") != std::string_view::npos;
+}
+
+// Reciprocal-rank fusion of independent rankings of the same snapshot's
+// nodes: each list contributes 1/(k + rank) to every node it ranks, so a node
+// several rankings agree on climbs, and no ranking's raw scores need a shared
+// scale. Equal fused scores keep the first ranking's order, then id. An
+// optional further ranking (an embedding provider -- kept out of this binary,
+// which stays model-free) joins as one more list.
+[[nodiscard]] std::vector<const Node*> fuse_by_reciprocal_rank(
+    std::span<const std::vector<const Node*>> rankings) {
+  struct Fused {
+    double score = 0.0;
+    std::size_t first_rank = std::numeric_limits<std::size_t>::max();
+  };
+  std::unordered_map<const Node*, Fused> fused;
+  for (std::size_t list = 0; list < rankings.size(); ++list) {
+    for (std::size_t rank = 0; rank < rankings[list].size(); ++rank) {
+      auto& entry = fused[rankings[list][rank]];
+      entry.score += 1.0 / (kRrfK + static_cast<double>(rank + 1));
+      if (list == 0) {
+        entry.first_rank = rank;
+      }
+    }
+  }
+  std::vector<std::pair<const Node*, Fused>> ordered(fused.begin(), fused.end());
+  std::ranges::sort(ordered, [](const auto& lhs, const auto& rhs) {
+    if (lhs.second.score != rhs.second.score) {
+      return lhs.second.score > rhs.second.score;
+    }
+    if (lhs.second.first_rank != rhs.second.first_rank) {
+      return lhs.second.first_rank < rhs.second.first_rank;
+    }
+    return lhs.first->id < rhs.first->id;
+  });
+  std::vector<const Node*> out;
+  out.reserve(ordered.size());
+  for (const auto& [node, _] : ordered) {
+    out.push_back(node);
+  }
+  return out;
+}
+
+// Free-text seed ranking (CGR-25). Identifier-like queries rank by label
+// overlap alone (lexical_matches). Prose queries also rank every code symbol by
+// BM25 over its source span (BodyIndex) -- the words of a trace or an issue
+// live in bodies (called identifiers, logged strings, comments), not in the
+// label -- and the two rankings are fused by reciprocal rank, label first. A
+// snapshot with no body index (no verified source bytes) ranks by label alone.
+[[nodiscard]] std::vector<const Node*> free_text_matches(
+    const GraphSnapshot& graph,
+    const std::unordered_map<std::string, const Node*>& by_id,
+    const std::string& needle) {
+  const auto raw_terms = lexical_terms(needle);
+  auto label_ranked = lexical_matches(graph, raw_terms);
+  if (!is_prose_query(needle) || graph.body_index == nullptr) {
+    return label_ranked;
+  }
+  std::vector<const Node*> body_ranked;
+  for (const auto& [score, node_id] : graph.body_index->rank(stem_terms(raw_terms), kBodyCandidateCount)) {
+    if (const auto found = by_id.find(*node_id); found != by_id.end()) {
+      body_ranked.push_back(found->second);  // else indexed under an id a later overlay or dedup removed
+    }
+  }
+  if (body_ranked.empty()) {
+    return label_ranked;
+  }
+  const std::array rankings{std::move(label_ranked), std::move(body_ranked)};
+  return fuse_by_reciprocal_rank(rankings);
 }
 
 // Metadata-only estimate of the node's capped source slice. Selection must finish
@@ -877,7 +890,7 @@ struct StructuralIntent {
   // so the centrality re-sort below is skipped for them.
   const bool lexical_fallback = matches.empty();
   if (lexical_fallback) {
-    matches = lexical_matches(graph, lexical_terms(needle));
+    matches = free_text_matches(graph, by_id, needle);
   }
   narrow(matches);
   if (!lexical_fallback) {
@@ -1074,7 +1087,7 @@ struct StructuralIntent {
       }
     }
     if (focal == nullptr) {
-      seeds = lexical_matches(graph, lexical_terms(needle));
+      seeds = free_text_matches(graph, by_id, needle);
       if (seeds.size() > kFocalSeedCount) {
         seeds.resize(kFocalSeedCount);
       }
@@ -2267,6 +2280,13 @@ std::shared_ptr<const GraphSnapshot> read_graph_snapshot(const DaemonState& stat
 }
 
 void publish_graph_snapshot(DaemonState& state, GraphSnapshot graph) {
+  // Every published snapshot carries a body index current for its own nodes and
+  // source bytes. Built before the swap, outside snapshot_mutex, so readers are
+  // never blocked on tokenizing; per-file reuse from the snapshot's own index
+  // (a copy of a published one) or else the served one keeps an incremental
+  // update to the files it re-extracted.
+  const auto previous = graph.body_index != nullptr ? graph.body_index : read_graph_snapshot(state)->body_index;
+  graph.body_index = BodyIndex::refresh(graph, previous);
   auto snapshot = std::make_shared<const GraphSnapshot>(std::move(graph));
   std::scoped_lock guard(state.snapshot_mutex);
   state.graph_snapshot = std::move(snapshot);

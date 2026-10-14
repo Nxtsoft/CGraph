@@ -929,8 +929,19 @@ int main() {
   // focus). "d" is disconnected (no edges) and reachable ONLY as its own seed,
   // and "a" is reachable only from the alpha seeds, so both appearing in the
   // bundle proves the gather unions several ego graphs, not just the focal's.
+  // The ordering asserted here is the label path's: "a" is the only node with
+  // a hashed source span, so on `state` its body ("class Alpha") would also
+  // vote for "alpha" through the body fusion. A snapshot without source hashes
+  // has an empty body index and ranks by label alone.
+  cgraph::DaemonState label_only;
+  {
+    auto unhashed = *cgraph::read_graph_snapshot(state);
+    unhashed.source_hashes.clear();
+    unhashed.body_index = nullptr;
+    cgraph::publish_graph_snapshot(label_only, std::move(unhashed));
+  }
   const auto multi = cgraph::handle_daemon_request(
-      state, cgraph::make_request("context", {{"q", "alpha gamma"}, {"budget", 50000}}));
+      label_only, cgraph::make_request("context", {{"q", "alpha gamma"}, {"budget", 50000}}));
   if (multi["result"]["focus"].value("id", std::string{}) != "d") {
     return 1;  // idf: the rare-term match outranks the ubiquitous-term matches
   }
@@ -942,6 +953,72 @@ int main() {
   }
   if (!multi_found_alpha) {
     return 1;  // the lower-ranked alpha seeds' ego graphs are still unioned in
+  }
+
+  // --- body BM25 seeding with query-type routing (CGR-25) ---
+  // Labels share no word with the query; only the bodies do. A prose query
+  // resolves through the body index; an identifier-like one stays on the label
+  // path, where no label matches, and is an honest miss.
+  {
+    const auto retry_go = src.parent_path() / "retry.go";
+    const auto write_retry = [&](const std::string& text) {
+      std::ofstream(retry_go, std::ios::binary) << text;
+      return cgraph::sha256_hex(text);
+    };
+    cgraph::GraphSnapshot g;
+    g.build_state = cgraph::BuildState::DeterministicReady;
+    const auto located = [&](const std::string& id, std::uint32_t start, std::uint32_t end) {
+      return cgraph::Node{.id = id, .label = id, .source_file = retry_go.generic_string(),
+                          .source_location = cgraph::SourceLocation{.start_line = start, .end_line = end},
+                          .kind = "function"};
+    };
+    g.nodes = {located("handler", 1, 3), located("worker", 4, 7)};
+    g.edges.push_back(cgraph::Edge{.source = "handler", .target = "worker", .relation = "CALLS"});
+    g.source_hashes[retry_go.lexically_normal().generic_string()] = write_retry(
+        "func handler() {\n"
+        "  serveHTTP(responseWriter)\n"
+        "}\n"
+        "func worker() {\n"
+        "  // exponential backoff between attempts\n"
+        "  sleep(backoffDelay)\n"
+        "}\n");
+    cgraph::DaemonState s;
+    cgraph::publish_graph_snapshot(s, g);
+
+    const auto prose = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "requests stall in exponential backoff"}, {"budget", 5000}}));
+    if (prose["result"]["focus"].value("id", std::string{}) != "worker") {
+      return 230;  // body vocabulary seeds the focus a label match never could
+    }
+    const auto search = cgraph::handle_daemon_request(
+        s, cgraph::make_request("query", {{"q", "requests stall in exponential backoff"}}));
+    if (search["result"]["nodes"].empty() || search["result"]["nodes"][0].value("id", std::string{}) != "worker") {
+      return 231;  // the query op's lexical route ranks the same way
+    }
+    const auto identifier = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "backoffDelay"}, {"budget", 5000}}));
+    if (!identifier["result"]["focus"].is_null()) {
+      return 232;  // an identifier-like query keeps the label-only path
+    }
+
+    // An edit republished through the single-writer path is searchable at
+    // once; the replaced body is not.
+    g.source_hashes[retry_go.lexically_normal().generic_string()] = write_retry(
+        "func handler() {\n"
+        "  serveHTTP(responseWriter)\n"
+        "}\n"
+        "func worker() {\n"
+        "  // drain the circuit breaker queue\n"
+        "  flushQueue()\n"
+        "}\n");
+    cgraph::publish_graph_snapshot(s, g);
+    const auto edited = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "circuit breaker trips"}, {"budget", 5000}}));
+    const auto stale = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "requests stall in exponential backoff"}, {"budget", 5000}}));
+    if (edited["result"]["focus"].value("id", std::string{}) != "worker" || !stale["result"]["focus"].is_null()) {
+      return 233;
+    }
   }
 
   fs::remove_all(src.parent_path());
