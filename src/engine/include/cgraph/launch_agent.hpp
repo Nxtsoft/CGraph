@@ -46,6 +46,13 @@ struct LaunchAgentSpec {
 [[nodiscard]] std::filesystem::path write_launch_agent(
     const std::filesystem::path& launch_agents_dir, const LaunchAgentSpec& spec);
 
+// Run argv to completion without a shell (no quoting pitfalls), inheriting the
+// environment. Returns the exit status, or -1 if it could not be spawned or did
+// not exit normally. macOS and Linux only (launchctl / systemctl glue).
+#if defined(__APPLE__) || defined(__linux__)
+[[nodiscard]] int run_service_command(const std::vector<std::string>& argv);
+#endif
+
 // launchctl glue (macOS). bootstrap loads+starts a plist into the user gui domain;
 // bootout stops+unloads a label. Both return false on non-macOS or on error.
 [[nodiscard]] bool launchctl_bootstrap(const std::filesystem::path& plist_path);
