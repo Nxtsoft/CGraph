@@ -63,6 +63,7 @@ add_library(cgraph_engine STATIC
   skills_install.cpp
   snapshot_source_reader.cpp
   spring_actuator.cpp
+  systemd_unit.cpp
   tsconfig_aliases.cpp
   workspace.cpp)
 

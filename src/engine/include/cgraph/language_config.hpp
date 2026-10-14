@@ -38,6 +38,14 @@ struct RawCall {
   // name alone binds `std::find` to any project function called `find`,
   // which is a false dependent on every call into the standard library.
   std::string qualifier;
+  // The call sits in a closure that is no function scope of its own (a JS/TS
+  // callback arrow) and was handed its enclosing caller. Closures are where
+  // parameters, destructured props and hook setters get called (`reject(e)`,
+  // `onOpenChange(false)`, `setStatus(s)`), names that only coincide with a
+  // project declaration, so such a call resolves on evidence alone (its own
+  // file, a named import of the declaration, a receiver naming its class) and
+  // never on a bare project-wide name match or a file-level `imports_from`.
+  bool in_closure = false;
 };
 
 // A type/heritage relationship discovered during extraction, resolved against
@@ -96,6 +104,17 @@ using MethodPredicate = std::function<bool(const TSNode&, const ExtractionContex
 // handler an HTTP route registration passes inline. The name still comes from
 // `resolve_function_name`, which must return one for the same node.
 using NestedFunctionScope = std::function<bool(const TSNode&, const ExtractionContext&)>;
+// Names the CALLER for the calls inside such a boundary arrow when no enclosing
+// function or method exists to own them: a closure passed as an argument or an
+// object-literal property at module scope (`Layer.succeed(Tag, { merge: () =>
+// Effect.try({ try: () => f() }) })`) or a test callback (`it('x', () => f())`).
+// It receives the arrow and the walker's structural scope (id and kind) and
+// returns the id of an existing node, or empty to drop the calls. The arrow
+// stays a boundary for everything else: it gets no node, and contract readers
+// still see no enclosing function. A closure INSIDE a function or method needs
+// no hook: its calls belong to that function.
+using ClosureCallScope = std::function<std::string(const TSNode&, const ExtractionContext&, const std::string&,
+                                                   std::string_view, const Fragment&)>;
 // Invoked for each class/interface node (with its already-assigned node id) to
 // emit heritage and member type-reference facts.
 using RelationHandler = std::function<void(const TSNode&, const ExtractionContext&, const std::string&, std::vector<RawRelation>&)>;
@@ -173,6 +192,7 @@ struct LanguageConfig {
   RelationHandler relation_handler;
   MethodPredicate method_predicate;
   NestedFunctionScope nested_function_scope;
+  ClosureCallScope closure_call_scope;
   PreprocessSource preprocess_source;
   InternedSymbols symbols;
   bool extract_members = false;

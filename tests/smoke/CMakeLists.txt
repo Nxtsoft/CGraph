@@ -137,6 +137,9 @@ target_link_libraries(cgraph_javascript_extractor_test
   PRIVATE
     cgraph::engine)
 
+target_compile_definitions(cgraph_javascript_extractor_test PRIVATE
+  CGRAPH_TS_CLOSURE_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/ts_closure_calls")
+
 cgraph_set_warnings(cgraph_javascript_extractor_test)
 cgraph_enable_sanitizers(cgraph_javascript_extractor_test)
 
@@ -911,6 +914,18 @@ cgraph_set_warnings(cgraph_daemon_supervisor_test)
 cgraph_enable_sanitizers(cgraph_daemon_supervisor_test)
 
 add_test(NAME cgraph_daemon_supervisor_test COMMAND cgraph_daemon_supervisor_test)
+
+add_executable(cgraph_systemd_unit_test
+  systemd_unit_test.cpp)
+
+target_link_libraries(cgraph_systemd_unit_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_systemd_unit_test)
+cgraph_enable_sanitizers(cgraph_systemd_unit_test)
+
+add_test(NAME cgraph_systemd_unit_test COMMAND cgraph_systemd_unit_test)
 
 add_executable(cgraph_enrich_drainer_test
   enrich_drainer_test.cpp)

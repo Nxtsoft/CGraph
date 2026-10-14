@@ -1155,6 +1155,132 @@ int main() {
     fs::remove_all(cov_root);
   }
 
+  // Stale-checkpoint detection through the real daemon: graph_remember anchors
+  // each touched symbol to its own source span, and graph_recall grades each
+  // touch valid / changed after a real edit is extracted, keeps grading it the
+  // same after a restart (sidecar re-overlaid onto the fast-loaded graph), and
+  // lists a renamed or deleted symbol under "gone". Watching is off, so the
+  // explicit `update` (graph_update) is the only synchronizer.
+  {
+    const auto mem_root = fs::temp_directory_path() / "cgraph_daemon_stale_checkpoint_test";
+    const auto billing = mem_root / "src" / "billing.py";
+    fs::remove_all(mem_root);
+    write_file(billing,
+               "def charge(amount):\n    return amount + 1\n\n\n"
+               "def refund(amount):\n    return amount - 1\n");
+    const auto mem_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(mem_root));
+    fs::remove(mem_socket);
+
+    cgraph::DaemonServerOptions mem_options;
+    mem_options.idle_timeout = std::chrono::seconds(60);
+    mem_options.build_graph_on_start = true;
+    mem_options.code_poll_interval = std::chrono::milliseconds::zero();
+
+    const auto sync = [&](const char* what) {
+      const auto response = request_with_retry(mem_socket, cgraph::make_request("update", {{"path", "."}}));
+      expect(ok, response && response->value("ok", false), what);
+    };
+    const auto recall = [&]() {
+      const auto response = request_with_retry(mem_socket, cgraph::make_request("recall", {}));
+      return response && response->value("ok", false) ? (*response)["result"] : nlohmann::json::object();
+    };
+    // A touch's validity by symbol name ("absent" when recall lists no link to it).
+    const auto touch_state = [](const nlohmann::json& checkpoint, std::string_view symbol) {
+      for (const auto& link : checkpoint.value("concerns", nlohmann::json::array())) {
+        const auto label = link.value("label", std::string{});
+        if (std::string_view{label}.substr(0, label.find('(')) == symbol) {
+          return link.value("validity", std::string{});
+        }
+      }
+      return std::string{"absent"};
+    };
+    const auto only_checkpoint = [](const nlohmann::json& rec) {
+      return rec.value("total", 0) == 1 && rec.value("returned", 0) == 1 ? rec["checkpoints"][0]
+                                                                          : nlohmann::json::object();
+    };
+
+    int mem_rc = -1;
+    std::thread mem_server([&] { mem_rc = cgraph::run_daemon_server(mem_root, mem_options); });
+    sync("stale-checkpoint: initial update synchronized the graph");
+
+    const auto remembered = request_with_retry(
+        mem_socket, cgraph::make_request("remember", {{"title", "Billing refactor"},
+                                                      {"body", "charge and refund reviewed"},
+                                                      {"touches", {"charge", "refund"}}}));
+    expect(ok,
+           remembered && remembered->value("ok", false) && (*remembered)["result"].value("concerns", 0) == 2 &&
+               (*remembered)["result"].value("anchored", 0) == 2,
+           "stale-checkpoint: both touched functions resolved and anchored");
+    {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             touch_state(cp, "charge") == "valid" && touch_state(cp, "refund") == "valid" &&
+                 cp.value("validity", std::string{}) == "valid",
+             "stale-checkpoint: a fresh checkpoint is valid");
+    }
+
+    // Edit refund's body only; charge's span is untouched in the same file.
+    write_file(billing,
+               "def charge(amount):\n    return amount + 1\n\n\n"
+               "def refund(amount):\n    return amount - 2\n");
+    sync("stale-checkpoint: update after editing refund");
+    const auto expect_edited = [&](const char* what) {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             touch_state(cp, "charge") == "valid" && touch_state(cp, "refund") == "changed" &&
+                 cp.value("validity", std::string{}) == "stale" && cp["gone"].empty(),
+             what);
+    };
+    expect_edited("stale-checkpoint: edited refund is changed, untouched charge stays valid");
+
+    const auto restart = [&](const char* what) {
+      const auto down = request_with_retry(mem_socket, cgraph::make_request("shutdown"));
+      expect(ok, down && down->value("ok", false), what);
+      mem_server.join();
+      expect(ok, mem_rc == 0, what);
+      mem_rc = -1;
+      mem_server = std::thread([&] { mem_rc = cgraph::run_daemon_server(mem_root, mem_options); });
+      // The fast-loaded graph and its re-overlaid sidecar publish together.
+      for (int attempt = 0; attempt < 500 && recall().value("total", 0) != 1; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    };
+    restart("stale-checkpoint: daemon restarted");
+    expect_edited("stale-checkpoint: after restart refund is still changed and charge still valid");
+
+    // Rename refund: its touch can no longer be re-bound, so it is gone.
+    write_file(billing,
+               "def charge(amount):\n    return amount + 1\n\n\n"
+               "def refund_all(amount):\n    return amount - 2\n");
+    sync("stale-checkpoint: update after renaming refund");
+    {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             touch_state(cp, "charge") == "valid" && touch_state(cp, "refund") == "absent" &&
+                 touch_state(cp, "refund_all") == "absent" &&
+                 cp["gone"] == nlohmann::json::array({"refund"}) && cp.value("validity", std::string{}) == "stale",
+             "stale-checkpoint: renamed refund is gone, not re-bound to refund_all");
+    }
+
+    // Delete charge as well: both touches are gone and no link remains.
+    write_file(billing, "def refund_all(amount):\n    return amount - 2\n");
+    sync("stale-checkpoint: update after deleting charge");
+    {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             cp.value("concerns", nlohmann::json::array()).empty() &&
+                 cp["gone"] == nlohmann::json::array({"charge", "refund"}) &&
+                 cp.value("validity", std::string{}) == "stale",
+             "stale-checkpoint: deleted charge joins refund under gone");
+    }
+
+    const auto mem_shutdown = request_with_retry(mem_socket, cgraph::make_request("shutdown"));
+    expect(ok, mem_shutdown && mem_shutdown->value("ok", false), "stale-checkpoint: shutdown accepted");
+    mem_server.join();
+    expect(ok, mem_rc == 0, "stale-checkpoint: daemon exited cleanly");
+    fs::remove_all(mem_root);
+  }
+
   fs::remove_all(root);
   return ok ? 0 : 1;
 }

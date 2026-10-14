@@ -1696,6 +1696,9 @@ int main() {
         cps[1].value("label", std::string{}) != "Refactor charge") {
       return 96;  // newest-first
     }
+    if (rec["result"].value("returned", 0) != 2) {
+      return 96;  // returned counts the checkpoints actually sent
+    }
     if (cps[1].value("snippet", std::string{}).find("did X") == std::string::npos) {
       return 97;  // body is snippet-readable through source_file
     }

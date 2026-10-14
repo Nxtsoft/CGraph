@@ -2238,7 +2238,8 @@ constexpr const char* kGoneTouchesProperty = "gone_touches";
     entry["gone"] = gone;
     items.push_back(std::move(entry));
   }
-  return {{"checkpoints", std::move(items)}, {"total", total}, {"returned", items.size()}};
+  const auto returned = items.size();
+  return {{"checkpoints", std::move(items)}, {"total", total}, {"returned", returned}};
 }
 
 }  // namespace

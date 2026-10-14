@@ -169,6 +169,7 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
            {"dropped_self", stats.calls.dropped_self},
            {"dropped_scope_mismatch", stats.calls.dropped_scope_mismatch},
            {"dropped_library_member", stats.calls.dropped_library_member},
+           {"dropped_closure_guess", stats.calls.dropped_closure_guess},
            {"resolved_rate", stats.calls.resolved_rate()},
            {"balances", stats.calls.balances()},
        }},

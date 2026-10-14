@@ -421,6 +421,20 @@ Changing a route's path or mount counts as removing the old route, so its caller
 
 ## Quick start
 
+### Claude Code plugin
+
+```sh
+claude plugin marketplace add Nxtsoft/CGraph
+claude plugin install cgraph@cgraph
+```
+
+The plugin registers the `cgraph` MCP server, the `cgraph` and `cgraph-enrich` skills and the
+pre-edit hook. On first use it downloads the release archive for your platform (Linux x64/arm64,
+macOS arm64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
+the plugin's data directory. It needs `node` and `tar` on `PATH`.
+
+### Release archive
+
 Download the current Linux x64 release and build your first graph:
 
 ```sh
@@ -530,10 +544,11 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 | `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; `view: "clones"`: near-duplicate function bodies grouped into classes; `view: "design"`: entry points, top call flows, layers by call distance; all sized to a budget |
 | `graph_update` | Content-verified sync; returns a `content_root` to pin reads |
 | `graph_status` | Daemon, graph, and enrichment status |
-| `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after |
+| `graph_change_context` | Impact and budgeted context for an explicit unified diff between two source roots |
+| `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after; recall flags checkpoints whose code changed ([details](#checkpoints-that-notice-changed-code)) |
 | `graph_shutdown` | Stop the daemon |
 
-`graph_context` has two gather modes. The default (`gather: "fixed"`) packs the whole k-hop neighborhood. With a task query in hand, `gather: "adaptive"` keeps the full 2-hop core but expands the third hop only along query-relevant nodes — on the retrieval eval it lifted grade-2 recall **+0.057** for **+13%** candidate tokens, versus the **+96%** a full 3-hop gather costs (needs a `query`/`q`).
+`graph_context` has two gather modes. The default (`gather: "adaptive"`) keeps the full 2-hop core but expands the third hop only along query-relevant nodes — on the retrieval eval it lifted grade-2 recall **+0.057** for **+13%** candidate tokens, versus the **+96%** a full 3-hop gather costs (pass a `query`/`q` describing the task). `gather: "fixed"` packs the plain k-hop neighborhood instead.
 
 The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds). Graph reads wait up to 30 seconds for it (for a workspace, 30 seconds for the whole request); a result that still carries `"graph_state": "building"` is short because the build has not finished, so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/home/you` with your absolute home directory.
 
@@ -596,6 +611,32 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
 ```
 
 </details>
+
+### Checkpoints that notice changed code
+
+`graph_remember` stores a checkpoint (a title and a short summary) and links it to the symbols it `touches`. Each link records a sha256 of that symbol's own source span. `graph_recall` re-hashes the span and reports every link as:
+
+- `valid`: the symbol's code is unchanged since the checkpoint.
+- `changed`: it was edited since, or its file was edited and the graph has not caught up yet. Re-read it before trusting the summary.
+- `unanchored`: it cannot be checked (for example a module node with no source span).
+
+Symbols that were renamed or deleted are listed under `gone`. The checkpoint itself is `stale` when anything changed or is gone, `unverified` when it has no links or some link cannot be checked, and `valid` otherwise. The anchor covers the span, not the file: an edit to another function in the same file, or code that only moved down, leaves a link `valid`. Checkpoints live in `cgraph-out/memory/` and keep their anchors across daemon restarts.
+
+```sh
+cgraph-client --root . update '{"path":"."}'
+cgraph-client --root . remember '{"title":"Billing refactor","body":"next: wire refund into the API","touches":["charge","refund"]}'
+# edit the body of refund(), then sync
+cgraph-client --root . update '{"path":"."}'
+cgraph-client --root . recall '{}'
+```
+
+```json
+{"label": "Billing refactor", "validity": "stale", "gone": [],
+ "concerns": [{"label": "charge", "validity": "valid"},
+              {"label": "refund", "validity": "changed"}]}
+```
+
+Renaming `refund` afterwards drops its link and lists it under `gone`. A link follows the symbol name it was written with, so `refund_all` is not picked up in its place.
 
 ## CLI, daemon and MCP reference
 
@@ -759,6 +800,9 @@ daemons that are still building. A file that only imports a routes file claims n
 {"hooks": {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit",
   "hooks": [{"type": "command", "command": "/path/to/CGraph/integrations/hooks/cgraph-pre-edit.sh"}]}]}}
 ```
+
+The [Claude Code plugin](#claude-code-plugin) already registers this hook; if you installed the
+plugin, do not also add `cgraph-pre-edit.sh` to your settings, or every edit runs the lookup twice.
 
 The same lookup is `cgraph-client --root REPO cross-service '{"file": "src/routes.ts"}'`.
 

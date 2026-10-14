@@ -1,0 +1,45 @@
+{
+  "name": "cgraph-mcp",
+  "version": "0.8.3",
+  "description": "CGraph code graph MCP server for coding agents; runs the verified native release for your platform",
+  "mcpName": "io.github.Nxtsoft/cgraph",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nxtsoft/CGraph.git",
+    "directory": "packaging/npm"
+  },
+  "homepage": "https://github.com/Nxtsoft/CGraph",
+  "keywords": [
+    "mcp",
+    "code-graph",
+    "impact-analysis",
+    "claude",
+    "codex"
+  ],
+  "type": "module",
+  "bin": {
+    "cgraph-mcp": "bin/cgraph-mcp.mjs",
+    "cgraph": "bin/cgraph.mjs",
+    "cgraph-client": "bin/cgraph-client.mjs"
+  },
+  "files": [
+    "bin/",
+    "cgraph-launch.mjs",
+    "release.json"
+  ],
+  "scripts": {
+    "prepack": "node -e \"for (const f of ['cgraph-launch.mjs', 'release.json']) require('fs').copyFileSync('../../integrations/launcher/' + f, f)\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}
