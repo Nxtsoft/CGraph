@@ -4,7 +4,8 @@ Each task's value for an arm is the mean over its seeds; the paired difference i
 cgraph minus baseline per task. Means and medians of those differences carry a
 95% percentile bootstrap CI (tasks resampled with replacement, fixed RNG seed).
 
-usage: analyze.py --work /var/tmp/cgr29 --tasks tasks.json --out results.json [--arm-b cgraph]
+usage: analyze.py --runs <work>/runs --tasks tasks.json --out results.json [--arm-b cgraph]
+--runs also takes the runs/ dir extracted from the bench-cgr29 release tarball.
 --arm-b cgraph_directed compares the diagnostic directed arm with the same baseline.
 """
 
@@ -41,10 +42,10 @@ def stream_facts(run_dir):
     raise SystemExit(f"{run_dir}: no model request in the stream")
 
 
-def load(work, ids):
+def load(runs_dir, ids):
     runs = []
     for iid in ids:
-        for res in sorted((work / "runs" / iid).glob("*/result.json")):
+        for res in sorted((runs_dir / iid).glob("*/result.json")):
             rec = json.loads(res.read_text())
             if rec["arm"] not in ARMS:
                 continue
@@ -88,14 +89,14 @@ def fit_prices(runs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--work", type=Path, required=True)
+    ap.add_argument("--runs", type=Path, required=True)
     ap.add_argument("--tasks", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--arm-b", default="cgraph")
     args = ap.parse_args()
     ARMS[1] = args.arm_b
     ids = json.load(open(args.tasks))["instance_ids"]
-    runs = load(args.work, ids)
+    runs = load(args.runs, ids)
 
     per = defaultdict(lambda: defaultdict(list))  # (iid, arm) -> metric -> [values over seeds]
     for r in runs:

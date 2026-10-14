@@ -15,9 +15,9 @@ its own HOME and CLAUDE_CONFIG_DIR, copied from a per-arm template made once by
 `run_ab.py templates`, and its own checkout of the instance's base commit with a
 single-commit history (so the fix cannot be read out of git).
 
-Run it under the auth bundle so CLAUDE_CODE_OAUTH_TOKEN is set:
-  secrets exec anthropic -- python run_ab.py templates --work /var/tmp/cgr29
-  secrets exec anthropic -- python run_ab.py run --work /var/tmp/cgr29 \
+CLAUDE_CODE_OAUTH_TOKEN must be set (a `claude setup-token` token):
+  python run_ab.py templates --work /var/tmp/cgr29
+  python run_ab.py run --work /var/tmp/cgr29 \
       --tasks tasks.json --seeds 1 2 --jobs 6
 
 Each run leaves <work>/runs/<instance>/<arm>-s<seed>/ with result.json,
@@ -40,7 +40,6 @@ from pathlib import Path
 
 from datasets import load_dataset
 
-CLAUDE = "/home/taylor/.agents/.history/versions/claude/2.1.260/node_modules/.bin/claude"
 MODEL = "claude-sonnet-5-5"
 ARMS = ("baseline", "cgraph")
 TEMPLATE = {"baseline": "baseline", "cgraph": "cgraph", "cgraph_directed": "cgraph"}
@@ -83,7 +82,7 @@ def clean_env(home, config_dir):
     }
 
 
-def make_templates(work):
+def make_templates(claude, work):
     """One config dir per arm. The cgraph arm installs the plugin from GitHub."""
     for arm in ARMS:
         tpl = work / "templates" / arm
@@ -95,8 +94,8 @@ def make_templates(work):
         if arm == "cgraph":
             for cmd in (["plugin", "marketplace", "add", "Nxtsoft/CGraph"],
                         ["plugin", "install", "cgraph@cgraph"]):
-                subprocess.run([CLAUDE, *cmd], env=env, check=True)
-        listing = subprocess.run([CLAUDE, "plugin", "list"], env=env, check=True,
+                subprocess.run([claude, *cmd], env=env, check=True)
+        listing = subprocess.run([claude, "plugin", "list"], env=env, check=True,
                                  capture_output=True, text=True).stdout
         print(f"--- {arm} template plugins ---\n{listing}")
 
@@ -177,7 +176,7 @@ def summarize(events):
     }
 
 
-def run_one(work, inst, arm, seed):
+def run_one(claude, work, inst, arm, seed):
     run_dir = work / "runs" / inst["instance_id"] / f"{arm}-s{seed}"
     if (run_dir / "result.json").exists():
         return json.loads((run_dir / "result.json").read_text())
@@ -194,12 +193,15 @@ def run_one(work, inst, arm, seed):
     prompt = PROMPT.format(problem_statement=inst["problem_statement"])
     if arm == "cgraph_directed":
         prompt = DIRECTED + prompt
-    cmd = [CLAUDE, "-p", prompt,
+    env = clean_env(sandbox / "home", sandbox / "cfg")
+    version = subprocess.run([claude, "--version"], env=env, check=True,
+                             capture_output=True, text=True).stdout.strip()
+    cmd = [claude, "-p", prompt,
            "--model", MODEL, "--output-format", "stream-json", "--verbose",
            "--dangerously-skip-permissions", "--max-budget-usd", MAX_BUDGET_USD]
     started = time.time()
     with open(run_dir / "stream.jsonl", "w") as out, open(run_dir / "stderr.log", "w") as err:
-        proc = subprocess.Popen(cmd, cwd=repo_dir, env=clean_env(sandbox / "home", sandbox / "cfg"),
+        proc = subprocess.Popen(cmd, cwd=repo_dir, env=env,
                                 stdout=out, stderr=err, stdin=subprocess.DEVNULL,
                                 start_new_session=True)
         try:
@@ -218,7 +220,7 @@ def run_one(work, inst, arm, seed):
         shutil.copyfileobj(src, dst)
     (run_dir / "stream.jsonl").unlink()
     record = {"instance_id": inst["instance_id"], "repo": inst["repo"], "arm": arm, "seed": seed,
-              "model": MODEL, "exit_code": exit_code, "timed_out": timed_out,
+              "model": MODEL, "claude_version": version, "exit_code": exit_code, "timed_out": timed_out,
               "sandbox": str(sandbox), "wall_s": round(wall_s, 1), "graphd_stopped": graphd_stopped,
               "patch_bytes": len(patch.encode()), **summarize(events)}
     (run_dir / "result.json").write_text(json.dumps(record, indent=2))
@@ -237,6 +239,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["templates", "run"])
     ap.add_argument("--work", type=Path, required=True)
+    ap.add_argument("--claude", default="claude", help="Claude Code executable")
     ap.add_argument("--tasks", type=Path)
     ap.add_argument("--only", nargs="*", help="restrict to these instance ids")
     ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2])
@@ -244,7 +247,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=4)
     args = ap.parse_args()
     if args.command == "templates":
-        make_templates(args.work)
+        make_templates(args.claude, args.work)
         return
     tasks = load_tasks(args.tasks)
     if args.only:
@@ -253,7 +256,7 @@ def main():
     jobs = [(t, arm, seed) for seed in args.seeds for t in tasks for arm in args.arms]
     spent = 0.0
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-        futures = {pool.submit(run_one, args.work, *job): job for job in jobs}
+        futures = {pool.submit(run_one, args.claude, args.work, *job): job for job in jobs}
         for done, fut in enumerate(concurrent.futures.as_completed(futures), 1):
             t, arm, seed = futures[fut]
             rec = fut.result()

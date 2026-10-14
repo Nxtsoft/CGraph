@@ -31,15 +31,16 @@ result. CGraph cost 6.6% more (95% CI 0.7% to 12.9%), solved 13/39 runs against 
   from `select_tasks.py hard`) is every ContextBench Lite ∩ Verified instance rated "1-4 hours":
   13 tasks across astropy, django, pylint, pytest, sphinx and sympy.
 - **Arms.**
-  - Baseline: Claude Code with no plugins.
+  - Baseline: Claude Code with no installed plugins (only Claude Code's built-in plugins, the
+    same in both arms).
   - CGraph: the same install plus `claude plugin marketplace add Nxtsoft/CGraph` and
     `claude plugin install cgraph@cgraph`, taken from GitHub main at 7ae98e3. That is plugin 0.9.1,
     whose launcher is pinned to `bin-v0.9.1`. The binary was downloaded into the template once, so
     the download does not count against any run.
   - Every run reported `mcp_servers: plugin:cgraph:cgraph connected` (96/96 main, 39/39 hard).
 - **Held equal across arms.**
-  - Binary: `/home/taylor/.agents/.history/versions/claude/2.1.260/node_modules/.bin/claude`. The
-    `init` event reports `claude_code_version` 2.1.296 in all 270 gated runs.
+  - Binary: Claude Code 2.1.296. The `init` event reports `claude_code_version` 2.1.296 in all
+    270 gated runs.
   - Model: `--model claude-sonnet-5-5`, confirmed by `init.model` in every run.
   - Prompt: the same `PROMPT` in `run_ab.py`, which is the issue text plus "edit non-test source,
     do not install or run tests".
@@ -59,8 +60,16 @@ result. CGraph cost 6.6% more (95% CI 0.7% to 12.9%), solved 13/39 runs against 
   `swebench/sweb.eval.x86_64.*`) applies the agent's patch, applies the test patch and runs the
   FAIL_TO_PASS and PASS_TO_PASS tests.
   - The harness marked 2 hard-set instances "ambiguous" in some runs (pylint-8898
-    `missing_module`, pytest-10356 `no_tests_collected`). The gold patch resolves both in the same
-    images, so the graded per-instance `report.json` result is used for those runs.
+    `missing_module`, pytest-10356 `no_tests_collected`). Both labels are guesses at a cause; the
+    harness still graded those runs, and each run's per-instance `report.json` lists the
+    FAIL_TO_PASS tests that failed (for example, `testing/test_mark.py::test_mark_mro` for
+    pytest-10356 in baseline seed 1).
+  - To rule out a broken environment, the gold patches for both instances were run through the
+    same harness and images (`swebench/sweb.eval.x86_64.pylint-dev_1776_pylint-8898:latest`,
+    image id `sha256:a78e6034f627…`, and `swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-10356:latest`,
+    id `sha256:363458d4698f…`). Both resolved: `tests/config/test_config.py::test_csv_regex_error`
+    and `testing/test_mark.py::test_mark_mro` passed (run id `goldcheck2`, 2 resolved, 0 ambiguous).
+    The graded per-instance `report.json` result is therefore used for those runs.
 - **Cost.** `total_cost_usd` from the final `result` event. Auth is a Claude subscription OAuth
   token, so this is Claude Code's list-price bill for the usage (`costBasis: list`), not an
   invoice line.
@@ -204,27 +213,38 @@ These steps were run on Linux x86-64 with Docker. The Python dependencies are `s
 
 ```bash
 W=/var/tmp/cgr29                                    # work dir; no CLAUDE.md in any ancestor
+export CLAUDE_CODE_OAUTH_TOKEN=...                  # from `claude setup-token`
+# run_ab.py takes --claude <executable> when `claude` on PATH is not Claude Code 2.1.296
 for r in django/django sympy/sympy scikit-learn/scikit-learn sphinx-doc/sphinx pydata/xarray \
          astropy/astropy pylint-dev/pylint pytest-dev/pytest; do
   git clone --bare https://github.com/$r.git $W/mirrors/${r//\//__}.git
 done
 python select_tasks.py main  <ContextBench selected_500_instances.csv> tasks.json
 python select_tasks.py hard  <ContextBench selected_500_instances.csv> tasks-hard.json
-secrets exec anthropic -- python run_ab.py templates --work $W
+python run_ab.py templates --work $W
 # copy the downloaded launcher cache into the template so no run pays for the download:
 #   $W/templates/cgraph/cfg/plugins/data/cgraph-cgraph/bin-v0.9.1/
-secrets exec anthropic -- python run_ab.py run --work $W --tasks tasks.json --seeds 1 2 3 --jobs 6
-secrets exec anthropic -- python run_ab.py run --work $W --tasks tasks-hard.json --seeds 1 2 3 --jobs 6
-secrets exec anthropic -- python run_ab.py run --work $W --tasks tasks.json --arms cgraph_directed --seeds 1 2 3 --jobs 6
-secrets exec anthropic -- python run_ab.py run --work $W --tasks tasks-hard.json --arms cgraph_directed --seeds 1 2 3 --jobs 6
+python run_ab.py run --work $W --tasks tasks.json --seeds 1 2 3 --jobs 6
+python run_ab.py run --work $W --tasks tasks-hard.json --seeds 1 2 3 --jobs 6
+python run_ab.py run --work $W --tasks tasks.json --arms cgraph_directed --seeds 1 2 3 --jobs 6
+python run_ab.py run --work $W --tasks tasks-hard.json --arms cgraph_directed --seeds 1 2 3 --jobs 6
 python evaluate.py --work $W --tasks tasks.json --jobs 8
 python evaluate.py --work $W --tasks tasks-hard.json --jobs 8
 for t in main hard; do f=tasks.json; [ $t = hard ] && f=tasks-hard.json
-  python analyze.py --work $W --tasks $f --out results/$t-cgraph.json
-  python analyze.py --work $W --tasks $f --arm-b cgraph_directed --out results/$t-cgraph_directed.json
+  python analyze.py --runs $W/runs --tasks $f --out results/$t-cgraph.json
+  python analyze.py --runs $W/runs --tasks $f --arm-b cgraph_directed --out results/$t-cgraph_directed.json
 done
 ```
 
-`runs/<instance>/<arm>-s<seed>/` holds each run's `result.json` (cost, usage, turns, tool calls,
-SWE-bench verdict), the agent's `patch.diff`, and the full stream-json transcript
-(`stream.jsonl.gz`). There are 405 runs in all.
+The run logs are not in the repository. They are published as `cgr29-runs.tar.gz` on the
+[`bench-cgr29` release](https://github.com/Nxtsoft/CGraph/releases/tag/bench-cgr29)
+(sha256 `4102ac4149f2f9b323d8be62b16609b5398fc17190b85187b41234375a697735`). It unpacks to
+`runs/<instance>/<arm>-s<seed>/`, one directory per run (405 in all), each holding the run's
+`result.json` (cost, usage, turns, tool calls, SWE-bench verdict), the agent's `patch.diff`, and
+the full stream-json transcript (`stream.jsonl.gz`). The committed `results/*.json` reproduce
+byte for byte from it:
+
+```bash
+tar xzf cgr29-runs.tar.gz
+python analyze.py --runs runs --tasks tasks.json --out main-cgraph.json   # same bytes as results/main-cgraph.json
+```
