@@ -20,7 +20,8 @@
 //             `StreamObserver<...>`), C# `: <S>.<S>Base` (an `override`
 //             method), Python `(<module>.<S>Servicer)` or a same-file subclass
 //             of one (a method `(self, request, context)`), C++
-//             `: public <ns>::<S>::Service` (an `override` method);
+//             `: public <ns>::<S>::Service` (an `override` method defined in
+//             the class body; one defined out of line is not read);
 //             JavaScript/TypeScript `server.addService(<x>.<S>.service, {m1, m2})`
 //             or `addService(<S>Service, {...})` (each key of the object);
 //             Go: a method of the type registered with
@@ -31,26 +32,38 @@
 //             package, anywhere in the same directory (one Go package).
 //             Extraction records `grpc_server` (S, T, package alias) and
 //             `grpc_handler` (method, T, name, package alias) facts;
-//             grpc_server_contract_facts joins them per directory. A
+//             grpc_server_contract_facts joins them per directory; a type
+//             registered for two services provides nothing (which handler
+//             serves which is in the .proto, not the code). A
 //             streaming handler `(..., <pkg>.<S>_<M>Server) error` names its
 //             service and method itself and provides directly.
 //   uses      a method call on a generated client: Go `<pkg>.New<S>Client(c)`
-//             (one argument; the call takes a context first, then the request,
+//             with `<pkg>` imported from a generated-stub path (a segment
+//             naming proto or grpc, or a `pb` package: `genproto`,
+//             `proto-gen/api_v3`; go-redis's `redis.NewClusterClient` is not
+//             one), one argument (the call takes a context first, then the request,
 //             then only `grpc.X(...)` call options), Java
 //             `<S>Grpc.new[Blocking|Future]Stub(c)`
 //             (and `.withX(...)` chained on it), Python
-//             `<module>.<S>Stub(c)` / `<S>Stub(c)`, C# `new <S>.<S>Client(c)`,
+//             `<module>.<S>Stub(c)` / `<S>Stub(c)` in a file importing grpc,
+//             C# `new <S>.<S>Client(c)`,
 //             JavaScript/TypeScript `new <S>Client(...)` or
 //             `new <x>.<S>(address, credentials)` in a file importing
-//             `@grpc/grpc-js` or `grpc`; called inline or through a name bound
+//             `@grpc/grpc-js` or `grpc`, a `<S>Client` imported from a relative
+//             or generated-stub path (`new S3Client()` is not one); called
+//             inline or through a name bound
 //             to one anywhere in the file: a local, a field or property
 //             (`cs.cartSvcClient`, `self.stub`, `this.client`) assigned one,
-//             or declared with the client type (Go `<pkg>.<S>Client`, never a
+//             or declared with the client type (Go `<pkg>.<S>Client` from a
+//             generated-stub path, never a
 //             pointer: a generated client is an interface; Java
 //             `<S>[Blocking|Future]Stub` in a file naming `<S>Grpc`, C#
 //             `<S>.<S>Client` or a `using A = ...<S>.<S>Client;` alias of it,
 //             TypeScript `<S>Client` with the grpc import).
-//             A name bound to two services records nothing. Methods of the
+//             A name bound to two services, or also declared with or
+//             constructed as something else in the file (`HttpClient _client`
+//             beside a `CurrencyServiceClient _client`), records nothing.
+//             Methods of the
 //             stub machinery itself are not RPCs (Java `withDeadlineAfter`,
 //             `getChannel`; JavaScript `close`, `waitForReady`,
 //             `makeUnaryRequest`, ...; Python `.future` / `.with_call` read
@@ -65,7 +78,8 @@
 // `Environment.GetEnvironmentVariable("X") ?? "orders"`,
 // `System.getenv("X") ?: "orders"`, `System.getenv().getOrDefault("X", "orders")`):
 // the default; or a name bound to one of those in the same file (a constant, a
-// field, `this.x` / `self.x`), unless the file binds it to two values. An SQS
+// field, `this.x` / `self.x`), unless the file binds it to two values or it is
+// a parameter of an enclosing function. An SQS
 // queue URL (`https://sqs.<region>.amazonaws.com/<account>/<name>`) reads as
 // its last segment, an SNS topic ARN as its last `:` segment. A name in
 // RabbitMQ's reserved `amq.` space (`amq.rabbitmq.reply-to`) is the broker's
@@ -124,7 +138,8 @@
 //
 // Every fact's source is the innermost enclosing function; outside any
 // function it is, in JavaScript, js_syntax::reading_scope_id, in Python and C#
-// the file (a script's or `Program.cs`'s top-level statement); in the other
+// the file (a script's or `Program.cs`'s top-level statement, a field
+// initializer, a class-body call); in the other
 // languages such a call records nothing. A test source (data_contracts.hpp
 // is_test_source_path) records nothing: its producers and consumers stand in
 // for other services.
@@ -133,12 +148,30 @@
 
 #include <tree_sitter/api.h>
 
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace cgraph {
+
+// Held while one file is extracted (every extractor that calls a handler
+// below holds one): the file's constants, client bindings, imports and
+// servicer classes are read once, on the first call that needs them, and
+// dropped with the scope. Scopes nest; each covers one file on its thread.
+// Without one, each call reads the file afresh.
+class MessagingContractsFileScope {
+ public:
+  MessagingContractsFileScope();
+  ~MessagingContractsFileScope();
+  MessagingContractsFileScope(const MessagingContractsFileScope&) = delete;
+  MessagingContractsFileScope& operator=(const MessagingContractsFileScope&) = delete;
+
+ private:
+  struct Index;
+  std::unique_ptr<Index> index_;
+};
 
 // The raw relations Go server registration leaves for resolve_contracts.
 inline constexpr std::string_view kGrpcServerRelation = "grpc_server";

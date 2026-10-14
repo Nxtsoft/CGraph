@@ -1622,6 +1622,7 @@ ExtractionResult extract_javascript(const ExtractionContext& context) {
   const HeaderContractsFileScope header_contracts;
   const EnvContractsFileScope env_contracts;
   const DynamoContractsFileScope dynamo_contracts;
+  const MessagingContractsFileScope messaging_contracts;
   return extract_with_config(tree_sitter_javascript(), config, context);
 }
 
@@ -1632,6 +1633,7 @@ ExtractionResult extract_typescript(const ExtractionContext& context) {
   const HeaderContractsFileScope header_contracts;
   const EnvContractsFileScope env_contracts;
   const DynamoContractsFileScope dynamo_contracts;
+  const MessagingContractsFileScope messaging_contracts;
   return extract_with_config(tree_sitter_typescript(), config, context);
 }
 
@@ -1642,6 +1644,7 @@ ExtractionResult extract_tsx(const ExtractionContext& context) {
   const HeaderContractsFileScope header_contracts;
   const EnvContractsFileScope env_contracts;
   const DynamoContractsFileScope dynamo_contracts;
+  const MessagingContractsFileScope messaging_contracts;
   return extract_with_config(tree_sitter_tsx(), config, context);
 }
 

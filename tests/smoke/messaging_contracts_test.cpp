@@ -74,6 +74,8 @@ int main() {
     std::cerr << "contract id / name helpers wrong\n";
   }
 
+  // go-redis (`redis.UniversalClient`, `redis.NewClusterClient`) has the
+  // client's shape but its package is no generated stub: nothing.
   // Go client: inline constructor, a struct field typed with the client, a
   // field and a local assigned one. Lowercase methods and a zero-argument
   // `New...Client()` are not RPCs; Health is standard. A generated client is
@@ -84,9 +86,13 @@ int main() {
     const auto result = configured(cgraph::DetectedLanguage::Go, "checkout/main.go", R"go(
 package main
 
-import pb "example.com/demo/genproto"
+import (
+	pb "example.com/demo/genproto"
+	"github.com/redis/go-redis/v9"
+)
 
 type checkout struct {
+	rdb           redis.UniversalClient
 	cartSvcClient pb.CartServiceClient
 	other         *grpc.ClientConn
 	ilm           *esclient.ILMClient
@@ -110,6 +116,9 @@ func (cs *checkout) placeOrder(ctx context.Context) {
 	tracing.NewHTTPClient(tracer).GetJSON(ctx, "/customer", url, &out)
 	cl.ListProducts(ctx, nil, grpc.WaitForReady(true))
 	cl.Search(name, nil)
+	cs.rdb.Del(ctx, "k")
+	cluster := redis.NewClusterClient(&redis.ClusterOptions{})
+	cluster.Get(ctx, "k")
 }
 )go");
     ok &= expect("go client", facts(result),
@@ -121,6 +130,7 @@ func (cs *checkout) placeOrder(ctx context.Context) {
                  });
   }
 
+  // A type registered for two services (Foo, Bar) provides nothing.
   // Go server: the registered type's unary handlers in the same directory,
   // whose messages come from the registration's package. The health handler
   // (healthpb messages), a helper with another shape and a handler of an
@@ -134,6 +144,9 @@ func run() {
 	pb.RegisterProductCatalogServiceServer(srv, svc)
 	healthpb.RegisterHealthServer(srv, svc)
 	pb.RegisterAdServiceServer(srv, new(adServer))
+	multi := &multiServer{}
+	pb.RegisterFooServer(srv, multi)
+	pb.RegisterBarServer(srv, multi)
 }
 )go");
     const auto catalog_go = configured(cgraph::DetectedLanguage::Go, "catalog/catalog.go", R"go(
@@ -146,6 +159,7 @@ func (p *productCatalog) parse(ctx context.Context, n int) ([]*pb.Product, error
 func (a *adServer) GetAds(ctx context.Context, req *pb.AdRequest) (*pb.AdResponse, error) { return nil, nil }
 func (o *other) GetCart(ctx context.Context, req *pb.GetCartRequest) (*pb.Cart, error) { return nil, nil }
 func (p *productCatalog) Watch(req *pb.WatchRequest, stream pb.ProductCatalogService_WatchServer) error { return nil }
+func (m *multiServer) Ping(ctx context.Context, req *pb.PingRequest) (*pb.PingResponse, error) { return nil, nil }
 )go");
     const auto elsewhere = configured(cgraph::DetectedLanguage::Go, "other/ads.go", R"go(
 package other
@@ -402,6 +416,10 @@ def publish(channel):
     channel.basic_publish(exchange="events", routing_key="tasks.created", body=b"x")
     sock.send("not-a-topic")
 
+def forward(ORDERS):
+    relay = KafkaProducer(bootstrap_servers="k")
+    relay.send(ORDERS, b"x")
+
 def consume(channel):
     consumer = KafkaConsumer("payments", "refunds", group_id="g")
     channel.basic_consume(queue="emails", on_message_callback=cb)
@@ -458,6 +476,10 @@ export function serve(server: any, shopProto: any) {
   server.addService(shopProto.CurrencyService.service, { getSupportedCurrencies, convert: handler });
 }
 
+import { S3Client } from '@aws-sdk/client-s3';
+const s3 = new S3Client({});
+export function put(cmd: any) { return s3.send(cmd); }
+
 export async function produce(producer: any, consumer: any) {
   await producer.send({ topic: 'orders', messages: [] });
   await consumer.subscribe({ topics: ['payments', 'refunds'] });
@@ -479,6 +501,55 @@ const s3 = new S3Client({});
 export function put() { return s3.send(cmd); }
 )ts"});
     ok &= expect("typescript without grpc", facts(plain), {});
+  }
+
+  // One name in one C# file bound to a gRPC client and to an HttpClient is
+  // ambiguous: neither class's call records a fact.
+  {
+    const auto result = configured(cgraph::DetectedLanguage::CSharp, "src/Clients.cs", R"cs(
+public class A
+{
+    private readonly CurrencyService.CurrencyServiceClient _client;
+    public void Run() { _client.Convert(req); }
+}
+public class B
+{
+    private readonly HttpClient _client;
+    public async Task Fetch() { await _client.GetAsync(url); }
+}
+)cs");
+    ok &= expect("csharp ambiguous name", facts(result), {});
+  }
+
+  // The per-file index belongs to one extraction: the same path, the same
+  // size and the same first and last bytes, with another topic in the middle,
+  // gives the second topic.
+  {
+    const std::string padding(200, '#');
+    const auto source = [&](std::string_view topic) {
+      return "# " + padding + "\nfrom kafka import KafkaProducer\nTOPIC = \"" + std::string(topic) +
+             "\"\ndef publish():\n    producer = KafkaProducer()\n    producer.send(TOPIC, b\"x\")\n# " + padding + "\n";
+    };
+    const std::string file = "svc/publisher.py";
+    // One buffer edited in place: the same address and size, as a daemon's
+    // re-read of an edited file can hand the extractor.
+    auto buffer = source("orders-v1");
+    const auto first = cgraph::extract_python({.source_file = file, .relative_path = file, .source = buffer});
+    buffer.replace(buffer.find("orders-v1"), 9, "orders-v2");
+    const auto second = cgraph::extract_python({.source_file = file, .relative_path = file, .source = buffer});
+    ok &= expect("first extraction", facts(first), {"provides|publish|topic:orders-v1"});
+    ok &= expect("second extraction", facts(second), {"provides|publish|topic:orders-v2"});
+  }
+
+  // A file whose tree is far deeper than a worker stack allows a recursion to
+  // go (a generated 20000-term expression) is read without one.
+  {
+    std::string deep = "public class Gen {\n  private readonly CartService.CartServiceClient _cart;\n"
+                       "  private readonly int x = 1";
+    for (int term = 0; term < 20000; ++term) deep += " + 1";
+    deep += ";\n  public void F() { _cart.GetCart(req); }\n}\n";
+    const auto result = configured(cgraph::DetectedLanguage::CSharp, "src/Gen.cs", deep);
+    ok &= expect("deep file", facts(result), {"uses|F|grpc:CartService/GetCart"});
   }
 
   if (!ok) {

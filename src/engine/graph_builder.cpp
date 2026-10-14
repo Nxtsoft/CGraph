@@ -1605,6 +1605,7 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
         relation.relation == "langgraph_client" || relation.relation == "actuator_app" ||
         relation.relation == "actuator_config" || relation.relation == "provides_contract" ||
         relation.relation == "uses_contract" || relation.relation == "orm_table_use" ||
+        relation.relation == "grpc_server" || relation.relation == "grpc_handler" ||
         is_claim_read_relation(relation.relation)) {
       continue;  // contract facts: resolve_contracts mints endpoints, contracts and table links from these
     }

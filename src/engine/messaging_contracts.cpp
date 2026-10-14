@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -178,7 +179,7 @@ constexpr std::string_view kUses = "uses_contract";
 enum class Lang { Go, Java, Kotlin, CSharp, Cpp, Python, Js };
 
 struct FileIndex {
-  std::string key;
+  bool built = false;
   // name -> the literal values it is bound to, or names it is bound to (one hop)
   std::unordered_map<std::string, std::set<std::string>> values;
   std::unordered_map<std::string, std::set<std::string>> aliases;
@@ -192,14 +193,47 @@ struct FileIndex {
   // C# `using A = X.<S>.<S>Client;`: A -> S
   std::unordered_map<std::string, std::string> using_aliases;
   bool grpc_import = false;
+  // Go package alias / JavaScript imported name -> the path it is imported from
+  std::unordered_map<std::string, std::string> import_paths;
+  // names also bound to a declared type or a constructed object that is no
+  // client (`HttpClient _client` beside a `CurrencyServiceClient _client`)
+  std::set<std::string> non_clients;
 };
 
-[[nodiscard]] std::string index_key(const ExtractionContext& context, Lang lang) {
-  const auto source = context.source;
-  return context.source_file + '\n' + std::to_string(static_cast<int>(lang)) + '\n' +
-         std::to_string(reinterpret_cast<std::uintptr_t>(source.data())) + '\n' + std::to_string(source.size()) +
-         '\n' + std::string(source.substr(0, 64)) + '\n' +
-         std::string(source.substr(source.size() > 64 ? source.size() - 64 : 0));
+// The path segment an import path names a package by: its last, or the one
+// before a `/vN` major-version suffix (`github.com/redis/go-redis/v9`).
+[[nodiscard]] std::string go_package_name(std::string_view path) {
+  auto cut = path.rfind('/');
+  auto last = cut == std::string_view::npos ? path : path.substr(cut + 1);
+  if (last.size() >= 2 && last.front() == 'v' &&
+      std::ranges::all_of(last.substr(1), [](char ch) { return std::isdigit(static_cast<unsigned char>(ch)) != 0; }) &&
+      cut != std::string_view::npos) {
+    const auto head = path.substr(0, cut);
+    const auto previous = head.rfind('/');
+    last = previous == std::string_view::npos ? head : head.substr(previous + 1);
+  }
+  return std::string(last);
+}
+
+// True for an import path generated protobuf code lives under: a segment
+// naming proto / grpc (`genproto`, `proto-gen`, `grpc_health_v1`) or a `pb`
+// package (`pb`, `oteldemopb`), or (JavaScript) a relative path.
+[[nodiscard]] bool is_generated_stub_path(std::string_view path) {
+  if (path.starts_with('.')) {
+    return true;
+  }
+  std::size_t start = 0;
+  while (start <= path.size()) {
+    auto end = path.find('/', start);
+    if (end == std::string_view::npos) end = path.size();
+    const auto segment = path.substr(start, end - start);
+    if (contains_lower(segment, "proto") || contains_lower(segment, "grpc") || segment.ends_with("pb") ||
+        segment.starts_with("pb")) {
+      return true;
+    }
+    start = end + 1;
+  }
+  return false;
 }
 
 // The name an expression binds or reads: an identifier, or the last member of
@@ -262,7 +296,11 @@ struct FileIndex {
       return {};
     }
     const auto name = text(field(callee, "field"), source);
-    if (!name.starts_with("New")) {
+    if (!name.starts_with("New") || index == nullptr) {
+      return {};
+    }
+    const auto package = index->import_paths.find(text(field(callee, "operand"), source));
+    if (package == index->import_paths.end() || !is_generated_stub_path(package->second)) {
       return {};
     }
     return strip_suffix(std::string_view(name).substr(3), "Client");
@@ -288,12 +326,19 @@ struct FileIndex {
     return name == qualifier + "Client" ? qualifier : std::string{};
   }
   if (lang == Lang::Python && type == "call") {
+    if (index == nullptr || index->imports.find("grpc") == std::string::npos) {
+      return {};
+    }
     const auto callee = std::string(last_segment(text(field(node, "function"), source)));
     return strip_suffix(callee, "Stub");
   }
   if (lang == Lang::Js && type == "new_expression" && index != nullptr && index->grpc_import) {
     const auto constructor = field(node, "constructor");
     if (type_of(constructor) == "identifier") {
+      const auto imported = index->import_paths.find(text(constructor, source));
+      if (imported == index->import_paths.end() || !is_generated_stub_path(imported->second)) {
+        return {};
+      }
       return strip_suffix(text(constructor, source), "Client");
     }
     if (type_of(constructor) == "member_expression" && named_children(field(node, "arguments")).size() >= 2) {
@@ -314,6 +359,10 @@ struct FileIndex {
     // A generated client is an interface, held by value: `*pkg.XClient` and
     // `pkg.XClient{...}` are some other library's struct.
     if (type_of(node) != "qualified_type") {
+      return {};
+    }
+    const auto package = index.import_paths.find(text(field(node, "package"), source));
+    if (package == index.import_paths.end() || !is_generated_stub_path(package->second)) {
       return {};
     }
     return strip_suffix(text(field(node, "name"), source), "Client");
@@ -340,7 +389,12 @@ struct FileIndex {
     return {};
   }
   if (lang == Lang::Js && index.grpc_import) {
-    return strip_suffix(simple_type(node, source), "Client");
+    const auto name = simple_type(node, source);
+    const auto imported = index.import_paths.find(name);
+    if (imported == index.import_paths.end() || !is_generated_stub_path(imported->second)) {
+      return {};
+    }
+    return strip_suffix(name, "Client");
   }
   return {};
 }
@@ -364,18 +418,27 @@ void bind_name(FileIndex& index, const std::string& name, TSNode type_node, TSNo
     return;
   }
   if (!ts_node_is_null(type_node)) {
-    if (auto service = client_type_service(type_node, source, lang, index, file_source); !service.empty()) {
+    auto service = client_type_service(type_node, source, lang, index, file_source);
+    if (!service.empty()) {
       index.clients[name].insert(service);
     }
     if (auto simple = simple_type(type_node, source); !simple.empty()) {
       index.types[name].insert(simple);
+      if (service.empty() && simple != "var" && simple != "auto") {
+        index.non_clients.insert(name);
+      }
     }
   }
   if (!ts_node_is_null(value)) {
-    if (auto service = client_constructor_service(value, source, lang, &index); !service.empty()) {
+    const auto service = client_constructor_service(value, source, lang, &index);
+    if (!service.empty()) {
       index.clients[name].insert(service);
     }
     const auto unwrapped = unwrap(value);
+    if (service.empty() &&
+        (type_of(unwrapped) == "object_creation_expression" || type_of(unwrapped) == "new_expression")) {
+      index.non_clients.insert(name);
+    }
     // The constructor a name is assigned from types it (Python, Kotlin and
     // JavaScript have no declared type): `producer = KafkaProducer(...)`.
     if (type_of(unwrapped) == "call" || type_of(unwrapped) == "object_creation_expression" ||
@@ -391,11 +454,52 @@ void bind_name(FileIndex& index, const std::string& name, TSNode type_node, TSNo
   }
 }
 
-void collect(const TSNode& node, FileIndex& index, std::string_view source, Lang lang) {
+// Go `import pb "x/genproto"` (alias or package name -> path) and JavaScript
+// `import { CartServiceClient } from '../protos/demo'` (local name -> path).
+void record_import_paths(const TSNode& node, FileIndex& index, std::string_view source, Lang lang) {
+  std::vector<TSNode> stack{node};
+  while (!stack.empty()) {
+    const auto current = stack.back();
+    stack.pop_back();
+    const auto type = type_of(current);
+    if (lang == Lang::Go && type == "import_spec") {
+      const auto path = string_value(field(current, "path"), source).value_or("");
+      const auto alias = field(current, "name");
+      index.import_paths[ts_node_is_null(alias) ? go_package_name(path) : text(alias, source)] = path;
+      continue;
+    }
+    if (lang == Lang::Js && type == "import_statement") {
+      const auto path = string_value(field(current, "source"), source).value_or("");
+      std::vector<TSNode> names{current};
+      while (!names.empty()) {
+        const auto name_node = names.back();
+        names.pop_back();
+        if (type_of(name_node) == "import_specifier") {
+          const auto alias = field(name_node, "alias");
+          index.import_paths[text(ts_node_is_null(alias) ? field(name_node, "name") : alias, source)] = path;
+          continue;
+        }
+        if (type_of(name_node) == "import_clause") {
+          for (const auto& child : named_children(name_node)) {
+            if (type_of(child) == "identifier") index.import_paths[text(child, source)] = path;
+          }
+        }
+        for (const auto& child : named_children(name_node)) names.push_back(child);
+      }
+      continue;
+    }
+    for (const auto& child : named_children(current)) stack.push_back(child);
+  }
+}
+
+// Reads one node into the index; false when its children hold nothing more to
+// read (an import).
+bool collect_node(const TSNode& node, FileIndex& index, std::string_view source, Lang lang) {
   const auto type = type_of(node);
   if (type.find("import") != std::string_view::npos || type == "using_directive") {
     index.imports += text(node, source);
     index.imports += '\n';
+    record_import_paths(node, index, source, lang);
     if (lang == Lang::CSharp && type == "using_directive") {
       const auto alias = field(node, "name");
       for (const auto& target : named_children(node)) {
@@ -407,7 +511,7 @@ void collect(const TSNode& node, FileIndex& index, std::string_view source, Lang
         }
       }
     }
-    return;
+    return false;
   }
   switch (lang) {
     case Lang::Go:
@@ -522,19 +626,37 @@ void collect(const TSNode& node, FileIndex& index, std::string_view source, Lang
     case Lang::Cpp:
       break;
   }
-  for (const auto& child : named_children(node)) {
-    collect(child, index, source, lang);
+  return true;
+}
+
+// Walks the whole tree with an explicit stack: a file's tree can be deeper
+// than a worker thread's stack allows a recursion to go (extractor.cpp caps
+// its own walk for the same reason).
+void collect(const TSNode& root, FileIndex& index, std::string_view source, Lang lang) {
+  std::vector<TSNode> stack{root};
+  while (!stack.empty()) {
+    const auto node = stack.back();
+    stack.pop_back();
+    if (!collect_node(node, index, source, lang)) {
+      continue;
+    }
+    auto children = named_children(node);
+    stack.insert(stack.end(), children.rbegin(), children.rend());
   }
 }
 
+thread_local FileIndex* current_index = nullptr;
+
+// The index of the file `node` is in: built once per MessagingContractsFileScope
+// (one per extracted file); without a scope, built afresh for each call.
 FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang lang) {
-  thread_local FileIndex index;
-  auto key = index_key(context, lang);
-  if (index.key == key) {
+  thread_local FileIndex unscoped;
+  FileIndex& index = current_index != nullptr ? *current_index : unscoped;
+  if (current_index != nullptr && index.built) {
     return index;
   }
   index = FileIndex{};
-  index.key = std::move(key);
+  index.built = true;
   const auto root = root_of(node);
   // The grpc import is needed while collecting (a JavaScript client
   // constructor counts only with it), so read the imports first.
@@ -591,6 +713,39 @@ FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang
   return std::ranges::any_of(modules, [&](std::string_view module) { return index.imports.find(module) != std::string::npos; });
 }
 
+// True when `node` is a plain name that a parameter of an enclosing function
+// declares: `def forward(topic): producer.send(topic, ...)` reads its argument,
+// not a same-named binding elsewhere in the file.
+[[nodiscard]] bool shadowed_by_parameter(TSNode node, const std::string& name, std::string_view source) {
+  node = unwrap(node);
+  const auto type = type_of(node);
+  if (type != "identifier" && type != "simple_identifier") {
+    return false;
+  }
+  for (auto up = parent(node); !ts_node_is_null(up); up = parent(up)) {
+    auto parameters = field(up, "parameters");
+    if (ts_node_is_null(parameters)) {
+      for (const auto& child : named_children(up)) {
+        if (type_of(child) == "function_value_parameters") parameters = child;
+      }
+    }
+    if (ts_node_is_null(parameters)) {
+      continue;
+    }
+    std::vector<TSNode> stack{parameters};
+    while (!stack.empty()) {
+      const auto current = stack.back();
+      stack.pop_back();
+      const auto current_type = type_of(current);
+      if ((current_type == "identifier" || current_type == "simple_identifier") && text(current, source) == name) {
+        return true;
+      }
+      for (const auto& child : named_children(current)) stack.push_back(child);
+    }
+  }
+  return false;
+}
+
 // The one value a name argument reads: a literal, an env default, or a name
 // bound to exactly one value in the file.
 [[nodiscard]] std::optional<std::string> name_value(TSNode node, std::string_view source, const FileIndex& index) {
@@ -602,7 +757,7 @@ FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang
   }
   const auto name = bound_name(node, source);
   if (const auto found = index.values.find(name); !name.empty() && found != index.values.end() &&
-                                                  found->second.size() == 1) {
+                                                  found->second.size() == 1 && !shadowed_by_parameter(node, name, source)) {
     return *found->second.begin();
   }
   return std::nullopt;
@@ -615,7 +770,7 @@ FileIndex& file_index(const TSNode& node, const ExtractionContext& context, Lang
   }
   const auto name = bound_name(receiver, source);
   if (const auto found = index.clients.find(name); !name.empty() && found != index.clients.end() &&
-                                                   found->second.size() == 1) {
+                                                   found->second.size() == 1 && !index.non_clients.contains(name)) {
     return *found->second.begin();
   }
   return {};
@@ -857,6 +1012,18 @@ void emit_topic(std::vector<RawRelation>& out, std::string_view relation, const 
 
 }  // namespace
 
+struct MessagingContractsFileScope::Index {
+  FileIndex index;
+  FileIndex* previous = nullptr;
+};
+
+MessagingContractsFileScope::MessagingContractsFileScope() : index_(std::make_unique<Index>()) {
+  index_->previous = current_index;
+  current_index = &index_->index;
+}
+
+MessagingContractsFileScope::~MessagingContractsFileScope() { current_index = index_->previous; }
+
 bool is_standard_grpc_service(std::string_view service) {
   return service == "Health" || service == "ServerReflection";
 }
@@ -1007,6 +1174,9 @@ std::vector<RawRelation> grpc_server_contract_facts(std::span<const RawRelation>
         relation.context.substr(0, cut));
   }
   std::vector<RawRelation> facts;
+  // A type registered for two services: which handler serves which is in the
+  // .proto, not here, so it provides nothing rather than every method twice.
+  std::erase_if(servers, [](const auto& entry) { return entry.second.size() != 1; });
   if (servers.empty()) {
     return facts;
   }

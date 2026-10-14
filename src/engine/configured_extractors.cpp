@@ -2335,6 +2335,7 @@ namespace {
     return extract_tsx(context);
   }
   const EnvContractsFileScope env_contracts;  // Go, Kotlin, Java env reads
+  const MessagingContractsFileScope messaging_contracts;
   return extract_with_config(grammar, *config, context);
 }
 
