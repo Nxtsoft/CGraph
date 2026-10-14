@@ -171,7 +171,9 @@ grep/read calls that burn context.
   on "no callers"; `graph_status` reports how many calls went unresolved
   (`route_resolution.calls_unresolved`). If a context message headed
   "cgraph: editing … crosses into other services" appears before an edit
-  (the pre-edit hook), treat each line as a caller to check. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
+  (the pre-edit hook), treat each line as a caller to check. A message headed
+  "cgraph: files likely to change with …" lists the files that call, test or
+  are joined to the code being edited; open the ones the change affects. `.group('/v2', app => …)` and `.guard()` callbacks, chains passed
   inline to `.use()`, aliased imports and cast re-exports all compose. A
   route on a router the file only receives as a function parameter is not
   minted (its mount is unknowable from that file); `stats.json`

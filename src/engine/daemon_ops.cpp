@@ -2,6 +2,7 @@
 
 #include "cgraph/atomic_write.hpp"
 #include "cgraph/body_index.hpp"
+#include "cgraph/co_change.hpp"
 #include "cgraph/contracts.hpp"
 #include "cgraph/engine.hpp"
 
@@ -86,6 +87,7 @@ constexpr std::size_t kMaxKnapsackCapacity = 50000;
     case DaemonOp::Context:
     case DaemonOp::Recall:
     case DaemonOp::Report:
+    case DaemonOp::CoChange:
       return true;
     case DaemonOp::Update:
     case DaemonOp::Status:
@@ -2480,6 +2482,7 @@ nlohmann::json pack_seed_context(
   switch (op) {
     case DaemonOp::Explain:
     case DaemonOp::Impact:
+    case DaemonOp::CoChange:
       if (!present("id")) {
         return "id is required: pass a node id or exact symbol name";
       }
@@ -2597,6 +2600,12 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
             zero_hit = response["result"]["totals"].value("modules", std::size_t{0}) == 0;
             response["result"] = decorate_freshness(annotate_build_state(response["result"], *graph), *graph);
           }
+          break;
+        }
+        case DaemonOp::CoChange: {
+          auto result = co_change(*graph, params);
+          zero_hit = result["files"].empty();
+          response = ok_response(decorate_freshness(annotate_build_state(std::move(result), *graph), *graph));
           break;
         }
         case DaemonOp::Count:

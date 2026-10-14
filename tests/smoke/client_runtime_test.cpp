@@ -3,6 +3,7 @@
 #include "cgraph/change_context.hpp"
 #include "cgraph/daemon_server.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 #include "cgraph/workspace.hpp"
 
 #include <atomic>
@@ -599,6 +600,62 @@ int main() {
     const auto method_text = method ? method->at("hookSpecificOutput").value("additionalContext", std::string{}) : std::string{};
     if (method_text.find("src/svc.ts calls GET /api/v1/ping, served by api src/server.ts") == std::string::npos) {
       return fail("class method caller", method ? *method : nlohmann::json{});
+    }
+    // An edit with its text: the hook first names the files that change with
+    // the edited function (page.ts calls loadStats), then the services.
+    {
+      const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "Edit"},
+                                 {"tool_input", {{"file_path", (web / "src" / "stats.ts").generic_string()},
+                                                 {"old_string", "  return fetch('/api/v1/stats');"},
+                                                 {"new_string", "  return fetch('/api/v1/stats?all=1');"}}}};
+      const auto both = cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+      const auto text = both ? both->at("hookSpecificOutput").value("additionalContext", std::string{}) : std::string{};
+      const auto files_at = text.find("cgraph: files likely to change with src/stats.ts");
+      const auto services_at = text.find("src/stats.ts calls GET /api/v1/stats, served by api");
+      if (files_at != 0 || text.find("\n- src/page.ts: calls `loadStats`") == std::string::npos ||
+          services_at == std::string::npos || services_at < files_at) {
+        return fail("co-change and services together", both ? *both : nlohmann::json{});
+      }
+      // An Edit whose text is not in the file changes nothing: only the services speak.
+      nlohmann::json absent = input;
+      absent["tool_input"]["old_string"] = "not in this file";
+      const auto services_only = cgraph::pre_edit_hook_output(absent, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+      if (!services_only || services_only->dump().find("files likely to change") != std::string::npos ||
+          services_only->dump().find("served by api") == std::string::npos) {
+        return fail("edit text not in the file", services_only ? *services_only : nlohmann::json{});
+      }
+    }
+    // A repository in no workspace: the hook still names the files that change
+    // with the edit, from that repository's own graph, and nothing about services.
+    {
+      const auto lone = fs::temp_directory_path() / "cgraph_client_runtime_lone_repo";
+      fs::remove_all(lone);
+      fs::create_directories(lone / ".git");
+      write_file(lone / "src" / "helper.ts", "export function helper(n: number) {\n  return n + 1;\n}\n");
+      write_file(lone / "src" / "use.ts", "import { helper } from './helper';\nexport function twice() {\n  return helper(helper(1));\n}\n");
+      write_file(lone / "src" / "helper.test.ts", "import { helper } from './helper';\ntest('one', () => expect(helper(1)).toBe(2));\n");
+      std::thread lone_server([&] { (void)cgraph::run_daemon_server(lone, options); });
+      const auto identity = cgraph::daemon_identity_for(lone);
+      const auto hooks = cgraph::default_client_runtime_hooks(cgraph::ClientRequest{.project_root = lone});
+      for (int attempt = 0; attempt < 200 && !hooks.connect(identity, cgraph::make_request("status", nlohmann::json::object()));
+           ++attempt) {
+        std::this_thread::sleep_for(25ms);
+      }
+      const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "MultiEdit"},
+                                 {"tool_input", {{"file_path", (lone / "src" / "helper.ts").generic_string()},
+                                                 {"edits", {{{"old_string", "  return n + 1;"}, {"new_string", "  return n + 2;"}}}}}}};
+      const auto hook = cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+      const auto text = hook ? hook->at("hookSpecificOutput").value("additionalContext", std::string{}) : std::string{};
+      cgraph::ClientRequest stop{.project_root = lone, .operation = "shutdown"};
+      (void)cgraph::send_thin_client_request(stop, cgraph::default_client_runtime_hooks(stop));
+      lone_server.join();
+      fs::remove_all(lone);
+      if (text.find("cgraph: files likely to change with src/helper.ts") != 0 ||
+          text.find("\n- src/use.ts: calls `helper`") == std::string::npos ||
+          text.find("\n- src/helper.test.ts: ") == std::string::npos || text.find("workspace") != std::string::npos ||
+          cgraph::estimate_report_tokens(text) > cgraph::kHookTokenBudget) {
+        return fail("lone repository", hook ? *hook : nlohmann::json{});
+      }
     }
     // A relative file is relative to the root, wherever the client runs.
     const auto relative = cgraph::cross_service_for_file(cgraph::ClientRequest{.project_root = api}, "src/routes/stats.ts");

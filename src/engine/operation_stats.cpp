@@ -15,7 +15,7 @@ namespace cgraph {
 namespace {
 
 constexpr std::array<const char*, kDaemonOpCount> kOpNames = {
-    "query", "path", "explain", "impact", "context", "update", "status", "shutdown", "remember", "recall", "report",
+    "query", "path", "explain", "impact", "context", "update", "status", "shutdown", "remember", "recall", "report", "co-change",
 };
 
 // Human-readable duration: ms under a second, seconds under a minute, otherwise

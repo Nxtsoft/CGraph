@@ -83,12 +83,20 @@ struct CrossServiceScope {
 // per other repository, and the hook runs before every edit.
 inline constexpr std::size_t kHookMaxContracts = 8;
 
+// The most the pre-edit hook adds to the agent's context per edit, in the
+// ~4 characters per token estimate the report and context ops pack against.
+inline constexpr std::size_t kHookTokenBudget = 800;
+
 // A Claude Code PreToolUse hook for Edit, Write and MultiEdit: given the hook's
-// stdin JSON, the hook's stdout JSON (`hookSpecificOutput.additionalContext`
-// listing the other services behind the file's endpoints), or nothing when the
-// file is outside a workspace, touches no endpoint another service uses, or
-// cannot be read. Never blocks an edit. `wait` bounds how long cold daemons
-// are waited for.
+// stdin JSON, the hook's stdout JSON (`hookSpecificOutput.additionalContext`),
+// or nothing when there is nothing to say. The context names, within
+// kHookTokenBudget, the files most likely to change with the edited lines (the
+// daemon's `co-change` op over the file's repository: the nearest `.git`, or
+// the workspace member holding the file) and, inside a workspace, the other
+// services behind the file's endpoints. Silent for a file outside any
+// repository, one the graph does not know, an edit whose text is not in the
+// file, or while the graph is still building (the services section still says
+// so). Never blocks an edit. `wait` bounds how long cold daemons are waited for.
 [[nodiscard]] std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_input,
                                                                  const ClientRequest& base,
                                                                  std::chrono::milliseconds wait);

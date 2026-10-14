@@ -822,12 +822,18 @@ integrations/hooks/cgraph-hook.sh query '{"q":"GraphSnapshot"}'
 ```
 
 `integrations/hooks/cgraph-pre-edit.sh` is a Claude Code `PreToolUse` hook. Before an agent edits a
-file in a repository that a `cgraph.workspace.json` in a parent directory lists, it adds to the
-agent's context every other service on the far side of an endpoint the file serves or calls
-(`… serves GET /api/v1/org/stats, called from turing-webapp lib/org-api.ts:83 (getOrgStats)`). It
-prints nothing when there is nothing to say and never blocks an edit; it checks at most 8 of a file's
-endpoints per edit (naming the rest), and `CGRAPH_HOOK_WAIT_MS` (default `3000`) bounds the wait for
-daemons that are still building. A file that only imports a routes file claims none of its routes. Register it in `.claude/settings.json`:
+file in a git repository, it adds to the agent's context up to five files most likely to change with
+the edited lines, one line each with the reason (``src/routes.ts: calls `record` ``,
+`src/metrics_test.go: test for this file`), from the daemon's `co-change` op: files that call or use
+the edited symbols (directly, then through one more symbol), the file's test or source counterpart by
+name, and the other files joined to it in the graph. When a `cgraph.workspace.json` in a parent
+directory lists the repository, it also names every other service on the far side of an endpoint the
+file serves or calls (`… serves GET /api/v1/org/stats, called from turing-webapp lib/org-api.ts:83
+(getOrgStats)`). The whole message stays within 800 tokens. It prints nothing when there is nothing
+to say and never blocks an edit; it checks at most 8 of a file's endpoints per edit (naming the
+rest), and `CGRAPH_HOOK_WAIT_MS` (default `3000`) bounds the wait for daemons that are still
+building. A file that only imports a routes file claims none of its routes. Register it in
+`.claude/settings.json`:
 
 ```json
 {"hooks": {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit",
