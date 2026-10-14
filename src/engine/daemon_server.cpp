@@ -745,6 +745,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       return false;
     }
     auto graph = *read_graph_snapshot(persisted_state);
+    graph.code_generation = next_code_generation();  // source hashes attached below change the code identity
     graph.content_root = manifest->content_root;
     graph.source_hashes.reserve(manifest->files.size());
     for (const auto& entry : manifest->files) {

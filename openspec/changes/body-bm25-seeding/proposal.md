@@ -25,6 +25,16 @@ Bench (ARB) queries are exactly this shape (CGR-25).
   resolution and the `query` op's lexical route): a query without whitespace is identifier-like
   and keeps the label-only path; a query with whitespace is prose and fuses the label ranking with
   the top 100 BM25 body matches by reciprocal rank (k = 60). Graph expansion is unchanged.
+- Publish cost: every snapshot carries a `code_generation` (fresh per built snapshot, kept by
+  copies). `publish_graph_snapshot` skips the index entirely when the snapshot's index was
+  verified for its own generation -- overlay, memory and semantic-replay mutations of a published
+  copy -- so those publishes do no per-node work. Code that edits code nodes or code hashes on a
+  copy assigns a fresh generation (the fast-load path does).
+- A file whose read or tokenization throws is skipped (the worker never lets it escape) and
+  listed in `status.body_index.failures`; `status.body_index` also reports `files`, `documents`,
+  `files_failed`.
+- `query` search route: `total` keeps counting name matches; body-only candidates are counted in
+  `body_candidates`. An unresolved structural phrase (`callers of X`) scores only `X` on bodies.
 - `fuse_by_reciprocal_rank` takes any number of rankings, so an optional embedding provider can
   join as one more list later; the binary stays model-free.
 - `lexical_terms`/`stem_term`/`stem_terms` move from `daemon_ops.cpp` to `body_index.cpp` so the
@@ -46,9 +56,10 @@ order, then `query` limit 100):
 | body BM25 fused (this change) | 0.3873 | 0.4458 | 0.7667 |
 | RepoMap, same 40 ids (ARB's published details) | 0.3319 | -- | 0.7375 |
 
-Committed retrieval gate (`retrieval_quality_test`): unchanged and passing (0.2616 / 0.3532 /
-0.3984 / 0.4379 at 2000/4000/6000/8000). Its fixture graph carries no source hashes, so the body
-route is inert there. Rebased onto the fixture's own commit (0cb8237) with hashes computed, the
+Committed retrieval gate (`retrieval_quality_test`): passing at 0.2616 / 0.3532 / 0.3998 / 0.4387
+(the gate slices live worktree bytes for snippets, so these move with edits to the tree itself:
+0.3984 / 0.4379 at 6000 / 8000 on the first commit of this change). Its fixture graph carries no
+source hashes, so the body route is inert there. Rebased onto the fixture's own commit (0cb8237) with hashes computed, the
 same rows measure label-only 0.2541 / 0.3571 / 0.3943 / 0.4379 against fused 0.2884 / 0.3459 /
 0.4318 / 0.4726 (the 4000 dip, -0.011, is inside kTol = 0.03).
 
@@ -57,6 +68,20 @@ to 0.745 s (+8%, quiet machine, 10 runs each) and 0.745 s to 0.850 s (+14%, load
 10 runs each); warm `context` p50 prose 14.64 to 14.51 ms and identifier 12.72 to 12.28 ms; RSS
 after build 102.8 to 105.2 MB. `BodyIndex::refresh` itself: about 27-35 ms full, about 5 ms
 when every file is reused; `rank` about 14-23 us per query.
+
+Publish cost on the turing-webapp copy (23,531 nodes, 2,113 indexed files), previous PR head vs
+this change vs main 42d8501, daemon via `cgraph-client`, 200 attributed semantic drops present:
+
+| measure | main | PR before fix | PR after fix |
+| --- | --- | --- | --- |
+| `remember`, no drops (median of 10) | 92 ms | 125 ms | 91 ms |
+| `remember`, 200 drops (median of 10) | 88 ms | 134.5 ms | 90.5 ms |
+| `update` op, 200 drops (median of 5) | 36.5 s | 45.5 s | 35.8 s |
+| incremental edit to applied, 200 drops (median of 3, 2 s poll) | 42.5 s | 48.9 s | 41.4 s |
+
+In-process: an unchanged publish costs 0.003 ms (the per-node pass it replaces: 39-42 ms); a
+one-file span change publishes in 100-105 ms (one file re-tokenized, postings re-aggregated).
+The 36-41 s overlay replay with 200 drops is the same on main.
 
 ## Impact
 

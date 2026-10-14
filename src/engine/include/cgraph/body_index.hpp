@@ -69,6 +69,9 @@ class BodyIndex {
     std::size_t documents = 0;
     std::size_t postings = 0;
     std::size_t terms = 0;
+    // Files whose read or tokenization threw, as "path: reason". Such a file
+    // has no documents in this index; the next refresh retries it.
+    std::vector<std::string> failures;
   };
 
   // The index for `graph`, reusing `previous` per file where nothing changed.

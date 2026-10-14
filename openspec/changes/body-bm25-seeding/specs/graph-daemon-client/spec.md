@@ -29,6 +29,17 @@ its bytes on disk hash to the snapshot's recorded source hash; a snapshot withou
 has an empty body index and ranks by label alone. On each publish a file's tokenized entry SHALL
 be reused when its source hash and indexed node spans are unchanged, so an incremental update
 re-reads only the files it re-extracted. Memory and enrichment nodes SHALL never be indexed.
+Each snapshot SHALL carry a code generation that a copy keeps and a newly built snapshot does not;
+publishing a snapshot whose index was verified for its own code generation (an overlay, memory or
+enrichment mutation of a published copy) SHALL keep that index without any per-node work. A file
+whose read or tokenization fails SHALL be skipped, never terminate the daemon, and be listed under
+`status` `body_index.failures` (with `files_failed`), alongside the indexed `files` and
+`documents`. For a structural phrase (`callers of X` and the like) whose operand does not resolve,
+the body ranking SHALL score only the operand, never the relation verb. In the `query` op's search
+route, `total` SHALL keep counting symbols matched by name (substring or label terms); body-ranked
+candidates with no name match SHALL be ranked into `nodes` but counted separately in
+`body_candidates` (present when non-zero), so `returned` may exceed `total`; the call is a zero
+hit, with `suggestions`, only when both are zero.
 
 #### Scenario: Natural-language query resolves via lexical overlap
 - **WHEN** a `context` request supplies a free-text query that is not an exact match or a substring
@@ -44,7 +55,8 @@ re-reads only the files it re-extracted. Memory and enrichment nodes SHALL never
   would have found nothing
 
 #### Scenario: A rare query term outranks a ubiquitous one
-- **GIVEN** a query with two terms, one appearing in a single node label and one appearing in many
+- **GIVEN** a query with two terms, one appearing in a single node label and one appearing in many,
+  ranked on the label path (an identifier-like query, or a snapshot with no body index)
 - **WHEN** the lexical fallback ranks the matches
 - **THEN** the node matching the rare term ranks above the nodes matching only the common term and
   becomes the focus
@@ -91,3 +103,25 @@ re-reads only the files it re-extracted. Memory and enrichment nodes SHALL never
 - **WHEN** a file's bytes on disk no longer hash to the snapshot's recorded source hash
 - **THEN** that file contributes no body documents until a snapshot that extracted those bytes is
   published
+
+#### Scenario: On a prose query, agreement between the rankings decides the focus
+- **GIVEN** a snapshot with a body index and a prose query where node A is the label ranking's
+  second match and the body ranking's first, and node D is the label ranking's first match with no
+  indexed body
+- **WHEN** a `context` request resolves the query
+- **THEN** A is the focus (ranked by both) and D, the rare-term label match, is still one of the
+  seeds whose neighborhood is gathered
+
+#### Scenario: Body-only search results are counted apart from name matches
+- **WHEN** a prose `query` matches no symbol by name but some symbols by body
+- **THEN** `total` is 0, `body_candidates` counts the body-ranked symbols returned in `nodes`, no
+  `suggestions` are attached, and the call is not recorded as a zero hit
+
+#### Scenario: An unresolved structural phrase scores only its operand on bodies
+- **WHEN** `callers of X` falls through to search because `X` resolves no symbol
+- **THEN** the body ranking scores `X` alone, so code whose body merely says "call" is not pulled in
+
+#### Scenario: Publishing an unchanged copy does no index work
+- **WHEN** a published snapshot is copied, given only memory, overlay or enrichment nodes, and
+  published again
+- **THEN** it carries the very same body index, and no node or file is visited

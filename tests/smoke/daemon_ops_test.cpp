@@ -929,15 +929,16 @@ int main() {
   // focus). "d" is disconnected (no edges) and reachable ONLY as its own seed,
   // and "a" is reachable only from the alpha seeds, so both appearing in the
   // bundle proves the gather unions several ego graphs, not just the focal's.
-  // The ordering asserted here is the label path's: "a" is the only node with
-  // a hashed source span, so on `state` its body ("class Alpha") would also
-  // vote for "alpha" through the body fusion. A snapshot without source hashes
-  // has an empty body index and ranks by label alone.
+  // That idf ordering is the LABEL path's guarantee: it holds where no body
+  // index exists (a snapshot without source hashes, as here) and for
+  // identifier-like queries. On a snapshot with a body index a prose query is
+  // ranked by fusion instead -- asserted right after this block on `state`.
   cgraph::DaemonState label_only;
   {
     auto unhashed = *cgraph::read_graph_snapshot(state);
     unhashed.source_hashes.clear();
     unhashed.body_index = nullptr;
+    unhashed.code_generation = cgraph::next_code_generation();  // code hashes changed on a copy
     cgraph::publish_graph_snapshot(label_only, std::move(unhashed));
   }
   const auto multi = cgraph::handle_daemon_request(
@@ -953,6 +954,24 @@ int main() {
   }
   if (!multi_found_alpha) {
     return 1;  // the lower-ranked alpha seeds' ego graphs are still unioned in
+  }
+
+  // Fused ranking on the hashed snapshot: "a" is the label ranking's second
+  // match and the body ranking's first ("class Alpha" is its span), "d" is the
+  // label ranking's first and has no body. Reciprocal-rank fusion promises
+  // that agreement wins -- "a" becomes the focus -- and that the rare-term
+  // match is still a seed: "d" is reachable ONLY as its own seed.
+  const auto fused = cgraph::handle_daemon_request(
+      state, cgraph::make_request("context", {{"q", "alpha gamma"}, {"budget", 50000}}));
+  if (fused["result"]["focus"].value("id", std::string{}) != "a") {
+    return 234;
+  }
+  bool fused_found_gamma = false;
+  for (const auto& item : fused["result"]["included"]) {
+    fused_found_gamma = fused_found_gamma || item.value("id", std::string{}) == "d";
+  }
+  if (!fused_found_gamma) {
+    return 235;
   }
 
   // --- body BM25 seeding with query-type routing (CGR-25) ---
@@ -973,6 +992,15 @@ int main() {
                           .kind = "function"};
     };
     g.nodes = {located("handler", 1, 3), located("worker", 4, 7)};
+    // A helper whose body is all "call" words: a structural phrase's verb
+    // ("callers" stems to "call") must not reach it through the body ranking.
+    const auto helper_go = src.parent_path() / "helper.go";
+    const std::string helper_text = "func testHelper() {\n  // callers call this to call the handler\n}\n";
+    std::ofstream(helper_go, std::ios::binary) << helper_text;
+    g.source_hashes[helper_go.lexically_normal().generic_string()] = cgraph::sha256_hex(helper_text);
+    g.nodes.push_back(cgraph::Node{.id = "testHelper", .label = "testHelper", .source_file = helper_go.generic_string(),
+                                   .source_location = cgraph::SourceLocation{.start_line = 1, .end_line = 3},
+                                   .kind = "function"});
     g.edges.push_back(cgraph::Edge{.source = "handler", .target = "worker", .relation = "CALLS"});
     g.source_hashes[retry_go.lexically_normal().generic_string()] = write_retry(
         "func handler() {\n"
@@ -995,10 +1023,40 @@ int main() {
     if (search["result"]["nodes"].empty() || search["result"]["nodes"][0].value("id", std::string{}) != "worker") {
       return 231;  // the query op's lexical route ranks the same way
     }
+    // No label matches: `total` (name matches) stays 0, the body-only
+    // candidates are counted apart, and the call is not a zero hit.
+    if (search["result"].value("total", -1) != 0 || search["result"].value("body_candidates", 0) != 1 ||
+        search["result"].contains("suggestions")) {
+      return 237;
+    }
+    // "callers of exponential": the operand resolves no symbol, so the phrase
+    // falls through to search -- and only the operand is scored on bodies.
+    const auto phrase = cgraph::handle_daemon_request(
+        s, cgraph::make_request("query", {{"q", "callers of exponential"}}));
+    bool phrase_found_worker = false;
+    for (const auto& node : phrase["result"]["nodes"]) {
+      if (node.value("id", std::string{}) == "testHelper") {
+        return 238;  // the verb leaked into the body query
+      }
+      phrase_found_worker = phrase_found_worker || node.value("id", std::string{}) == "worker";
+    }
+    if (!phrase_found_worker) {
+      return 239;
+    }
     const auto identifier = cgraph::handle_daemon_request(
         s, cgraph::make_request("context", {{"q", "backoffDelay"}, {"budget", 5000}}));
     if (!identifier["result"]["focus"].is_null()) {
       return 232;  // an identifier-like query keeps the label-only path
+    }
+
+    // A mutation that leaves code content alone (memory, overlays, enrichment)
+    // keeps the very same index: publishing it does no per-node work.
+    const auto index_before = cgraph::read_graph_snapshot(s)->body_index;
+    cgraph::mutate_graph_snapshot(s, [](cgraph::GraphSnapshot& current) {
+      current.nodes.push_back(cgraph::Node{.id = "memory:note", .label = "note", .kind = "memory"});
+    });
+    if (index_before == nullptr || cgraph::read_graph_snapshot(s)->body_index != index_before) {
+      return 236;
     }
 
     // An edit republished through the single-writer path is searchable at
@@ -1011,6 +1069,7 @@ int main() {
         "  // drain the circuit breaker queue\n"
         "  flushQueue()\n"
         "}\n");
+    g.code_generation = cgraph::next_code_generation();  // a re-extraction is new code content
     cgraph::publish_graph_snapshot(s, g);
     const auto edited = cgraph::handle_daemon_request(
         s, cgraph::make_request("context", {{"q", "circuit breaker trips"}, {"budget", 5000}}));

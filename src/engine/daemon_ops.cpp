@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <mutex>
 #include <queue>
@@ -375,26 +376,47 @@ constexpr double kRrfK = 60.0;
 // live in bodies (called identifiers, logged strings, comments), not in the
 // label -- and the two rankings are fused by reciprocal rank, label first. A
 // snapshot with no body index (no verified source bytes) ranks by label alone.
-[[nodiscard]] std::vector<const Node*> free_text_matches(
+// `body_query` is the text the body ranking scores: the needle itself, except
+// for a structural phrase ("callers of X") whose operand did not resolve, where
+// it is only the operand -- the verb ("callers" stems to "call") names the
+// relation asked about, not code to find.
+struct FreeTextMatches {
+  std::vector<const Node*> nodes;
+  // Candidates only the body ranking produced (no label match). The query op
+  // reports them apart from `total`, which keeps counting label matches.
+  std::unordered_set<const Node*> body_only;
+};
+
+[[nodiscard]] FreeTextMatches free_text_matches(
     const GraphSnapshot& graph,
     const std::unordered_map<std::string, const Node*>& by_id,
-    const std::string& needle) {
+    const std::string& needle,
+    std::string_view body_query) {
   const auto raw_terms = lexical_terms(needle);
-  auto label_ranked = lexical_matches(graph, raw_terms);
+  FreeTextMatches out;
+  out.nodes = lexical_matches(graph, raw_terms);
   if (!is_prose_query(needle) || graph.body_index == nullptr) {
-    return label_ranked;
+    return out;
   }
   std::vector<const Node*> body_ranked;
-  for (const auto& [score, node_id] : graph.body_index->rank(stem_terms(raw_terms), kBodyCandidateCount)) {
+  for (const auto& [score, node_id] :
+       graph.body_index->rank(stem_terms(lexical_terms(body_query)), kBodyCandidateCount)) {
     if (const auto found = by_id.find(*node_id); found != by_id.end()) {
       body_ranked.push_back(found->second);  // else indexed under an id a later overlay or dedup removed
     }
   }
   if (body_ranked.empty()) {
-    return label_ranked;
+    return out;
   }
-  const std::array rankings{std::move(label_ranked), std::move(body_ranked)};
-  return fuse_by_reciprocal_rank(rankings);
+  const std::unordered_set<const Node*> labelled(out.nodes.begin(), out.nodes.end());
+  for (const auto* node : body_ranked) {
+    if (!labelled.contains(node)) {
+      out.body_only.insert(node);
+    }
+  }
+  const std::array rankings{std::move(out.nodes), std::move(body_ranked)};
+  out.nodes = fuse_by_reciprocal_rank(rankings);
+  return out;
 }
 
 // Metadata-only estimate of the node's capped source slice. Selection must finish
@@ -472,6 +494,19 @@ void annotate_snippet_absence(nlohmann::json& entry, const Node& node) {
   const bool has_extent = !node.source_file.empty() && node.source_location &&
                           node.source_location->start_line != 0;
   entry[has_extent ? "snippet_omitted" : "snippet_unavailable"] = true;
+}
+
+// The body index's coverage for `status`: how much code prose queries can
+// reach, and every file whose indexing failed (never silently dropped).
+[[nodiscard]] nlohmann::json body_index_status(const GraphSnapshot& graph) {
+  if (graph.body_index == nullptr) {
+    return {{"files", 0}, {"documents", 0}, {"files_failed", 0}, {"failures", nlohmann::json::array()}};
+  }
+  const auto& stats = graph.body_index->stats();
+  return {{"files", stats.files},
+          {"documents", stats.documents},
+          {"files_failed", stats.failures.size()},
+          {"failures", stats.failures}};
 }
 
 [[nodiscard]] std::unordered_map<std::string, const Node*> index_nodes(const GraphSnapshot& graph) {
@@ -836,7 +871,8 @@ struct StructuralIntent {
 
   // Route 1 — a structural-intent phrase whose operand resolves: return the typed
   // neighbor set directly (the same set explain would, filtered to that relation).
-  if (const auto intent = parse_structural_phrase(needle)) {
+  const auto intent = parse_structural_phrase(needle);
+  if (intent) {
     if (const Node* target = resolve_node(graph, by_id, intent->operand)) {
       return as_nodes(typed_neighbors(graph, by_id, *target, intent->relation, intent->direction),
                       intent->intent_name, {{"of", target->id}});
@@ -889,8 +925,11 @@ struct StructuralIntent {
   // symbols instead of nothing. Lexical results arrive already ranked by overlap,
   // so the centrality re-sort below is skipped for them.
   const bool lexical_fallback = matches.empty();
+  std::unordered_set<const Node*> body_only;
   if (lexical_fallback) {
-    matches = free_text_matches(graph, by_id, needle);
+    auto free_text = free_text_matches(graph, by_id, needle, intent ? std::string_view{intent->operand} : needle);
+    matches = std::move(free_text.nodes);
+    body_only = std::move(free_text.body_only);
   }
   narrow(matches);
   if (!lexical_fallback) {
@@ -912,7 +951,13 @@ struct StructuralIntent {
   std::ranges::stable_partition(
       matches, [](const Node* node) { return !is_enrichment_node_id(node->id); });
 
-  const auto total = matches.size();
+  // `total` counts symbols the query matched by name (substring or label
+  // terms), as it always has; a prose query's body-only BM25 candidates (at
+  // most kBodyCandidateCount) are ranked into `nodes` but counted apart in
+  // `body_candidates`, so `returned` can exceed `total`.
+  const auto body_candidates = static_cast<std::size_t>(
+      std::ranges::count_if(matches, [&](const Node* node) { return body_only.contains(node); }));
+  const auto total = matches.size() - body_candidates;
   if (limit > 0 && matches.size() > limit) {
     matches.resize(limit);
   }
@@ -923,7 +968,10 @@ struct StructuralIntent {
   const auto returned = nodes.size();  // capture before the move below
   nlohmann::json result{{"route", "search"}, {"nodes", std::move(nodes)}, {"total", total},
                         {"returned", returned}};
-  if (total == 0) {
+  if (body_candidates > 0) {
+    result["body_candidates"] = body_candidates;
+  }
+  if (total + body_candidates == 0) {
     result["suggestions"] = suggest_similar(graph, needle);
   }
   return result;
@@ -1087,7 +1135,8 @@ struct StructuralIntent {
       }
     }
     if (focal == nullptr) {
-      seeds = free_text_matches(graph, by_id, needle);
+      const auto intent = parse_structural_phrase(needle);
+      seeds = free_text_matches(graph, by_id, needle, intent ? std::string_view{intent->operand} : needle).nodes;
       if (seeds.size() > kFocalSeedCount) {
         seeds.resize(kFocalSeedCount);
       }
@@ -1798,6 +1847,7 @@ struct StructuralIntent {
       {"uptime_seconds", uptime.count()},
       {"node_count", graph.nodes.size()},
       {"edge_count", graph.edges.size()},
+      {"body_index", body_index_status(graph)},
       {"build_state", build_state_label(graph.build_state)},
       {"cache_hit_rate", graph.cache_hit_rate},
       {"enrichment_state", enrichment_state(enrichment_state_value)},
@@ -2285,8 +2335,17 @@ void publish_graph_snapshot(DaemonState& state, GraphSnapshot graph) {
   // never blocked on tokenizing; per-file reuse from the snapshot's own index
   // (a copy of a published one) or else the served one keeps an incremental
   // update to the files it re-extracted.
-  const auto previous = graph.body_index != nullptr ? graph.body_index : read_graph_snapshot(state)->body_index;
-  graph.body_index = BodyIndex::refresh(graph, previous);
+  // A snapshot whose code content is the one its index was verified against
+  // (overlay, memory and enrichment mutations of a published copy) keeps the
+  // index without a pass over its nodes.
+  if (graph.body_index == nullptr || graph.body_index_generation != graph.code_generation) {
+    const auto previous = graph.body_index != nullptr ? graph.body_index : read_graph_snapshot(state)->body_index;
+    graph.body_index = BodyIndex::refresh(graph, previous);
+    graph.body_index_generation = graph.code_generation;
+    for (const auto& failure : graph.body_index->stats().failures) {
+      std::cerr << "graphd: body index skipped " << failure << '\n';
+    }
+  }
   auto snapshot = std::make_shared<const GraphSnapshot>(std::move(graph));
   std::scoped_lock guard(state.snapshot_mutex);
   state.graph_snapshot = std::move(snapshot);
@@ -2475,7 +2534,7 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
       switch (*known_op) {
         case DaemonOp::Query: {
           auto result = query_graph(*graph, params, source_reader);
-          zero_hit = result.value("total", std::size_t{0}) == 0;
+          zero_hit = result.value("total", std::size_t{0}) + result.value("body_candidates", std::size_t{0}) == 0;
           query_route = result.value("route", std::string{});
           response = ok_response(decorate_freshness(annotate_build_state(std::move(result), *graph), *graph));
           break;

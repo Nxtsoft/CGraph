@@ -256,7 +256,8 @@ std::shared_ptr<const BodyIndex> BodyIndex::refresh(const GraphSnapshot& graph,
     const std::vector<const Node*>* nodes = nullptr;
     const std::string* sha256 = nullptr;
     std::uint64_t signature = 0;
-    std::shared_ptr<const File> file;  // null when the bytes no longer match
+    std::shared_ptr<const File> file;  // null when the bytes no longer match or loading failed
+    std::string failure;
   };
   auto index = std::make_shared<BodyIndex>();
   std::vector<Pending> pending;
@@ -279,7 +280,7 @@ std::shared_ptr<const BodyIndex> BodyIndex::refresh(const GraphSnapshot& graph,
         continue;
       }
     }
-    pending.push_back(Pending{&key, &nodes, &expected->second, signature, nullptr});
+    pending.push_back(Pending{&key, &nodes, &expected->second, signature, nullptr, {}});
   }
   if (previous != nullptr && pending.empty() && index->files_.size() == previous->files_.size()) {
     return previous;
@@ -289,10 +290,19 @@ std::shared_ptr<const BodyIndex> BodyIndex::refresh(const GraphSnapshot& graph,
   // core as extract_files does; each worker writes only its own slot. A file
   // is read at the path the snapshot extracted it from -- the key is only its
   // normalized form.
+  // A throw (allocation failure, a filesystem error) must not escape a worker
+  // thread -- that terminates the daemon. It skips the file and is reported in
+  // stats().failures, as extract_detected_file reports a failed extraction.
   const auto load = [&](Pending& item) {
-    const auto contents = read_extracted_source(item.nodes->front()->source_file, *item.sha256);
-    if (contents) {
-      item.file = std::make_shared<const File>(tokenize_file(*contents, *item.nodes, *item.sha256, item.signature));
+    try {
+      const auto contents = read_extracted_source(item.nodes->front()->source_file, *item.sha256);
+      if (contents) {
+        item.file = std::make_shared<const File>(tokenize_file(*contents, *item.nodes, *item.sha256, item.signature));
+      }
+    } catch (const std::exception& error) {
+      item.failure = *item.key + ": " + error.what();
+    } catch (...) {
+      item.failure = *item.key + ": unknown error";
     }
   };
   const unsigned hardware = std::thread::hardware_concurrency();
@@ -313,7 +323,9 @@ std::shared_ptr<const BodyIndex> BodyIndex::refresh(const GraphSnapshot& graph,
     thread.join();
   }
   for (auto& item : pending) {
-    if (item.file != nullptr) {  // else changed on disk since extraction; the next publish re-reads it
+    if (!item.failure.empty()) {
+      index->stats_.failures.push_back(std::move(item.failure));
+    } else if (item.file != nullptr) {  // else changed on disk since extraction; the next publish re-reads it
       index->files_.emplace(*item.key, std::move(item.file));
       ++index->stats_.files_tokenized;
     }

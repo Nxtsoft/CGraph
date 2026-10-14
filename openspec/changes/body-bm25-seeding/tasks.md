@@ -38,5 +38,9 @@
       +14% across two interleaved runs; RSS +2.4 MB.
 - [x] 4.4 Live daemon: a body edit picked up by the watcher's incremental update is found by a
       prose query 4 s later; a fast-load restart indexes from the manifest's hashes.
+- [x] 4.6 Review follow-ups: code-generation fast path (unchanged publish 39-42 ms to 0.003 ms;
+      remember and 200-drop update back to main's numbers), per-file exception capture reported in
+      `status.body_index`, `body_candidates` apart from `total`, operand-only body scoring for
+      unresolved structural phrases, fused-ranking guarantee asserted on the hashed snapshot.
 - [x] 4.5 Full ctest: 96/97 pass; `cgraph_file_watcher_test` fails at line 150 (known local-only
       failure, passes in CI).
