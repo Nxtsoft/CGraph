@@ -123,12 +123,19 @@ struct Candidate {
   return inner;
 }
 
+// Whether (rank, why) names a candidate better than its current reason: the
+// stronger relation, and on a tie the lexically smaller reason, so the reason
+// never depends on the order edges sit in the snapshot.
+[[nodiscard]] bool better_reason(const Candidate& candidate, int rank, const std::string& why) {
+  return rank < candidate.why_rank || (rank == candidate.why_rank && why < candidate.why);
+}
+
 // Orders one list's candidates: shallower first, then more edges, then path.
 [[nodiscard]] std::vector<std::pair<std::string, Candidate>> ranked(std::map<std::string, Candidate> candidates) {
   std::vector<std::pair<std::string, Candidate>> out(std::make_move_iterator(candidates.begin()),
                                                      std::make_move_iterator(candidates.end()));
-  std::ranges::stable_sort(out, [](const auto& lhs, const auto& rhs) {
-    return std::tie(lhs.second.depth, rhs.second.edges) < std::tie(rhs.second.depth, lhs.second.edges);
+  std::ranges::sort(out, [](const auto& lhs, const auto& rhs) {
+    return std::tie(lhs.second.depth, rhs.second.edges, lhs.first) < std::tie(rhs.second.depth, lhs.second.edges, rhs.first);
   });
   return out;
 }
@@ -234,10 +241,11 @@ nlohmann::json co_change(const GraphSnapshot& graph, const nlohmann::json& param
     auto& candidate = callers[other->source_file];
     candidate.depth = 1;
     ++candidate.edges;
-    if (verb_rank(hop.relation) < candidate.why_rank) {
+    const auto why = std::string(verb_for(hop.relation)) + " " +
+                     (hop.here == file->id ? std::string("this file") : ticked(label_of(hop.here)));
+    if (better_reason(candidate, verb_rank(hop.relation), why)) {
       candidate.why_rank = verb_rank(hop.relation);
-      candidate.why = std::string(verb_for(hop.relation)) + " " +
-                      (hop.here == file->id ? std::string("this file") : ticked(label_of(hop.here)));
+      candidate.why = why;
     }
   }
   for (const auto& hop : second) {
@@ -247,10 +255,11 @@ nlohmann::json co_change(const GraphSnapshot& graph, const nlohmann::json& param
     if (fresh) it->second.depth = 2;
     if (it->second.depth != 2) continue;
     ++it->second.edges;
-    if (verb_rank(hop.relation) < it->second.why_rank) {
+    const auto why = std::string(verb_for(hop.relation)) + " " + ticked(label_of(hop.here)) +
+                     ", which depends on the edited code";
+    if (better_reason(it->second, verb_rank(hop.relation), why)) {
       it->second.why_rank = verb_rank(hop.relation);
-      it->second.why = std::string(verb_for(hop.relation)) + " " + ticked(label_of(hop.here)) +
-                       ", which depends on the edited code";
+      it->second.why = why;
     }
   }
 
@@ -275,10 +284,11 @@ nlohmann::json co_change(const GraphSnapshot& graph, const nlohmann::json& param
     if (other == nullptr) continue;
     auto& candidate = linked[other->source_file];
     ++candidate.edges;
-    if (verb_rank(hop.relation) < candidate.why_rank) {
+    const auto why = std::string(verb_for(hop.relation)) + " " +
+                     (hop.here == file->id ? std::string("this file") : ticked(label_of(hop.here)));
+    if (better_reason(candidate, verb_rank(hop.relation), why)) {
       candidate.why_rank = verb_rank(hop.relation);
-      candidate.why = std::string(verb_for(hop.relation)) + " " +
-                      (hop.here == file->id ? std::string("this file") : ticked(label_of(hop.here)));
+      candidate.why = why;
     }
   }
   for (const auto& hop : linked_out) {
@@ -286,11 +296,12 @@ nlohmann::json co_change(const GraphSnapshot& graph, const nlohmann::json& param
     if (other == nullptr) continue;
     auto& candidate = linked[other->source_file];
     ++candidate.edges;
-    if (verb_rank(hop.relation) < candidate.why_rank) {
+    const auto why = other->kind == "file"
+                         ? "this file " + std::string(verb_for(hop.relation)) + " it"
+                         : "defines " + ticked(other->label) + ", which this file " + std::string(verb_for(hop.relation));
+    if (better_reason(candidate, verb_rank(hop.relation), why)) {
       candidate.why_rank = verb_rank(hop.relation);
-      candidate.why = other->kind == "file"
-                          ? "this file " + std::string(verb_for(hop.relation)) + " it"
-                          : "defines " + ticked(other->label) + ", which this file " + std::string(verb_for(hop.relation));
+      candidate.why = why;
     }
   }
 

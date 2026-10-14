@@ -48,7 +48,9 @@ int fail(std::string_view what, const nlohmann::json& got) {
 }  // namespace
 
 int main() {
-  const auto root = fs::temp_directory_path() / "cgraph_co_change_test";
+  // The graph records canonical source paths (on macOS the temp dir /var/... is
+  // /private/var/...), so the paths it lists are relative to the canonical root.
+  const auto root = fs::weakly_canonical(fs::temp_directory_path()) / "cgraph_co_change_test";
   fs::remove_all(root);
   // metrics.py is the file being edited. routes.py imports and calls record()
   // (a direct caller), service.py calls routes.handle (a caller of a caller),
