@@ -1071,10 +1071,15 @@ struct StructuralIntent {
 // brief-only entry (so the agent still learns the symbol exists and where);
 // anything that no longer fits is counted in `omitted`. The focal node is always
 // included with its snippet, even if it alone exceeds the budget.
+// Every entry's `source_file` is `entry_path(node)`, the path the caller is
+// given, and the budget is charged for exactly that: the daemon passes the path
+// relative to its project root, so the same tree packs the same entries however
+// deep it is checked out (an absolute path cost each entry its root's length).
 [[nodiscard]] nlohmann::json pack_context(
     const GraphSnapshot& graph,
     const nlohmann::json& params,
     SnapshotSourceReader& source_reader,
+    const ContextEntryPath& entry_path,
     std::span<const std::string> explicit_seeds = {}) {
   // Read signed and clamp: a negative budget must floor at 0 (focal-only,
   // truncated), not wrap to a practically-unbounded unsigned ceiling.
@@ -1297,8 +1302,15 @@ struct StructuralIntent {
     return lhs->label < rhs->label;
   });
 
-  const auto candidate_brief = [&](const Node& node) {
+  const auto entry_brief = [&](const Node& node) {
     auto brief = node_brief(node);
+    if (brief.contains("source_file")) {
+      brief["source_file"] = entry_path(node);
+    }
+    return brief;
+  };
+  const auto candidate_brief = [&](const Node& node) {
+    auto brief = entry_brief(node);
     brief["depth"] = reached[node.id].depth;
     if (const auto& via = reached[node.id].via; !via.empty()) {
       brief["via"] = via;
@@ -1384,7 +1396,7 @@ struct StructuralIntent {
       return lhs->label < rhs->label;
     });
 
-    auto focus = with_source(node_brief(*focal), *focal, source_reader);
+    auto focus = with_source(entry_brief(*focal), *focal, source_reader);
     annotate_snippet_absence(focus, *focal);
 
     // Render each selected entry, then re-cost the selection at its TRUE
@@ -1494,7 +1506,7 @@ struct StructuralIntent {
   std::vector<PlannedEntry> planned;
   planned.reserve(candidates.size());
   std::size_t projected_used =
-      projected_source_entry_token_cost(node_brief(*focal), *focal);
+      projected_source_entry_token_cost(entry_brief(*focal), *focal);
   std::size_t omitted = 0;
   for (const auto* node : candidates) {
     // Same-file admission is an inferred relationship and packs only on lexical
@@ -1527,7 +1539,7 @@ struct StructuralIntent {
 
   // All full/brief/omitted decisions above are metadata-only. Only the focal and
   // entries selected for full emission reach SnapshotSourceReader.
-  auto focus = with_source(node_brief(*focal), *focal, source_reader);
+  auto focus = with_source(entry_brief(*focal), *focal, source_reader);
   annotate_snippet_absence(focus, *focal);
   auto included = nlohmann::json::array();
   for (auto& item : planned) {
@@ -2462,9 +2474,10 @@ std::unordered_map<std::string, ImpactReach> trace_impact(
 
 nlohmann::json pack_seed_context(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
-    std::size_t budget, int max_depth, SnapshotSourceReader& reader) {
+    std::size_t budget, int max_depth, SnapshotSourceReader& reader,
+    const ContextEntryPath& entry_path) {
   return pack_context(graph, {{"budget", budget}, {"max_depth", max_depth},
-                              {"gather", "fixed"}}, reader, seeds);
+                              {"gather", "fixed"}}, reader, entry_path, seeds);
 }
 
 // An id-taking read with no key names nothing. `explain {}` (a mistyped
@@ -2551,7 +2564,12 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
           response = ok_response(decorate_freshness(annotate_build_state(impact_radius(*graph, params), *graph), *graph));
           break;
         case DaemonOp::Context: {
-          auto result = pack_context(*graph, params, source_reader);
+          auto result = pack_context(*graph, params, source_reader, [&](const Node& node) {
+            return relative_file(node.source_file, state.project_root);
+          });
+          // Entries name files relative to this root; it is stated once here
+          // rather than charged against the budget in every entry.
+          result["root"] = state.project_root.generic_string();
           // Zero-hit for context = the focal node did not resolve (the id/query
           // matched nothing). A resolved focus is useful context even if a tight
           // budget left no neighbors room, so focal-only is NOT a zero hit.

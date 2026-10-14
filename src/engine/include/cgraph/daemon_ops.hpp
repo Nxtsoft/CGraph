@@ -150,10 +150,13 @@ struct ImpactReach {
 [[nodiscard]] std::unordered_map<std::string, ImpactReach> trace_impact(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
     std::string_view direction, const std::set<std::string, std::less<>>& relations, int max_depth);
+// The path a context entry names its node's file by, and is charged for.
+using ContextEntryPath = std::function<std::string(const Node&)>;
 // One union gather and one packing pass, never a per-seed budget multiplication.
 [[nodiscard]] nlohmann::json pack_seed_context(
     const GraphSnapshot& graph, std::span<const std::string> seeds,
-    std::size_t budget, int max_depth, SnapshotSourceReader& reader);
+    std::size_t budget, int max_depth, SnapshotSourceReader& reader,
+    const ContextEntryPath& entry_path);
 [[nodiscard]] std::size_t serialized_context_tokens(const nlohmann::json& value);
 
 // Re-resolves a memory checkpoint fragment's `concerns` edges against the graph

@@ -249,6 +249,29 @@ def node_files(nodes: list[dict[str, Any]], prefix: str) -> list[str]:
     return out
 
 
+def context_files(nodes: list[dict[str, Any]], prefix: str) -> list[str]:
+    """Repo files of context entries. Since CGR-33 an entry's source_file is
+    relative to the response's `root`; older engines emit it absolute, so a
+    snapshot-root prefix is stripped when present. Any other absolute path is
+    outside the snapshot, which no engine should emit: fail loud."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for node in nodes:
+        source = str(node.get("source_file") or "")
+        if not source:
+            continue
+        if source.startswith(prefix):
+            rel = source[len(prefix) :]
+        elif source.startswith("/"):
+            raise RuntimeError(f"context entry outside the snapshot {prefix!r}: {source}")
+        else:
+            rel = source
+        if rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+    return out
+
+
 def context_nodes(result: dict[str, Any]) -> list[dict[str, Any]]:
     focus = result.get("focus")
     return ([focus] if isinstance(focus, dict) else []) + list(result.get("included") or [])
@@ -271,7 +294,7 @@ def retrieve(daemon: Daemon, sample: dict[str, Any], index: SnapshotIndex, files
     ops: dict[str, Any] = {}
 
     ctx = daemon.call("context", {"q": text, "budget": CONTEXT_BUDGET})
-    lists["context_text"] = node_files(context_nodes(ctx), prefix)
+    lists["context_text"] = context_files(context_nodes(ctx), prefix)
     ops["context_text_included"] = len(ctx.get("included") or [])
 
     qry = daemon.call("query", {"q": text, "limit": QUERY_LIMIT})
@@ -283,7 +306,7 @@ def retrieve(daemon: Daemon, sample: dict[str, Any], index: SnapshotIndex, files
     ops["anchor_seeds"] = seeds
     for i, seed in enumerate(seeds):
         res = daemon.call("context", {"id": seed, "budget": CONTEXT_BUDGET})
-        lists[f"context_anchor_{i}"] = node_files(context_nodes(res), prefix)
+        lists[f"context_anchor_{i}"] = context_files(context_nodes(res), prefix)
 
     if sample.get("task_type") == "edit2ripple":
         changed = changed_symbols(sample, index)

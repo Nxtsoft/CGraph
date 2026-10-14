@@ -55,7 +55,9 @@ grep/read calls that burn context.
 - `graph_context` is the highest-leverage call before an edit or review: ask for
   a budget (e.g. `4000`) and it returns the focal symbol's source plus its
   neighborhood's source, ranked and trimmed to fit. Read that instead of opening
-  files one by one. It reports `omitted` / `truncated` if more existed.
+  files one by one. It reports `omitted` / `truncated` if more existed. Its
+  entries name files relative to the response's `root` (`source_file:
+  "src/app.py"`), so the budget buys code, not the checkout path.
 - `graph_context` has two **gather** modes. The default (`gather:"fixed"`) packs
   the whole k-hop neighborhood. When you have a task in hand, pass
   `gather:"adaptive"` **together with a `query`** — it keeps the full 2-hop core

@@ -72,6 +72,12 @@ struct ReportRequest {
   std::filesystem::path project_root;
 };
 
+// `source_file` relative to `root` when the file lies under it, as module names
+// are; otherwise (an empty root, or a file outside it) the path unchanged. An
+// absolute path per row would spend a token budget on the same prefix, and on a
+// different amount of it for every checkout location.
+[[nodiscard]] std::string relative_file(const std::string& source_file, const std::filesystem::path& root);
+
 // Fills `out` from a daemon `params` object. Returns an error message for an
 // unknown view/format or a negative depth; a mistyped value throws
 // nlohmann::json::exception like every other op's parameter read.
