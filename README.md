@@ -107,20 +107,29 @@ The interactive viewer used to run an O(N²) force simulation in the browser on 
 
 ## Retrieval benchmark
 
-Scored on [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882) (427 samples, 25
-repositories, each checked out at its base commit) with the benchmark's own metric code,
-all 345 positive samples, release bin-v0.8.3:
+CGraph has been scored on [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882): 427
+samples from 25 repositories, each checked out at its base commit, scored with the
+benchmark's own metric code. The table covers all 345 positive samples, using release
+bin-v0.8.3.
 
 | Method | Recall@20 | MRR | BCY@8k |
 | --- | ---: | ---: | ---: |
-| **CGraph** | 0.5726 | **0.2553** | **0.3862** |
+| CGraph | 0.5726 | 0.2356 | 0.3790 |
 | RepoMap (published) | 0.6333 | 0.2158 | 0.3788 |
-| Qwen3-Embedding-8B (published) | **0.7029** | 0.2336 | 0.3732 |
+| RepoMap (rerun on this harness) | 0.6311 | 0.2156 | 0.3846 |
+| Qwen3-Embedding-8B (published) | 0.7029 | 0.2336 | 0.3732 |
+| Qwen3-Embedding-4B (published) | 0.6306 | 0.2379 | 0.3409 |
 | BM25 (published) | 0.4452 | 0.1520 | 0.2051 |
 
-CGraph has the board's highest MRR and BCY@8k and leads the `trace2code` task, but its
-Recall@20 is below RepoMap's and the embedding models'. CGraph does not abstain on
-no-gold samples. Per-task tables, pins and caveats:
+How CGraph compares:
+
+- **Recall@20.** CGraph's Recall@20 is below RepoMap, the two Qwen3 embedding models and
+  pplx-embed. It is above nomic-embed-code, jina-code-embeddings, Lexical and BM25.
+- **BCY@8k.** CGraph is level with RepoMap, within run-to-run noise of about 0.006.
+- **MRR.** CGraph's MRR is between RepoMap's and Qwen3-Embedding-4B's.
+- **Abstention.** CGraph does not abstain on no-gold samples.
+
+Per-task tables, pins, the noise floor and caveats are in
 [bench/arb/RESULTS.md](bench/arb/RESULTS.md). Reproduce with `bench/arb/run.sh`.
 
 ## Languages
