@@ -113,8 +113,8 @@ benchmark's own metric code. The table covers all 345 positive samples.
 
 | Method | Recall@20 | MRR | BCY@8k |
 | --- | ---: | ---: | ---: |
-| CGraph bin-v0.9.1 (name + code-text search) | 0.6362 | 0.2787 | 0.4319 |
-| CGraph bin-v0.8.3 (name search only) | 0.5726 | 0.2356 | 0.3790 |
+| CGraph bin-v0.9.1 (label + code-text search) | 0.6362 | 0.2787 | 0.4319 |
+| CGraph bin-v0.8.3 (label-only text search) | 0.5726 | 0.2356 | 0.3790 |
 | RepoMap (published) | 0.6333 | 0.2158 | 0.3788 |
 | RepoMap (rerun on this harness) | 0.6311 | 0.2156 | 0.3846 |
 | Qwen3-Embedding-8B (published) | 0.7029 | 0.2336 | 0.3732 |
@@ -128,8 +128,9 @@ How bin-v0.9.1 compares:
 - **MRR.** Higher than every published single method.
 - **BCY@8k.** Higher than every published single method, by more than the noise floor.
 - **Against the paper's fusion of Qwen3-Embedding-8B and RepoMap**, on the 287-sample core
-  it reports: CGraph's MRR is higher (0.281 vs 0.271); its Recall@20 (0.633 vs 0.733) and
-  BCY@8k (0.440 vs 0.488) are lower.
+  it reports: MRR is level (the fusion scores only its top 20; CGraph's MRR over its top 20
+  is 0.276 vs 0.271, inside the noise floor); Recall@20 (0.633 vs 0.733) and BCY@8k (0.440
+  vs 0.488) are lower.
 - **Abstention.** CGraph does not abstain on no-gold samples.
 
 Per-task tables, pins, the noise floor and caveats are in

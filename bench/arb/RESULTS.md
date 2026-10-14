@@ -29,8 +29,13 @@ Against the CGR-24 gate:
   0.0473, well outside the noise floor.
 
 Against the paper's RRF fusion of Qwen3-Embedding-8B and RepoMap (287-sample core: R@20
-0.7331, MRR 0.2713, BCY@8k 0.4884), CGraph is higher on MRR and lower on R@20 and BCY@8k.
-On trace2code the fusion reports R@20 0.8795 and MRR 0.2672; CGraph is higher on both.
+0.7331, MRR 0.2713, BCY@8k 0.4884), CGraph is lower on R@20 and BCY@8k and level on MRR.
+The fusion is built from each method's stored top 20, so its MRR sees ranks 1-20 only
+(ARB `rank_fusion.py`); CGraph's MRR above uses its full ranking (0.2806 on the core).
+Measured over ranks 1-20, CGraph's core MRR is 0.2759, +0.0046 over the fusion, which is
+inside the noise floor.
+On trace2code the fusion reports R@20 0.8795 and MRR 0.2672; CGraph is higher on both
+(trace2code MRR over ranks 1-20: 0.4131).
 CGraph still abstains on 0 of 82 no-gold samples.
 
 The sections below record the first run, on bin-v0.8.3.
