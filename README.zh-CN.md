@@ -155,6 +155,7 @@ cgraph --root . --out cgraph-out
 | Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-linux-x64.tar.gz) |
 | Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-linux-arm64.tar.gz) |
 | macOS | Apple 芯片 / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-macos-arm64.tar.gz) |
+| macOS | Intel / x86_64 | [`cgraph-macos-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-macos-x64.tar.gz) |
 
 用 `uname -s` 和 `uname -m` 选择压缩包。快速开始把带版本的文件安装到 `~/.local/lib/cgraph/bin-v0.9.0`，并在 `~/.local/bin` 中创建稳定的软链接；如有需要，请把该目录加入 `PATH`。MCP 客户端配置应使用带版本的绝对路径，因为客户端未必继承 shell 的 `PATH`。
 

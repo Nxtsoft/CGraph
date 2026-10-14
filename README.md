@@ -430,7 +430,7 @@ claude plugin install cgraph@cgraph
 
 The plugin registers the `cgraph` MCP server, the `cgraph` and `cgraph-enrich` skills and the
 pre-edit hook. On first use it downloads the release archive for your platform (Linux x64/arm64,
-macOS arm64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
+macOS arm64/x64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
 the plugin's data directory. It needs `node` and `tar` on `PATH`.
 
 ### Release archive
@@ -463,6 +463,7 @@ Release `bin-v0.9.0` provides all four executables (`cgraph`, `graphd`, `cgraph-
 | Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-linux-x64.tar.gz) |
 | Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-linux-arm64.tar.gz) |
 | macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-macos-arm64.tar.gz) |
+| macOS | Intel / x86_64 | [`cgraph-macos-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.0/cgraph-macos-x64.tar.gz) |
 
 Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.9.0` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
 
