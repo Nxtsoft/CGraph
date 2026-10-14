@@ -38,6 +38,7 @@ add_library(cgraph_engine STATIC
   http_consumers.cpp
   javascript_extractor.cpp
   langgraph_config.cpp
+  messaging_contracts.cpp
   language_config.cpp
   launch_agent.cpp
   non_grammar_extractors.cpp

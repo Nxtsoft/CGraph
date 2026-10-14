@@ -1494,6 +1494,68 @@ int test_generic_contract_facts() {
 // database and crosses repositories by itself; the env variables a name is the
 // default of become the node's `env`, and two defaults of one variable are two
 // tables.
+// gRPC methods and topics (messaging_contracts.hpp): a gRPC method a server
+// implements is handled_by it and CONSUMED by its callers; a Go server's
+// handler provides only through its type's registration in the same directory
+// (grpc_server / grpc_handler facts), and a handler of another type or another
+// directory provides nothing. A topic's producer provides it.
+int test_messaging_contract_facts() {
+  auto built = build({
+      // The fixture's functions are TypeScript (resolution reads facts, not
+      // languages); the facts carry the Go files' directories.
+      {"/proj/m/catalog/main.ts", "export function run() { return 1; }\n"},
+      {"/proj/m/catalog/catalog.ts", "export function GetProduct() { return 1; }\nexport function Other() { return 2; }\n"},
+      {"/proj/m/other/ads.ts", "export function GetProduct() { return 1; }\n"},
+      {"/proj/m/web/cart.ts", "export function load() { return 1; }\nexport function publish() { return 2; }\n"},
+  });
+  auto& graph = built.graph;
+  const auto run = cgraph::make_id("/proj/m/catalog/main.ts:run");
+  const auto get_product = cgraph::make_id("/proj/m/catalog/catalog.ts:GetProduct");
+  const auto other = cgraph::make_id("/proj/m/catalog/catalog.ts:Other");
+  const auto elsewhere = cgraph::make_id("/proj/m/other/ads.ts:GetProduct");
+  const auto load = cgraph::make_id("/proj/m/web/cart.ts:load");
+  const auto publish = cgraph::make_id("/proj/m/web/cart.ts:publish");
+  for (const auto& id : {run, get_product, other, elsewhere, load, publish}) {
+    if (node_of(graph, id) == nullptr) {
+      return fail("fixture function missing: " + id);
+    }
+  }
+  const auto fact = [](std::string relation, std::string source, std::string label, std::string context,
+                       std::string file) {
+    return cgraph::RawRelation{.source_id = std::move(source), .target_label = std::move(label),
+                               .relation = std::move(relation), .context = std::move(context),
+                               .source_file = std::move(file)};
+  };
+  const std::vector<cgraph::RawRelation> facts{
+      fact("grpc_server", run, "productCatalog", "ProductCatalogService\npb", "/proj/m/catalog/main.go"),
+      fact("grpc_handler", get_product, "productCatalog", "GetProduct\npb", "/proj/m/catalog/catalog.go"),
+      fact("grpc_handler", other, "server", "Other\npb", "/proj/m/catalog/catalog.go"),
+      fact("grpc_handler", elsewhere, "productCatalog", "GetProduct\npb", "/proj/m/other/ads.go"),
+      fact("uses_contract", load, "", "grpc:ProductCatalogService/GetProduct", "/proj/m/web/cart.ts"),
+      fact("provides_contract", publish, "", "topic:kafka:orders", "/proj/m/web/cart.ts"),
+  };
+  cgraph::resolve_contracts(graph, facts, &built.stats);
+  const auto* method = node_of(graph, "grpc:ProductCatalogService/GetProduct");
+  if (method == nullptr || method->kind != "grpc" || method->label != "ProductCatalogService/GetProduct" ||
+      method->properties.contains("served") || method->source_file != "/proj/m/catalog/catalog.ts" ||
+      !has_edge(graph, "grpc:ProductCatalogService/GetProduct", get_product, "handled_by") ||
+      !has_edge(graph, load, "grpc:ProductCatalogService/GetProduct", "CONSUMES") ||
+      has_edge(graph, "grpc:ProductCatalogService/GetProduct", elsewhere, "handled_by")) {
+    return fail("a Go handler of the registered type in the registration's directory provides its gRPC method");
+  }
+  for (const auto& node : graph.nodes) {
+    if (node.id.starts_with("grpc:") && node.id != "grpc:ProductCatalogService/GetProduct") {
+      return fail("a handler of an unregistered type minted a gRPC method: " + node.id);
+    }
+  }
+  const auto* topic = node_of(graph, "topic:kafka:orders");
+  if (topic == nullptr || topic->kind != "topic" || !has_edge(graph, "topic:kafka:orders", publish, "handled_by") ||
+      !cgraph::is_bridged_contract("topic:kafka:orders") || !cgraph::is_bridged_contract("grpc:ProductCatalogService/GetProduct")) {
+    return fail("a topic is handled_by its producer, and both kinds bridge repositories by name");
+  }
+  return 0;
+}
+
 int test_dynamo_contract_facts() {
   auto built = build({
       {"/proj/d/api/connectors.ts", "export function storeTokens() { return 1; }\n"},
@@ -1672,5 +1734,6 @@ int main() {
   failures += test_standard_http_headers();
   failures += test_standard_jwt_claims();
   failures += test_dynamo_contract_facts();
+  failures += test_messaging_contract_facts();
   return failures == 0 ? 0 : 1;
 }

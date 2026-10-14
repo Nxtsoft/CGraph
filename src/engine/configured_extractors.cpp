@@ -5,6 +5,7 @@
 #include "cgraph/env_contracts.hpp"
 #include "cgraph/header_contracts.hpp"
 #include "cgraph/javascript_extractor.hpp"
+#include "cgraph/messaging_contracts.hpp"
 #include "cgraph/non_grammar_extractors.hpp"
 #include "cgraph/normalize.hpp"
 #include "cgraph/python_extractor.hpp"
@@ -207,7 +208,11 @@ void java_member_handler(const TSNode& node, const ExtractionContext& context,
   // C (no base classes). Shared by the C and C++ configs.
   config.import_handler = cpp_import_handler;
   config.relation_handler = cpp_relation_handler;
-  config.extra_walk = cpp_field_walk;
+  config.extra_walk = [](const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                         Fragment& fragment, std::vector<RawCall>& raw_calls, std::vector<RawRelation>& raw_relations) {
+    cpp_field_walk(node, context, function_scope_id, fragment, raw_calls, raw_relations);
+    cpp_messaging_contracts(node, context, function_scope_id, raw_relations);
+  };
   config.class_requires_body = true;
   // A `function_definition` has no `name` field, so without this the label would
   // be the declarator's raw text -- the whole declaration, signature included --
@@ -647,12 +652,13 @@ void java_relation_handler(const TSNode& node, const ExtractionContext& context,
                          Fragment& /*fragment*/, std::vector<RawCall>& /*raw_calls*/,
                          std::vector<RawRelation>& raw_relations) {
     java_env_reads(node, context, function_scope_id, raw_relations);
+    java_messaging_contracts(node, context, function_scope_id, raw_relations);
   };
   return config;
 }
 
 [[nodiscard]] LanguageConfig csharp_config() {
-  return LanguageConfig{
+  LanguageConfig config{
       .name = "csharp",
       .grammar_name = "tree-sitter-c-sharp",
       .extensions = {".cs"},
@@ -671,6 +677,12 @@ void java_relation_handler(const TSNode& node, const ExtractionContext& context,
       .call_member_node_types = {"member_access_expression"},
       .call_member_field = "name",
   };
+  config.extra_walk = [](const TSNode& node, const ExtractionContext& context, const std::string& function_scope_id,
+                         Fragment& /*fragment*/, std::vector<RawCall>& /*raw_calls*/,
+                         std::vector<RawRelation>& raw_relations) {
+    csharp_messaging_contracts(node, context, function_scope_id, raw_relations);
+  };
+  return config;
 }
 
 [[nodiscard]] LanguageConfig ruby_config() {
@@ -1094,6 +1106,7 @@ void kotlin_http_walk(const TSNode& node, const ExtractionContext& context, cons
                       Fragment& /*fragment*/, std::vector<RawCall>& /*raw_calls*/, std::vector<RawRelation>& out) {
   kotlin_env_reads(node, context, function_scope_id, out);
   kotlin_header_contracts(node, context, function_scope_id, out);
+  kotlin_messaging_contracts(node, context, function_scope_id, out);
   if (std::string_view(ts_node_type(node)) != "call_expression") {
     return;
   }
@@ -1539,6 +1552,7 @@ void go_extra_walk(const TSNode& node, const ExtractionContext& context,
   go_http_walk(node, context, function_scope_id, raw_relations);
   go_env_reads(node, context, function_scope_id, raw_relations);
   go_header_contracts(node, context, function_scope_id, raw_relations);
+  go_messaging_contracts(node, context, function_scope_id, raw_relations);
   if (std::string_view(ts_node_type(node)) != "type_spec") {
     return;
   }
@@ -2321,6 +2335,7 @@ namespace {
     return extract_tsx(context);
   }
   const EnvContractsFileScope env_contracts;  // Go, Kotlin, Java env reads
+  const MessagingContractsFileScope messaging_contracts;
   return extract_with_config(grammar, *config, context);
 }
 
