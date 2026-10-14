@@ -564,7 +564,7 @@ int test_generic_contracts(const fs::path& root) {
     }
   }
   const auto other_line = std::ranges::any_of(plain.resolution_log, [](const std::string& line) {
-    return line.starts_with("other contracts (tables, graph labels, headers, claims, env, DynamoDB tables): matched 1;");
+    return line.starts_with("other contracts (tables, graph labels, headers, claims, env, DynamoDB tables, gRPC methods, topics): matched 1;");
   });
   if (!other_line) {
     std::cerr << "discover: other contracts are not logged\n";
@@ -692,6 +692,51 @@ int test_dynamo_contracts(const fs::path& root) {
       find_in(fused.graph, "dweb::dynamo:turing-agents-dev") != nullptr) {
     for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
     std::cerr << "fuse: a DynamoDB table is not one shared node\n";
+    return 1;
+  }
+  return 0;
+}
+
+// gRPC methods and topics join repositories by name with no declaration: cart
+// serves `grpc:CartService/GetCart` and web calls it; checkout produces
+// `topic:orders`, accounting and fraud consume it. Fuse shares both ids.
+int test_messaging_contracts(const fs::path& root) {
+  const auto cart = contract_graph(root, "mcart", {{"provides_contract", "GetCart", "grpc:CartService/GetCart", ""}});
+  const auto web = contract_graph(root, "mweb", {{"uses_contract", "getCart", "grpc:CartService/GetCart", ""}});
+  const auto checkout = contract_graph(root, "mcheckout", {{"provides_contract", "sendOrder", "topic:orders", ""}});
+  const auto accounting = contract_graph(root, "maccounting", {{"uses_contract", "consume", "topic:orders", ""}});
+  const auto fraud = contract_graph(root, "mfraud", {{"uses_contract", "main", "topic:orders", ""}});
+  const std::vector<std::pair<std::string, fs::path>> graphs{
+      {"mcart", cart}, {"mweb", web}, {"mcheckout", checkout}, {"maccounting", accounting}, {"mfraud", fraud}};
+  const auto seam = cgraph::discover_seam(graphs);
+  const auto* method = find_node(seam.fragment, "grpc:CartService/GetCart");
+  const auto* topic = find_node(seam.fragment, "topic:orders");
+  if (!seam.ok || method == nullptr || method->kind != "grpc" || topic == nullptr || topic->kind != "topic" ||
+      !has_edge(seam.fragment, "grpc:CartService/GetCart", "service:mcart", "SERVED_BY") ||
+      !has_edge(seam.fragment, "service:mweb", "grpc:CartService/GetCart", "CONSUMES") ||
+      !has_edge(seam.fragment, "grpc:CartService/GetCart", "mweb_getCart", "CONSUMED_AT") ||
+      !has_edge(seam.fragment, "topic:orders", "service:mcheckout", "SERVED_BY") ||
+      !has_edge(seam.fragment, "service:maccounting", "topic:orders", "CONSUMES") ||
+      !has_edge(seam.fragment, "service:mfraud", "topic:orders", "CONSUMES")) {
+    std::cerr << "discover: a gRPC method or a topic did not join its provider and consumers by name\n";
+    return 1;
+  }
+  auto snapshot = [&](const fs::path& path) {
+    std::ifstream input(path);
+    json graph;
+    input >> graph;
+    return cgraph::parse_node_link_graph(graph);
+  };
+  const std::vector<std::pair<std::string, cgraph::GraphSnapshot>> services{
+      {"mcart", snapshot(cart)}, {"mweb", snapshot(web)}, {"mcheckout", snapshot(checkout)},
+      {"maccounting", snapshot(accounting)}, {"mfraud", snapshot(fraud)}};
+  const auto fused = cgraph::fuse_seam(seam.fragment, services);
+  if (!fused.ok || !has_snapshot_edge(fused.graph, "mweb::mweb_getCart", "grpc:CartService/GetCart", "CONSUMES") ||
+      !has_snapshot_edge(fused.graph, "grpc:CartService/GetCart", "mcart::mcart_GetCart", "handled_by") ||
+      !has_snapshot_edge(fused.graph, "mfraud::mfraud_main", "topic:orders", "CONSUMES") ||
+      find_in(fused.graph, "mweb::grpc:CartService/GetCart") != nullptr) {
+    for (const auto& error : fused.errors) std::cerr << "  " << error << '\n';
+    std::cerr << "fuse: a gRPC method or topic is not one shared node\n";
     return 1;
   }
   return 0;
@@ -1046,6 +1091,9 @@ int main() {
     return 1;
   }
   if (test_dynamo_contracts(root) != 0) {
+    return 1;
+  }
+  if (test_messaging_contracts(root) != 0) {
     return 1;
   }
   if (test_generic_contracts(root) != 0) {

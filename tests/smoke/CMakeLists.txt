@@ -181,6 +181,18 @@ cgraph_enable_sanitizers(cgraph_dynamo_contracts_test)
 
 add_test(NAME cgraph_dynamo_contracts_test COMMAND cgraph_dynamo_contracts_test)
 
+add_executable(cgraph_messaging_contracts_test
+  messaging_contracts_test.cpp)
+
+target_link_libraries(cgraph_messaging_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_messaging_contracts_test)
+cgraph_enable_sanitizers(cgraph_messaging_contracts_test)
+
+add_test(NAME cgraph_messaging_contracts_test COMMAND cgraph_messaging_contracts_test)
+
 add_executable(cgraph_env_contracts_test
   env_contracts_test.cpp)
 

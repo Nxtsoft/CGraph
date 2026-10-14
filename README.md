@@ -322,7 +322,8 @@ declared, not guessed.
 
 Contracts other than endpoints are recorded by extractors as `provides_contract` /
 `uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`, `env:<NAME>`, DynamoDB tables
-as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
+as `dynamo:<name>`, gRPC methods as `grpc:<Service>/<Method>`, message topics and queues as
+`topic:<name>`, and tables and graph labels as `table:<database>:<name>` /
 `label:<database>:<name>`. They do not all join alike:
 
 - **Claims and non-standard headers** (`x-tenant-id`) join like endpoints, by id. A standard HTTP
@@ -378,6 +379,23 @@ as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
   name joins every repository given to the workspace or seam that names it, whatever account each
   runs in: two services in different accounts that each have a `sessions` table would join. An
   optional account declaration is a recorded follow-up.
+- **gRPC methods and topics** (`src/engine/messaging_contracts.cpp`) join by name with no
+  declaration. A gRPC method is `grpc:<Service>/<Method>` without the proto package (a Go
+  `pb.NewCartServiceClient` or a Python `CartServiceStub` call never spells it), the method as the
+  proto spells it (Java's and JavaScript's `getCart` and C#'s `GetCartAsync` read as `GetCart`). A
+  server provides it: a method of a class implementing the generated base (Java `<S>ImplBase`, C#
+  `<S>.<S>Base`, Python `<S>Servicer`, C++ `<S>::Service`), a key of a Node `addService(<S>.service,
+  {...})`, or in Go a handler method of the type registered with `Register<S>Server`, with the unary
+  shape and its messages from the registration's package. A call on a generated client uses it: Go
+  `New<S>Client`, Java `<S>Grpc.new*Stub` or a `<S>BlockingStub` field, Python `<S>Stub`, C#
+  `<S>.<S>Client`, TypeScript `new <S>Client` with `@grpc/grpc-js` imported; through a local, a
+  field or `self`/`this` member bound to one anywhere in the file. `Health` and `ServerReflection`
+  are never recorded. A topic is `topic:<name>`: the producer provides it, the consumer uses it
+  (Kafka in Java/Kotlin/C#/Go/Python/JavaScript, Spring Kafka and Kafka Streams, RabbitMQ on the
+  default exchange, SQS queue URLs, SNS topic ARNs, Pub/Sub topics). The name is a literal, the
+  literal default of an env read, or a same-file constant or field holding either. Caveat: two proto
+  packages that each define a `CartService` meet at one id, and so do two brokers' topics of one name.
+  `messaging_contracts.hpp` lists every pattern read.
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 

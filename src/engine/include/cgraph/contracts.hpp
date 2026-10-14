@@ -11,8 +11,8 @@
 
 // Contract discovery (CGR-13): the wire contracts a repo provides and consumes,
 // found in its own source rather than typed into a seam spec: HTTP
-// endpoints, tables, graph labels, headers, JWT claims, env names and DynamoDB
-// tables. Extraction records raw facts as RawRelation entries:
+// endpoints, tables, graph labels, headers, JWT claims, env names, DynamoDB
+// tables, gRPC methods and message topics. Extraction records raw facts as RawRelation entries:
 //
 //   "route"        source_id = the inline handler's function node, target_label =
 //                  the module-level identifier of the router chain it is
@@ -64,7 +64,10 @@
 //                  reading the claim), context = "<kind>:<name>" with kind one
 //                  of `table`, `label` (a graph database node label or
 //                  relationship type), `header`, `claim`, `env`, `dynamo` (a
-//                  DynamoDB table, dynamo_contracts.hpp), and name as the
+//                  DynamoDB table, dynamo_contracts.hpp), `grpc` (a gRPC
+//                  method `<Service>/<Method>`) or `topic` (a message topic or
+//                  queue; messaging_contracts.hpp: its producer provides it),
+//                  and name as the
 //                  code spells it. For `table` and `label` target_label is the
 //                  database the extractor knows the name lives in, empty when
 //                  it knows none (the usual case: code rarely proves which
@@ -91,6 +94,7 @@
 //
 //   table:<database>:<name>   label:<database>:<name>
 //   header:<name lowercased>  claim:<name>  env:<name>  dynamo:<name>
+//   grpc:<Service>/<Method>  topic:<name>
 //
 // A table or label with no known database is `table:local:<name>`: local to
 // its repo, never the same node as another repo's `table:local:<name>` (two
@@ -105,6 +109,8 @@
 // their claims cross between those repos only, at `claim:<issuer>:<name>`
 // (every name but the RFC 7519 registered ones). Claim facts come only from
 // provably-JWT code (claim_contracts.hpp).
+// A gRPC method and a topic cross by name too (messaging_contracts.hpp): a
+// method's address is its service and method, a topic's its name on the broker.
 // A DynamoDB table (`dynamo:<name>`, case-sensitive) is its own kind, never a
 // `table:`, and crosses by name: its name is its whole address in an AWS
 // account, with no database between to declare. Nothing in code says which
@@ -184,11 +190,11 @@ inline constexpr std::string_view kBoundHeaderRead = "bound";
                                                      std::string_view database = {});
 
 // The kind of a contract id (`endpoint`, `table`, `label`, `header`, `claim`,
-// `env`, `dynamo`), empty when `id` is no contract id.
+// `env`, `dynamo`, `grpc`, `topic`), empty when `id` is no contract id.
 [[nodiscard]] std::string_view contract_kind_of(std::string_view id);
 
 // True for an id that is the same contract in every repository's graph by
-// itself: every endpoint and DynamoDB table, a claim outside the standard set
+// itself: every endpoint, DynamoDB table, gRPC method and topic, a claim outside the standard set
 // below, a header outside the standard set below, and a table or label in a
 // named database. A `table:local:` / `label:local:` id, every `env:` id, a
 // standard claim and a standard header are not: a table or env variable crosses only where a

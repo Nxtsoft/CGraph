@@ -4,6 +4,7 @@
 #include "cgraph/data_contracts.hpp"
 #include "cgraph/graph_builder.hpp"
 #include "cgraph/header_contracts.hpp"
+#include "cgraph/messaging_contracts.hpp"
 #include "cgraph/normalize.hpp"
 #include "cgraph/spring_actuator.hpp"
 
@@ -45,7 +46,8 @@ constexpr std::string_view kConsumes = "CONSUMES";
 constexpr std::string_view kRoutePrefix = "route_prefix";
 constexpr std::string_view kProvidesContractRelation = "provides_contract";
 constexpr std::string_view kUsesContractRelation = "uses_contract";
-constexpr std::array<std::string_view, 6> kContractKinds = {"table", "label", "header", "claim", "env", "dynamo"};
+constexpr std::array<std::string_view, 8> kContractKinds = {"table", "label", "header", "claim",
+                                                            "env",   "dynamo", "grpc",   "topic"};
 // HTTP headers every service sends or reads for its own reasons
 // (`authorization`, `content-type`): two repos naming one are not evidence that
 // they talk to each other, so a standard header never bridges repositories.
@@ -973,7 +975,10 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // Claim reads through a decoder another file defines (claim_contracts.hpp)
   // become uses_contract facts here, once imports resolve.
   const auto claim_reads = resolve_claim_reads(raw_relations, scopes);
-  const std::array<std::span<const RawRelation>, 3> fact_sets{raw_relations, orm_facts, claim_reads};
+  // Go gRPC servers: a registration and its handler methods meet per package
+  // directory (messaging_contracts.hpp).
+  const auto grpc_servers = grpc_server_contract_facts(raw_relations);
+  const std::array<std::span<const RawRelation>, 4> fact_sets{raw_relations, orm_facts, claim_reads, grpc_servers};
   for (const bool providing : {true, false}) {
     for (const auto& relation : fact_sets | std::views::join) {
       if (relation.relation != (providing ? kProvidesContractRelation : kUsesContractRelation)) {
