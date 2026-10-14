@@ -6,6 +6,40 @@ The benchmark is [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882) (ARB,
 repository is checked out at its base commit, because ARB's released corpus is chunked
 and truncated and CGraph has to index the real tree.
 
+## bin-v0.9.1 (BM25 code-text search, CGR-25)
+
+Same harness and data pins as below, engine release bin-v0.9.1 (`cgraph --version`:
+`cgraph-native 0.1.0 (d761f0c)`), run with `bench/arb/run.sh --cgraph-bin-dir <release dir>
+--skip-baselines`. All 345 positive samples:
+
+| Group | n | R@5 | R@10 | R@20 | MRR | BCY@8k |
+|---|---:|---:|---:|---:|---:|---:|
+| overall | 345 | 0.4121 | 0.5348 | 0.6362 | 0.2787 | 0.4319 |
+| code2test | 106 | 0.2736 | 0.3632 | 0.4780 | 0.1875 | 0.2830 |
+| comment2context | 80 | 0.2313 | 0.4417 | 0.5083 | 0.2355 | 0.3229 |
+| trace2code | 101 | 0.7112 | 0.8168 | 0.8944 | 0.4140 | 0.6964 |
+| edit2ripple | 58 | 0.3937 | 0.4856 | 0.6523 | 0.2693 | 0.3937 |
+| 287-sample core (sample-weighted from the rows above) | 287 | | | 0.6330 | 0.2806 | 0.4396 |
+
+Against the CGR-24 gate:
+
+- **Recall@20 >= 0.6333.** 0.6362: above the published RepoMap by 0.0029 and the rerun by
+  0.0051. Both margins are inside the noise floor, so this is level with RepoMap, not a win.
+- **BCY@8k >= 0.3788.** 0.4319: above the published RepoMap by 0.0531 and the rerun by
+  0.0473, well outside the noise floor.
+
+Against the paper's RRF fusion of Qwen3-Embedding-8B and RepoMap (287-sample core: R@20
+0.7331, MRR 0.2713, BCY@8k 0.4884), CGraph is lower on R@20 and BCY@8k and level on MRR.
+The fusion is built from each method's stored top 20, so its MRR sees ranks 1-20 only
+(ARB `rank_fusion.py`); CGraph's MRR above uses its full ranking (0.2806 on the core).
+Measured over ranks 1-20, CGraph's core MRR is 0.2759, +0.0046 over the fusion, which is
+inside the noise floor.
+On trace2code the fusion reports R@20 0.8795 and MRR 0.2672; CGraph is higher on both
+(trace2code MRR over ranks 1-20: 0.4131).
+CGraph still abstains on 0 of 82 no-gold samples.
+
+The sections below record the first run, on bin-v0.8.3.
+
 ## Gate (CGR-24)
 
 All 345 positive samples:
