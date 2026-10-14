@@ -1,6 +1,6 @@
 {
   "name": "cgraph-mcp",
-  "version": "0.9.1",
+  "version": "0.9.3",
   "description": "CGraph code graph MCP server for coding agents; runs the verified native release for your platform",
   "mcpName": "io.github.Nxtsoft/cgraph",
   "license": "MIT",
