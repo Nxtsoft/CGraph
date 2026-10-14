@@ -43,8 +43,8 @@ struct RawCall {
   // parameters, destructured props and hook setters get called (`reject(e)`,
   // `onOpenChange(false)`, `setStatus(s)`), names that only coincide with a
   // project declaration, so such a call resolves on evidence alone (its own
-  // file, an import, a receiver naming its class) and never on a bare
-  // project-wide name match.
+  // file, a named import of the declaration, a receiver naming its class) and
+  // never on a bare project-wide name match or a file-level `imports_from`.
   bool in_closure = false;
 };
 

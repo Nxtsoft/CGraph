@@ -81,7 +81,8 @@ struct CallResolution {
   // refuses it, because a unique project method of that name is not evidence.
   std::size_t dropped_library_member = 0;
   // A call inside a closure (RawCall::in_closure) whose only candidate came from
-  // a bare name match -- a project-unique label with no import, or a unique
+  // a bare name match -- a project-unique label the caller's file does not
+  // import by name (a file-level `imports_from` is not enough), or a unique
   // method for an unknown receiver. Refused: the name is most often a parameter,
   // a prop or a local setter the closure was handed.
   std::size_t dropped_closure_guess = 0;

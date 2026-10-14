@@ -34,15 +34,15 @@ In JavaScript and TypeScript, the last function-valued argument of a call whose 
 ## ADDED Requirements
 
 ### Requirement: Calls inside closures keep a caller
-In JavaScript and TypeScript, a call inside an anonymous function that is not itself a call scope (an arrow that is neither a module-level `const f = () => {}` nor an HTTP route's inline handler) SHALL be attributed to the nearest enclosing function or method. With none, it SHALL be attributed to the enclosing class for a class-field arrow, else to the module-level variable whose initializer holds the closure when the extractor made a node for it, else to the file. Such an arrow SHALL still emit no node and SHALL NOT be a function scope for any other extraction. A call attributed this way SHALL resolve only on evidence: a declaration in the caller's own file, an `imports` / `imports_from` edge from the caller's file, or a receiver naming the owning class. A project-wide unique label without import evidence and a unique method for an unknown receiver SHALL NOT bind it; each such refusal SHALL be counted as `dropped_closure_guess`. Calls outside closures SHALL resolve as before.
+In JavaScript and TypeScript, a call inside an anonymous function that is not itself a call scope (an arrow that is neither a module-level `const f = () => {}` nor an HTTP route's inline handler, or a `function` / `function*` expression at module scope) SHALL be attributed to the nearest enclosing function or method. With none, it SHALL be attributed to the enclosing class for a class-field arrow, else to the module-level variable whose initializer holds the closure when the extractor made a node for it, else to the file. Such an arrow SHALL still emit no node and SHALL NOT be a function scope for any other extraction. A call attributed this way SHALL resolve only on evidence: a declaration in the caller's own file, an `imports` or `re_exports` edge from the caller's file to the resolved declaration itself, or a receiver naming the owning class. A module-level `imports_from` edge SHALL NOT count as evidence: it names a file, not the declaration, and the name a closure calls is most often a parameter, a destructured prop or a hook's return value. A project-wide unique label without such a named import and a unique method for an unknown receiver SHALL NOT bind it; each such refusal SHALL be counted as `dropped_closure_guess`. Calls outside closures SHALL resolve as before.
 
 #### Scenario: Effect closures in a module-level service object
 - **GIVEN** `export const ServiceLive = Layer.succeed(Tag, { merge: (id) => Effect.tryPromise({ try: async () => { await assertAccess(id); }, catch: (e) => toError(e) }) })`, `assertAccess` imported and `toError` declared in the same file
 - **THEN** `ServiceLive` CALLS `assertAccess` and `toError`, and no node is emitted for `merge`, `try` or `catch`
 
 #### Scenario: Test callbacks
-- **GIVEN** a test file with `describe('x', () => { it('y', async () => { expect(await assertAccess('a')).toBe('a'); }); })` and `assertAccess` imported
-- **THEN** the test file's node CALLS `assertAccess`
+- **GIVEN** a test file with `describe('x', () => { it('y', async () => { expect(await assertAccess('a')).toBe('a'); }); it('z', function () { audit('x'); }); })` and `assertAccess` and `audit` imported
+- **THEN** the test file's node CALLS `assertAccess` and `audit`
 
 #### Scenario: Closures inside a function and a class field
 - **GIVEN** `function load(ids) { return Promise.all(ids.map((id) => assertAccess(id))).then(() => audit('load')); }` and `class Handler { handle = (id) => assertAccess(id); }`
@@ -50,4 +50,5 @@ In JavaScript and TypeScript, a call inside an anonymous function that is not it
 
 #### Scenario: Names a closure is handed are not guessed
 - **GIVEN** closures calling a parameter `reject(...)`, a parameter `onDone()`, a destructured prop `onOpenChange(false)` and `cache.delete(key)` on a `Map`, and another file, not imported, declaring functions `reject`, `onDone`, `onOpenChange` and a class method `delete`
-- **THEN** none of those calls produces a CALLS edge, and `dropped_closure_guess` is 4
+- **AND** a file that imports `Store` (not `write`) from that same file and calls its parameter `write(key)` in a closure, where that file also declares a function `write`
+- **THEN** none of those calls produces a CALLS edge, and `dropped_closure_guess` is 5

@@ -404,6 +404,16 @@ void walk_node(
       child_call_scope = child_function_scope;
     }
   }
+  // A JS/TS `function () {}` / `function* () {}` expression is no function node
+  // (Graphify emits none) and never touched either scope, so inside a function
+  // its calls already belong to that function. At module scope they had no
+  // caller (`it('x', function () { f(); })`); give them the one a boundary arrow
+  // gets there.
+  if (child_call_scope.empty() && config.closure_call_scope) {
+    if (const std::string_view type = ts_node_type(node); type == "function_expression" || type == "generator_function") {
+      child_call_scope = config.closure_call_scope(node, context, scope_id, scope_kind, fragment);
+    }
+  }
   // Type-level declarations (TS interfaces, type aliases, enums). They carry a
   // `name` field and become first-class graph nodes like Graphify's, contained
   // by their file. They are not a call scope: a call lexically inside a type

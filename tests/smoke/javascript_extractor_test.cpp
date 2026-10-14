@@ -654,7 +654,8 @@ export { a as b } from "./named";
   // head-to-head missed (Effect `try:` closures in a module-level service
   // object, `it` callbacks) plus closures in a named function and a class field,
   // and the names a closure is handed (a parameter, a prop, an unknown receiver)
-  // that a decoy file also declares. The CALLS set must be exactly this: every
+  // that a decoy file also declares, once from a file that imports a different
+  // name from it. The CALLS set must be exactly this: every
   // closure call to a project symbol, and no edge to a decoy.
   {
     const auto result = cgraph::run_one_shot(CGRAPH_TS_CLOSURE_FIXTURE_DIR);
@@ -671,7 +672,8 @@ export { a as b } from "./named";
       calls.insert(source->kind + ":" + source->label + "->" + target->label);
     }
     const std::set<std::string> expected = {
-        "file:access.test.ts->assertAccess",                   // `it` callback in a test file
+        "file:access.test.ts->assertAccess",                   // `it` arrow callback in a test file
+        "file:access.test.ts->audit",                          // `it` function-expression callback
         "variable:ServiceLive->assertAccess",                   // Effect `try:` closure
         "variable:ServiceLive->audit",                          // transaction callback inside it
         "variable:ServiceLive->toError",                        // `catch:` closure, same-file callee
@@ -684,8 +686,10 @@ export { a as b } from "./named";
       return 1;
     }
     // The decoys' names were called only through a parameter, a prop and an
-    // unknown receiver; each was refused as a closure guess, not fabricated.
-    if (result.stats.calls.dropped_closure_guess != 4 || !result.stats.calls.balances()) return 1;
+    // unknown receiver; each was refused as a closure guess, not fabricated --
+    // including consumer.ts's `write` parameter, although consumer.ts imports
+    // (another name) from decoys.ts.
+    if (result.stats.calls.dropped_closure_guess != 5 || !result.stats.calls.balances()) return 1;
   }
 
   return 0;

@@ -15,3 +15,7 @@ export class Store {
     return key;
   }
 }
+
+export function write(key: string): string {
+  return key;
+}

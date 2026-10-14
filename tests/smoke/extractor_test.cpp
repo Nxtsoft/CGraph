@@ -249,7 +249,8 @@ def first_size_size():
 // inside a function that is the function; with none, whatever the language's
 // closure_call_scope names; a language without the hook drops them as before.
 // Calls handed down this way are marked in_closure; a named function declared
-// inside a closure is a scope of its own again.
+// inside a closure is a scope of its own again. A module-scope `function () {}`
+// expression (no node, no scope of its own) is treated like such an arrow.
 [[nodiscard]] bool check_closure_calls_keep_a_caller() {
   constexpr auto source = R"js(
 function outer() {
@@ -259,6 +260,7 @@ describe('s', () => {
   top();
   function named() { own(); }
 });
+it('t', function () { expr(); });
 )js";
   const cgraph::ExtractionContext context{.source_file = "c.js", .relative_path = "c.js", .source = source};
   const auto file_id = cgraph::make_id("c.js");
@@ -292,7 +294,8 @@ describe('s', () => {
     return calls;
   };
   const std::set<std::string> hooked = {
-      outer_id + "->forEach", outer_id + "->inside closure", file_id + "->top closure", named_id + "->own"};
+      outer_id + "->forEach", outer_id + "->inside closure", file_id + "->top closure", named_id + "->own",
+      file_id + "->expr closure"};
   // Without the hook only the module-scope closure's call is lost; `describe`
   // itself is a module-level call and has no caller either way.
   const std::set<std::string> unhooked = {outer_id + "->forEach", outer_id + "->inside closure", named_id + "->own"};

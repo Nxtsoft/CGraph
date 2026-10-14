@@ -710,7 +710,7 @@ int test_library_qualified_calls() {
 // defines. `v.size()` must not reach the project's only method named `size`,
 // while `r.Match()` (issue #44) still does. The same-file tier is untouched.
 // A closure's call (RawCall::in_closure) binds only on evidence: its own file,
-// an import, or a receiver naming the class. The bare-name tiers -- a unique
+// a named import of the declaration, or a receiver naming the class. The bare-name tiers -- a unique
 // project label with no import, a unique method for an unknown receiver -- are
 // refused for it (CGR-26), while the identical call outside a closure resolves
 // exactly as before.
@@ -722,6 +722,7 @@ int test_closure_calls_resolve_on_evidence() {
   const auto store = cgraph::make_id("/p/decoys.ts:Store");
   const auto store_delete = cgraph::make_id("/p/decoys.ts:Store::delete");
   const auto fetch_items = cgraph::make_id("/p/lib.ts:fetchItems");
+  const auto write_item = cgraph::make_id("/p/lib.ts:write");
   const auto local = cgraph::make_id("/p/ui.ts:local");
 
   const auto make_graph = [&] {
@@ -734,8 +735,11 @@ int test_closure_calls_resolve_on_evidence() {
     graph.nodes.push_back({.id = store, .label = "Store", .source_file = "/p/decoys.ts", .kind = "class"});
     graph.nodes.push_back({.id = store_delete, .label = "delete", .source_file = "/p/decoys.ts", .kind = "function"});
     graph.nodes.push_back({.id = fetch_items, .label = "fetchItems", .source_file = "/p/lib.ts", .kind = "function"});
+    graph.nodes.push_back({.id = write_item, .label = "write", .source_file = "/p/lib.ts", .kind = "function"});
     graph.edges.push_back({.source = store, .target = store_delete, .relation = "method"});
+    // ui.ts imports `fetchItems` from lib.ts by name, and so also imports from the module.
     graph.edges.push_back({.source = ui_file, .target = lib_file, .relation = "imports_from"});
+    graph.edges.push_back({.source = ui_file, .target = fetch_items, .relation = "imports"});
     return graph;
   };
   const auto calls_for = [&](bool in_closure) {
@@ -745,21 +749,25 @@ int test_closure_calls_resolve_on_evidence() {
          .in_closure = in_closure},
         {.caller_id = caller, .callee_label = "fetchItems", .source_file = "/p/ui.ts", .in_closure = in_closure},
         {.caller_id = caller, .callee_label = "local", .source_file = "/p/ui.ts", .in_closure = in_closure},
+        // `write` is lib.ts's, but ui.ts never imports it by name: a file-level
+        // `imports_from` does not say a closure's `write(...)` (a parameter) means it.
+        {.caller_id = caller, .callee_label = "write", .source_file = "/p/ui.ts", .in_closure = in_closure},
     };
   };
 
   auto closure_graph = make_graph();
   cgraph::CallResolution closure_outcomes;
   cgraph::resolve_raw_calls(closure_graph, calls_for(true), &closure_outcomes);
-  // Evidence binds: the imported module's function and the same-file sibling.
+  // Evidence binds: the function imported by name and the same-file sibling.
   if (!has_edge(closure_graph, caller, fetch_items, "CALLS") || !has_edge(closure_graph, caller, local, "CALLS")) {
     return 1;
   }
   // Bare-name guesses do not.
-  if (has_edge(closure_graph, caller, on_open, "CALLS") || has_edge(closure_graph, caller, store_delete, "CALLS")) {
+  if (has_edge(closure_graph, caller, on_open, "CALLS") || has_edge(closure_graph, caller, store_delete, "CALLS") ||
+      has_edge(closure_graph, caller, write_item, "CALLS")) {
     return 1;
   }
-  if (closure_outcomes.dropped_closure_guess != 2 || !closure_outcomes.balances()) {
+  if (closure_outcomes.dropped_closure_guess != 3 || !closure_outcomes.balances()) {
     return 1;
   }
 
@@ -768,6 +776,7 @@ int test_closure_calls_resolve_on_evidence() {
   cgraph::CallResolution body_outcomes;
   cgraph::resolve_raw_calls(body_graph, calls_for(false), &body_outcomes);
   if (!has_edge(body_graph, caller, on_open, "CALLS") || !has_edge(body_graph, caller, store_delete, "CALLS") ||
+      !has_edge(body_graph, caller, write_item, "CALLS") ||
       body_outcomes.dropped_closure_guess != 0 || !body_outcomes.balances()) {
     return 1;
   }

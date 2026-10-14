@@ -1124,11 +1124,17 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
         const auto& callee_file_id = file_id_for(source_file_by_id[target_id]);
         const auto symbols = imported_symbols.find(caller_file_id);
         const auto modules = imported_modules.find(caller_file_id);
+        const bool named_import = symbols != imported_symbols.end() && symbols->second.contains(target_id);
         const bool has_import_evidence =
-            (symbols != imported_symbols.end() && symbols->second.contains(target_id)) ||
-            (modules != imported_modules.end() && modules->second.contains(callee_file_id));
+            named_import || (modules != imported_modules.end() && modules->second.contains(callee_file_id));
         confidence = has_import_evidence ? Confidence::Extracted : Confidence::Inferred;
-        name_guess = !has_import_evidence;
+        // Only an import of THIS declaration names it. A file-level
+        // `imports_from` says the caller uses something from that module, not
+        // that a closure's `write(...)` or `saveFormulation(...)` -- usually a
+        // parameter, a destructured prop or a hook's return value -- is the
+        // module's declaration of that name (the same rule as the imported-
+        // candidate narrowing above).
+        name_guess = !named_import;
       }
     }
 
@@ -1259,7 +1265,8 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
       ++tally.dropped_unknown;
       continue;
     }
-    // A closure's call binds only on evidence. Closures are where a function's
+    // A closure's call binds only on evidence: its own file, a named import of
+    // the declaration, or a receiver naming the class. Closures are where a function's
     // parameters, destructured props and hook setters are called (`reject(e)`,
     // `onOpenChange(false)`, `setStatus(s)`), and a project declaration that
     // merely shares the name is not what the call means. On turing-webapp the
