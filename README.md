@@ -421,6 +421,20 @@ Changing a route's path or mount counts as removing the old route, so its caller
 
 ## Quick start
 
+### Claude Code plugin
+
+```sh
+claude plugin marketplace add Nxtsoft/CGraph
+claude plugin install cgraph@cgraph
+```
+
+The plugin registers the `cgraph` MCP server, the `cgraph` and `cgraph-enrich` skills and the
+pre-edit hook. On first use it downloads the release archive for your platform (Linux x64/arm64,
+macOS arm64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
+the plugin's data directory. It needs `node` and `tar` on `PATH`.
+
+### Release archive
+
 Download the current Linux x64 release and build your first graph:
 
 ```sh

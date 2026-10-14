@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cgraph": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/launcher/cgraph-launch.mjs", "cgraph-mcp"],
+      "env": { "CGRAPH_CACHE_DIR": "${CLAUDE_PLUGIN_DATA}" }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "cgraph",
+  "displayName": "CGraph",
+  "version": "0.8.3",
+  "description": "Code graph for coding agents: ranked symbol search, callers and callees, blast radius, token-budgeted context and cross-service impact, served by a resident per-project daemon over MCP.",
+  "author": { "name": "Nxtsoft", "url": "https://github.com/Nxtsoft" },
+  "homepage": "https://github.com/Nxtsoft/CGraph",
+  "repository": "https://github.com/Nxtsoft/CGraph",
+  "license": "MIT",
+  "keywords": ["code-graph", "mcp", "impact-analysis", "code-navigation", "context"]
+}

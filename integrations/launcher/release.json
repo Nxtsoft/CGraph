@@ -1,0 +1,18 @@
+{
+  "repository": "Nxtsoft/CGraph",
+  "tag": "bin-v0.8.3",
+  "assets": {
+    "linux-arm64": {
+      "name": "cgraph-linux-arm64.tar.gz",
+      "sha256": "03104ea5ba07f06c91c568f1ac64a764e7d542ed4b39805fb7203232e3a40149"
+    },
+    "linux-x64": {
+      "name": "cgraph-linux-x64.tar.gz",
+      "sha256": "d1d9ae87fae0de6693ac23ab0d7f78205a7b792791f8cefdc72b25ea60fb0361"
+    },
+    "macos-arm64": {
+      "name": "cgraph-macos-arm64.tar.gz",
+      "sha256": "42160bbb1c04f9cb2c9c8ca1e5573bc7c7cb12ff643e0efb031931e14d1e44d8"
+    }
+  }
+}

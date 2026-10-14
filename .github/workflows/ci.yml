@@ -37,6 +37,27 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+  launcher:
+    name: ${{ matrix.os }} / launcher
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Downloads the pinned release through the plugin/npm launcher and checks
+      # the checksum, race and refusal paths against the real GitHub release.
+      - name: Test launcher
+        run: node --test integrations/launcher/cgraph-launch.test.mjs
+
   fuzz-smoke:
     name: ubuntu-latest / fuzzers
     runs-on: ubuntu-latest
