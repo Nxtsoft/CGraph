@@ -22,6 +22,7 @@
 [What it produces](#what-it-produces) ·
 [Output formats](#output-formats) ·
 [Performance](#performance) ·
+[Retrieval benchmark](#retrieval-benchmark) ·
 [Languages](#languages) ·
 [Quick start](#quick-start) ·
 [Install & Setup](#install--setup) ·
@@ -103,6 +104,24 @@ The interactive viewer used to run an O(N²) force simulation in the browser on 
 | graph | time-to-settle **before** | **after** | per-frame repaint |
 | --- | --- | --- | --- |
 | 10,000 nodes | **35.2 s** (main thread pinned) | **~0 ms** (static layout) | **20–34× cheaper** (zoom/pan) |
+
+## Retrieval benchmark
+
+Scored on [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882) (427 samples, 25
+repositories, each checked out at its base commit) with the benchmark's own metric code,
+all 345 positive samples, release bin-v0.8.3:
+
+| Method | Recall@20 | MRR | BCY@8k |
+| --- | ---: | ---: | ---: |
+| **CGraph** | 0.5726 | **0.2553** | **0.3862** |
+| RepoMap (published) | 0.6333 | 0.2158 | 0.3788 |
+| Qwen3-Embedding-8B (published) | **0.7029** | 0.2336 | 0.3732 |
+| BM25 (published) | 0.4452 | 0.1520 | 0.2051 |
+
+CGraph has the board's highest MRR and BCY@8k and leads the `trace2code` task, but its
+Recall@20 is below RepoMap's and the embedding models'. CGraph does not abstain on
+no-gold samples. Per-task tables, pins and caveats:
+[bench/arb/RESULTS.md](bench/arb/RESULTS.md). Reproduce with `bench/arb/run.sh`.
 
 ## Languages
 
