@@ -1214,6 +1214,29 @@ int test_design_envelope() {
   return 0;
 }
 
+// relative_file: a file is outside the root only when its first relative
+// component is "..", never because a repo name merely starts with dots.
+int test_relative_file() {
+  const std::filesystem::path root = "/work/repo";
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {"/work/repo/src/app.py", "src/app.py"},
+      {"/work/repo/..foo/x.py", "..foo/x.py"},
+      {"/work/repo/...py", "...py"},
+      {"/work/other/x.py", "/work/other/x.py"},
+      {"/work/repo", "/work/repo"},
+      {"src/app.py", "src/app.py"},
+  };
+  for (const auto& [source, expected] : cases) {
+    if (const auto got = cgraph::relative_file(source, root); got != expected) {
+      return fail("relative_file(" + source + ") = " + got + ", want " + expected);
+    }
+  }
+  if (cgraph::relative_file("/work/repo/src/app.py", {}) != "/work/repo/src/app.py") {
+    return fail("an empty root must leave the path as it is");
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1221,7 +1244,7 @@ int main() {
                           test_budget_shedding, test_renderers, test_daemon_envelope, test_types_view,
                           test_types_view_schemas, test_types_budget_and_renderers, test_types_envelope, test_clones_view,
                           test_clones_envelope,
-                          test_design_view, test_design_envelope}) {
+                          test_design_view, test_design_envelope, test_relative_file}) {
     if (const int rc = test(); rc != 0) {
       return rc;
     }
