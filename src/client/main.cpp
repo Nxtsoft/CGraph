@@ -10,7 +10,7 @@
 namespace {
 
 void print_usage() {
-  std::cout << "Usage: cgraph-client [--root PATH] [--daemon PATH] <query|path|explain|impact|context|report|update|status|shutdown|remember|recall> [JSON params]\n"
+  std::cout << "Usage: cgraph-client [--root PATH] [--daemon PATH] <query|path|explain|impact|context|report|update|status|shutdown|remember|recall|co-change> [JSON params]\n"
                "       cgraph-client [--root PATH] cross-service '{\"file\": PATH, \"wait_ms\": N}'\n"
                "         the other services on the far side of each endpoint FILE serves or calls\n";
 }
@@ -58,13 +58,18 @@ int main(int argc, char** argv) {
 
   if (request.operation == "pre-edit") {
     // Claude Code PreToolUse hook: stdin is the hook input; print the hook
-    // output only when there is something to say. Always exit 0.
-    std::string text{std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>()};
-    const auto input = nlohmann::json::parse(text, nullptr, false);
+    // output only when there is something to say. Always exit 0: the hook
+    // must never block an edit, so a failure is reported on stderr only.
     const char* wait_env = std::getenv("CGRAPH_HOOK_WAIT_MS");
-    const auto wait = std::chrono::milliseconds(wait_env != nullptr ? std::atol(wait_env) : 3000);
-    if (const auto output = cgraph::pre_edit_hook_output(input, request, wait)) {
-      std::cout << output->dump() << '\n';
+    const auto budget = wait_env != nullptr ? std::chrono::milliseconds(std::atol(wait_env)) : cgraph::kHookDefaultBudget;
+    try {
+      std::string text{std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>()};
+      const auto input = nlohmann::json::parse(text, nullptr, false);
+      if (const auto output = cgraph::pre_edit_hook_output(input, request, budget)) {
+        std::cout << output->dump() << '\n';
+      }
+    } catch (const std::exception& failure) {
+      std::cerr << "cgraph pre-edit: " << failure.what() << '\n';
     }
     return 0;
   }

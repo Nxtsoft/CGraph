@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace cgraph {
 
@@ -32,6 +33,13 @@ struct ClientRequest {
   // `impact` and `path` cross the workspace; asks forwarded to member repos set
   // this false so a member never re-federates (which would recurse).
   bool federate = true;
+  // Whether a request that finds no daemon may start one. The pre-edit hook
+  // never does: starting a daemon builds a graph, which no single edit can
+  // wait for, and writes cgraph-out/ into the repository.
+  bool spawn = true;
+  // When set, no exchange with a daemon (this request's or a federated
+  // member's) runs past it: a busy or stopped daemon counts as unreachable.
+  std::optional<std::chrono::steady_clock::time_point> deadline;
 };
 
 struct ClientResult {
@@ -87,18 +95,32 @@ inline constexpr std::size_t kHookMaxContracts = 8;
 // ~4 characters per token estimate the report and context ops pack against.
 inline constexpr std::size_t kHookTokenBudget = 800;
 
+// How long the pre-edit hook may take, end to end, unless CGRAPH_HOOK_WAIT_MS
+// says otherwise: it runs before every edit.
+inline constexpr std::chrono::milliseconds kHookDefaultBudget{250};
+
+// The pre-edit hook's message for `file` (root-relative): the files section
+// (`neighbors`, `<path>: <reason>` lines) and, when `found` (cross_service_for_file)
+// has summary lines, the services section, within kHookTokenBudget. Service
+// rows outrank files; rows that do not fit are counted in one closing line,
+// files that do not fit are left out. Empty when there is nothing to say.
+[[nodiscard]] std::string pre_edit_context(const nlohmann::json& found, const std::string& file,
+                                           const std::vector<std::string>& neighbors);
+
 // A Claude Code PreToolUse hook for Edit, Write and MultiEdit: given the hook's
 // stdin JSON, the hook's stdout JSON (`hookSpecificOutput.additionalContext`),
-// or nothing when there is nothing to say. The context names, within
-// kHookTokenBudget, the files most likely to change with the edited lines (the
-// daemon's `co-change` op over the file's repository: the nearest `.git`, or
-// the workspace member holding the file) and, inside a workspace, the other
-// services behind the file's endpoints. Silent for a file outside any
-// repository, one the graph does not know, an edit whose text is not in the
-// file, or while the graph is still building (the services section still says
-// so). Never blocks an edit. `wait` bounds how long cold daemons are waited for.
+// or nothing when there is nothing to say. The context names the files most
+// likely to change with the edited lines (the daemon's `co-change` op over the
+// file's repository: the nearest `.git`, or the workspace member holding the
+// file) and, inside a workspace, the other services behind the file's
+// endpoints; the whole message stays within kHookTokenBudget. Only daemons
+// already running are asked (none is started, no build is waited for), and
+// everything shares one `budget`: when it runs out the hook says nothing.
+// Silent for a file outside any repository, one the graph does not know, an
+// edit whose text is not in the file, or while the graph is still building
+// (the services section still says so). Never blocks an edit.
 [[nodiscard]] std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_input,
                                                                  const ClientRequest& base,
-                                                                 std::chrono::milliseconds wait);
+                                                                 std::chrono::milliseconds budget);
 
 }  // namespace cgraph

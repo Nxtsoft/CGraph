@@ -1020,6 +1020,9 @@ target_link_libraries(cgraph_client_runtime_test
     cgraph::client_runtime
     cgraph::engine)
 
+target_compile_definitions(cgraph_client_runtime_test PRIVATE CGRAPH_TEST_GRAPHD="$<TARGET_FILE:graphd>")
+add_dependencies(cgraph_client_runtime_test graphd)
+
 cgraph_set_warnings(cgraph_client_runtime_test)
 cgraph_enable_sanitizers(cgraph_client_runtime_test)
 

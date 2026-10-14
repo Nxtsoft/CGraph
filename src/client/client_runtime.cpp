@@ -142,8 +142,9 @@ std::filesystem::path resolve_daemon_path(const std::filesystem::path& requested
 
 ClientRuntimeHooks default_client_runtime_hooks(const ClientRequest& request) {
   ClientRuntimeHooks hooks;
-  hooks.connect = [](const DaemonIdentity& identity, const nlohmann::json& frame) -> std::optional<nlohmann::json> {
-    return request_over_unix_socket(unix_socket_path(identity), frame);
+  hooks.connect = [deadline = request.deadline](const DaemonIdentity& identity,
+                                                const nlohmann::json& frame) -> std::optional<nlohmann::json> {
+    return request_over_unix_socket(unix_socket_path(identity), frame, deadline);
   };
   hooks.spawn = [daemon_path = resolve_daemon_path(request.daemon_path)](const DaemonIdentity& identity) {
     if (daemon_path.empty()) {
@@ -331,6 +332,10 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
       settle_building_answer(request, hooks, identity, frame, result);
       return result;
     }
+    if (!request.spawn) {
+      result.error = "no daemon is running for " + request.project_root.string() + " (this request starts none)";
+      return result;
+    }
     result.spawned = hooks.spawn(identity);
     if (!result.spawned) {
       result.error =
@@ -465,7 +470,8 @@ namespace {
 // whole file); none when an edit's text is not in the file.
 std::optional<std::vector<std::pair<std::size_t, std::size_t>>> edit_line_ranges(const nlohmann::json& hook_input,
                                                                                     std::string_view text) {
-  const auto tool = hook_input.value("tool_name", std::string{});
+  const auto tool_field = hook_input.find("tool_name");
+  const auto tool = tool_field != hook_input.end() && tool_field->is_string() ? tool_field->get<std::string>() : "";
   const auto tool_input = hook_input.value("tool_input", nlohmann::json::object());
   std::vector<std::pair<std::size_t, std::size_t>> ranges;
   if (tool == "Write" || !tool_input.is_object()) {
@@ -474,9 +480,13 @@ std::optional<std::vector<std::pair<std::size_t, std::size_t>>> edit_line_ranges
   // The line span of every place `old` occurs (the first only, unless the
   // edit replaces them all), counted in the file as it is before the edit.
   const auto locate = [&](const nlohmann::json& edit) {
-    const auto old = edit.is_object() ? edit.value("old_string", std::string{}) : std::string{};
+    if (!edit.is_object()) return;
+    const auto old_field = edit.find("old_string");
+    if (old_field == edit.end() || !old_field->is_string()) return;
+    const auto old = old_field->get<std::string>();
     if (old.empty()) return;
-    const bool all = edit.value("replace_all", false);
+    const auto all_field = edit.find("replace_all");
+    const bool all = all_field != edit.end() && all_field->is_boolean() && all_field->get<bool>();
     const auto old_lines = static_cast<std::size_t>(std::count(old.begin(), old.end(), '\n')) - (old.ends_with('\n') ? 1 : 0);
     std::size_t line = 1;
     std::size_t counted = 0;
@@ -489,7 +499,10 @@ std::optional<std::vector<std::pair<std::size_t, std::size_t>>> edit_line_ranges
     }
   };
   if (tool_input.contains("edits")) {
-    for (const auto& edit : tool_input.at("edits")) locate(edit);
+    const auto& edits = tool_input.at("edits");
+    if (edits.is_array()) {
+      for (const auto& edit : edits) locate(edit);
+    }
   } else {
     locate(tool_input);
   }
@@ -527,13 +540,70 @@ std::vector<std::string> co_change_lines(const ClientRequest& base, const std::f
 
 }  // namespace
 
+std::string pre_edit_context(const nlohmann::json& found, const std::string& file,
+                             const std::vector<std::string>& neighbors) {
+  // The whole message stays within kHookTokenBudget. The services section is
+  // placed first (its rows outrank the file list), then the files fill what is
+  // left; each section keeps the rows that fit.
+  std::size_t used = 0;
+  const auto room_for = [&](std::size_t chars) {
+    return estimate_report_tokens(used + chars) <= kHookTokenBudget;
+  };
+  std::string services;
+  const auto& summary = found.at("summary");
+  if (!summary.empty()) {
+    const bool crosses = found.value("crossings", std::size_t{0}) > 0;
+    const auto header = std::string("cgraph: ") +
+                        (crosses ? "editing " + found.value("file", std::string{}) + " crosses into other services"
+                                 : "could not fully check " + found.value("file", std::string{}) + " for other services") +
+                        " (" + found.value("workspace", std::string{}) + " workspace):";
+    const std::string footer = crosses ? "\nCheck those callers before changing a route, request or response shape." : "";
+    // Room kept for the line that counts rows left out.
+    constexpr std::size_t kOmittedLine = 64;
+    std::string rows;
+    std::size_t kept = 0;
+    for (const auto& line : summary) {
+      const auto row = "\n- " + line.get<std::string>();
+      if (!room_for(header.size() + rows.size() + row.size() + footer.size() + kOmittedLine)) break;
+      rows += row;
+      ++kept;
+    }
+    if (kept < summary.size()) {
+      rows += "\n- " + std::to_string(summary.size() - kept) + " more line(s) left out to stay within " +
+              std::to_string(kHookTokenBudget) + " tokens";
+    }
+    services = header + rows + footer;
+    used += services.size();
+  }
+  std::string files;
+  if (!neighbors.empty()) {
+    const auto header = "cgraph: files likely to change with " + file +
+                        " (open the ones your change affects):";
+    std::string rows;
+    for (const auto& line : neighbors) {
+      const auto row = "\n- " + line;
+      if (!room_for(header.size() + rows.size() + row.size() + 2)) break;
+      rows += row;
+    }
+    if (!rows.empty()) files = header + rows;
+  }
+  auto context = files;
+  if (!services.empty()) context += (context.empty() ? "" : "\n\n") + services;
+  return context;
+}
+
 std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_input, const ClientRequest& base,
-                                                   std::chrono::milliseconds wait) {
+                                                   std::chrono::milliseconds budget) {
+  const auto deadline = std::chrono::steady_clock::now() + budget;
   if (!hook_input.is_object()) {
     return std::nullopt;
   }
   const auto tool_input = hook_input.value("tool_input", nlohmann::json::object());
-  const auto file_text = tool_input.is_object() ? tool_input.value("file_path", std::string{}) : std::string{};
+  const auto path_field = tool_input.is_object() ? tool_input.find("file_path") : tool_input.end();
+  if (!tool_input.is_object() || path_field == tool_input.end() || !path_field->is_string()) {
+    return std::nullopt;
+  }
+  const auto file_text = path_field->get<std::string>();
   std::error_code error;
   if (file_text.empty() || !std::filesystem::is_regular_file(file_text, error)) {
     return std::nullopt;
@@ -559,39 +629,23 @@ std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_in
   if (root.empty()) {
     return std::nullopt;
   }
+  // One deadline for everything the hook asks, and only daemons already
+  // running are asked: none is started and no build is waited for.
   ClientRequest request = base;
   request.project_root = root;
-  request.build_wait = wait;
-  std::string services;
+  request.build_wait = std::chrono::milliseconds(0);
+  request.spawn = false;
+  request.deadline = deadline;
+
   const auto found = cross_service_for_file(request, file, kHookMaxContracts);
-  const auto& lines = found.at("summary");
-  if (!lines.empty()) {
-    const bool crosses = found.value("crossings", std::size_t{0}) > 0;
-    services = std::string("cgraph: ") +
-               (crosses ? "editing " + found.value("file", std::string{}) + " crosses into other services"
-                        : "could not fully check " + found.value("file", std::string{}) + " for other services") +
-               " (" + found.value("workspace", std::string{}) + " workspace):";
-    for (const auto& line : lines) {
-      services += "\n- " + line.get<std::string>();
-    }
-    if (crosses) services += "\nCheck those callers before changing a route, request or response shape.";
-  }
-  // The files that usually change with this one, as many as fit the budget
-  // the services section leaves.
-  std::string context;
   const auto neighbors = co_change_lines(request, root, file, hook_input);
-  if (!neighbors.empty()) {
-    const auto header = "cgraph: files likely to change with " + file.lexically_relative(root).generic_string() +
-                        " (open the ones your change affects):";
-    std::string listed;
-    for (const auto& line : neighbors) {
-      const auto grown = listed + "\n- " + line;
-      if (estimate_report_tokens(header.size() + grown.size() + 2 + services.size()) > kHookTokenBudget) break;
-      listed = grown;
-    }
-    if (!listed.empty()) context = header + listed;
+  // Past the deadline every unanswered ask failed for want of time, not for a
+  // reason worth showing: say nothing.
+  if (std::chrono::steady_clock::now() >= deadline) {
+    return std::nullopt;
   }
-  if (!services.empty()) context += (context.empty() ? "" : "\n\n") + services;
+
+  const auto context = pre_edit_context(found, file.lexically_relative(root).generic_string(), neighbors);
   if (context.empty()) {
     return std::nullopt;
   }
