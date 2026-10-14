@@ -1143,11 +1143,12 @@ std::string relative_file(const std::string& source_file, const std::filesystem:
     return source_file;
   }
   const auto relative = std::filesystem::path(source_file).lexically_normal().lexically_relative(root);
-  const auto text = relative.generic_string();
-  if (relative.empty() || text == "." || text.starts_with("..")) {
+  // Outside the root only when the FIRST component climbs; a repo file named
+  // `..foo/x.py` or `...py` merely starts with the characters.
+  if (relative.empty() || relative == "." || *relative.begin() == "..") {
     return source_file;
   }
-  return text;
+  return relative.generic_string();
 }
 
 TypesReport build_types_report(const GraphSnapshot& graph, const ReportRequest& request) {
