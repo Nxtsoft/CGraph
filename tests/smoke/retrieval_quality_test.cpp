@@ -63,6 +63,7 @@ int main() {
     }
     node.source_file = (repo_root / source_file).lexically_normal().string();
   }
+  portable_graph.code_generation = cgraph::next_code_generation();  // source paths changed on a copy
   cgraph::publish_graph_snapshot(state, std::move(portable_graph));
 
   struct Row {
