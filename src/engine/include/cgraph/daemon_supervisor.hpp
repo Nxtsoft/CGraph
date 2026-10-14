@@ -1,10 +1,33 @@
 #pragma once
 
+#include "cgraph/launch_agent.hpp"
+
 #include <filesystem>
 #include <string>
 #include <vector>
 
 namespace cgraph {
+
+// The supervisor runs on the platform's per-user service manager: launchd
+// LaunchAgents (<label>.plist) on macOS, systemd --user units (<label>.service,
+// plus <label>.timer for the periodic supervisor) on Linux. Labels are the same
+// on both, so discovery, reconcile and the socket identity do not change.
+#if defined(__linux__)
+inline constexpr const char* kUserServiceExtension = ".service";
+#else
+inline constexpr const char* kUserServiceExtension = ".plist";
+#endif
+
+// ~/Library/LaunchAgents on macOS; $XDG_CONFIG_HOME/systemd/user (default
+// ~/.config/systemd/user) on Linux.
+[[nodiscard]] std::filesystem::path default_user_service_dir();
+
+// The definition file `label` is stored under in dir.
+[[nodiscard]] std::filesystem::path user_service_file(const std::filesystem::path& dir, const std::string& label);
+
+// Write the platform definition for spec into dir without loading it. Returns
+// the definition path, or empty on failure.
+[[nodiscard]] std::filesystem::path write_user_service(const std::filesystem::path& dir, const LaunchAgentSpec& spec);
 
 // A repo cgraph tracks for background refresh: a project root whose .mcp.json
 // registers a cgraph MCP server. Keyed by the same canonical-root hash the daemon
@@ -19,7 +42,7 @@ struct TrackedRepo {
 struct SupervisorConfig {
   std::vector<std::filesystem::path> search_roots;  // scanned: each dir + its immediate children
   std::vector<std::filesystem::path> exclude;       // roots to skip (canonicalized on compare)
-  std::filesystem::path launch_agents_dir;          // where plists are written (default: ~/Library/LaunchAgents)
+  std::filesystem::path launch_agents_dir;          // where service definitions are written (default_user_service_dir())
   std::filesystem::path graphd_binary;              // absolute path to graphd (per-repo agents)
   std::filesystem::path cgraph_binary;              // absolute path to cgraph (supervisor agent runs `daemon sync`)
   int reconcile_interval_seconds = 300;             // supervisor StartInterval
@@ -44,8 +67,8 @@ struct ReconcilePlan {
     const std::vector<TrackedRepo>& discovered,
     const std::vector<std::string>& installed_hashes);
 
-// Root hashes of the managed per-repo LaunchAgents currently present in
-// launch_agents_dir (parsed from com.cgraph.graphd.<hash>.plist filenames).
+// Root hashes of the managed per-repo services currently present in
+// launch_agents_dir (parsed from com.cgraph.graphd.<hash><kUserServiceExtension>).
 [[nodiscard]] std::vector<std::string> installed_managed_hashes(
     const std::filesystem::path& launch_agents_dir);
 

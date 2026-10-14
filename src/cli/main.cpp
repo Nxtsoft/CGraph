@@ -88,7 +88,8 @@ void print_usage() {
       "  cgraph seam query --graph FUSED.json <query|path|explain|impact|context> [PARAMS_JSON]\n"
       "        run a read op against a fused seam graph (cross-service); read-only\n"
       "  cgraph daemon <install|sync|status|uninstall> [--search-root DIR] [--exclude DIR]\n"
-      "        keep a resident, auto-refreshing graphd per tracked repo (login LaunchAgents)\n"
+      "        keep a resident, auto-refreshing graphd per tracked repo (login LaunchAgents on macOS,\n"
+      "        systemd --user units on Linux)\n"
       "  cgraph skills <install|status|uninstall> [--source DIR] [--skills-dir DIR ...]\n"
       "        symlink the repo's host skills (integrations/skills/*) into host skill dirs\n"
       "  cgraph drain <install|status|uninstall> [--interval SECONDS] [--chunk-cap N]\n"
@@ -873,7 +874,7 @@ std::filesystem::path supervisor_config_path() {
 // (repeatable), --exclude PATH, --launch-agents-dir DIR, --graphd PATH,
 // --cgraph PATH, --interval SECONDS. Returns false on a malformed flag.
 [[nodiscard]] bool load_supervisor_config(int argc, char** argv, const char* argv0, cgraph::SupervisorConfig& config) {
-  config.launch_agents_dir = cgraph::default_launch_agents_dir();
+  config.launch_agents_dir = cgraph::default_user_service_dir();
   const auto self = current_executable_path(argv0);
   config.cgraph_binary = self;
   config.graphd_binary = resolve_graphd_binary(self);
@@ -921,12 +922,11 @@ std::filesystem::path supervisor_config_path() {
 
 // cgraph daemon <install|sync|status|uninstall> [flags]
 int run_daemon_command(int argc, char** argv) {
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__linux__)
   (void)argc;
   (void)argv;
-  std::cerr << "cgraph daemon: launchd-based supervision is only supported on macOS. "
-               "On this platform run `graphd --root PATH` directly (or supervise it "
-               "with your init system, e.g. a systemd user unit).\n";
+  std::cerr << "cgraph daemon: supervision needs launchd (macOS) or systemd --user (Linux). "
+               "On this platform run `graphd --root PATH` directly.\n";
   return 1;
 #endif
   const std::string sub = argc >= 3 ? argv[2] : "";
@@ -982,7 +982,13 @@ int run_daemon_command(int argc, char** argv) {
 
   if (sub == "install") {
     if (!cgraph::supervisor_install(config)) {
-      std::cerr << "cgraph daemon install: failed (check launchctl and binary paths)\n";
+      std::cerr << "cgraph daemon install: failed (check "
+#if defined(__linux__)
+                   "systemctl --user"
+#else
+                   "launchctl"
+#endif
+                   " and binary paths)\n";
       return 1;
     }
     std::cout << "installed supervisor (" << cgraph::kSupervisorLabel << ") + per-repo daemons\n";
@@ -991,7 +997,7 @@ int run_daemon_command(int argc, char** argv) {
 
   // uninstall
   if (!cgraph::supervisor_uninstall(config)) {
-    std::cerr << "cgraph daemon uninstall: some plists could not be removed\n";
+    std::cerr << "cgraph daemon uninstall: some service definitions could not be removed\n";
     return 1;
   }
   std::cout << "uninstalled supervisor and all managed daemons\n";

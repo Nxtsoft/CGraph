@@ -128,8 +128,10 @@ int main() {
   expect(ok, contains(sup_plist, "<string>sync</string>"), "supervisor plist runs daemon sync");
 
   // --- Plist file layer: write, discover installed, uninstall removes. ---
-  const auto written = cgraph::write_launch_agent(config.launch_agents_dir, repo_spec);
-  expect(ok, !written.empty() && fs::exists(written), "write_launch_agent writes the plist");
+  const auto written = cgraph::write_user_service(config.launch_agents_dir, repo_spec);
+  expect(ok, !written.empty() && fs::exists(written), "write_user_service writes the definition");
+  expect(ok, written == cgraph::user_service_file(config.launch_agents_dir, repo_spec.label),
+         "the definition lands where user_service_file says");
   const auto installed = cgraph::installed_managed_hashes(config.launch_agents_dir);
   expect(ok, std::find(installed.begin(), installed.end(), "abc123") != installed.end(),
          "installed_managed_hashes reports the written per-repo agent");
@@ -145,13 +147,15 @@ int main() {
 
   // uninstall removes all managed plists (launchctl bootout of never-loaded labels
   // is a harmless no-op; the file removal is the observable residue guarantee).
-  (void)cgraph::write_launch_agent(config.launch_agents_dir, sup_spec);
+  (void)cgraph::write_user_service(config.launch_agents_dir, sup_spec);
   const bool uninstalled = cgraph::supervisor_uninstall(config);
   expect(ok, uninstalled, "uninstall reports success");
   expect(ok, cgraph::installed_managed_hashes(config.launch_agents_dir).empty(),
          "uninstall leaves no managed per-repo plist");
-  expect(ok, !fs::exists(config.launch_agents_dir / (std::string(cgraph::kSupervisorLabel) + ".plist")),
-         "uninstall removes the supervisor plist");
+  expect(ok, !fs::exists(cgraph::user_service_file(config.launch_agents_dir, cgraph::kSupervisorLabel)),
+         "uninstall removes the supervisor definition");
+  expect(ok, !fs::exists(config.launch_agents_dir / (std::string(cgraph::kSupervisorLabel) + ".timer")),
+         "uninstall removes the supervisor timer (Linux) and leaves nothing behind");
 
   fs::remove_all(base);
   return ok ? 0 : 1;
