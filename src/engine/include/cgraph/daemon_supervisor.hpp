@@ -42,6 +42,11 @@ struct TrackedRepo {
 struct SupervisorConfig {
   std::vector<std::filesystem::path> search_roots;  // scanned: each dir + its immediate children
   std::vector<std::filesystem::path> exclude;       // roots to skip (canonicalized on compare)
+  // The subset of search_roots / exclude given as --search-root / --exclude flags.
+  // Only these are written into the supervisor's scheduled `daemon sync`; roots
+  // from supervisor.json are re-read by that sync, so edits to the file apply.
+  std::vector<std::filesystem::path> flag_search_roots;
+  std::vector<std::filesystem::path> flag_exclude;
   std::filesystem::path launch_agents_dir;          // where service definitions are written (default_user_service_dir())
   std::filesystem::path graphd_binary;              // absolute path to graphd (per-repo agents)
   std::filesystem::path cgraph_binary;              // absolute path to cgraph (supervisor agent runs `daemon sync`)
@@ -98,6 +103,15 @@ struct SupervisorSyncResult {
 // Write + bootstrap the supervisor agent (which runs `cgraph daemon sync` at load
 // and every reconcile_interval_seconds), then run one sync. Returns false on error.
 [[nodiscard]] bool supervisor_install(const SupervisorConfig& config);
+
+// The supervisor's service: runs `cgraph daemon sync` plus the flag roots and
+// excludes (absolute), at load and every reconcile_interval_seconds.
+[[nodiscard]] LaunchAgentSpec supervisor_spec(const SupervisorConfig& config);
+
+// The labels uninstall removes, in order: the supervisor first (so a scheduled
+// sync cannot re-add daemons mid-uninstall), then every managed per-repo daemon
+// whose definition is in launch_agents_dir.
+[[nodiscard]] std::vector<std::string> supervisor_uninstall_labels(const SupervisorConfig& config);
 
 // Boot out + remove the supervisor agent and every managed per-repo agent.
 // Reverses supervisor_install / supervisor_sync — leaves no managed plist behind.

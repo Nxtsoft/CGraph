@@ -902,8 +902,10 @@ std::filesystem::path supervisor_config_path() {
     const std::string arg = argv[index];
     if (arg == "--search-root" && index + 1 < argc) {
       config.search_roots.emplace_back(argv[++index]);
+      config.flag_search_roots.emplace_back(config.search_roots.back());
     } else if (arg == "--exclude" && index + 1 < argc) {
       config.exclude.emplace_back(argv[++index]);
+      config.flag_exclude.emplace_back(config.exclude.back());
     } else if (arg == "--launch-agents-dir" && index + 1 < argc) {
       config.launch_agents_dir = argv[++index];
     } else if (arg == "--graphd" && index + 1 < argc) {

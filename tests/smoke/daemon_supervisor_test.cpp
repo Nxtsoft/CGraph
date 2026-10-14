@@ -145,9 +145,43 @@ int main() {
   expect(ok, dry.plan.to_add.size() == 1 && dry.plan.to_remove.size() == 1,
          "dry sync adds the discovered repo and removes the orphaned abc123 plist");
 
+  // --- Supervisor spec: only flag roots travel into the scheduled sync. Roots
+  // from supervisor.json must not be frozen there, or editing the file later
+  // would never drop a root. ---
+  cgraph::SupervisorConfig flagged = config;
+  const auto file_root = base / "from-supervisor-json";
+  const auto flag_root = tree;
+  const auto file_exclude = base / "file-excluded";
+  const auto flag_exclude = tree / "repo_other";
+  flagged.search_roots = {file_root, flag_root};
+  flagged.flag_search_roots = {flag_root};
+  flagged.exclude = {file_exclude, flag_exclude};
+  flagged.flag_exclude = {flag_exclude};
+  const auto sync_args = cgraph::supervisor_spec(flagged).program_args;
+  const auto has_pair = [&](const std::string& flag, const fs::path& value) {
+    for (std::size_t i = 0; i + 1 < sync_args.size(); ++i) {
+      if (sync_args[i] == flag && sync_args[i + 1] == fs::absolute(value).string()) return true;
+    }
+    return false;
+  };
+  expect(ok, sync_args.size() >= 3 && sync_args[1] == "daemon" && sync_args[2] == "sync",
+         "supervisor runs `daemon sync`");
+  expect(ok, has_pair("--search-root", flag_root), "a --search-root flag reaches the scheduled sync");
+  expect(ok, has_pair("--exclude", flag_exclude), "an --exclude flag reaches the scheduled sync");
+  expect(ok, !has_pair("--search-root", file_root), "a supervisor.json root is not frozen into the sync");
+  expect(ok, !has_pair("--exclude", file_exclude), "a supervisor.json exclude is not frozen into the sync");
+  expect(ok, sync_args.size() == 7, "exactly one flag root and one flag exclude are forwarded");
+
+  // --- Uninstall order: supervisor first, then every managed per-repo daemon. ---
+  (void)cgraph::write_user_service(config.launch_agents_dir, sup_spec);
+  const auto order = cgraph::supervisor_uninstall_labels(config);
+  expect(ok, !order.empty() && order.front() == cgraph::kSupervisorLabel,
+         "uninstall stops the supervisor before any per-repo daemon");
+  expect(ok, std::find(order.begin() + 1, order.end(), repo_spec.label) != order.end(),
+         "uninstall then removes the installed per-repo daemon");
+
   // uninstall removes all managed plists (launchctl bootout of never-loaded labels
   // is a harmless no-op; the file removal is the observable residue guarantee).
-  (void)cgraph::write_user_service(config.launch_agents_dir, sup_spec);
   const bool uninstalled = cgraph::supervisor_uninstall(config);
   expect(ok, uninstalled, "uninstall reports success");
   expect(ok, cgraph::installed_managed_hashes(config.launch_agents_dir).empty(),

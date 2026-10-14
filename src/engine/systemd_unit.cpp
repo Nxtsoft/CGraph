@@ -195,13 +195,4 @@ bool systemctl_user_disable(const std::filesystem::path& unit_dir, const std::st
 #endif
 }
 
-bool systemctl_user_is_active(const std::string& label) {
-#if defined(__linux__)
-  return run_service_command({"systemctl", "--user", "is-active", "--quiet", label + ".service"}) == 0;
-#else
-  (void)label;
-  return false;
-#endif
-}
-
 }  // namespace cgraph

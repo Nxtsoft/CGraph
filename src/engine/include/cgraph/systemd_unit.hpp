@@ -46,7 +46,4 @@ namespace cgraph {
 // `systemctl --user daemon-reload`, so the manager forgets removed unit files.
 [[nodiscard]] bool systemctl_user_reload();
 
-// True when `<label>.service` is active. False on non-Linux.
-[[nodiscard]] bool systemctl_user_is_active(const std::string& label);
-
 }  // namespace cgraph
