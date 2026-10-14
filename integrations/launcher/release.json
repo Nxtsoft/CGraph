@@ -1,22 +1,22 @@
 {
   "repository": "Nxtsoft/CGraph",
-  "tag": "bin-v0.9.1",
+  "tag": "bin-v0.9.3",
   "assets": {
     "linux-arm64": {
       "name": "cgraph-linux-arm64.tar.gz",
-      "sha256": "f2be69528cf5552106f06e50b3043a30ec6406c03278c5c57d93fb2b7f4a5b43"
+      "sha256": "2becc1bc3a0d56b97b11d4a92eb478b26bf5508c5096a4a1fc3f28e620a95024"
     },
     "linux-x64": {
       "name": "cgraph-linux-x64.tar.gz",
-      "sha256": "3bcaf38eef0c82f41fe0c4c5e9a2ff60efc7eb24e58ab519b783be41729f1e9d"
+      "sha256": "d019331319d58a87465f1d48281d16cd54f57fa41ed51135ba344d17ffa53184"
     },
     "macos-arm64": {
       "name": "cgraph-macos-arm64.tar.gz",
-      "sha256": "242a8060a2e15609e2c60c037004a34ff131196603466a566395b034c7777781"
+      "sha256": "713b1ac124e86b26cfec322b619cf76e6982881d8494242574423f4b6521361c"
     },
     "macos-x64": {
       "name": "cgraph-macos-x64.tar.gz",
-      "sha256": "7ad81f802ac6c6a3463f9d92e96f0a9da2f02c84a22a6d81138d2074459a7525"
+      "sha256": "84c076c5b8b44afa51af71f01686a84e5445fe9f786def901565f7b3cfb1e2fe"
     }
   }
 }
