@@ -21,9 +21,9 @@ Retrieval recipe (fixed for every sample; nothing reads the gold labels):
   itself needs an applicable diff, and ARB's anchor diffs are excerpts (30 of 58
   end in ``...[truncated]``) that ``git apply`` rejects.
 * Each op's node list is collapsed to files in first-hit order and the lists are
-  merged with reciprocal-rank fusion (k=60). Files the task already hands the
-  agent (comment2context ``given_file``, edit2ripple ``anchor_file``) are dropped,
-  since the task asks for *other* files. The ranking is restricted to ARB's
+  merged with reciprocal-rank fusion (k=60). Files the query names (a given or
+  anchor file) stay in the ranking, as they do for every ARB evaluator and in the
+  engine's own results. The ranking is restricted to ARB's
   official ``all_files`` candidate set (the files in the released corpus snapshot),
   the same candidate set every leaderboard method ranks.
 
@@ -130,16 +130,6 @@ def query_text(sample: dict[str, Any]) -> str:
         elif isinstance(value, list):
             parts.extend(str(item) for item in value if isinstance(item, str))
     return "\n".join(parts)
-
-
-def given_paths(sample: dict[str, Any]) -> set[str]:
-    query = sample.get("query") or {}
-    task = sample.get("task_type")
-    if task == "comment2context":
-        return {p for p in (query.get("given_file"), query.get("path")) if p}
-    if task == "edit2ripple":
-        return {query["anchor_file"]} if query.get("anchor_file") else set()
-    return set()
 
 
 class SnapshotIndex:
@@ -304,8 +294,7 @@ def retrieve(daemon: Daemon, sample: dict[str, Any], index: SnapshotIndex, files
         impacted.sort(key=lambda node: int(node.get("depth") or 0))  # stable: per-seed order kept within a depth
         lists["impact_changed"] = node_files(impacted, prefix)
 
-    drop = given_paths(sample)
-    fused = [path for path in rrf(list(lists.values())) if path not in drop]
+    fused = rrf(list(lists.values()))
     in_candidates = [path for path in fused if path in files]
     ops["dropped_non_candidate"] = len(fused) - len(in_candidates)
     return {"ranked_files": in_candidates, "lists": {k: v[:50] for k, v in lists.items()}, "ops": ops}

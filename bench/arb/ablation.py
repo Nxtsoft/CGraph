@@ -1,8 +1,8 @@
 """Post-hoc op ablation for a CGraph ARB run.
 
 cgraph_eval.py stores each op's file list (first 50 files) per sample. This
-re-fuses subsets of those lists the same way the adapter does (RRF, given files
-dropped, corpus candidates only) and reports Recall@20 and MRR. Because the
+re-fuses subsets of those lists the same way the adapter does (RRF, corpus
+candidates only) and reports Recall@20 and MRR. Because the
 stored lists are cut at 50 files, the "all ops" row approximates the scored run
 rather than reproducing it exactly, and MRR only sees the first 50 files.
 Diagnostic only: the scored recipe was fixed before these numbers existed.
@@ -11,7 +11,6 @@ Diagnostic only: the scored recipe was fixed before these numbers existed.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -37,7 +36,6 @@ def main(argv: list[str] | None = None) -> int:
     sys.path.insert(0, str(args.arb_src / "src"))
     from agent_retrieval_bench import bcy_curve  # noqa: PLC0415
 
-    samples = {s["id"]: s for task in POSITIVE_TASKS for s in cgraph_eval.load_samples(args.data, task)}
     manifest = merged_manifest(args.data, bcy_curve)
     candidates: dict[Path, set[str]] = {}
     scores: dict[str, dict[str, list[tuple[float, float]]]] = defaultdict(lambda: defaultdict(list))
@@ -47,11 +45,10 @@ def main(argv: list[str] | None = None) -> int:
             if chunks not in candidates:
                 candidates[chunks] = set(bcy_curve.load_file_texts(chunks))
             files = candidates[chunks]
-            drop = cgraph_eval.given_paths(samples[row["sample_id"]])
             gold = set(row["gold_files"])
             for name, pick in VARIANTS.items():
                 lists = pick(row["cgraph"]["lists"])
-                ranked = [p for p in cgraph_eval.rrf(lists) if p not in drop and p in files] if lists else []
+                ranked = [p for p in cgraph_eval.rrf(lists) if p in files] if lists else []
                 recall = len(gold & set(ranked[:20])) / len(gold)
                 rr = next((1.0 / i for i, p in enumerate(ranked, start=1) if p in gold), 0.0)
                 scores[name]["overall"].append((recall, rr))

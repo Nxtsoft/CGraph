@@ -56,6 +56,47 @@ def score_method(details: list[dict[str, Any]], cache, bcy_curve) -> dict[str, A
     return out
 
 
+def given_files(sample: dict[str, Any]) -> set[str]:
+    """Files the query itself hands the agent: comment2context's given file, edit2ripple's anchor."""
+    query = sample.get("query") or {}
+    if sample.get("task_type") == "comment2context":
+        return {p for p in (query.get("given_file"), query.get("path")) if p}
+    if sample.get("task_type") == "edit2ripple":
+        return {query["anchor_file"]} if query.get("anchor_file") else set()
+    return set()
+
+
+def score_given_excluded(details: list[dict[str, Any]], samples: dict[str, Any], cache, bcy_curve) -> dict[str, Any]:
+    """Every method scored identically on its stored top 20 with the query's given/anchor file removed.
+
+    Only the top 20 of each ranking is stored, so after removal a list can hold 19 files:
+    Recall@20 here is a lower bound and MRR only sees ranks within the stored 20.
+    """
+    positives = []
+    for d in details:
+        if not d.get("gold_files"):
+            continue
+        drop = given_files(samples[d["sample_id"]])
+        positives.append({**d, "top_files": [p for p in d.get("top_files") or [] if p not in drop]})
+    bcy = bcy_curve.evaluate_run("method", "", Path("."), positives, cache, BUDGETS)
+    out: dict[str, Any] = {}
+    for name in ("overall", "comment2context", "edit2ripple"):
+        rows = positives if name == "overall" else [d for d in positives if d["task_type"] == name]
+        bcy_row = bcy["overall"] if name == "overall" else bcy["by_task"].get(name, {})
+
+        def rr(d: dict[str, Any]) -> float:
+            gold = set(d["gold_files"])
+            return next((1.0 / i for i, p in enumerate(d["top_files"], start=1) if p in gold), 0.0)
+
+        out[name] = {
+            "samples": len(rows),
+            "Recall@20 (lower bound)": mean([len(set(d["gold_files"]) & set(d["top_files"][:20])) / len(set(d["gold_files"])) for d in rows]),
+            "MRR@20": mean([rr(d) for d in rows]),
+            "BCY@8k": float(bcy_row.get("BCY@8000", 0.0)),
+        }
+    return out
+
+
 def selective(details: list[dict[str, Any]]) -> dict[str, Any]:
     no_gold = [d for d in details if d.get("no_gold")]
     natural = [d for d in no_gold if d.get("organic")]
@@ -85,6 +126,21 @@ def render_markdown(result: dict[str, Any]) -> str:
             row = entry["metrics"][group]
             lines.append(f"| {label} | {row['samples']} | " + " | ".join(f"{row[c]:.4f}" for c in cols) + " |")
         lines.append("")
+    lines += [
+        "### Diagnostic: given/anchor file removed from every method's stored top 20",
+        "",
+        "Not the ARB protocol. Same rule applied to every row; Recall@20 is a lower bound and MRR sees ranks 1-20 only.",
+        "",
+        "| Method | Group | n | Recall@20 (lower bound) | MRR@20 | BCY@8k |",
+        "|---|---|---:|---:|---:|---:|",
+    ]
+    for group in ("overall", "comment2context", "edit2ripple"):
+        for label, entry in result["methods"].items():
+            row = entry["given_excluded"][group]
+            lines.append(
+                f"| {label} | {group} | {row['samples']} | {row['Recall@20 (lower bound)']:.4f} | {row['MRR@20']:.4f} | {row['BCY@8k']:.4f} |"
+            )
+    lines.append("")
     for label, entry in result["methods"].items():
         if "selective" in entry:
             s = entry["selective"]
@@ -113,6 +169,11 @@ def main(argv: list[str] | None = None) -> int:
     from agent_retrieval_bench import bcy_curve  # noqa: PLC0415
 
     cache = bcy_curve.CorpusFileCache(merged_manifest(args.data, bcy_curve))
+    samples = {
+        row["id"]: row
+        for task in POSITIVE_TASKS
+        for row in read_jsonl(args.data / "benchmark" / f"v2_{task}" / "samples.jsonl")
+    }
     result: dict[str, Any] = {"methods": {}}
     for spec in args.methods:
         label, location = spec.split("=", 1)
@@ -125,7 +186,10 @@ def main(argv: list[str] | None = None) -> int:
                 details.extend(read_jsonl(path))
             elif task != "abstention":
                 parser.error(f"{path} missing")
-        entry = {"metrics": score_method(details, cache, bcy_curve)}
+        entry = {
+            "metrics": score_method(details, cache, bcy_curve),
+            "given_excluded": score_given_excluded(details, samples, cache, bcy_curve),
+        }
         if any(d.get("no_gold") for d in details):
             entry["selective"] = selective(details)
         result["methods"][label] = entry
