@@ -4,6 +4,7 @@
 #include "cgraph/file_cache.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/graph_builder.hpp"
+#include "cgraph/pipeline.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/semantic_fragment_validation.hpp"
 
@@ -2445,6 +2446,58 @@ int main() {
     if (field_ctx["focus"].value("id", std::string{}) != "EditorState::member7") {
       return 112;
     }
+  }
+
+  // --- context packs the same entries wherever the project is checked out
+  //     (CGR-33). One tree is built at a short root and at one 142 characters
+  //     longer; a budget that sheds candidates must pack identical entries
+  //     in identical order, because an entry names its file relative to the
+  //     root (given once, at top level) and is charged only for that. ---
+  {
+    const auto base = fs::temp_directory_path() / "cgraph-context-root-test";
+    fs::remove_all(base);
+    const auto short_root = base / "s";
+    const auto long_root = base / std::string(120, 'l') / "a-much-deeper-checkout";
+    std::string hub = "from pkg.leaves import *\n\n\ndef hub():\n";
+    std::string leaves;
+    for (int i = 0; i < 40; ++i) {
+      const auto name = "leaf_" + std::to_string(i);
+      hub += "    " + name + "()\n";
+      leaves += "def " + name + "():\n    value = " + std::to_string(i) +
+                "\n    return value * value\n\n\n";
+    }
+    for (const auto& root : {short_root, long_root}) {
+      fs::create_directories(root / "pkg");
+      std::ofstream(root / "pkg" / "__init__.py", std::ios::binary) << "";
+      std::ofstream(root / "pkg" / "hub.py", std::ios::binary) << hub;
+      std::ofstream(root / "pkg" / "leaves.py", std::ios::binary) << leaves;
+    }
+
+    const auto context_at = [](const fs::path& root, const std::string& packing) {
+      cgraph::DaemonState s;
+      s.project_root = fs::weakly_canonical(root);
+      cgraph::publish_graph_snapshot(s, cgraph::run_one_shot(s.project_root).graph);
+      return cgraph::handle_daemon_request(
+          s, cgraph::make_request("context", {{"id", "pkg_hub_py_hub"}, {"budget", 1500}, {"packing", packing}}))["result"];
+    };
+    for (const auto* packing : {"greedy", "knapsack"}) {
+      const auto near = context_at(short_root, packing);
+      const auto far = context_at(long_root, packing);
+      if (near["focus"].value("source_file", std::string{}) != "pkg/hub.py" ||
+          near.value("root", std::string{}) != fs::weakly_canonical(short_root).generic_string() ||
+          far.value("root", std::string{}) != fs::weakly_canonical(long_root).generic_string()) {
+        return 120;  // entries name files relative to the root, given once
+      }
+      if (!near.value("truncated", false) || near["included"].size() < 3U) {
+        return 121;  // the budget must shed, or packing cannot depend on the path
+      }
+      if (near["focus"] != far["focus"] || near["included"] != far["included"] ||
+          near.value("omitted", 0U) != far.value("omitted", 0U) ||
+          near.value("tokens_used", 0U) != far.value("tokens_used", 0U)) {
+        return 122;  // same tree, same entries, same order, same charge
+      }
+    }
+    fs::remove_all(base);
   }
 
   return 0;

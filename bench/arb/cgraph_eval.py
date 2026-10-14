@@ -236,6 +236,10 @@ def changed_symbols(sample: dict[str, Any], index: SnapshotIndex) -> list[str]:
 
 
 def node_files(nodes: list[dict[str, Any]], prefix: str) -> list[str]:
+    """Repo-relative files of `nodes`. `prefix` is the root plus "/" for ops whose
+    source_file is absolute (query, impact) and "" for context, whose entries are
+    already relative to its top-level `root`; a path still absolute after the
+    prefix is outside the snapshot and skipped."""
     out: list[str] = []
     seen: set[str] = set()
     for node in nodes:
@@ -243,6 +247,8 @@ def node_files(nodes: list[dict[str, Any]], prefix: str) -> list[str]:
         if not source.startswith(prefix):
             continue
         rel = source[len(prefix) :]
+        if not rel or rel.startswith("/"):
+            continue
         if rel not in seen:
             seen.add(rel)
             out.append(rel)
@@ -271,7 +277,7 @@ def retrieve(daemon: Daemon, sample: dict[str, Any], index: SnapshotIndex, files
     ops: dict[str, Any] = {}
 
     ctx = daemon.call("context", {"q": text, "budget": CONTEXT_BUDGET})
-    lists["context_text"] = node_files(context_nodes(ctx), prefix)
+    lists["context_text"] = node_files(context_nodes(ctx), "")
     ops["context_text_included"] = len(ctx.get("included") or [])
 
     qry = daemon.call("query", {"q": text, "limit": QUERY_LIMIT})
@@ -283,7 +289,7 @@ def retrieve(daemon: Daemon, sample: dict[str, Any], index: SnapshotIndex, files
     ops["anchor_seeds"] = seeds
     for i, seed in enumerate(seeds):
         res = daemon.call("context", {"id": seed, "budget": CONTEXT_BUDGET})
-        lists[f"context_anchor_{i}"] = node_files(context_nodes(res), prefix)
+        lists[f"context_anchor_{i}"] = node_files(context_nodes(res), "")
 
     if sample.get("task_type") == "edit2ripple":
         changed = changed_symbols(sample, index)

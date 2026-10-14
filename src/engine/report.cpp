@@ -1087,20 +1087,6 @@ constexpr std::size_t kMarkdownDeclarationCap = 8;
   return union_size == 0 ? 0.0 : static_cast<double>(shared) / static_cast<double>(union_size);
 }
 
-// Root-relative when the file lies under the project root, as module names are;
-// an absolute path per row would spend the budget on the same prefix.
-[[nodiscard]] std::string relative_file(const std::string& source_file, const fs::path& root) {
-  if (root.empty()) {
-    return source_file;
-  }
-  const auto relative = fs::path(source_file).lexically_normal().lexically_relative(root);
-  const auto text = relative.generic_string();
-  if (relative.empty() || text == "." || text.starts_with("..")) {
-    return source_file;
-  }
-  return text;
-}
-
 [[nodiscard]] std::string file_line(const TypeRef& type) {
   return type.source_file + (type.line > 0 ? ":" + std::to_string(type.line) : std::string{});
 }
@@ -1151,6 +1137,18 @@ constexpr std::size_t kMarkdownDeclarationCap = 8;
 }
 
 }  // namespace
+
+std::string relative_file(const std::string& source_file, const std::filesystem::path& root) {
+  if (root.empty()) {
+    return source_file;
+  }
+  const auto relative = std::filesystem::path(source_file).lexically_normal().lexically_relative(root);
+  const auto text = relative.generic_string();
+  if (relative.empty() || text == "." || text.starts_with("..")) {
+    return source_file;
+  }
+  return text;
+}
 
 TypesReport build_types_report(const GraphSnapshot& graph, const ReportRequest& request) {
   TypesReport report;

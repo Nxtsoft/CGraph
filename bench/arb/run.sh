@@ -99,9 +99,10 @@ fi
 REV="$("$BIN_DIR/cgraph" --version | awk '{gsub(/[()]/, "", $3); print $3}')"
 RUN="runs/cgraph-$REV"
 if [[ "$LIMIT" != 0 ]]; then RUN="$RUN-limit$LIMIT"; SKIP_BASELINES=1; fi
-# Snapshots are checked out at a fixed absolute path: `context` charges each entry's
-# absolute source_file against its token budget, so the checkout path's length changes
-# how many entries pack. A fixed path keeps runs comparable across machines and WORK dirs.
+# Snapshots are checked out at a fixed absolute path. Since CGR-33 `context` names files
+# relative to the snapshot root, so its packing no longer depends on where the snapshot
+# sits (engines before it charged the absolute path); the fixed path keeps runs of those
+# older engines comparable too.
 SNAPSHOTS="${ARB_SNAPSHOTS:-/tmp/cgraph-arb-snapshots}"
 python3 "$HERE/cgraph_eval.py" --arb-src arb --data data --cache repos --work "$SNAPSHOTS" \
   --out "$RUN" --cgraph-bin-dir "$BIN_DIR" --jobs "$JOBS" --limit "$LIMIT"
