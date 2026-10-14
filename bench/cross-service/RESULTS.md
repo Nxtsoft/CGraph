@@ -119,7 +119,7 @@ Raw outputs of a run: `<work>/predictions/*.jsonl`, `<work>/results.md`, `<work>
 
 ## Results: CGraph with gRPC and topic contracts (CGR-28 part B)
 
-`cgraph --version`: `cgraph-native 0.1.0 (bin-v0.9.1-5-gc848cf8)`, run with
+`cgraph --version`: `cgraph-native 0.1.0 (bin-v0.9.1-9-g8c7322f)`, run with
 `run.sh --skip-baselines`; GitNexus and codebase-memory-mcp rows are the bin-v0.9.1 run above
 (their output does not depend on CGraph; same pinned corpus and tool versions).
 
