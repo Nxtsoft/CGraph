@@ -36,6 +36,8 @@
 
 #ifndef _WIN32
 #include <cerrno>
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -58,7 +60,19 @@ constexpr std::chrono::seconds kConnectionIoTimeout{5};
 // read/write cannot hang the single serve thread indefinitely. Best-effort:
 // a failed setsockopt only means the fallback (no timeout) for that one socket,
 // which is logged; it never aborts serving.
+// Where send() has no MSG_NOSIGNAL (macOS), the socket itself must not raise
+// SIGPIPE on a write to a peer that hung up.
+void suppress_sigpipe(int fd) {
+#if !defined(MSG_NOSIGNAL) && defined(SO_NOSIGPIPE)
+  const int on = 1;
+  (void)::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#else
+  (void)fd;
+#endif
+}
+
 void apply_connection_timeout(int conn) {
+  suppress_sigpipe(conn);
   timeval tv{};
   tv.tv_sec = static_cast<time_t>(kConnectionIoTimeout.count());
   tv.tv_usec = 0;
@@ -80,10 +94,34 @@ void apply_connection_timeout(int conn) {
   return true;
 }
 
-[[nodiscard]] bool write_all(int fd, const std::uint8_t* data, std::size_t size) {
+using Deadline = std::optional<std::chrono::steady_clock::time_point>;
+
+// Waits until `fd` is ready for `events` or `deadline` passes; true when ready.
+// No deadline: always ready (the blocking call itself waits).
+[[nodiscard]] bool ready_before(int fd, short events, const Deadline& deadline) {
+  if (!deadline) return true;
+  while (true) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(*deadline - std::chrono::steady_clock::now());
+    if (left.count() <= 0) return false;
+    pollfd entry{.fd = fd, .events = events, .revents = 0};
+    const int got = ::poll(&entry, 1, static_cast<int>(left.count()));
+    if (got > 0) return true;
+    if (got == 0 || errno != EINTR) return false;
+  }
+}
+
+[[nodiscard]] bool write_all(int fd, const std::uint8_t* data, std::size_t size, const Deadline& deadline = {}) {
   std::size_t sent = 0;
   while (sent < size) {
+    if (!ready_before(fd, POLLOUT, deadline)) return false;
+    // A peer that hung up (a client that gave up at its deadline, a daemon
+    // that went away) is a failed write, never a SIGPIPE that kills this
+    // process: MSG_NOSIGNAL here, SO_NOSIGPIPE on the socket where it is absent.
+#ifdef MSG_NOSIGNAL
+    const auto written = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
+#else
     const auto written = ::write(fd, data + sent, size - sent);
+#endif
     if (written < 0) {
       if (errno == EINTR) {
         continue;
@@ -95,9 +133,10 @@ void apply_connection_timeout(int conn) {
   return true;
 }
 
-[[nodiscard]] bool read_exact(int fd, std::uint8_t* data, std::size_t size) {
+[[nodiscard]] bool read_exact(int fd, std::uint8_t* data, std::size_t size, const Deadline& deadline = {}) {
   std::size_t received = 0;
   while (received < size) {
+    if (!ready_before(fd, POLLIN, deadline)) return false;
     const auto got = ::read(fd, data + received, size - received);
     if (got == 0) {
       return false;  // peer closed early
@@ -115,9 +154,9 @@ void apply_connection_timeout(int conn) {
 
 // Reads one length-prefixed frame (4-byte little-endian length + body) and
 // decodes it, reusing the shared protocol codec.
-[[nodiscard]] std::optional<nlohmann::json> read_frame(int fd) {
+[[nodiscard]] std::optional<nlohmann::json> read_frame(int fd, const Deadline& deadline = {}) {
   std::array<std::uint8_t, 4> header{};
-  if (!read_exact(fd, header.data(), header.size())) {
+  if (!read_exact(fd, header.data(), header.size(), deadline)) {
     return std::nullopt;
   }
   const auto length =
@@ -134,15 +173,46 @@ void apply_connection_timeout(int conn) {
   }
   std::vector<std::uint8_t> frame(static_cast<std::size_t>(length) + 4);
   std::memcpy(frame.data(), header.data(), header.size());
-  if (length > 0 && !read_exact(fd, frame.data() + 4, length)) {
+  if (length > 0 && !read_exact(fd, frame.data() + 4, length, deadline)) {
     return std::nullopt;
   }
   return decode_frame(frame);
 }
 
-[[nodiscard]] bool write_frame(int fd, const nlohmann::json& payload) {
+// Whether the client on `conn` has already hung up (a hook that gave up at its
+// deadline while this request waited in the queue). The thin client never
+// half-closes: it writes its frame and reads the answer, so a hang-up seen
+// right after its frame was read means nobody will read the answer.
+[[nodiscard]] bool peer_hung_up(int conn) {
+#ifdef POLLRDHUP
+  pollfd entry{.fd = conn, .events = POLLIN | POLLRDHUP, .revents = 0};
+  return ::poll(&entry, 1, 0) > 0 && (entry.revents & (POLLHUP | POLLRDHUP | POLLERR)) != 0;
+#else
+  pollfd entry{.fd = conn, .events = POLLIN, .revents = 0};
+  if (::poll(&entry, 1, 0) <= 0) return false;
+  if ((entry.revents & (POLLHUP | POLLERR)) != 0) return true;
+  char byte = 0;
+  return (entry.revents & POLLIN) != 0 && ::recv(conn, &byte, 1, MSG_PEEK | MSG_DONTWAIT) == 0;
+#endif
+}
+
+[[nodiscard]] bool write_frame(int fd, const nlohmann::json& payload, const Deadline& deadline = {}) {
   const auto frame = encode_frame(payload);
-  return write_all(fd, frame.data(), frame.size());
+  return write_all(fd, frame.data(), frame.size(), deadline);
+}
+
+// The thin client uses one connection per request: read it, answer it. A
+// request whose client has already gone is counted and not computed, so
+// abandoned asks do not hold up the ones behind them.
+void answer_connection(DaemonState& state, int conn) {
+  if (const auto request = read_frame(conn)) {
+    if (peer_hung_up(conn)) {
+      ++state.op_stats.abandoned;
+      return;
+    }
+    const auto response = handle_daemon_request(state, *request);
+    (void)write_frame(conn, response);
+  }
 }
 
 #endif  // !_WIN32
@@ -157,7 +227,8 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions) {
   return 1;
 }
 
-std::optional<nlohmann::json> request_over_unix_socket(const std::filesystem::path&, const nlohmann::json&) {
+std::optional<nlohmann::json> request_over_unix_socket(const std::filesystem::path&, const nlohmann::json&,
+                                                       std::optional<std::chrono::steady_clock::time_point>) {
   return std::nullopt;
 }
 
@@ -293,10 +364,7 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
     }
     last_activity = FileWatcherClock::now();
     apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
-    if (const auto request = read_frame(conn)) {
-      const auto response = handle_daemon_request(state, *request);
-      (void)write_frame(conn, response);
-    }
+    answer_connection(state, conn);
     ::close(conn);
   }
   ::close(listen_fd);
@@ -1014,11 +1082,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
     last_activity = FileWatcherClock::now();
     apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
-    // The thin client uses one connection per request: read it, answer it, close.
-    if (const auto request = read_frame(conn)) {
-      const auto response = handle_daemon_request(state, *request);
-      (void)write_frame(conn, response);
-    }
+    answer_connection(state, conn);
     ::close(conn);
   }
 
@@ -1059,13 +1123,25 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
 
 std::optional<nlohmann::json> request_over_unix_socket(
     const std::filesystem::path& socket_path,
-    const nlohmann::json& request) {
+    const nlohmann::json& request,
+    std::optional<std::chrono::steady_clock::time_point> deadline) {
+  if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+    return std::nullopt;
+  }
   const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) {
     return std::nullopt;
   }
+  suppress_sigpipe(fd);
   sockaddr_un addr{};
   if (!fill_sockaddr(addr, socket_path.string())) {
+    ::close(fd);
+    return std::nullopt;
+  }
+  // With a deadline nothing blocks: a connect the listener's full backlog
+  // would park fails at once (EAGAIN), and every read and write waits in
+  // poll() for what is left of the deadline.
+  if (deadline && ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK) != 0) {
     ::close(fd);
     return std::nullopt;
   }
@@ -1074,8 +1150,8 @@ std::optional<nlohmann::json> request_over_unix_socket(
     return std::nullopt;
   }
   std::optional<nlohmann::json> response;
-  if (write_frame(fd, request)) {
-    response = read_frame(fd);
+  if (write_frame(fd, request, deadline)) {
+    response = read_frame(fd, deadline);
   }
   ::close(fd);
   return response;

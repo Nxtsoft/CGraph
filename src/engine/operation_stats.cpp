@@ -15,7 +15,7 @@ namespace cgraph {
 namespace {
 
 constexpr std::array<const char*, kDaemonOpCount> kOpNames = {
-    "query", "path", "explain", "impact", "context", "update", "status", "shutdown", "remember", "recall", "report",
+    "query", "path", "explain", "impact", "context", "update", "status", "shutdown", "remember", "recall", "report", "co-change",
 };
 
 // Human-readable duration: ms under a second, seconds under a minute, otherwise
@@ -226,6 +226,7 @@ nlohmann::json op_stats_json(const DaemonOpStats& stats) {
       {"context_zero_hits", stats.context_zero_hits},
       {"recall_zero_hits", stats.recall_zero_hits},
       {"not_ready", stats.not_ready},
+      {"abandoned", stats.abandoned},
       {"query_routes",
        {{"entity", stats.query_route_entity},
         {"structural", stats.query_route_structural},

@@ -1032,6 +1032,9 @@ target_link_libraries(cgraph_client_runtime_test
     cgraph::client_runtime
     cgraph::engine)
 
+target_compile_definitions(cgraph_client_runtime_test PRIVATE CGRAPH_TEST_GRAPHD="$<TARGET_FILE:graphd>")
+add_dependencies(cgraph_client_runtime_test graphd)
+
 cgraph_set_warnings(cgraph_client_runtime_test)
 cgraph_enable_sanitizers(cgraph_client_runtime_test)
 
@@ -1180,3 +1183,9 @@ cgraph_set_warnings(cgraph_data_contracts_test)
 cgraph_enable_sanitizers(cgraph_data_contracts_test)
 
 add_test(NAME cgraph_data_contracts_test COMMAND cgraph_data_contracts_test)
+
+add_executable(cgraph_co_change_test co_change_test.cpp)
+target_link_libraries(cgraph_co_change_test PRIVATE cgraph::engine nlohmann_json::nlohmann_json)
+cgraph_set_warnings(cgraph_co_change_test)
+cgraph_enable_sanitizers(cgraph_co_change_test)
+add_test(NAME cgraph_co_change_test COMMAND cgraph_co_change_test)

@@ -8,7 +8,7 @@
     {
       "name": "cgraph",
       "source": "./integrations",
-      "description": "MCP graph tools (query, explain, impact, path, context, report), the cgraph and cgraph-enrich skills, and a pre-edit hook that names the services on the far side of the endpoints a file serves or calls.",
+      "description": "MCP graph tools (query, explain, impact, path, context, report), the cgraph and cgraph-enrich skills, and a pre-edit hook that names the files most likely to change with an edit and the services on the far side of the endpoints a file serves or calls.",
       "category": "development"
     }
   ]

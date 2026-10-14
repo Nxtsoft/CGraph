@@ -154,10 +154,10 @@ struct BuildStats {
 };
 
 // The daemon request types, in dispatch order. Count is the array sentinel.
-// Remember/Recall (session memory) and Report (structural reports) are appended
-// before Count so the durable ledger's kSubstantiveOps (Query..Context) and its
-// schema stay unchanged.
-enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Report, Count };
+// Remember/Recall (session memory), Report (structural reports) and CoChange
+// (the pre-edit hook's file list) are appended before Count so the durable
+// ledger's kSubstantiveOps (Query..Context) and its schema stay unchanged.
+enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Report, CoChange, Count };
 
 inline constexpr std::size_t kDaemonOpCount = static_cast<std::size_t>(DaemonOp::Count);
 
@@ -245,6 +245,10 @@ struct DaemonOpStats {
   // "not ready", not a retrieval miss -- otherwise the zero-hit rate lies during
   // the rebuild that every logic-version bump triggers.
   std::size_t not_ready = 0;
+  // Requests whose client hung up before they were computed (a hook that gave
+  // up at its deadline while the daemon was busy): skipped, not answered, and
+  // counted nowhere else. Live status only, not in the durable ledger.
+  std::size_t abandoned = 0;
   // Query route adoption (route-query-by-intent): how query-op responses resolved.
   std::size_t query_route_entity = 0;
   std::size_t query_route_structural = 0;

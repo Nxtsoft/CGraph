@@ -14,6 +14,7 @@ add_library(cgraph_engine STATIC
   dedup.cpp
   contract_schemas.cpp
   claim_contracts.cpp
+  co_change.cpp
   contracts.cpp
   cpp_extractor.cpp
   data_contracts.cpp

@@ -1,8 +1,11 @@
 #include "cgraph/client_runtime.hpp"
 
 #include "cgraph/change_context.hpp"
+#include "cgraph/daemon_endpoint.hpp"
+#include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_server.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 #include "cgraph/workspace.hpp"
 
 #include <atomic>
@@ -18,7 +21,9 @@
 
 #ifndef _WIN32
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -600,6 +605,62 @@ int main() {
     if (method_text.find("src/svc.ts calls GET /api/v1/ping, served by api src/server.ts") == std::string::npos) {
       return fail("class method caller", method ? *method : nlohmann::json{});
     }
+    // An edit with its text: the hook first names the files that change with
+    // the edited function (page.ts calls loadStats), then the services.
+    {
+      const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "Edit"},
+                                 {"tool_input", {{"file_path", (web / "src" / "stats.ts").generic_string()},
+                                                 {"old_string", "  return fetch('/api/v1/stats');"},
+                                                 {"new_string", "  return fetch('/api/v1/stats?all=1');"}}}};
+      const auto both = cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+      const auto text = both ? both->at("hookSpecificOutput").value("additionalContext", std::string{}) : std::string{};
+      const auto files_at = text.find("cgraph: files likely to change with src/stats.ts");
+      const auto services_at = text.find("src/stats.ts calls GET /api/v1/stats, served by api");
+      if (files_at != 0 || text.find("\n- src/page.ts: calls `loadStats`") == std::string::npos ||
+          services_at == std::string::npos || services_at < files_at) {
+        return fail("co-change and services together", both ? *both : nlohmann::json{});
+      }
+      // An Edit whose text is not in the file changes nothing: only the services speak.
+      nlohmann::json absent = input;
+      absent["tool_input"]["old_string"] = "not in this file";
+      const auto services_only = cgraph::pre_edit_hook_output(absent, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+      if (!services_only || services_only->dump().find("files likely to change") != std::string::npos ||
+          services_only->dump().find("served by api") == std::string::npos) {
+        return fail("edit text not in the file", services_only ? *services_only : nlohmann::json{});
+      }
+    }
+    // A repository in no workspace: the hook still names the files that change
+    // with the edit, from that repository's own graph, and nothing about services.
+    {
+      const auto lone = fs::temp_directory_path() / "cgraph_client_runtime_lone_repo";
+      fs::remove_all(lone);
+      fs::create_directories(lone / ".git");
+      write_file(lone / "src" / "helper.ts", "export function helper(n: number) {\n  return n + 1;\n}\n");
+      write_file(lone / "src" / "use.ts", "import { helper } from './helper';\nexport function twice() {\n  return helper(helper(1));\n}\n");
+      write_file(lone / "src" / "helper.test.ts", "import { helper } from './helper';\ntest('one', () => expect(helper(1)).toBe(2));\n");
+      std::thread lone_server([&] { (void)cgraph::run_daemon_server(lone, options); });
+      const auto identity = cgraph::daemon_identity_for(lone);
+      const auto hooks = cgraph::default_client_runtime_hooks(cgraph::ClientRequest{.project_root = lone});
+      for (int attempt = 0; attempt < 200 && !hooks.connect(identity, cgraph::make_request("status", nlohmann::json::object()));
+           ++attempt) {
+        std::this_thread::sleep_for(25ms);
+      }
+      const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "MultiEdit"},
+                                 {"tool_input", {{"file_path", (lone / "src" / "helper.ts").generic_string()},
+                                                 {"edits", {{{"old_string", "  return n + 1;"}, {"new_string", "  return n + 2;"}}}}}}};
+      const auto hook = cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
+      const auto text = hook ? hook->at("hookSpecificOutput").value("additionalContext", std::string{}) : std::string{};
+      cgraph::ClientRequest stop{.project_root = lone, .operation = "shutdown"};
+      (void)cgraph::send_thin_client_request(stop, cgraph::default_client_runtime_hooks(stop));
+      lone_server.join();
+      fs::remove_all(lone);
+      if (text.find("cgraph: files likely to change with src/helper.ts") != 0 ||
+          text.find("\n- src/use.ts: calls `helper`") == std::string::npos ||
+          text.find("\n- src/helper.test.ts: ") == std::string::npos || text.find("workspace") != std::string::npos ||
+          cgraph::estimate_report_tokens(text) > cgraph::kHookTokenBudget) {
+        return fail("lone repository", hook ? *hook : nlohmann::json{});
+      }
+    }
     // A relative file is relative to the root, wherever the client runs.
     const auto relative = cgraph::cross_service_for_file(cgraph::ClientRequest{.project_root = api}, "src/routes/stats.ts");
     if (relative.value("crossings", 0) < 1) return fail("relative file", relative);
@@ -632,6 +693,121 @@ int main() {
     if (!finish(true)) {
       return 1;
     }
+  }
+#endif
+  // The hook's whole message, services rows included, stays within the token
+  // budget; rows that do not fit are counted, and files fill what is left.
+  {
+    nlohmann::json found{{"file", "src/routes.ts"}, {"workspace", "shop"}, {"crossings", 60},
+                         {"summary", nlohmann::json::array()}};
+    for (int i = 0; i < 60; ++i) {
+      found["summary"].push_back("src/routes.ts serves GET /api/v1/items/" + std::to_string(i) + ", called from web " +
+                                 std::string(150, 'a') + ".ts:" + std::to_string(i) + " (load" + std::to_string(i) + ")");
+    }
+    const std::vector<std::string> files{"src/a.ts: calls `x`", "src/b.ts: calls `y`"};
+    const auto crowded = cgraph::pre_edit_context(found, "src/routes.ts", files);
+    if (cgraph::estimate_report_tokens(crowded) > cgraph::kHookTokenBudget ||
+        crowded.find("more line(s) left out to stay within 800 tokens") == std::string::npos ||
+        crowded.find("GET /api/v1/items/0,") == std::string::npos) {
+      std::cerr << "crowded hook message: " << cgraph::estimate_report_tokens(crowded) << " tokens\n" << crowded << '\n';
+      return 1;
+    }
+    found["summary"] = nlohmann::json::array({"src/routes.ts serves GET /api/v1/items, called from web src/items.ts:3 (load)"});
+    const auto roomy = cgraph::pre_edit_context(found, "src/routes.ts", files);
+    if (roomy.find("cgraph: files likely to change with src/routes.ts") != 0 || roomy.find("\n- src/b.ts: calls `y`") == std::string::npos ||
+        roomy.find("left out") != std::string::npos || roomy.find("crosses into other services") == std::string::npos) {
+      std::cerr << "roomy hook message:\n" << roomy << '\n';
+      return 1;
+    }
+  }
+
+#ifndef _WIN32
+  // The pre-edit hook only asks daemons already running, all within one
+  // deadline. A real graphd binary is available to it throughout, so a spawn
+  // would succeed if the hook tried one.
+  {
+    namespace fs = std::filesystem;
+    using clock = std::chrono::steady_clock;
+    const auto repo = fs::temp_directory_path() / "cgraph_client_runtime_hook_deadline";
+    fs::remove_all(repo);
+    fs::create_directories(repo / ".git");
+    write_file(repo / "src" / "helper.ts", "export function helper(n: number) {\n  return n + 1;\n}\n");
+    write_file(repo / "src" / "use.ts", "import { helper } from './helper';\nexport function twice() {\n  return helper(helper(1));\n}\n");
+    (void)set_environment("CGRAPH_DAEMON_PATH", CGRAPH_TEST_GRAPHD);
+    const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "Edit"},
+                               {"tool_input", {{"file_path", (repo / "src" / "helper.ts").generic_string()},
+                                               {"old_string", "  return n + 1;"}, {"new_string", "  return n + 2;"}}}};
+    const auto status = [&] {
+      return cgraph::request_over_unix_socket(cgraph::unix_socket_path(cgraph::daemon_identity_for(repo)),
+                                              cgraph::make_request("status", nlohmann::json::object()));
+    };
+    const auto hook_ms = [&](std::chrono::milliseconds budget, std::optional<nlohmann::json>& out) {
+      const auto started = clock::now();
+      out = cgraph::pre_edit_hook_output(input, cgraph::ClientRequest{}, budget);
+      return std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - started).count();
+    };
+    const auto fail = [&](const std::string& what, const std::optional<nlohmann::json>& got, long long ms) {
+      std::cerr << "hook deadline: " << what << " (" << ms << " ms): " << (got ? got->dump() : "silent") << '\n';
+      fs::remove_all(repo);
+      return 1;
+    };
+    // No daemon: silent at once, and nothing started or written.
+    std::optional<nlohmann::json> cold;
+    const auto cold_ms = hook_ms(cgraph::kHookDefaultBudget, cold);
+    std::this_thread::sleep_for(500ms);
+    if (cold || cold_ms >= 100 || status() || fs::exists(repo / "cgraph-out")) {
+      return fail("cold repository spawned, spoke or was slow", cold, cold_ms);
+    }
+    // A running daemon answers within the budget.
+    const auto pid = ::fork();
+    if (pid == 0) {
+      if (const int devnull = ::open("/dev/null", O_RDWR); devnull >= 0) {
+        ::dup2(devnull, STDOUT_FILENO);
+        ::dup2(devnull, STDERR_FILENO);
+      }
+      ::execl(CGRAPH_TEST_GRAPHD, CGRAPH_TEST_GRAPHD, "--root", repo.c_str(), nullptr);
+      std::_Exit(127);
+    }
+    const auto stop_daemon = [&] {
+      ::kill(pid, SIGCONT);
+      ::kill(pid, SIGTERM);
+      int wstatus = 0;
+      (void)::waitpid(pid, &wstatus, 0);
+    };
+    for (int attempt = 0; attempt < 400; ++attempt) {
+      if (const auto answer = status(); answer && (*answer)["result"].value("build_state", std::string{}) == "ready") break;
+      std::this_thread::sleep_for(25ms);
+    }
+    std::optional<nlohmann::json> warm;
+    const auto warm_ms = hook_ms(std::chrono::milliseconds(2000), warm);
+    if (!warm || warm->dump().find("src/use.ts: calls `helper`") == std::string::npos) {
+      stop_daemon();
+      return fail("warm daemon", warm, warm_ms);
+    }
+    // A stopped daemon accepts the connection and never answers: the hook
+    // gives up at its deadline and says nothing.
+    ::kill(pid, SIGSTOP);
+    std::optional<nlohmann::json> wedged;
+    const auto wedged_ms = hook_ms(std::chrono::milliseconds(300), wedged);
+    if (wedged || wedged_ms < 250 || wedged_ms > 500) {
+      stop_daemon();
+      return fail("stopped daemon", wedged, wedged_ms);
+    }
+    // Resumed, the daemon answers a client that already hung up: the write
+    // fails, and the daemon (no SIGPIPE) goes on serving.
+    ::kill(pid, SIGCONT);
+    std::this_thread::sleep_for(500ms);
+    int wstatus = 0;
+    const bool exited = ::waitpid(pid, &wstatus, WNOHANG) == pid;
+    std::optional<nlohmann::json> after;
+    const auto after_ms = exited ? 0 : hook_ms(std::chrono::milliseconds(2000), after);
+    if (!exited) stop_daemon();
+    if (exited || !after) {
+      std::cerr << "daemon after a client gave up: " << (exited ? "exited, signal " + std::to_string(WIFSIGNALED(wstatus) ? WTERMSIG(wstatus) : 0) : "silent") << '\n';
+      return fail("daemon after a client gave up", after, after_ms);
+    }
+    (void)remove_environment("CGRAPH_DAEMON_PATH");
+    fs::remove_all(repo);
   }
 #endif
 

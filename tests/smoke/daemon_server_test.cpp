@@ -473,6 +473,43 @@ int main() {
   expect(ok, after_stall && (*after_stall)["ok"] == true,
          "daemon serve loop survived a stalled half-frame reader");
 
+  // A request whose client hung up while the daemon was busy is skipped: not
+  // computed, not answered, counted as abandoned. A peer stalled mid-header
+  // keeps the single serve loop busy while the second client sends a whole
+  // query and closes; once the stalled peer goes, the query is found abandoned.
+  {
+    const auto ops_of = [&] {
+      const auto status = request_with_retry(socket_path, cgraph::make_request("status"));
+      return status ? (*status)["result"].value("ops", nlohmann::json::object()) : nlohmann::json::object();
+    };
+    const auto before = ops_of();
+    const int busy = raw_connect(socket_path);
+    expect(ok, busy >= 0, "raw connect for the busy peer");
+    const std::array<std::uint8_t, 2> partial{0x10, 0x00};
+    (void)::write(busy, partial.data(), partial.size());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));  // the daemon is now reading `busy`
+    const int gone = raw_connect(socket_path);  // queued in the listen backlog
+    expect(ok, gone >= 0, "raw connect for the abandoning client");
+    const auto frame = cgraph::encode_frame(cgraph::make_request("query", {{"q", "anything"}}));
+    (void)::write(gone, frame.data(), frame.size());
+    ::close(gone);
+    ::close(busy);
+    nlohmann::json after;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      after = ops_of();
+      if (after.value("abandoned", 0) > before.value("abandoned", 0)) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    expect(ok, after.value("abandoned", 0) == before.value("abandoned", 0) + 1,
+           "a request whose client hung up is counted as abandoned");
+    expect(ok, after.value("query_count", 0) == before.value("query_count", 0),
+           "an abandoned query is not computed");
+    // A live client is still answered.
+    const auto live = request_with_retry(socket_path, cgraph::make_request("query", {{"q", "anything"}}));
+    expect(ok, live && (*live)["ok"] == true && ops_of().value("query_count", 0) == before.value("query_count", 0) + 1,
+           "a live client's query is still computed and answered");
+  }
+
   // An unknown op is an error, not a crash; shutdown stops the loop cleanly.
   const auto bad = cgraph::request_over_unix_socket(socket_path, cgraph::make_request("nonsense"));
   expect(ok, bad && (*bad)["ok"] == false, "unknown op rejected");
