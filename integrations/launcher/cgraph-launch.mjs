@@ -116,7 +116,7 @@ export function executablePath(dir, name, platform = process.platform) {
   return path.join(dir, platform === "win32" ? `${name}.exe` : name);
 }
 
-async function main(argv) {
+export async function main(argv) {
   const [name, ...args] = argv;
   if (!EXECUTABLES.has(name)) {
     fail(`usage: cgraph-launch.mjs <${[...EXECUTABLES].join("|")}> [args...]`);

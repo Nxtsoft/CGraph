@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Nxtsoft/cgraph",
+  "title": "CGraph",
+  "description": "Code graph for coding agents: symbol search, callers, blast radius and cross-service impact.",
+  "repository": {
+    "url": "https://github.com/Nxtsoft/CGraph",
+    "source": "github"
+  },
+  "version": "0.8.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "cgraph-mcp",
+      "version": "0.8.3",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

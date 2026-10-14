@@ -1,0 +1,4 @@
+# Copied from integrations/launcher/ by the prepack script.
+/cgraph-launch.mjs
+/release.json
+*.tgz
