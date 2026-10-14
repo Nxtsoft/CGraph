@@ -1,0 +1,110 @@
+{
+  "systems": [
+    {
+      "name": "boutique",
+      "about": "Online Boutique: 11 gRPC services in Go, C#, Node.js, Python and Java, an HTTP frontend and a load generator.",
+      "repo": "https://github.com/GoogleCloudPlatform/microservices-demo",
+      "commit": "38e7348eb289eb5b87c0c6e8cb19ced0449dc389",
+      "services": {
+        "adservice": "src/adservice",
+        "cartservice": "src/cartservice",
+        "checkoutservice": "src/checkoutservice",
+        "currencyservice": "src/currencyservice",
+        "emailservice": "src/emailservice",
+        "frontend": "src/frontend",
+        "loadgenerator": "src/loadgenerator",
+        "paymentservice": "src/paymentservice",
+        "productcatalogservice": "src/productcatalogservice",
+        "recommendationservice": "src/recommendationservice",
+        "shippingservice": "src/shippingservice",
+        "shoppingassistantservice": "src/shoppingassistantservice",
+        "protos": "protos"
+      }
+    },
+    {
+      "name": "otel-demo",
+      "about": "OpenTelemetry Astronomy Shop: gRPC, Kafka and HTTP across Go, C#, Java, Kotlin, Node.js, TypeScript, Python, Rust, PHP, Ruby and C++.",
+      "repo": "https://github.com/open-telemetry/opentelemetry-demo",
+      "commit": "ab6d01d0f8b4007599a7e1cda4ddd920a2360e82",
+      "services": {
+        "accounting": "src/accounting",
+        "ad": "src/ad",
+        "cart": "src/cart",
+        "checkout": "src/checkout",
+        "currency": "src/currency",
+        "email": "src/email",
+        "fraud-detection": "src/fraud-detection",
+        "frontend": "src/frontend",
+        "load-generator": "src/load-generator",
+        "payment": "src/payment",
+        "product-catalog": "src/product-catalog",
+        "quote": "src/quote",
+        "recommendation": "src/recommendation",
+        "shipping": "src/shipping",
+        "postgresql": "src/postgresql",
+        "pb": "pb"
+      }
+    },
+    {
+      "name": "sock-shop",
+      "about": "Weaveworks Sock Shop: HTTP between a Node.js frontend and Go and Java services, plus a RabbitMQ queue.",
+      "services": {
+        "front-end": {
+          "repo": "https://github.com/microservices-demo/front-end",
+          "commit": "52dee656f4423be041619bbb090205f912e00113"
+        },
+        "orders": {
+          "repo": "https://github.com/microservices-demo/orders",
+          "commit": "546a10c92d1ff9998c21f3849f5b95a0f14430a0"
+        },
+        "shipping": {
+          "repo": "https://github.com/microservices-demo/shipping",
+          "commit": "9c0fbfa31895dd029d44d3434de93f64cd71f87b"
+        },
+        "queue-master": {
+          "repo": "https://github.com/microservices-demo/queue-master",
+          "commit": "7dc33721c765e5af415c9d244d84637ff2d510cd"
+        },
+        "carts": {
+          "repo": "https://github.com/microservices-demo/carts",
+          "commit": "f4e80051668c6a83359c41b03a27baefa590adc8"
+        },
+        "catalogue": {
+          "repo": "https://github.com/microservices-demo/catalogue",
+          "commit": "925e08ee17c28b94b87160e1ae5e03da7f61cf84"
+        },
+        "payment": {
+          "repo": "https://github.com/microservices-demo/payment",
+          "commit": "384e33447dda5334187517dda09566c9a17fd6af"
+        },
+        "user": {
+          "repo": "https://github.com/microservices-demo/user",
+          "commit": "e1a79e77860734cacc3f64cabff1487e22a442a4"
+        }
+      }
+    },
+    {
+      "name": "kafka-saga",
+      "about": "Spring Kafka saga: an order service publishes orders, payment and stock services answer on their own topics, joined back with Kafka Streams.",
+      "repo": "https://github.com/piomin/sample-spring-kafka-microservices",
+      "commit": "a76daeb2517a2d4656f8f1a8a1b1385bc41c8ea9",
+      "services": {
+        "order-service": "order-service",
+        "payment-service": "payment-service",
+        "stock-service": "stock-service",
+        "base-domain": "base-domain"
+      }
+    },
+    {
+      "name": "kafka-orders",
+      "about": "Order, shipping and invoicing services connected by one Kafka topic.",
+      "repo": "https://github.com/ewolff/microservice-kafka",
+      "commit": "103de22da497c631708f0541a0cad0e662d04aa5",
+      "services": {
+        "order": "microservice-kafka/microservice-kafka-order",
+        "shipping": "microservice-kafka/microservice-kafka-shipping",
+        "invoicing": "microservice-kafka/microservice-kafka-invoicing"
+      }
+    }
+  ]
+}
