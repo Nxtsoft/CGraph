@@ -11,6 +11,7 @@
 
 extern "C" const TSLanguage* tree_sitter_c();
 extern "C" const TSLanguage* tree_sitter_cpp();
+extern "C" const TSLanguage* tree_sitter_javascript();
 
 namespace {
 
@@ -243,7 +244,72 @@ def first_size_size():
 
 }  // namespace
 
+// A boundary arrow (any arrow that is not a module-level `const f = () => {}`)
+// gets no node and is no function scope, but its calls keep a caller (CGR-26):
+// inside a function that is the function; with none, whatever the language's
+// closure_call_scope names; a language without the hook drops them as before.
+// Calls handed down this way are marked in_closure; a named function declared
+// inside a closure is a scope of its own again. A module-scope `function () {}`
+// expression (no node, no scope of its own) is treated like such an arrow.
+[[nodiscard]] bool check_closure_calls_keep_a_caller() {
+  constexpr auto source = R"js(
+function outer() {
+  list.forEach((x) => inside(x));
+}
+describe('s', () => {
+  top();
+  function named() { own(); }
+});
+it('t', function () { expr(); });
+)js";
+  const cgraph::ExtractionContext context{.source_file = "c.js", .relative_path = "c.js", .source = source};
+  const auto file_id = cgraph::make_id("c.js");
+  const auto outer_id = cgraph::make_id("c.js:outer");
+  const auto named_id = cgraph::make_id("c.js:named");
+  const auto config_for = [](bool with_hook) {
+    auto config = cgraph::LanguageConfig{
+        .name = "javascript",
+        .grammar_name = "tree-sitter-javascript",
+        .extensions = {".js"},
+        .function_node_types = {"function_declaration", "arrow_function"},
+        .call_node_types = {"call_expression"},
+        .name_fields = {"name"},
+        .body_fields = {"body"},
+        .call_accessor_fields = {"function"},
+        .call_member_node_types = {"member_expression"},
+        .call_member_field = "property",
+    };
+    if (with_hook) {
+      config.closure_call_scope = [](const TSNode&, const cgraph::ExtractionContext&, const std::string& scope_id,
+                                     std::string_view, const cgraph::Fragment&) { return scope_id; };
+    }
+    cgraph::intern_node_symbols(config, tree_sitter_javascript());
+    return config;
+  };
+  const auto calls_of = [&](bool with_hook) {
+    std::set<std::string> calls;
+    for (const auto& call : cgraph::extract_with_config(tree_sitter_javascript(), config_for(with_hook), context).raw_calls) {
+      calls.insert(call.caller_id + "->" + call.callee_label + (call.in_closure ? " closure" : ""));
+    }
+    return calls;
+  };
+  const std::set<std::string> hooked = {
+      outer_id + "->forEach", outer_id + "->inside closure", file_id + "->top closure", named_id + "->own",
+      file_id + "->expr closure"};
+  // Without the hook only the module-scope closure's call is lost; `describe`
+  // itself is a module-level call and has no caller either way.
+  const std::set<std::string> unhooked = {outer_id + "->forEach", outer_id + "->inside closure", named_id + "->own"};
+  if (calls_of(true) != hooked || calls_of(false) != unhooked) {
+    std::cerr << "closure calls lost their caller\n";
+    return false;
+  }
+  return true;
+}
+
 int main() {
+  if (!check_closure_calls_keep_a_caller()) {
+    return 1;
+  }
   if (!check_relocated_field_is_reindexed()) {
     return 1;
   }

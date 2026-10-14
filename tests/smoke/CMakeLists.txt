@@ -137,6 +137,9 @@ target_link_libraries(cgraph_javascript_extractor_test
   PRIVATE
     cgraph::engine)
 
+target_compile_definitions(cgraph_javascript_extractor_test PRIVATE
+  CGRAPH_TS_CLOSURE_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/ts_closure_calls")
+
 cgraph_set_warnings(cgraph_javascript_extractor_test)
 cgraph_enable_sanitizers(cgraph_javascript_extractor_test)
 
