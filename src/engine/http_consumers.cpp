@@ -35,17 +35,54 @@ namespace {
 // Calls `visit` on every named descendant of `node` (not `node` itself). With
 // `skip_functions`, a nested function's subtree is not entered: its calls run
 // in another scope.
+// Calls `visit` on each named child of `node` in order until it returns true;
+// true when one did. A cursor, because ts_node_named_child(node, i) costs O(i).
+template <class Visit>
+bool find_named_child(const TSNode& node, Visit&& visit) {
+  TSTreeCursor cursor = ts_tree_cursor_new(node);
+  bool found = false;
+  if (ts_tree_cursor_goto_first_child(&cursor)) {
+    do {
+      const TSNode child = ts_tree_cursor_current_node(&cursor);
+      found = ts_node_is_named(child) && visit(child);
+    } while (!found && ts_tree_cursor_goto_next_sibling(&cursor));
+  }
+  ts_tree_cursor_delete(&cursor);
+  return found;
+}
+
+// Walks with a cursor: ts_node_named_child(node, i) costs O(i), which made a
+// node with thousands of children (a minified bundle) quadratic.
 template <class Visit>
 void visit_named_descendants(const TSNode& node, bool skip_functions, Visit&& visit) {
-  const auto count = ts_node_named_child_count(node);
-  for (std::uint32_t index = 0; index < count; ++index) {
-    const TSNode child = ts_node_named_child(node, index);
-    if (skip_functions && is_function_node(ts_node_type(child))) {
-      continue;
+  TSTreeCursor cursor = ts_tree_cursor_new(node);
+  if (ts_tree_cursor_goto_first_child(&cursor)) {
+    for (;;) {
+      const TSNode current = ts_tree_cursor_current_node(&cursor);
+      bool descend = true;
+      if (ts_node_is_named(current)) {
+        if (skip_functions && is_function_node(ts_node_type(current))) {
+          descend = false;
+        } else {
+          visit(current);
+        }
+      }
+      if (descend && ts_tree_cursor_goto_first_child(&cursor)) {
+        continue;
+      }
+      while (!ts_tree_cursor_goto_next_sibling(&cursor)) {
+        if (!ts_tree_cursor_goto_parent(&cursor)) {
+          ts_tree_cursor_delete(&cursor);
+          return;
+        }
+        if (ts_node_eq(ts_tree_cursor_current_node(&cursor), node)) {
+          ts_tree_cursor_delete(&cursor);
+          return;
+        }
+      }
     }
-    visit(child);
-    visit_named_descendants(child, skip_functions, visit);
   }
+  ts_tree_cursor_delete(&cursor);
 }
 
 // The value of a module-level `const NAME = ...` in this file (through casts),
@@ -172,12 +209,13 @@ void visit_named_descendants(const TSNode& node, bool skip_functions, Visit&& vi
 // nearest enclosing block declaring it directly. Empty when a function
 // parameter binds the name first, or no enclosing block declares it (it is a
 // module-level name, an import, or a global).
-// True when a parameter of `function` binds `name`, destructured ones
-// included (`({ apiUrl }) => ...` shadows an outer `apiUrl`).
-[[nodiscard]] bool binds_pattern(const TSNode& node, std::string_view name, std::string_view source) {
+// The names a binding pattern binds, destructured ones included
+// (`({ apiUrl }) => ...` binds `apiUrl`).
+void pattern_names(const TSNode& node, std::string_view source, std::vector<std::string>& out) {
   const std::string_view type = ts_node_type(node);
   if (type == "identifier" || type == "shorthand_property_identifier_pattern") {
-    return node_text(node, source) == name;
+    out.push_back(node_text(node, source));
+    return;
   }
   const auto count = ts_node_named_child_count(node);
   for (std::uint32_t index = 0; index < count; ++index) {
@@ -190,11 +228,16 @@ void visit_named_descendants(const TSNode& node, bool skip_functions, Visit&& vi
         field_name == "right" || field_name == "key" || field_name == "type") {
       continue;
     }
-    if (binds_pattern(child, name, source)) {
-      return true;
-    }
+    pattern_names(child, source, out);
   }
-  return false;
+}
+
+// True when a parameter of `function` binds `name`, destructured ones
+// included (`({ apiUrl }) => ...` shadows an outer `apiUrl`).
+[[nodiscard]] bool binds_pattern(const TSNode& node, std::string_view name, std::string_view source) {
+  std::vector<std::string> names;
+  pattern_names(node, source, names);
+  return std::ranges::find(names, name) != names.end();
 }
 
 [[nodiscard]] bool binds_parameter(const TSNode& function, std::string_view name, std::string_view source) {
@@ -242,7 +285,30 @@ struct LocalBinding {
   return false;
 }
 
-[[nodiscard]] std::optional<LocalBinding> local_binding(const TSNode& use, std::string_view name, std::string_view source) {
+}  // namespace
+
+// Per file, what the local-value analysis computes once and reads many times.
+// In a minified bundle one scope is most of the file and reads are many; walking
+// the scope (or scanning its block) per read took hours.
+// - writes_by_scope: for each scope local_values reads, the writes in it
+//   (update, assignment and augmented assignment expressions, in document
+//   order) under each name they can affect.
+// - declarations_by_block: for each statement block, the first declarator of
+//   each name its own `let`/`const`/`var` statements declare.
+struct ExtractionMemo {
+  std::unordered_map<const void*, std::unordered_map<std::string, std::vector<TSNode>>> writes_by_scope;
+  std::unordered_map<const void*, std::unordered_map<std::string, LocalBinding>> declarations_by_block;
+};
+
+std::shared_ptr<ExtractionMemo> make_extraction_memo() {
+  return std::make_shared<ExtractionMemo>();
+}
+
+namespace {
+
+[[nodiscard]] std::optional<LocalBinding> local_binding(const TSNode& use, std::string_view name,
+                                                         const ExtractionContext& context) {
+  const auto source = context.source;
   for (TSNode ancestor = ts_node_parent(use); !ts_node_is_null(ancestor); ancestor = ts_node_parent(ancestor)) {
     const std::string_view type = ts_node_type(ancestor);
     if (is_function_node(type)) {
@@ -260,26 +326,28 @@ struct LocalBinding {
     if (type != "statement_block") {
       continue;
     }
-    const auto count = ts_node_named_child_count(ancestor);
-    for (std::uint32_t index = 0; index < count; ++index) {
-      const TSNode statement = ts_node_named_child(ancestor, index);
-      const std::string_view statement_type = ts_node_type(statement);
-      if (statement_type != "lexical_declaration" && statement_type != "variable_declaration") {
-        continue;
-      }
-      const auto declarators = ts_node_named_child_count(statement);
-      for (std::uint32_t d = 0; d < declarators; ++d) {
-        const TSNode declarator = ts_node_named_child(statement, d);
-        if (std::string_view(ts_node_type(declarator)) == "variable_declarator" &&
-            field_text(declarator, "name", source) == name) {
-          const TSNode keyword = ts_node_child(statement, 0);
-          return LocalBinding{
-              .declarator = declarator,
-              .scope = ancestor,
-              .constant = !ts_node_is_null(keyword) && std::string_view(ts_node_type(keyword)) == "const",
-          };
+    auto [entry, built] = context.memo->declarations_by_block.try_emplace(ancestor.id);
+    auto& declared = entry->second;
+    if (built) {
+      find_named_child(ancestor, [&](const TSNode& statement) {
+        const std::string_view statement_type = ts_node_type(statement);
+        if (statement_type != "lexical_declaration" && statement_type != "variable_declaration") {
+          return false;
         }
-      }
+        const TSNode keyword = ts_node_child(statement, 0);
+        const bool constant = !ts_node_is_null(keyword) && std::string_view(ts_node_type(keyword)) == "const";
+        find_named_child(statement, [&](const TSNode& declarator) {
+          if (std::string_view(ts_node_type(declarator)) == "variable_declarator") {
+            declared.try_emplace(field_text(declarator, "name", source),
+                                 LocalBinding{.declarator = declarator, .scope = ancestor, .constant = constant});
+          }
+          return false;
+        });
+        return false;
+      });
+    }
+    if (const auto found = declared.find(std::string(name)); found != declared.end()) {
+      return found->second;
     }
   }
   return std::nullopt;
@@ -366,8 +434,50 @@ struct LocalBinding {
 // another function than the read (a test's `beforeAll`), bound by a loop
 // header or `catch`, built from itself, its path is rewritten (`url.pathname =
 // ...`), or it is never given a value.
-[[nodiscard]] std::optional<std::vector<TSNode>> local_values(const TSNode& use, std::string_view name, std::string_view source) {
-  const auto binding = local_binding(use, name, source);
+// The writes in `scope` that can affect `name`: an update of it, an assignment
+// to it or to its pathname/href, or a destructuring that binds it.
+[[nodiscard]] const std::vector<TSNode>& scope_writes(const TSNode& scope, std::string_view name,
+                                                      const ExtractionContext& context) {
+  auto [entry, built] = context.memo->writes_by_scope.try_emplace(scope.id);
+  auto& by_name = entry->second;
+  if (built) {
+    const auto source = context.source;
+    visit_named_descendants(scope, false, [&](const TSNode& node) {
+      const std::string_view type = ts_node_type(node);
+      const auto add = [&](std::string key) {
+        auto& writes = by_name[std::move(key)];
+        if (writes.empty() || !ts_node_eq(writes.back(), node)) writes.push_back(node);
+      };
+      if (type == "update_expression") {
+        const TSNode argument = unwrap_expression(ts_node_child_by_field_name(node, "argument", 8));
+        if (!ts_node_is_null(argument)) add(node_text(argument, source));
+        return;
+      }
+      if (type != "assignment_expression" && type != "augmented_assignment_expression") return;
+      const TSNode left = unwrap_expression(ts_node_child_by_field_name(node, "left", 4));
+      if (ts_node_is_null(left)) return;
+      const std::string_view left_type = ts_node_type(left);
+      if (left_type == "member_expression") {
+        const TSNode object = unwrap_expression(ts_node_child_by_field_name(left, "object", 6));
+        if (!ts_node_is_null(object) && std::string_view(ts_node_type(object)) == "identifier") add(node_text(object, source));
+      } else if (left_type == "object_pattern" || left_type == "array_pattern") {
+        std::vector<std::string> names;
+        pattern_names(left, source, names);
+        for (auto& bound : names) add(std::move(bound));
+      } else if (left_type == "identifier") {
+        add(node_text(left, source));
+      }
+    });
+  }
+  static const std::vector<TSNode> none;
+  const auto found = by_name.find(std::string(name));
+  return found == by_name.end() ? none : found->second;
+}
+
+[[nodiscard]] std::optional<std::vector<TSNode>> local_values(const TSNode& use, std::string_view name,
+                                                              const ExtractionContext& context) {
+  const auto source = context.source;
+  const auto binding = local_binding(use, name, context);
   if (!binding) {
     return std::nullopt;
   }
@@ -380,15 +490,16 @@ struct LocalBinding {
   const auto use_start = ts_node_start_byte(use);
   const TSNode use_function = enclosing_function(use);
   const bool use_in_loop = loops_between(use, binding->scope);
-  visit_named_descendants(binding->scope, false, [&](const TSNode& node) {
+  for (const TSNode& node : scope_writes(binding->scope, name, context)) [&] {
     const std::string_view type = ts_node_type(node);
-    if ((type == "update_expression" || type == "assignment_expression" || type == "augmented_assignment_expression") &&
-        !use_in_loop && exclusive_branches(node, use, binding->scope)) {
-      return;  // the other branch of an if/else from the read
-    }
+    // A write in the other branch of an if/else from the read never reaches it.
+    // Asked only of writes that touch `name`: the branch walk climbs to the
+    // scope through ts_node_parent, and a minified bundle's scope holds
+    // countless unrelated writes.
+    const auto other_branch = [&] { return !use_in_loop && exclusive_branches(node, use, binding->scope); };
     if (type == "update_expression") {
       const TSNode argument = unwrap_expression(ts_node_child_by_field_name(node, "argument", 8));
-      unknowable = unknowable || (!ts_node_is_null(argument) && node_text(argument, source) == name);
+      unknowable = unknowable || (!ts_node_is_null(argument) && node_text(argument, source) == name && !other_branch());
       return;
     }
     if (type != "assignment_expression" && type != "augmented_assignment_expression") {
@@ -403,22 +514,22 @@ struct LocalBinding {
       const TSNode object = unwrap_expression(ts_node_child_by_field_name(left, "object", 6));
       const auto property = field_text(left, "property", source);
       if (!ts_node_is_null(object) && std::string_view(ts_node_type(object)) == "identifier" &&
-          node_text(object, source) == name && (property == "pathname" || property == "href")) {
+          node_text(object, source) == name && (property == "pathname" || property == "href") && !other_branch()) {
         unknowable = true;
       }
       return;
     }
     if (left_type == "object_pattern" || left_type == "array_pattern") {
-      if (binds_pattern(left, name, source)) {
-        const auto same = local_binding(left, name, source);
+      if (binds_pattern(left, name, source) && !other_branch()) {
+        const auto same = local_binding(left, name, context);
         unknowable = unknowable || (same && !same->opaque && ts_node_eq(same->declarator, binding->declarator));
       }
       return;
     }
-    if (left_type != "identifier" || node_text(left, source) != name) {
+    if (left_type != "identifier" || node_text(left, source) != name || other_branch()) {
       return;
     }
-    const auto same = local_binding(left, name, source);
+    const auto same = local_binding(left, name, context);
     if (!same || same->opaque || !ts_node_eq(same->declarator, binding->declarator)) {
       return;  // a nested declaration of the same name
     }
@@ -428,7 +539,7 @@ struct LocalBinding {
       return;
     }
     assignments.push_back(node);
-  });
+  }();
   std::vector<TSNode> values;
   if (!ts_node_is_null(initial)) {
     unknowable = unknowable || !assignments.empty();  // reassigned: which value the read sees is a guess
@@ -840,7 +951,7 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
     // call, several values) is the host, and one inside the path is a value
     // filling a segment, whatever this run happened to assign it, unless it
     // holds the query string.
-    if (const auto values = local_values(expression, name, context.source)) {
+    if (const auto values = local_values(expression, name, context)) {
       if (values->size() == 1 && !url.path.empty() && starts_query(values->front(), context.source)) {
         url.query();
         return;
@@ -1114,7 +1225,8 @@ constexpr int kMaxOptionsDepth = 3;
 // Absent is empty; any other value, method or spread the file cannot read is
 // `unknown`.
 [[nodiscard]] MethodSource options_method(const TSNode& options, const std::vector<std::string>& parameters,
-                                          std::string_view source, int depth = 0) {
+                                          const ExtractionContext& context, int depth = 0) {
+  const auto source = context.source;
   const TSNode object = unwrap_expression(options);
   if (ts_node_is_null(object)) {
     return {};
@@ -1126,8 +1238,8 @@ constexpr int kMaxOptionsDepth = 3;
       return MethodSource{.options = at};
     }
     if (depth < kMaxOptionsDepth) {
-      if (const auto values = local_values(object, name, source)) {
-        return values->size() == 1 ? options_method(values->front(), parameters, source, depth + 1)
+      if (const auto values = local_values(object, name, context)) {
+        return values->size() == 1 ? options_method(values->front(), parameters, context, depth + 1)
                                    : MethodSource{.unknown = true};
       }
       if (const int at = rest_of_parameter(object, name, parameters, source); at >= 0) {
@@ -1146,7 +1258,7 @@ constexpr int kMaxOptionsDepth = 3;
     const std::string_view member_type = ts_node_type(member);
     if (member_type == "spread_element") {
       const TSNode spread = ts_node_named_child_count(member) == 0 ? TSNode{} : ts_node_named_child(member, 0);
-      const auto inner = depth < kMaxOptionsDepth ? options_method(spread, parameters, source, depth + 1)
+      const auto inner = depth < kMaxOptionsDepth ? options_method(spread, parameters, context, depth + 1)
                                                   : MethodSource{.unknown = true};
       if (!inner.verb.empty() || inner.parameter >= 0 || !inner.choices.empty()) {
         found = inner;  // a method of its own replaces what came before
@@ -1330,7 +1442,7 @@ void compose_wrapper_call(const ClientCall& shape, std::string client, const TSN
   const int options_at = shape.method.options;
   if (options_at >= 0 && options_at < count) {
     const auto given = options_method(ts_node_named_child(arguments, static_cast<std::uint32_t>(options_at)),
-                                      scope.parameters, context.source);
+                                      scope.parameters, context);
     if (given.unknown) {
       method = MethodSource{.unknown = true};
     } else if (!given.verb.empty() || !given.choices.empty()) {
@@ -1512,7 +1624,7 @@ struct ReceiverBase {
       }
     }
     if (descriptor.empty() && (type == "object" || type == "identifier")) {
-      if (const auto method = options_method(argument, scope.parameters, context.source);
+      if (const auto method = options_method(argument, scope.parameters, context);
           !method.unknown && method.parameter < 0 && method.options < 0) {
         descriptor = "O" + join_verbs(method);
       }
@@ -1648,7 +1760,7 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
   // `let url; if (a) url = x; else url = y; fetch(url)`: one consumer per value.
   std::vector<TSNode> values{first};
   if (primitive && first_type == "identifier") {
-    if (const auto locals = local_values(first, node_text(first, context.source), context.source);
+    if (const auto locals = local_values(first, node_text(first, context.source), context);
         locals && locals->size() > 1) {
       values = *locals;
     }
@@ -1661,7 +1773,7 @@ std::vector<ClientCall> analyze_client_call(const TSNode& node, const Extraction
   // say (its `http_wrapper` fact records the index): contracts read the method
   // there from this call's `http_call_args`, never from the second argument.
   MethodSource method = primitive && argument_count >= 2
-                            ? options_method(ts_node_named_child(arguments, 1), scope.parameters, context.source)
+                            ? options_method(ts_node_named_child(arguments, 1), scope.parameters, context)
                             : MethodSource{};
   if (!verb.empty()) {
     method.options = -1;  // `axios.post(url, data)`: the second argument is the body, the verb is fixed
@@ -1987,24 +2099,26 @@ struct SdkClient {
   std::string factory;  // kImported: the imported function's name
 };
 
-[[nodiscard]] SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::string_view source, int depth);
+[[nodiscard]] SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, const ExtractionContext& context,
+                                       int depth);
 
 // True when `function` returns an SDK client on every path that returns.
-[[nodiscard]] bool returns_sdk_client(const TSNode& function, const SdkImports& imports, std::string_view source,
+[[nodiscard]] bool returns_sdk_client(const TSNode& function, const SdkImports& imports, const ExtractionContext& context,
                                       int depth) {
   std::vector<TSNode> returns;
   function_return_values(function, returns);
   return !returns.empty() && std::ranges::all_of(returns, [&](const TSNode& value) {
-    return !ts_node_is_null(value) && sdk_client_value(value, imports, source, depth + 1).origin == SdkOrigin::kHere;
+    return !ts_node_is_null(value) && sdk_client_value(value, imports, context, depth + 1).origin == SdkOrigin::kHere;
   });
 }
 
 // An identifier read through its one value: a block-scoped local set once, else
 // (unless a parameter shadows it) a module `const`. A module `let` or `var` may
 // be reassigned anywhere in the file, so it is not read. Null otherwise.
-[[nodiscard]] TSNode single_value(const TSNode& identifier, std::string_view source) {
+[[nodiscard]] TSNode single_value(const TSNode& identifier, const ExtractionContext& context) {
+  const auto source = context.source;
   const auto name = node_text(identifier, source);
-  if (const auto values = local_values(identifier, name, source)) {
+  if (const auto values = local_values(identifier, name, context)) {
     return values->size() == 1 ? values->front() : TSNode{};
   }
   if (parameter_shadows(identifier, name, source)) {
@@ -2020,7 +2134,8 @@ struct SdkClient {
   return TSNode{};
 }
 
-SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::string_view source, int depth) {
+SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, const ExtractionContext& context, int depth) {
+  const auto source = context.source;
   const TSNode value = unwrap_expression(node);
   if (ts_node_is_null(value) || depth > kMaxSdkDepth) {
     return {};
@@ -2039,8 +2154,8 @@ SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::s
     return sdk ? SdkClient{.origin = SdkOrigin::kHere} : SdkClient{};
   }
   if (type == "identifier") {
-    const TSNode held = single_value(value, source);
-    return ts_node_is_null(held) ? SdkClient{} : sdk_client_value(held, imports, source, depth + 1);
+    const TSNode held = single_value(value, context);
+    return ts_node_is_null(held) ? SdkClient{} : sdk_client_value(held, imports, context, depth + 1);
   }
   if (type == "member_expression") {
     // `this.client`, set once in its class.
@@ -2050,7 +2165,7 @@ SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::s
     }
     const TSNode body = enclosing_class_body(value);
     const TSNode held = ts_node_is_null(body) ? TSNode{} : class_member_value(body, field_text(value, "property", source), source);
-    return ts_node_is_null(held) ? SdkClient{} : sdk_client_value(held, imports, source, depth + 1);
+    return ts_node_is_null(held) ? SdkClient{} : sdk_client_value(held, imports, context, depth + 1);
   }
   if (type != "call_expression") {
     return {};
@@ -2060,11 +2175,11 @@ SdkClient sdk_client_value(const TSNode& node, const SdkImports& imports, std::s
     return {};
   }
   const auto name = node_text(callee, source);
-  if (local_binding(callee, name, source) || parameter_shadows(callee, name, source)) {
+  if (local_binding(callee, name, context) || parameter_shadows(callee, name, source)) {
     return {};  // a local or a parameter: not the module's function
   }
   if (const TSNode function = module_function(value, name, source); !ts_node_is_null(function)) {
-    return returns_sdk_client(function, imports, source, depth) ? SdkClient{.origin = SdkOrigin::kHere} : SdkClient{};
+    return returns_sdk_client(function, imports, context, depth) ? SdkClient{.origin = SdkOrigin::kHere} : SdkClient{};
   }
   return imports_name(value, name, source) ? SdkClient{.origin = SdkOrigin::kImported, .factory = name} : SdkClient{};
 }
@@ -2099,7 +2214,7 @@ struct SdkCall {
   }
   const SdkImports imports = langgraph_sdk_imports(node, context.source);
   const TSNode receiver = unwrap_expression(ts_node_child_by_field_name(group, "object", 6));
-  SdkClient client = sdk_client_value(receiver, imports, context.source, 0);
+  SdkClient client = sdk_client_value(receiver, imports, context, 0);
   if (client.origin == SdkOrigin::kNone) {
     return std::nullopt;
   }
@@ -2133,7 +2248,7 @@ void langgraph_factory_handler(const TSNode& node, const ExtractionContext& cont
   }
   const SdkImports imports = langgraph_sdk_imports(node, context.source);
   if ((imports.classes.empty() && imports.namespaces.empty()) ||
-      sdk_client_value(node, imports, context.source, 0).origin != SdkOrigin::kHere) {
+      sdk_client_value(node, imports, context, 0).origin != SdkOrigin::kHere) {
     return;
   }
   const TSNode function = enclosing_function(node);
@@ -2145,7 +2260,7 @@ void langgraph_factory_handler(const TSNode& node, const ExtractionContext& cont
   const auto name = declared_name(function, context.source);
   if (name.empty() || make_id(context.relative_path + ":" + name) != function_scope_id ||
       !ts_node_eq(module_function(node, name, context.source), function) ||
-      !returns_sdk_client(function, imports, context.source, 0)) {
+      !returns_sdk_client(function, imports, context, 0)) {
     return;
   }
   std::vector<TSNode> returns;
