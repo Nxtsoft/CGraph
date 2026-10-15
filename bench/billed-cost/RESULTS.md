@@ -150,7 +150,9 @@ call, once per file per session. Same 71 tasks, seeds and arms. Results:
 **Verdict: the read hook reaches the agent but does not help it, and it costs about 4%.** The
 miss-rate change is inside noise and far from the 10-point gate, while the injected text makes runs
 measurably more expensive (the CI excludes 1). Two django instances (13195, 13212, CGraph seed 1)
-were re-graded after the harness failed to stop their containers; both are unresolved either way.
+were re-graded after the harness failed to stop their containers; both are unresolved either way. The
+price fit in that file does not hold (`fitted_price_per_mtok.input_tokens` is negative, max residual
+$0.07), so ignore its `cost_breakdown_usd`; the ratio above uses billed totals and is unaffected.
 
 ## Setup
 
@@ -346,7 +348,7 @@ W=/var/tmp/cgr29                                    # work dir; no CLAUDE.md in 
 export CLAUDE_CODE_OAUTH_TOKEN=...                  # from `claude setup-token`
 # run_ab.py takes --claude <executable> when `claude` on PATH is not Claude Code 2.1.296
 for r in django/django sympy/sympy scikit-learn/scikit-learn sphinx-doc/sphinx pydata/xarray \
-         astropy/astropy pylint-dev/pylint pytest-dev/pytest; do
+         astropy/astropy pylint-dev/pylint pytest-dev/pytest matplotlib/matplotlib mwaskom/seaborn; do
   git clone --bare https://github.com/$r.git $W/mirrors/${r//\//__}.git
 done
 python select_tasks.py main  <ContextBench selected_500_instances.csv> tasks.json
@@ -364,6 +366,15 @@ for t in main hard; do f=tasks.json; [ $t = hard ] && f=tasks-hard.json
   python analyze.py --runs $W/runs --tasks $f --out results/$t-cgraph.json
   python analyze.py --runs $W/runs --tasks $f --arm-b cgraph_directed --out results/$t-cgraph_directed.json
 done
+# multi-file set: each variant (hook silent, hook live, read hook) is a separate work dir whose
+# templates come from `run_ab.py templates --marketplace <branch or local checkout>`
+python select_tasks.py multi tasks-multi.json
+python run_ab.py run --work $W --tasks tasks-multi.json --seeds 1 2 3 --jobs 6
+python run_ab.py run --work $W --tasks tasks-multi.json --arms cgraph_directed --seeds 1 2 3 --jobs 6
+python evaluate.py --work $W --tasks tasks-multi.json --jobs 8
+python analyze.py --runs $W/runs --tasks tasks-multi.json --out results/multi-cgraph.json
+python analyze.py --runs $W/runs --tasks tasks-multi.json --arm-b cgraph_directed --out results/multi-cgraph_directed.json
+python gold_recall.py --runs $W/runs --tasks tasks-multi.json --out results/multi-gold-recall.json
 ```
 
 The run logs are not in the repository. They are published as `cgr29-runs.tar.gz` on the
@@ -371,8 +382,8 @@ The run logs are not in the repository. They are published as `cgr29-runs.tar.gz
 (sha256 `4102ac4149f2f9b323d8be62b16609b5398fc17190b85187b41234375a697735`). It unpacks to
 `runs/<instance>/<arm>-s<seed>/`, one directory per run (405 in all), each holding the run's
 `result.json` (cost, usage, turns, tool calls, SWE-bench verdict), the agent's `patch.diff`, and
-the full stream-json transcript (`stream.jsonl.gz`). The committed `results/*.json` reproduce
-byte for byte from it:
+the full stream-json transcript (`stream.jsonl.gz`). The committed `results/main-*.json` and
+`results/hard-*.json` reproduce byte for byte from it; the multi-file run logs are not published:
 
 ```bash
 tar xzf cgr29-runs.tar.gz
