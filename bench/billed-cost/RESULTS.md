@@ -102,6 +102,33 @@ patch misses at least one gold source file in 72.4% of runs (mean gold-file reca
 rare (2.1% on the main set, 5.2% here). The `pre-edit-live` change starts the daemon in git
 repositories so the hook can fire, and is measured with `gold_recall.py`.
 
+## Multi-file tasks with the pre-edit hook live (openspec `pre-edit-live`)
+
+The same 71 tasks, seeds and arms (baseline and cgraph), with the `pre-edit-live` branch: `cgraph-mcp`
+starts the daemon when the session starts in a git repository, and `cgraph-out/` ignores itself.
+Results: `results/multi-hook-live-cgraph.json`, `results/multi-hook-live-gold-recall.json` (and
+`results/multi-gold-recall.json` for the hook-silent run above).
+
+| 71 tasks x 3 seeds | Hook silent (run above) | Hook live |
+|---|--:|--:|
+| Plugin runs with a daemon | 0 of 213 | **213 of 213** |
+| Runs whose patch misses a gold source file, baseline / CGraph | 72.4% / 72.4% | 72.9% / 72.9% |
+| Paired difference in that share | +0.0 [-4.8, +4.8] points | **+0.0 [-3.8, +3.8] points** |
+| Gold source-file recall, baseline / CGraph | 0.573 / 0.582 | 0.585 / 0.583 |
+| Billed cost, ratio of totals | 1.035 [0.997, 1.078] | 1.022 [0.994, 1.051] |
+| Solved, baseline / CGraph | 102/213 / 112/213 | 108/213 / 105/213 |
+| Runs that called a CGraph tool | 0 | 0 |
+
+**Verdict: the hook changes nothing, because it almost never runs.** It is a `PreToolUse` hook on
+`Edit|Write|MultiEdit`, and these agents edit through `Bash` (`python3` or `sed` scripts): across
+the 213 hook-live plugin runs there were 801 `Bash` calls and 22 `Edit` calls, and only 20 runs used
+`Edit`, `Write` or `MultiEdit` at all. Even a hook that always named the missing file could move the
+miss rate by at most 9 points (20 of 213 runs), short of the 10-point gate. Starting the daemon was
+necessary but not sufficient: the hook needs a trigger these agents actually hit.
+
+The solve-rate gap in the hook-silent run (+4.7 points for CGraph) did not reproduce with the same
+plugin a day later (-1.4 points), which supports reading it as noise.
+
 ## Setup
 
 - **Tasks.** The main set is 32 SWE-bench Verified instances that are also in ContextBench Lite
