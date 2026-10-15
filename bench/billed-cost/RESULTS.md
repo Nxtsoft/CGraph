@@ -129,6 +129,29 @@ necessary but not sufficient: the hook needs a trigger these agents actually hit
 The solve-rate gap in the hook-silent run (+4.7 points for CGraph) did not reproduce with the same
 plugin a day later (-1.4 points), which supports reading it as noise.
 
+## Multi-file tasks with a read hook (PostToolUse on Read|Bash, `pre-edit-live` branch)
+
+Because the agents edit through `Bash`, the `pre-edit-live` branch added `cgraph-client read-hook`:
+after a `Read` or a `Bash` command that names a repository file, it gives the whole-file pre-edit
+message (files likely to change with it, services behind its endpoints) for up to two files per
+call, once per file per session. Same 71 tasks, seeds and arms. Results:
+`results/multi-read-hook-cgraph.json`, `results/multi-read-hook-gold-recall.json`.
+
+| 71 tasks x 3 seeds | Read hook live |
+|---|--:|
+| Plugin runs with a daemon | 212 of 213 |
+| Runs whose patch misses a gold source file, baseline / CGraph | 75.7% / 73.8% |
+| Paired difference in that share | -1.9 [-6.2, +2.4] points |
+| Gold source-file recall, paired difference | +0.014 [-0.011, +0.038] |
+| Billed cost, ratio of totals | **1.042 [1.017, 1.069]** |
+| Solved, baseline / CGraph | 103/213 / 101/213, paired -0.9 [-6.6, +4.2] points |
+| Runs that called a CGraph tool | 0 |
+
+**Verdict: the read hook reaches the agent but does not help it, and it costs about 4%.** The
+miss-rate change is inside noise and far from the 10-point gate, while the injected text makes runs
+measurably more expensive (the CI excludes 1). Two django instances (13195, 13212, CGraph seed 1)
+were re-graded after the harness failed to stop their containers; both are unresolved either way.
+
 ## Setup
 
 - **Tasks.** The main set is 32 SWE-bench Verified instances that are also in ContextBench Lite
