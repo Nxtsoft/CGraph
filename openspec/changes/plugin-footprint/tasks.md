@@ -14,4 +14,5 @@
 
 ## 3. Measure
 
-- [ ] 3.1 Re-run the CGR-29 A/B (same tasks, seeds, binary, model) on this build.
+- [x] 3.1 Re-run the CGR-29 A/B (same tasks, seeds, binary, model) on this build: cost ratio
+      1.071 -> 1.006 [0.973, 1.038]; 0 CGraph calls in 96 runs, so the gate still does not pass.

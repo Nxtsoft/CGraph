@@ -8,6 +8,37 @@ prompt text, which is written to the prompt cache and then re-read on every requ
 
 Gate (CGR-29): billed cost no higher than baseline, at an equal or better solve rate.
 
+## Follow-up run: plugin footprint cut (openspec `plugin-footprint`)
+
+The same harness, tasks (`tasks.json`), seeds (1-3), Claude Code binary (2.1.296), model
+(`claude-sonnet-5-5`) and prompt, re-run on the plugin from the `cgr-29-footprint` branch. The
+plugin now lists 3 MCP tools instead of 12, has a one-line `cgraph` skill description and keeps
+`cgraph-enrich` out of the model's skill list. The cgraph arm's template was built with
+`run_ab.py templates --marketplace <checkout>`, and that branch's binaries were placed in the
+launcher cache in place of the `bin-v0.9.3` download. Results: `results/main-cgraph-footprint.json`.
+
+| Main set, 96 runs per arm | CGR-29 (plugin 0.9.1) | This run | 
+|---|--:|--:|
+| First-request prefix, CGraph minus baseline | +751 tokens [749, 752] | **+113** [111, 114] |
+| Billed cost, ratio of totals | 1.071 [1.048, 1.094] | **1.006** [0.973, 1.038] |
+| Billed cost per run, paired difference | +$0.0038 [+$0.0025, +$0.0050] | +$0.0003 [-$0.0014, +$0.0019] |
+| Solved, baseline / CGraph | 82/96 / 84/96 | 85/96 / 83/96 |
+| Runs that called a CGraph tool | 0 of 96 | 0 of 96 |
+| Spend (both arms) | $10.52 | $9.88 |
+
+**Verdict.** The plugin's overhead is now inside the noise: the cost ratio's 95% CI spans 1.0
+(0.973 to 1.038), where CGR-29's sat wholly above it. The gate as written (CI upper bound at or
+below baseline, at an equal or better solve rate) still does not pass, because the agent still
+made 0 CGraph calls in 96 runs, so the plugin has nothing to save on these tasks. The solve-rate
+gap (-2 runs, paired 95% CI [-5.2, 0] points) is within run-to-run noise: the identical baseline
+arm went from 82/96 in CGR-29 to 85/96 here, and the two tasks that differ are
+scikit-learn-25747 (baseline 1/3, CGraph 0/3; 0/3 in both arms in CGR-29) and xarray-6599
+(3/3 vs 2/3; 3/3 in both arms in CGR-29).
+
+Measure the prefix without a full run:
+`python prefix_probe.py --claude <claude 2.1.296> --work $W --arms baseline cgraph`
+(+753 on the CGR-29 template, +111 on this branch's).
+
 | | Baseline | CGraph plugin | Paired difference (CGraph minus baseline), 95% CI |
 |---|--:|--:|---|
 | Billed cost per run (mean) | $0.0529 | $0.0567 | **+$0.0038** [+$0.0025, +$0.0050]; median +$0.0031 [+$0.0020, +$0.0048] |
