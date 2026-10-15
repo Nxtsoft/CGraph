@@ -82,8 +82,9 @@ def clean_env(home, config_dir):
     }
 
 
-def make_templates(claude, work):
-    """One config dir per arm. The cgraph arm installs the plugin from GitHub."""
+def make_templates(claude, work, marketplace):
+    """One config dir per arm. The cgraph arm installs the plugin from `marketplace`
+    (GitHub by default; a local checkout to measure an unreleased plugin build)."""
     for arm in ARMS:
         tpl = work / "templates" / arm
         if tpl.exists():
@@ -92,7 +93,7 @@ def make_templates(claude, work):
         (tpl / "cfg").mkdir()
         env = clean_env(tpl / "home", tpl / "cfg")
         if arm == "cgraph":
-            for cmd in (["plugin", "marketplace", "add", "Nxtsoft/CGraph"],
+            for cmd in (["plugin", "marketplace", "add", marketplace],
                         ["plugin", "install", "cgraph@cgraph"]):
                 subprocess.run([claude, *cmd], env=env, check=True)
         listing = subprocess.run([claude, "plugin", "list"], env=env, check=True,
@@ -245,9 +246,11 @@ def main():
     ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2])
     ap.add_argument("--arms", nargs="+", choices=list(TEMPLATE), default=list(ARMS))
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--marketplace", default="Nxtsoft/CGraph",
+                    help="templates: where the cgraph arm installs the plugin from")
     args = ap.parse_args()
     if args.command == "templates":
-        make_templates(args.claude, args.work)
+        make_templates(args.claude, args.work, args.marketplace)
         return
     tasks = load_tasks(args.tasks)
     if args.only:

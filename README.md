@@ -484,7 +484,13 @@ claude plugin install cgraph@cgraph
 ```
 
 The plugin registers the `cgraph` MCP server, the `cgraph` and `cgraph-enrich` skills and the
-pre-edit hook. On first use it downloads the release archive for your platform (Linux x64/arm64,
+pre-edit hook. Claude Code names every listed MCP tool and every model-invocable skill in each
+request, so the plugin keeps that list short: the server lists `graph_query`, `graph_context`,
+`graph_impact` and `graph_status`, and `cgraph-enrich` runs only when you type `/cgraph-enrich`. Set
+`CGRAPH_MCP_TOOLS=all` (or a comma-separated list of tool names) before starting Claude Code to
+list more. In a project that already has a `cgraph-out/` directory, the server starts loading the
+graph when the session starts, so the first call waits less or not at all. A project without
+`cgraph-out/` is not indexed until the first tool call. On first use it downloads the release archive for your platform (Linux x64/arm64,
 macOS arm64/x64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
 the plugin's data directory. It needs `node` and `tar` on `PATH`.
 

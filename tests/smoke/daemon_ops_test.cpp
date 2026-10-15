@@ -488,6 +488,18 @@ int main() {
       still_search["result"]["nodes"].size() != 2) {
     return 1;
   }
+  // A search hit carries its source span, as an entity does, so "show me X" needs no
+  // follow-up file read: Alpha's snippet is read from disk and starts at its declaration.
+  bool alpha_has_source = false;
+  for (const auto& hit : still_search["result"]["nodes"]) {
+    if (hit.value("id", std::string{}) == "a") {
+      alpha_has_source = hit.value("snippet", std::string{}).rfind("class Alpha {", 0) == 0 &&
+                         hit["location"].value("start_line", 0U) == 2U;
+    }
+  }
+  if (!alpha_has_source) {
+    return 1;
+  }
 
   // Blast radius: what breaks if "b" changes? Its dependents are "a" (depth 1,
   // calls b) then "c" (depth 2, calls a). Ordered by depth.

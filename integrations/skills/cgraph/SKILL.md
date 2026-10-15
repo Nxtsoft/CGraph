@@ -1,6 +1,6 @@
 ---
 name: cgraph
-description: "Use FIRST for any question about THIS codebase's structure, symbols, or relationships — where a function/class/file is defined, what calls or imports it, what breaks if you change it, how two parts connect, or to load focused source context before editing or reviewing. Routes to the cgraph MCP tools (graph_query / graph_explain / graph_impact / graph_path / graph_context / graph_report), which serve ranked file:line results, node neighborhoods, transitive blast radius, token-budgeted source bundles, and module dependency maps from a resident per-project graph daemon in ~10ms — far cheaper than grepping and reading files. Prefer over blind grep/read for code navigation, dependency tracing, and impact analysis."
+description: "Code graph of this repo: definitions, callers, blast radius and focused source, faster than grep."
 trigger: /cgraph
 ---
 
@@ -15,11 +15,15 @@ about code structure or relationships. A graph call is one ~10ms round-trip and
 returns exactly the file:line (and often the source) you need, instead of many
 grep/read calls that burn context.
 
+The Claude Code plugin lists `graph_query`, `graph_context`, `graph_impact` and
+`graph_status` by default. The other tools in the table below are listed when `CGRAPH_MCP_TOOLS=all`
+(or a comma-separated list of tool names) is set before the session starts.
+
 ## Routing: question → tool
 
 | When the user / task needs… | Call |
 | --- | --- |
-| "Where is X? Find the symbol named …" | `graph_query` `{query}` — ranked by importance, each hit has `source_file` + `line` |
+| "Where is X? Find the symbol named …" | `graph_query` `{query}` — ranked by importance, each hit has `source_file` + `line`; the top three code hits also carry their source `snippet` |
 | "What is X? Show its callers/callees/imports" | `graph_explain` `{id}` — node + neighbors (each with `direction` and a navigable brief) + a source snippet |
 | "What breaks if I change X? What depends on it?" | `graph_impact` `{id, direction:"dependents"}` — transitive blast radius, bounded by `max_depth` |
 | "What does X rely on?" | `graph_impact` `{id, direction:"dependencies"}` |

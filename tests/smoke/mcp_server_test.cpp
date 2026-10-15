@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <cmath>
+#include <set>
+#include <stdexcept>
 #include <string>
 
 int main() {
@@ -52,6 +54,36 @@ int main() {
     }
   }
   if (!explain_doc_mentions_typed) {
+    return 1;
+  }
+
+  // Unfiltered, tools/list advertises every tool; a host's listed_tools narrows it
+  // to exactly those names, in tools/list order, so a host pays only for the core.
+  if (listed["result"]["tools"].size() != cgraph::mcp_tool_names().size()) {
+    return 1;
+  }
+  const auto narrowed = cgraph::handle_mcp_request(
+      nlohmann::json{{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/list"}, {"params", nlohmann::json::object()}},
+      forwarder, {}, {"graph_impact", "graph_query"});
+  const auto& narrowed_tools = narrowed["result"]["tools"];
+  if (narrowed_tools.size() != 2 || narrowed_tools[0]["name"] != "graph_query" ||
+      narrowed_tools[1]["name"] != "graph_impact") {
+    return 1;
+  }
+  // --tools parsing: whitespace around names is ignored (CGRAPH_MCP_TOOLS is typed
+  // by hand), any "all" entry lists every tool, and an unknown name is refused.
+  if (cgraph::parse_mcp_tool_list(" graph_query , graph_impact,") !=
+          std::set<std::string>{"graph_query", "graph_impact"} ||
+      !cgraph::parse_mcp_tool_list("all,graph_query").empty() || !cgraph::parse_mcp_tool_list("").empty()) {
+    return 1;
+  }
+  bool refused = false;
+  try {
+    (void)cgraph::parse_mcp_tool_list("graph_query,graph_nope");
+  } catch (const std::invalid_argument& error) {
+    refused = std::string{error.what()}.find("graph_nope") != std::string::npos;
+  }
+  if (!refused) {
     return 1;
   }
 

@@ -4,10 +4,14 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <thread>
 
 int main(int argc, char** argv) {
   cgraph::ClientRequest base;
+  std::set<std::string> listed_tools;
   // Claude Code (and other hosts) set CLAUDE_PROJECT_DIR to the project root and
   // do not guarantee the server's working directory, so prefer it over cwd.
   if (const auto* project = std::getenv("CLAUDE_PROJECT_DIR"); project != nullptr && project[0] != '\0') {
@@ -23,7 +27,25 @@ int main(int argc, char** argv) {
       base.project_root = argv[++index];
     } else if (arg == "--daemon" && index + 1 < argc) {
       base.daemon_path = argv[++index];
+    } else if (arg == "--tools" && index + 1 < argc) {
+      try {
+        listed_tools = cgraph::parse_mcp_tool_list(argv[++index]);
+      } catch (const std::invalid_argument& error) {
+        std::cerr << "cgraph-mcp: --tools names " << error.what() << '\n';
+        return 2;
+      }
     }
+  }
+
+  // A project CGraph has indexed before (cgraph-out/ exists) gets its daemon
+  // started now, so the first tool call reads a fast-loaded graph instead of
+  // waiting for one. A project without cgraph-out/ is left alone: starting a
+  // daemon there would write cgraph-out/ into a repository nobody asked to index.
+  if (std::filesystem::is_directory(base.project_root / "cgraph-out")) {
+    std::thread([request = base]() mutable {
+      request.operation = "status";
+      (void)cgraph::send_thin_client_request(request, cgraph::default_client_runtime_hooks(request));
+    }).detach();
   }
 
   // Route every tool's daemon op to the resident per-project daemon through the
@@ -49,7 +71,7 @@ int main(int argc, char** argv) {
     }
     const auto response = cgraph::handle_mcp_request(request, dispatch, [&](const nlohmann::json& arguments) {
       return cgraph::change_context_across_workspace(arguments, base);
-    });
+    }, listed_tools);
     if (!response.empty()) {
       std::cout << response.dump() << '\n';
     }
