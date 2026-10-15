@@ -696,6 +696,17 @@ int main() {
            ++attempt) {
         std::this_thread::sleep_for(25ms);
       }
+      // The hook never waits for a build and says nothing while one runs, so wait
+      // for the graph itself, not just a daemon that accepts connections.
+      for (int attempt = 0; attempt < 400; ++attempt) {
+        cgraph::ClientRequest ready{.project_root = lone, .operation = "status"};
+        ready.spawn = false;
+        const auto answer = cgraph::send_thin_client_request(ready, cgraph::default_client_runtime_hooks(ready));
+        if (answer.response && answer.response->value("result", nlohmann::json::object()).value("build_state", std::string{}) == "ready") {
+          break;
+        }
+        std::this_thread::sleep_for(25ms);
+      }
       const nlohmann::json input{{"hook_event_name", "PreToolUse"}, {"tool_name", "MultiEdit"},
                                  {"tool_input", {{"file_path", (lone / "src" / "helper.ts").generic_string()},
                                                  {"edits", {{{"old_string", "  return n + 1;"}, {"new_string", "  return n + 2;"}}}}}}};
