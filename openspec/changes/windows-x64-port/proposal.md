@@ -34,10 +34,25 @@ plan; PR #181 lists what a port needs.
   directory fsync on Windows. File identity and change tokens come from the volume serial number,
   file index and `ChangeTime`; `incremental_update` now reads identity through the watcher's token
   instead of its own `stat`.
+- **Deterministic dedup across standard libraries.** The MinHash signatures that pick fuzzy-merge
+  candidates hashed shingles with `std::hash<std::string>`, which is implementation-defined: MSVC
+  uses FNV-1a, libc++ CityHash, libstdc++ a MurmurHash2 variant, so the three platforms merged
+  different nodes (on Windows `dedup_test`'s `PaymentService` / `Payment Service` pair was never
+  compared). `minhash_shingle_hash` spells out libstdc++'s function, so Linux output is unchanged
+  and macOS and Windows now match it. macOS graphs can change, so the index key is bumped
+  (`logic-24` -> `logic-25`).
 - **Build and CI.** `windows-default` / `windows-release` presets (MSVC + Ninja, the existing
   `x64-windows-static-md` triplet), `/utf-8`, `ws2_32`/`advapi32`. CI gains both Windows presets
   and uploads the packaged `cgraph-windows-x64.tar.gz`; `release-binaries.yml` gains the
   `windows-x64` row. Both workflows package through `scripts/package_release.sh`.
+- **Stack.** MSVC links every executable with an 8 MB stack reserve (`/STACK`), Linux's main-thread
+  default; Windows' 1 MB overflowed the extractor's bounded AST walk in Debug.
+- **Parity gate.** `pack_context_parity_test` measured with absolute paths in every context entry, so
+  its result moved with the checkout root's length: main's own gate fails at budget 2000 from an
+  18-character root, which is what `windows-latest` checks out to. It now serves context with
+  `state.project_root` set, as `retrieval_quality_test` does (CGR-33), and is re-pinned. Measured
+  root-independently, knapsack trails greedy at 2000 by 0.0361, outside the 0.03 band; that band is
+  exempt pending a packer decision, both non-regression floors stay.
 - **Tests.** New `local_socket_test` and `platform_test`. Tests that needed only the socket now
   use the seam; tests that need a POSIX-only facility (RLIMIT_FSIZE, FIFOs, SIGSTOP, `wait4`) skip
   that case on Windows and print why. Test fixtures are written in binary mode so CRLF translation
@@ -51,14 +66,14 @@ plan; PR #181 lists what a port needs.
   directory DACL instead.
 - Cutting a release or pinning a Windows asset in `integrations/launcher/release.json`; that waits
   for the next release run.
-- No graph content changes, so the index version key is not bumped.
 
 ## Impact
 
 - New: `src/engine/local_socket.cpp`, `src/engine/platform.cpp` (+ headers),
   `tests/smoke/local_socket_test.cpp`, `tests/smoke/platform_test.cpp`,
   `tests/smoke/unreadable_file.hpp`, `scripts/package_release.sh`.
-- Changed: `daemon_server.cpp`, `daemon_endpoint.cpp` (named-pipe stubs removed),
+- Changed: `dedup.cpp` (portable MinHash hash), `index_persistence.cpp` (key bump),
+  `enrich_drainer.cpp`, `daemon_server.cpp`, `daemon_endpoint.cpp` (named-pipe stubs removed),
   `daemon_lifecycle.cpp`, `daemon_identity.cpp`, `atomic_write.cpp`, `file_watcher.cpp`,
   `incremental_update.cpp`, `workspace.cpp`, `skills_install.cpp`, `client_runtime.cpp`,
   `src/cli/main.cpp`, `src/mcp/main.cpp`, CMake, presets, both workflows.

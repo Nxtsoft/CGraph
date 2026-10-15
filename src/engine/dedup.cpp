@@ -138,8 +138,8 @@ class UnionFind {
   const auto grams = shingles(normalized);
   for (std::size_t seed = 0; seed < signature.size(); ++seed) {
     for (const auto& gram : grams) {
-      const auto value = std::hash<std::string>{}(std::to_string(seed) + ":" + gram);
-      signature[seed] = std::min(signature[seed], static_cast<std::uint64_t>(value));
+      const auto value = minhash_shingle_hash(std::to_string(seed) + ":" + gram);
+      signature[seed] = std::min(signature[seed], value);
     }
   }
   return signature;
@@ -435,6 +435,32 @@ void semantic_dedup_impl(
 }
 
 }  // namespace
+
+std::uint64_t minhash_shingle_hash(std::string_view bytes) {
+  constexpr std::uint64_t kMul = (std::uint64_t{0xc6a4a793} << 32U) + std::uint64_t{0x5bd1e995};
+  constexpr std::uint64_t kSeed = 0xc70f6907;
+  const auto shift_mix = [](std::uint64_t value) { return value ^ (value >> 47U); };
+  // Little-endian loads: what libstdc++'s native loads read on x86-64 and arm64.
+  const auto load = [](const char* data, std::size_t count) {
+    std::uint64_t result = 0;
+    for (std::size_t index = count; index-- > 0;) {
+      result = (result << 8U) + static_cast<unsigned char>(data[index]);
+    }
+    return result;
+  };
+  const std::size_t aligned = bytes.size() & ~std::size_t{7};
+  std::uint64_t hash = kSeed ^ (static_cast<std::uint64_t>(bytes.size()) * kMul);
+  for (std::size_t offset = 0; offset < aligned; offset += 8) {
+    hash ^= shift_mix(load(bytes.data() + offset, 8) * kMul) * kMul;
+    hash *= kMul;
+  }
+  if ((bytes.size() & 7U) != 0) {
+    hash ^= load(bytes.data() + aligned, bytes.size() & 7U);
+    hash *= kMul;
+  }
+  hash = shift_mix(hash) * kMul;
+  return shift_mix(hash);
+}
 
 double shannon_entropy(std::string_view value) {
   if (value.empty()) {

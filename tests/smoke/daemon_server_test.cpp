@@ -1189,6 +1189,7 @@ int main() {
     expect(ok, !overlay_in_persisted && code_in_persisted,
            "coverage: graph.json stayed deterministic-only across the refused update");
 
+    persisted.close();  // Windows cannot delete a file that is still open
     fs::remove_all(cov_root);
   }
 

@@ -1,11 +1,37 @@
 #include "cgraph/dedup.hpp"
 
+#include <cstdint>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
 
 int main() {
+  // The MinHash shingle hash is pinned, not std::hash: MSVC's FNV-1a and libc++'s
+  // CityHash picked different merge candidates than libstdc++ (on Windows the
+  // PaymentService / Payment Service pair below was never compared).
+  const std::pair<const char*, std::uint64_t> pinned[] = {
+      {"", 0x553e93901e462a6eULL},
+      {"0:pay", 0x2427f63aeeb1fd62ULL},
+      {"15:ice", 0x4047bc85c414717eULL},
+      {"3:ments", 0x8e9e90bc41c5abfaULL},
+      {"0:payment_service", 0x3ae125451af71d62ULL},
+  };
+  for (const auto& [text, expected] : pinned) {
+    if (cgraph::minhash_shingle_hash(text) != expected) {
+      std::cerr << "minhash_shingle_hash(\"" << text << "\") drifted\n";
+      return 1;
+    }
+#if defined(__GLIBCXX__)
+    // On libstdc++ it is std::hash<std::string>, so Linux output is unchanged.
+    if (cgraph::minhash_shingle_hash(text) != std::hash<std::string>{}(text)) {
+      std::cerr << "minhash_shingle_hash differs from libstdc++ std::hash for \"" << text << "\"\n";
+      return 1;
+    }
+#endif
+  }
+
   if (cgraph::shannon_entropy("aaaaaa") >= 2.5) {
     return 1;
   }

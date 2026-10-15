@@ -45,27 +45,72 @@ jobs:
         with:
           vcpkgJsonGlob: vcpkg.json
 
+      # On Windows vcpkg builds every dependency from source (about 27 minutes,
+      # most of it openblas twice), and run-vcpkg's x-gha binary cache restores
+      # nothing. Keep vcpkg's own file binary cache between runs instead. Saved
+      # right after Configure, so a failing build or test still keeps it.
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-bin
+          key: vcpkg-bin-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+
+      - name: Use the vcpkg file binary cache
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "${{ runner.temp }}/vcpkg-bin" | Out-Null
+          "VCPKG_BINARY_SOURCES=clear;files,${{ runner.temp }}/vcpkg-bin,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
+      - name: Save vcpkg binary cache
+        if: always() && runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-bin
+          key: vcpkg-bin-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+
       - name: Build
+        id: build
         run: cmake --build --preset ${{ matrix.preset }}
 
-      # The windows-x64 release asset, built exactly as release-binaries.yml
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+      # The windows-x64 release asset, packaged exactly as release-binaries.yml
       # packages it, so a PR proves the asset builds without cutting a release.
       - name: Package windows-x64 asset
-        if: matrix.preset == 'windows-release'
+        if: matrix.preset == 'windows-release' && !cancelled() && steps.build.outcome == 'success'
         shell: bash
         run: scripts/package_release.sh build/windows-release windows-x64
 
       - uses: actions/upload-artifact@v4
-        if: matrix.preset == 'windows-release'
+        if: matrix.preset == 'windows-release' && !cancelled() && steps.build.outcome == 'success'
         with:
           name: cgraph-windows-x64
           path: cgraph-windows-x64.tar.gz
 
-      - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+      # The plugin launcher on Windows, end to end, against that asset: unpack
+      # it (with Windows' own tar.exe) where the launcher caches the pinned
+      # release, then launcher -> cgraph-mcp.exe, which auto-spawns graphd.exe
+      # and answers graph_query over AF_UNIX. Runs even when a smoke test failed.
+      - name: Launcher E2E (windows-x64 asset)
+        if: matrix.preset == 'windows-release' && !cancelled() && steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $tag = node -p "require('./integrations/launcher/release.json').tag"
+          $env:CGRAPH_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'cgraph-cache'
+          $dir = Join-Path $env:CGRAPH_CACHE_DIR "$tag\windows-x64"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          & "$env:SystemRoot\System32\tar.exe" -xzf cgraph-windows-x64.tar.gz -C $dir
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $root = Join-Path $env:RUNNER_TEMP 'mcp-root'
+          Copy-Item -Recurse tests/fixtures/one_shot $root
+          node scripts/mcp_smoke.mjs $root node integrations/launcher/cgraph-launch.mjs cgraph-mcp
 
   launcher:
     name: ${{ matrix.os }} / launcher

@@ -19,6 +19,10 @@ if(MSVC)
   # spellings (getenv, fopen) are used deliberately.
   add_compile_options(/utf-8)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+  # Windows gives the main thread and every std::thread a 1 MB stack; Linux
+  # gives the main thread 8 MB. Match it, so the extractor's bounded AST
+  # recursion (kMaxWalkDepth) has the same headroom, Debug frames included.
+  add_link_options(/STACK:8388608)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")

@@ -95,7 +95,20 @@ int replace_repeatedly(const fs::path& path, const std::string& contents) {
         std::cerr << "concurrent writer failed: " << error << '\n';
       }
     }
-    const auto now = read_file(path);
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+#ifdef _WIN32
+      // While the other writer's MoveFileExW holds the name, Windows refuses
+      // new opens for an instant (a sharing violation): a missed sample, not a
+      // torn file. Any file a reader does open must still be whole.
+      continue;
+#else
+      std::cerr << "concurrent writers left the path unopenable\n";
+      ++failures;
+      continue;
+#endif
+    }
+    const std::string now{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     if (now != kContentA && now != kContentB) {
       std::cerr << "concurrent writers produced a mixed or partial file (" << now.size() << " bytes)\n";
       ++failures;
