@@ -33,7 +33,9 @@ plan; PR #181 lists what a port needs.
   open without `FILE_SHARE_DELETE` (Windows refuses the replace then; POSIX does not). There is no
   directory fsync on Windows. File identity and change tokens come from the volume serial number,
   file index and `ChangeTime`; `incremental_update` now reads identity through the watcher's token
-  instead of its own `stat`.
+  instead of its own `stat`. The token also carries size and mtime: timestamps advance in ticks, and
+  two writes inside one change-time tick were invisible to a ctime-only token (`file_watcher_test`
+  failed that way on NTFS in CI and on a Linux 6.12 tmpfs).
 - **Deterministic dedup across standard libraries.** The MinHash signatures that pick fuzzy-merge
   candidates hashed shingles with `std::hash<std::string>`, which is implementation-defined: MSVC
   uses FNV-1a, libc++ CityHash, libstdc++ a MurmurHash2 variant, so the three platforms merged

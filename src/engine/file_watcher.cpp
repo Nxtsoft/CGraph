@@ -143,10 +143,14 @@ FileChangeToken read_file_change_token(const std::filesystem::path& path) {
   FileChangeToken token;
   token.device = identity.dwVolumeSerialNumber;
   token.inode = (static_cast<std::uint64_t>(identity.nFileIndexHigh) << 32U) | identity.nFileIndexLow;
-  // ChangeTime counts 100 ns ticks; split into seconds + nanoseconds.
-  const auto ticks = basic.ChangeTime.QuadPart;
-  token.ctime_sec = static_cast<std::int64_t>(ticks / 10'000'000);
-  token.ctime_nsec = static_cast<long>((ticks % 10'000'000) * 100);
+  // File times count 100 ns ticks; split into seconds + nanoseconds.
+  const auto split = [](LARGE_INTEGER time, std::int64_t& sec, long& nsec) {
+    sec = static_cast<std::int64_t>(time.QuadPart / 10'000'000);
+    nsec = static_cast<long>((time.QuadPart % 10'000'000) * 100);
+  };
+  split(basic.ChangeTime, token.ctime_sec, token.ctime_nsec);
+  split(basic.LastWriteTime, token.mtime_sec, token.mtime_nsec);
+  token.size = (static_cast<std::uint64_t>(identity.nFileSizeHigh) << 32U) | identity.nFileSizeLow;
   return token;
 #else
   struct stat sb {};
@@ -156,12 +160,17 @@ FileChangeToken read_file_change_token(const std::filesystem::path& path) {
   FileChangeToken token;
   token.device = static_cast<std::uint64_t>(sb.st_dev);
   token.inode = static_cast<std::uint64_t>(sb.st_ino);
+  token.size = static_cast<std::uint64_t>(sb.st_size);
 #if defined(__APPLE__)
   token.ctime_sec = static_cast<std::int64_t>(sb.st_ctimespec.tv_sec);
   token.ctime_nsec = static_cast<long>(sb.st_ctimespec.tv_nsec);
+  token.mtime_sec = static_cast<std::int64_t>(sb.st_mtimespec.tv_sec);
+  token.mtime_nsec = static_cast<long>(sb.st_mtimespec.tv_nsec);
 #else
   token.ctime_sec = static_cast<std::int64_t>(sb.st_ctim.tv_sec);
   token.ctime_nsec = static_cast<long>(sb.st_ctim.tv_nsec);
+  token.mtime_sec = static_cast<std::int64_t>(sb.st_mtim.tv_sec);
+  token.mtime_nsec = static_cast<long>(sb.st_mtim.tv_nsec);
 #endif
   return token;
 #endif

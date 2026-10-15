@@ -94,14 +94,18 @@ jobs:
           name: cgraph-windows-x64
           path: cgraph-windows-x64.tar.gz
 
-      # The plugin launcher on Windows, end to end, against that asset: unpack
-      # it (with Windows' own tar.exe) where the launcher caches the pinned
-      # release, then launcher -> cgraph-mcp.exe, which auto-spawns graphd.exe
-      # and answers graph_query over AF_UNIX. Runs even when a smoke test failed.
+      # The plugin launcher on Windows, end to end, against that asset. The
+      # pinned release has no windows-x64 asset until the next release run, so
+      # this job's copy of release.json gains one (the built asset's checksum)
+      # and the asset is unpacked, with Windows' own tar.exe, where the launcher
+      # caches the pinned release. Then launcher -> cgraph-mcp.exe, which
+      # auto-spawns graphd.exe and answers graph_query over AF_UNIX.
       - name: Launcher E2E (windows-x64 asset)
         if: matrix.preset == 'windows-release' && !cancelled() && steps.build.outcome == 'success'
         shell: pwsh
         run: |
+          $sha = (Get-FileHash cgraph-windows-x64.tar.gz -Algorithm SHA256).Hash.ToLower()
+          node -e "const f='integrations/launcher/release.json'; const r=JSON.parse(require('fs').readFileSync(f)); r.assets['windows-x64']={name:'cgraph-windows-x64.tar.gz',sha256:process.argv[1]}; require('fs').writeFileSync(f, JSON.stringify(r, null, 2));" $sha
           $tag = node -p "require('./integrations/launcher/release.json').tag"
           $env:CGRAPH_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'cgraph-cache'
           $dir = Join-Path $env:CGRAPH_CACHE_DIR "$tag\windows-x64"

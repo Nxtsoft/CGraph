@@ -8,11 +8,18 @@
 
 namespace cgraph {
 
+// What a poll compares to decide a file changed. The change time catches a
+// rewrite whose mtime was restored; size and mtime catch a rewrite that lands
+// in the same change-time tick (timestamps advance in ticks: a few ms on
+// Linux, coarser on NTFS).
 struct FileChangeToken {
   std::uint64_t device = 0;
   std::uint64_t inode = 0;
   std::int64_t ctime_sec = 0;
   long ctime_nsec = 0;
+  std::uint64_t size = 0;
+  std::int64_t mtime_sec = 0;
+  long mtime_nsec = 0;
 
   bool operator==(const FileChangeToken&) const = default;
 };

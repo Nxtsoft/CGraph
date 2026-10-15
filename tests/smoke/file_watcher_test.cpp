@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -139,6 +140,10 @@ int main() {
     return 1;
   }
 
+  // A same-size rewrite with its mtime restored shows only in the change time,
+  // which filesystems advance in ticks (a few ms on Linux, coarser on NTFS).
+  // Let one pass, so the rewrite lands in a later tick than the create.
+  std::this_thread::sleep_for(100ms);
   const auto original_mtime = std::filesystem::last_write_time(token_file);
   write_file(token_file, "x = 2\n");
   std::filesystem::last_write_time(token_file, original_mtime);
