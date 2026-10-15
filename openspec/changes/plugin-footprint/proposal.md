@@ -10,8 +10,8 @@ graph, and a search answer held only names and lines, so it re-read the files an
 ## What Changes
 
 - `cgraph-mcp --tools a,b,c` limits what `tools/list` advertises (`all`, or no flag, lists every
-  tool; an unknown name exits 2). The plugin's `.mcp.json` passes
-  `${CGRAPH_MCP_TOOLS:-graph_query,graph_context,graph_impact}`, so a user can list more.
+  tool; whitespace around names is ignored; an unknown name exits 2). The plugin's `.mcp.json` passes
+  `${CGRAPH_MCP_TOOLS:-graph_query,graph_context,graph_impact,graph_status}`, so a user can list more.
 - The `cgraph` skill description is one short line; `cgraph-enrich` sets
   `disable-model-invocation: true` and runs only as `/cgraph-enrich`.
 - `cgraph-mcp` starts the project's daemon when it starts, only when `<root>/cgraph-out/` already
@@ -25,5 +25,5 @@ graph, and a search answer held only names and lines, so it re-read the files an
 
 ## Impact
 
-- Measured prefix delta with the plugin: +753 tokens before, +111 after (`prefix_probe.py`).
+- Measured prefix delta with the plugin: +753 tokens before, +133 after with the four default tools (+111 with three; `prefix_probe.py`).
 - Hosts other than the plugin are unchanged unless they pass `--tools`.

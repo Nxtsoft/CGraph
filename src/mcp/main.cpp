@@ -1,12 +1,11 @@
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/mcp_server.hpp"
 
-#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <set>
-#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -29,20 +28,12 @@ int main(int argc, char** argv) {
     } else if (arg == "--daemon" && index + 1 < argc) {
       base.daemon_path = argv[++index];
     } else if (arg == "--tools" && index + 1 < argc) {
-      // Comma-separated tool names to advertise in tools/list; "all" (or no flag) lists every tool.
-      std::stringstream names{argv[++index]};
-      for (std::string name; std::getline(names, name, ',');) {
-        if (!name.empty() && name != "all") {
-          listed_tools.insert(name);
-        }
+      try {
+        listed_tools = cgraph::parse_mcp_tool_list(argv[++index]);
+      } catch (const std::invalid_argument& error) {
+        std::cerr << "cgraph-mcp: --tools names " << error.what() << '\n';
+        return 2;
       }
-    }
-  }
-  const auto known = cgraph::mcp_tool_names();
-  for (const auto& name : listed_tools) {
-    if (std::find(known.begin(), known.end(), name) == known.end()) {
-      std::cerr << "cgraph-mcp: --tools names unknown tool '" << name << "'\n";
-      return 2;
     }
   }
 

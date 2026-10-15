@@ -3,9 +3,9 @@
 ## 1. Footprint
 
 - [x] 1.1 `cgraph-mcp --tools`; `handle_mcp_request` takes `listed_tools`; `mcp_tool_names()`.
-- [x] 1.2 Plugin `.mcp.json` lists the core three via `CGRAPH_MCP_TOOLS`; short `cgraph` skill
+- [x] 1.2 Plugin `.mcp.json` lists the core four via `CGRAPH_MCP_TOOLS`; short `cgraph` skill
       description; `cgraph-enrich` not model-invocable.
-- [x] 1.3 `prefix_probe.py`: +753 tokens before, +111 after.
+- [x] 1.3 `prefix_probe.py`: +753 tokens before, +133 after (+111 before `graph_status` joined the default).
 
 ## 2. First answer
 

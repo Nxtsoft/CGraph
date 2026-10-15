@@ -15,8 +15,8 @@ about code structure or relationships. A graph call is one ~10ms round-trip and
 returns exactly the file:line (and often the source) you need, instead of many
 grep/read calls that burn context.
 
-The Claude Code plugin lists `graph_query`, `graph_context` and `graph_impact` by
-default. The other tools in the table below are listed when `CGRAPH_MCP_TOOLS=all`
+The Claude Code plugin lists `graph_query`, `graph_context`, `graph_impact` and
+`graph_status` by default. The other tools in the table below are listed when `CGRAPH_MCP_TOOLS=all`
 (or a comma-separated list of tool names) is set before the session starts.
 
 ## Routing: question → tool

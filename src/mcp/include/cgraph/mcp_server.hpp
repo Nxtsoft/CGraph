@@ -18,6 +18,11 @@ using McpChangeContext = std::function<nlohmann::json(const nlohmann::json& argu
 // Names of every tool the server implements, in tools/list order.
 [[nodiscard]] std::vector<std::string> mcp_tool_names();
 
+// Parses a --tools value: comma-separated tool names, whitespace around each
+// ignored. Empty, or any entry "all", means every tool (an empty set). Throws
+// std::invalid_argument naming the first entry the server does not implement.
+[[nodiscard]] std::set<std::string> parse_mcp_tool_list(const std::string& value);
+
 // listed_tools limits what tools/list advertises (empty: every tool). Hosts that
 // list each tool in the agent's prompt pay for every name on every request, so a
 // host can expose a small core and leave the rest unadvertised.
