@@ -1,0 +1,63 @@
+name: install-check
+
+# A clean runner is a clean machine: time a cold plugin-launcher install to the
+# first graph_query answer (gate: under 60 s), and install the Homebrew formula
+# and run its test, on every platform the release ships.
+on:
+  pull_request:
+    paths:
+      - integrations/launcher/**
+      - packaging/**
+      - scripts/first_answer.mjs
+      - scripts/pin_launcher_release.py
+      - .github/workflows/install-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  first-answer:
+    name: first answer / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sample project (this repo's own sources, as a fresh git repository)
+        run: |
+          mkdir -p "$RUNNER_TEMP/project"
+          git archive HEAD src | tar -x -C "$RUNNER_TEMP/project"
+          git -C "$RUNNER_TEMP/project" init -q
+      - name: Cold install to first graph_query answer
+        run: |
+          node scripts/first_answer.mjs --project "$RUNNER_TEMP/project" --query run_daemon_server --max-seconds 60 | tee answer.json
+          echo "### first answer, ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat answer.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  homebrew:
+    name: homebrew / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put brew on PATH (Linux runners ship it outside PATH)
+        if: runner.os == 'Linux'
+        run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+      - name: Install the formula from a local tap and run its test
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_FROM_API: "1"
+        run: |
+          brew tap-new --no-git local/cgraph
+          cp packaging/homebrew/cgraph.rb "$(brew --repository)/Library/Taps/local/homebrew-cgraph/Formula/cgraph.rb"
+          brew install local/cgraph/cgraph
+          brew test local/cgraph/cgraph
+          cgraph --version
