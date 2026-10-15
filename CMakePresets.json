@@ -22,6 +22,30 @@
       }
     },
     {
+      "name": "windows-default",
+      "displayName": "Windows x64 (MSVC, Debug)",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/windows-default",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets"
+      }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows x64 (MSVC, Release)",
+      "inherits": "windows-default",
+      "binaryDir": "${sourceDir}/build/windows-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
       "name": "sanitizers",
       "displayName": "ASan/UBSan",
       "inherits": "default",
@@ -52,6 +76,14 @@
       "configurePreset": "release"
     },
     {
+      "name": "windows-default",
+      "configurePreset": "windows-default"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release"
+    },
+    {
       "name": "sanitizers",
       "configurePreset": "sanitizers"
     },
@@ -73,6 +105,26 @@
       "configurePreset": "release",
       "output": {
         "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-default",
+      "configurePreset": "windows-default",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "timeout": 600
+      }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "timeout": 600
       }
     },
     {

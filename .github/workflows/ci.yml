@@ -16,13 +16,30 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         preset: [default, release, sanitizers]
+        # Windows x64: MSVC + Ninja with the static-md vcpkg triplet. No
+        # sanitizers row: the preset's ASan/UBSan pair is GCC/Clang-only.
+        include:
+          - os: windows-latest
+            preset: windows-default
+          - os: windows-latest
+            preset: windows-release
 
     steps:
+      # Fixtures and goldens are compared byte for byte; Git for Windows
+      # would otherwise check text files out with CRLF line endings.
+      - name: Keep LF line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - uses: lukka/get-cmake@latest
+
+      # Puts cl.exe and the Windows SDK on PATH for the Ninja generator.
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -33,6 +50,19 @@ jobs:
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+
+      # The windows-x64 release asset, built exactly as release-binaries.yml
+      # packages it, so a PR proves the asset builds without cutting a release.
+      - name: Package windows-x64 asset
+        if: matrix.preset == 'windows-release'
+        shell: bash
+        run: scripts/package_release.sh build/windows-release windows-x64
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.preset == 'windows-release'
+        with:
+          name: cgraph-windows-x64
+          path: cgraph-windows-x64.tar.gz
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }}

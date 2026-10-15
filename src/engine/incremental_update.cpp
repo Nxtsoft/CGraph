@@ -8,6 +8,7 @@
 #include "cgraph/dedup.hpp"
 #include "cgraph/file_cache.hpp"
 #include "cgraph/file_extraction.hpp"
+#include "cgraph/file_watcher.hpp"
 #include "cgraph/graph_builder.hpp"
 
 #include <algorithm>
@@ -20,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include <sys/stat.h>
 
 namespace cgraph {
 
@@ -30,8 +30,15 @@ std::string incremental_file_key(const std::filesystem::path& path) {
 
 namespace {
 
-[[nodiscard]] std::pair<dev_t, ino_t> file_identity(const struct ::stat& file_stat) {
-  return {file_stat.st_dev, file_stat.st_ino};
+// A file's filesystem identity, (device, inode) or on Windows (volume serial,
+// file index), read through the watcher's change token. nullopt when the file
+// cannot be inspected.
+[[nodiscard]] std::optional<std::pair<std::uint64_t, std::uint64_t>> file_identity(const std::filesystem::path& path) {
+  const auto token = read_file_change_token(path);
+  if (token == FileChangeToken{}) {
+    return std::nullopt;
+  }
+  return std::pair{token.device, token.inode};
 }
 
 }  // namespace
@@ -144,7 +151,7 @@ IncrementalUpdateResult full_stat_index_rescan(
   };
   std::vector<Classified> classified;
   classified.reserve(detected_files.size());
-  std::optional<std::set<std::pair<dev_t, ino_t>>> indexed_identities;
+  std::optional<std::set<std::pair<std::uint64_t, std::uint64_t>>> indexed_identities;
   for (const auto& file : detected_files) {
     auto key = incremental_file_key(file.path);
     std::optional<FileCacheEntry> previous;
@@ -167,15 +174,13 @@ IncrementalUpdateResult full_stat_index_rescan(
         if (!indexed_identities.has_value()) {
           indexed_identities.emplace();
           for (const auto& [_, entry] : index.cache) {
-            struct ::stat entry_stat{};
-            if (::stat(entry.path.c_str(), &entry_stat) == 0) {
-              indexed_identities->insert(file_identity(entry_stat));
+            if (const auto identity = file_identity(entry.path)) {
+              indexed_identities->insert(*identity);
             }
           }
         }
-        struct ::stat file_stat{};
-        return ::stat(file.path.c_str(), &file_stat) == 0 &&
-               indexed_identities->contains(file_identity(file_stat));
+        const auto identity = file_identity(file.path);
+        return identity.has_value() && indexed_identities->contains(*identity);
       }();
       if (had_verified_state) {
         // Verified state exists for these bytes; refusing the rescan is the

@@ -1,10 +1,13 @@
 #include "cgraph/file_cache.hpp"
 #include "cgraph/content_root.hpp"
 
+#include "unreadable_file.hpp"
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -31,7 +34,7 @@ namespace {
 
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   output << contents;
 }
 
@@ -80,31 +83,21 @@ int main() {
     return 1;
   }
 
-#if defined(__APPLE__) || defined(__unix__)
   const auto unreadable_path = root / "src" / "unreadable.py";
   write_file(unreadable_path, "class Unreadable:\n    pass\n");
-  std::error_code permission_error;
-  std::filesystem::permissions(
-      unreadable_path,
-      std::filesystem::perms::none,
-      std::filesystem::perm_options::replace,
-      permission_error);
-  if (permission_error) {
-    return 1;
+  {
+    cgraph_test::UnreadableFile unreadable(unreadable_path);
+    if (!unreadable.active()) {
+      return 1;
+    }
+    const auto failed_digest = cgraph::sha256_file_hex(unreadable_path);
+    const auto classified = cgraph::classify_cached_file(
+        unreadable_path, std::nullopt, cgraph::CacheValidation::Content);
+    if (!unreadable.release() || !failed_digest.empty() || !classified.hash_computed ||
+        classified.current.has_value()) {
+      return 1;
+    }
   }
-  const auto failed_digest = cgraph::sha256_file_hex(unreadable_path);
-  const auto unreadable = cgraph::classify_cached_file(
-      unreadable_path, std::nullopt, cgraph::CacheValidation::Content);
-  std::filesystem::permissions(
-      unreadable_path,
-      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-      std::filesystem::perm_options::replace,
-      permission_error);
-  if (permission_error || !failed_digest.empty() || !unreadable.hash_computed ||
-      unreadable.current.has_value()) {
-    return 1;
-  }
-#endif
 
   // A million-plus-one repeated bytes crosses both SHA-256 block boundaries
   // and file-reader chunks, then finalizes a partial block while streaming.
@@ -161,6 +154,9 @@ int main() {
       max_resident_bytes(baseline_usage) + kMaximumHashWorkingSet) {
     return 1;
   }
+#elif defined(_WIN32)
+  std::cout << "file_cache_test: SKIP bounded-memory hashing case on Windows: it compares fork()ed "
+               "children's peak RSS from wait4(), which Windows does not have\n";
 #endif
 
   write_file(path, "print('hello')\n");

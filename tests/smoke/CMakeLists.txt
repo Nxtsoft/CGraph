@@ -843,6 +843,8 @@ add_test(NAME cgraph_cli_main_test
   COMMAND cgraph_cli_main_test
     $<TARGET_FILE:cgraph>
     "${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/one_shot")
+# Exits 77 on Windows: its full-disk cases need RLIMIT_FSIZE (see the test).
+set_tests_properties(cgraph_cli_main_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(cgraph_atomic_write_test
   atomic_write_test.cpp)
@@ -902,6 +904,30 @@ cgraph_set_warnings(cgraph_daemon_endpoint_test)
 cgraph_enable_sanitizers(cgraph_daemon_endpoint_test)
 
 add_test(NAME cgraph_daemon_endpoint_test COMMAND cgraph_daemon_endpoint_test)
+
+add_executable(cgraph_local_socket_test
+  local_socket_test.cpp)
+
+target_link_libraries(cgraph_local_socket_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_local_socket_test)
+cgraph_enable_sanitizers(cgraph_local_socket_test)
+
+add_test(NAME cgraph_local_socket_test COMMAND cgraph_local_socket_test)
+
+add_executable(cgraph_platform_test
+  platform_test.cpp)
+
+target_link_libraries(cgraph_platform_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_platform_test)
+cgraph_enable_sanitizers(cgraph_platform_test)
+
+add_test(NAME cgraph_platform_test COMMAND cgraph_platform_test)
 
 add_executable(cgraph_daemon_security_test
   daemon_security_test.cpp)

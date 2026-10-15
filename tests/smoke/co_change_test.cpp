@@ -19,7 +19,7 @@ namespace fs = std::filesystem;
 
 void write(const fs::path& path, std::string_view text) {
   fs::create_directories(path.parent_path());
-  std::ofstream(path) << text;
+  std::ofstream(path, std::ios::binary) << text;
 }
 
 // The listed files as root-relative paths, in order.

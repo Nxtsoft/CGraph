@@ -1,11 +1,14 @@
 #include "cgraph/incremental_update.hpp"
 
+#include "unreadable_file.hpp"
+
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/pipeline.hpp"
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -14,7 +17,7 @@ namespace {
 
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   output << contents;
 }
 
@@ -103,7 +106,6 @@ int main() {
   }
   const auto created_root = graph->content_root;
 
-#if defined(__APPLE__) || defined(__unix__)
   // A source that becomes unreadable after a verified publish must not replace
   // either the live snapshot or its incremental index with unverified state.
   const auto verified_snapshot = graph;
@@ -114,42 +116,21 @@ int main() {
   const auto verified_alpha_source_sha256 = index.files.at(alpha_key).source_sha256;
   const auto verified_alpha_cache_sha256 = index.cache.at(alpha_key).sha256;
 
-  std::error_code permission_error;
-  std::filesystem::permissions(
-      alpha,
-      std::filesystem::perms::none,
-      std::filesystem::perm_options::replace,
-      permission_error);
-  if (permission_error || !cgraph::sha256_file_hex(alpha).empty()) {
+  cgraph_test::UnreadableFile unreadable(alpha);
+  if (!unreadable.active() || !cgraph::sha256_file_hex(alpha).empty()) {
     return 1;
   }
 
-  cgraph::IncrementalUpdateResult failed_rescan;
-  cgraph::IncrementalUpdateResult failed_incremental;
-  try {
-    failed_rescan = cgraph::full_stat_index_rescan(state, index, root);
-    cgraph::FileWatchEvent unreadable_event[] = {
-        {.path = alpha,
-         .change = cgraph::FileWatchChange::Modified,
-         .kind = cgraph::WatchedFileKind::Code},
-    };
-    failed_incremental =
-        cgraph::apply_incremental_code_updates(state, index, unreadable_event);
-  } catch (...) {
-    std::filesystem::permissions(
-        alpha,
-        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-        std::filesystem::perm_options::replace,
-        permission_error);
-    throw;
-  }
-  std::filesystem::permissions(
-      alpha,
-      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-      std::filesystem::perm_options::replace,
-      permission_error);
+  const auto failed_rescan = cgraph::full_stat_index_rescan(state, index, root);
+  cgraph::FileWatchEvent unreadable_event[] = {
+      {.path = alpha,
+       .change = cgraph::FileWatchChange::Modified,
+       .kind = cgraph::WatchedFileKind::Code},
+  };
+  const auto failed_incremental = cgraph::apply_incremental_code_updates(state, index, unreadable_event);
+  const bool restored = unreadable.release();
   graph = cgraph::read_graph_snapshot(state);
-  if (permission_error || graph != verified_snapshot ||
+  if (!restored || graph != verified_snapshot ||
       index.project_root != verified_project_root ||
       index.files.size() != verified_files_size ||
       index.cache.size() != verified_cache_size ||
@@ -158,7 +139,6 @@ int main() {
       failed_rescan.warnings.empty() || failed_incremental.warnings.empty()) {
     return 1;
   }
-#endif
 
   const auto alpha_modified_at = std::filesystem::last_write_time(alpha);
   std::filesystem::last_write_time(alpha, alpha_modified_at + std::chrono::seconds(5));

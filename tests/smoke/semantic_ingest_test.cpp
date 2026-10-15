@@ -16,9 +16,11 @@
 #include <string_view>
 #include <thread>
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -71,6 +73,7 @@ bool has_hyperedge(const cgraph::GraphSnapshot& graph, const std::string& id) {
   return false;
 }
 
+#ifndef _WIN32
 int open_fifo_writer_when_reader_waits(const std::filesystem::path& path) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds{5};
@@ -115,6 +118,7 @@ bool serve_fifo_reads_until_ready(
   }
   return true;
 }
+#endif
 
 }  // namespace
 
@@ -395,6 +399,7 @@ int main() {
            "replacement: fragment path updated");
   }
 
+#ifndef _WIN32
   // Dependency discovery and merge are one snapshot decision. The FIFO blocks
   // source hashing after fragment validation, giving a concurrent publisher a
   // deterministic window to replace the graph before that decision and merge.
@@ -471,6 +476,10 @@ int main() {
                              "code:race-dependency"),
            "snapshot race: concurrent publication remains unchanged after rejection");
   }
+#else
+  std::cout << "semantic_ingest_test: SKIP snapshot-race case on Windows: it blocks source hashing on a "
+               "FIFO, and Windows has no filesystem FIFOs\n";
+#endif
 
   // An existing path is not a valid semantic source when hashing returns no
   // digest. A directory exercises the real file reader's read-failure path.

@@ -9,11 +9,14 @@
 #include <iterator>
 #include <fstream>
 #include <csignal>
+#include <iostream>
 #include <string>
 
+#ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -112,7 +115,7 @@ int main() {
 
   const auto endpoint = root / "graphd.sock";
   {
-    std::ofstream output(endpoint);
+    std::ofstream output(endpoint, std::ios::binary);
     output << "stale endpoint";
   }
   if (!std::filesystem::exists(endpoint) || !cgraph::cleanup_daemon_endpoint(endpoint) ||
@@ -181,7 +184,7 @@ int main() {
   // file it wrote. Regression coverage for the old destructive fallback.
   const auto blocked_path = root / "blocked-graph.json";
   std::filesystem::create_directories(blocked_path);           // destination is a directory...
-  std::ofstream(blocked_path / "keep.txt") << "last known good";  // ...and non-empty
+  std::ofstream(blocked_path / "keep.txt", std::ios::binary) << "last known good";  // ...and non-empty
   if (cgraph::persist_graph_snapshot(deterministic, blocked_path)) {
     return 1;  // must fail: cannot atomically replace a non-empty directory
   }
@@ -193,13 +196,17 @@ int main() {
     return 1;  // the orphan temp must be cleaned up, not left behind
   }
 
+#ifdef _WIN32
+  std::cout << "daemon_lifecycle_test: SKIP full-disk persist case on Windows: it needs RLIMIT_FSIZE "
+               "to make write() fail part-way, and Windows has no per-process file-size limit\n";
+#else
   // Durability on a full disk: a write that fails part-way must not replace the
   // last-known-good graph.json with a truncated one. A forked child with a tiny
   // RLIMIT_FSIZE (SIGXFSZ ignored, so write() fails with EFBIG) truncates the
   // temp file mid-write exactly like a full disk; persist must report failure
   // and leave both the good file and no temp behind.
   const auto good_path = root / "good-graph.json";
-  std::ofstream(good_path) << "last known good\n";
+  std::ofstream(good_path, std::ios::binary) << "last known good\n";
   const pid_t child = ::fork();
   if (child == 0) {
     std::signal(SIGXFSZ, SIG_IGN);
@@ -226,6 +233,8 @@ int main() {
   if (has_temp_file(root)) {
     return 1;
   }
+
+#endif
 
   std::filesystem::remove_all(root);
   return 0;

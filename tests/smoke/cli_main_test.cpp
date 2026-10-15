@@ -13,6 +13,19 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+
+// Every case here needs RLIMIT_FSIZE to make write() fail part-way, and
+// Windows has no per-process file-size limit. Exit code 77 is the test's
+// SKIP_RETURN_CODE (tests/smoke/CMakeLists.txt), so ctest reports a skip.
+int main() {
+  std::cout << "cli_main_test: SKIP on Windows: the full-disk cases need RLIMIT_FSIZE, "
+               "which Windows does not have\n";
+  return 77;
+}
+
+#else
+
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -137,7 +150,7 @@ int main(int argc, char** argv) {
   // nor the seam marker (which would make graphd serve the dir) may appear.
   const auto fused = root / "fused";
   fs::create_directories(fused);
-  std::ofstream(fused / "graph.json") << "PRIOR\n";
+  std::ofstream(fused / "graph.json", std::ios::binary) << "PRIOR\n";
   auto fuse_args = fuse_inputs;
   fuse_args.insert(fuse_args.end(), {"--out", fused.string()});
   run = run_cgraph(cgraph, fuse_args, 4096);
@@ -179,3 +192,5 @@ int main(int argc, char** argv) {
   }
   return ok ? 0 : 1;
 }
+
+#endif  // _WIN32

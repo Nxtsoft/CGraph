@@ -47,16 +47,16 @@ int main() {
   const auto bin_dir = base / "bin dir";
   fs::create_directories(bin_dir);
   const auto graphd = bin_dir / "graphd";
-  std::ofstream(graphd) << "#!/bin/sh\nexit 0\n";
+  std::ofstream(graphd, std::ios::binary) << "#!/bin/sh\nexit 0\n";
   fs::permissions(graphd, fs::perms::owner_all);
   cgraph::LaunchAgentSpec daemon;
   daemon.label = cgraph::per_repo_agent_label("abc123");
-  daemon.program_args = {graphd.string(), "--root", "/work/my repo 100%$HOME", "--idle-timeout", "0"};
+  daemon.program_args = {graphd.generic_string(), "--root", "/work/my repo 100%$HOME", "--idle-timeout", "0"};
   daemon.keep_alive = true;
   daemon.run_at_load = true;
   daemon.env = {{"CGRAPH_NOTE", "say \"hi\" 5%"}};
   const auto service = cgraph::render_systemd_service(daemon);
-  expect(ok, contains(service, "ExecStart=\"" + graphd.string() + "\" \"--root\" \"/work/my repo 100%%$$HOME\""),
+  expect(ok, contains(service, "ExecStart=\"" + graphd.generic_string() + "\" \"--root\" \"/work/my repo 100%%$$HOME\""),
          "ExecStart quotes each argument and escapes % and $");
   expect(ok, contains(service, "Type=simple\n"), "a resident daemon is Type=simple");
   expect(ok, contains(service, "Restart=always\n"), "keep_alive restarts whatever the exit");

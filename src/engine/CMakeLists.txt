@@ -42,6 +42,7 @@ add_library(cgraph_engine STATIC
   messaging_contracts.cpp
   language_config.cpp
   launch_agent.cpp
+  local_socket.cpp
   non_grammar_extractors.cpp
   normalize.cpp
   operation_stats.cpp
@@ -50,6 +51,7 @@ add_library(cgraph_engine STATIC
   path_ignore.cpp
   path_classification.cpp
   pipeline.cpp
+  platform.cpp
   protocol.cpp
   python_extractor.cpp
   report.cpp
@@ -102,6 +104,12 @@ target_link_libraries(cgraph_engine
     CURL::libcurl
     igraph::igraph
     utf8proc::utf8proc)
+
+# Winsock (AF_UNIX daemon endpoint) and the security API (owner-only DACL on
+# the socket directory).
+if(WIN32)
+  target_link_libraries(cgraph_engine PRIVATE ws2_32 advapi32)
+endif()
 
 cgraph_set_warnings(cgraph_engine)
 cgraph_enable_sanitizers(cgraph_engine)

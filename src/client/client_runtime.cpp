@@ -7,6 +7,7 @@
 
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_server.hpp"
+#include "cgraph/platform.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/report.hpp"
 #include "cgraph/workspace.hpp"
@@ -25,15 +26,6 @@
 #include <thread>
 #include <unordered_map>
 
-#ifndef _WIN32
-#include <fcntl.h>
-#include <sys/types.h>
-#include <unistd.h>
-#endif
-
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
 
 namespace cgraph {
 namespace {
@@ -96,27 +88,6 @@ void settle_building_answer(const ClientRequest& request, const ClientRuntimeHoo
   }
 }
 
-[[nodiscard]] std::filesystem::path current_executable_path() {
-#if defined(__APPLE__)
-  std::uint32_t size = 0;
-  _NSGetExecutablePath(nullptr, &size);
-  std::string buffer(size, '\0');
-  if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
-    return {};
-  }
-  buffer.resize(std::strlen(buffer.c_str()));
-  std::error_code ec;
-  const auto canonical = std::filesystem::canonical(buffer, ec);
-  return ec ? std::filesystem::path{buffer} : canonical;
-#elif defined(__linux__)
-  std::error_code ec;
-  const auto path = std::filesystem::read_symlink("/proc/self/exe", ec);
-  return ec ? std::filesystem::path{} : path;
-#else
-  return {};
-#endif
-}
-
 }  // namespace
 
 std::filesystem::path resolve_daemon_path(const std::filesystem::path& requested) {
@@ -130,7 +101,8 @@ std::filesystem::path resolve_daemon_path(const std::filesystem::path& requested
   // or under the sibling daemon/ directory (the CMake build tree).
   if (const auto self = current_executable_path(); !self.empty()) {
     const auto bin_dir = self.parent_path();
-    for (const auto& candidate : {bin_dir / "graphd", bin_dir.parent_path() / "daemon" / "graphd"}) {
+    const auto graphd = executable_file_name("graphd");
+    for (const auto& candidate : {bin_dir / graphd, bin_dir.parent_path() / "daemon" / graphd}) {
       std::error_code ec;
       if (std::filesystem::exists(candidate, ec)) {
         return candidate;
@@ -150,35 +122,9 @@ ClientRuntimeHooks default_client_runtime_hooks(const ClientRequest& request) {
     if (daemon_path.empty()) {
       return false;
     }
-#ifdef _WIN32
-    (void)identity;
-    return false;
-#else
-    const auto pid = ::fork();
-    if (pid < 0) {
-      return false;
-    }
-    if (pid == 0) {
-      // Detach the daemon from the client: a new session (no controlling
-      // terminal) and stdio pointed at /dev/null, so the resident daemon never
-      // holds the client's pipes open (which would make the client's caller
-      // hang waiting for EOF) and outlives this short-lived client cleanly.
-      ::setsid();
-      if (const int devnull = ::open("/dev/null", O_RDWR); devnull >= 0) {
-        ::dup2(devnull, STDIN_FILENO);
-        ::dup2(devnull, STDOUT_FILENO);
-        ::dup2(devnull, STDERR_FILENO);
-        if (devnull > STDERR_FILENO) {
-          ::close(devnull);
-        }
-      }
-      const auto daemon = daemon_path.string();
-      const auto root = identity.project_root.string();
-      ::execl(daemon.c_str(), daemon.c_str(), "--root", root.c_str(), nullptr);
-      std::_Exit(127);
-    }
-    return true;
-#endif
+    // Detached: the resident daemon never holds the client's pipes open (which
+    // would make the client's caller hang waiting for EOF) and outlives it.
+    return spawn_detached(daemon_path, {"--root", identity.project_root});
   };
   hooks.sleep = [](std::chrono::milliseconds delay) {
     std::this_thread::sleep_for(delay);

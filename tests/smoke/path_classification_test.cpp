@@ -18,7 +18,7 @@ bool contains(const std::vector<std::string>& haystack, std::string_view needle)
 
 void write(const std::filesystem::path& path, std::string_view text) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream out(path);
+  std::ofstream out(path, std::ios::binary);
   out << text;
 }
 

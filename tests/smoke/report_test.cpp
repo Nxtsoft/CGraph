@@ -106,7 +106,7 @@ int test_modules_by_package() {
   fs::remove_all(root);
   const auto write = [](const fs::path& path, std::string_view text) {
     fs::create_directories(path.parent_path());
-    std::ofstream(path) << text;
+    std::ofstream(path, std::ios::binary) << text;
   };
   write(root / "package.json", R"({"name": "mono", "workspaces": ["apps/*", "packages/*"]})");
   write(root / "apps" / "web" / "package.json", R"({"name": "@acme/web"})");
