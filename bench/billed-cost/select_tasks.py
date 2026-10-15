@@ -5,12 +5,16 @@ from the SWE-bench Verified dataset at run time.
   main  difficulty "15 min - 1 hour", a fixed count per repo, sampled with a fixed seed
   hard  every instance of difficulty "1-4 hours" (a supplementary set where
         navigation should matter more)
+  multi every SWE-bench Verified instance whose gold patch edits at least two files,
+        with no ContextBench filter: the fix spans files the agent has to find
 
 usage: select_tasks.py <main|hard> <contextbench selected_500_instances.csv> <out.json>
+       select_tasks.py multi <out.json>
 """
 
 import json
 import random
+import re
 import sys
 
 import pandas as pd
@@ -25,6 +29,18 @@ PER_REPO = {
 }
 DIFFICULTY = {"main": "15 min - 1 hour", "hard": "1-4 hours"}
 SEED = 29
+
+
+MIN_GOLD_FILES = 2
+
+
+def multi(out_path):
+    verified = load_dataset("SWE-bench/SWE-bench_Verified", split="test").to_pandas()
+    files = verified.patch.map(lambda p: len(re.findall(r"^diff --git a/", p, re.M)))
+    picked = sorted(verified[files >= MIN_GOLD_FILES].instance_id)
+    meta = {"dataset": "SWE-bench/SWE-bench_Verified", "min_gold_patch_files": MIN_GOLD_FILES}
+    json.dump({**meta, "instance_ids": picked}, open(out_path, "w"), indent=2)
+    print(f"{len(picked)} tasks written to {out_path}")
 
 
 def main(which, csv_path, out_path):
@@ -47,4 +63,7 @@ def main(which, csv_path, out_path):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:])
+    if sys.argv[1] == "multi":
+        multi(sys.argv[2])
+    else:
+        main(*sys.argv[1:])

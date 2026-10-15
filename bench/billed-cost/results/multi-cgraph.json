@@ -1,0 +1,1078 @@
+{
+  "arms": [
+    "baseline",
+    "cgraph"
+  ],
+  "n_tasks": 71,
+  "n_runs": 426,
+  "seeds_per_task": {
+    "baseline": {
+      "3": 71
+    },
+    "cgraph": {
+      "3": 71
+    }
+  },
+  "claude_code_versions": {
+    "2.1.296": 426
+  },
+  "models": {
+    "claude-sonnet-5-5": 426
+  },
+  "repos": [
+    "astropy/astropy",
+    "django/django",
+    "matplotlib/matplotlib",
+    "mwaskom/seaborn",
+    "pydata/xarray",
+    "pylint-dev/pylint",
+    "pytest-dev/pytest",
+    "scikit-learn/scikit-learn",
+    "sphinx-doc/sphinx",
+    "sympy/sympy"
+  ],
+  "metrics": {
+    "total_cost_usd": {
+      "baseline_mean": 0.06488408403755869,
+      "cgraph_mean": 0.06712658403755868,
+      "baseline_median": 0.06262056666666667,
+      "cgraph_median": 0.06175223333333333,
+      "diff_mean": 0.0022424999999999993,
+      "diff_mean_ci95": [
+        -0.0002151940258215963,
+        0.00510829262910798
+      ],
+      "diff_median": 0.00028613333333332713,
+      "diff_median_ci95": [
+        -0.00122626666666667,
+        0.0013058333333333255
+      ],
+      "tasks_cgraph_lower": 33,
+      "tasks_cgraph_higher": 38,
+      "ratio_of_totals": 1.0345616345404818,
+      "ratio_lo": 0.9965718456662482,
+      "ratio_hi": 1.0778505022898837
+    },
+    "num_turns": {
+      "baseline_mean": 4.976525821596244,
+      "cgraph_mean": 5.211267605633803,
+      "baseline_median": 4.666666666666667,
+      "cgraph_median": 5,
+      "diff_mean": 0.2347417840375587,
+      "diff_mean_ci95": [
+        6.254777603522009e-18,
+        0.48356807511737093
+      ],
+      "diff_median": 0,
+      "diff_median_ci95": [
+        -0.33333333333333304,
+        0.33333333333333304
+      ],
+      "tasks_cgraph_lower": 29,
+      "tasks_cgraph_higher": 32,
+      "ratio_of_totals": 1.0471698113207548,
+      "ratio_lo": 1.0,
+      "ratio_hi": 1.0965259270469596
+    },
+    "wall_s": {
+      "baseline_mean": 17.896713615023476,
+      "cgraph_mean": 18.695305164319247,
+      "baseline_median": 16.8,
+      "cgraph_median": 16.6,
+      "diff_mean": 0.7985915492957746,
+      "diff_mean_ci95": [
+        -0.18125586854460096,
+        2.003286384976526
+      ],
+      "diff_median": 0.06666666666666643,
+      "diff_median_ci95": [
+        -0.43333333333333357,
+        0.8333333333333339
+      ],
+      "tasks_cgraph_lower": 35,
+      "tasks_cgraph_higher": 36,
+      "ratio_of_totals": 1.044622245540399,
+      "ratio_lo": 0.9898707896165972,
+      "ratio_hi": 1.1091608015385805
+    },
+    "resolved": {
+      "baseline_mean": 0.4788732394366197,
+      "cgraph_mean": 0.5258215962441315,
+      "baseline_median": 0.3333333333333333,
+      "cgraph_median": 0.6666666666666666,
+      "diff_mean": 0.04694835680751174,
+      "diff_mean_ci95": [
+        2.3455416013207532e-18,
+        0.09389671361502348
+      ],
+      "diff_median": 0.0,
+      "diff_median_ci95": [
+        0.0,
+        0.0
+      ],
+      "tasks_cgraph_lower": 4,
+      "tasks_cgraph_higher": 12
+    },
+    "input_tokens": {
+      "baseline_mean": 9.793427230046948,
+      "cgraph_mean": 10.262910798122066,
+      "baseline_median": 9.333333333333334,
+      "cgraph_median": 9.333333333333334,
+      "diff_mean": 0.46948356807511743,
+      "diff_mean_ci95": [
+        0.009389671361502351,
+        0.976525821596244
+      ],
+      "diff_median": 0,
+      "diff_median_ci95": [
+        0.0,
+        0.6666666666666661
+      ],
+      "tasks_cgraph_lower": 26,
+      "tasks_cgraph_higher": 31,
+      "ratio_of_totals": 1.0479386385426654,
+      "ratio_lo": 1.0009388356281483,
+      "ratio_hi": 1.098493918869711
+    },
+    "output_tokens": {
+      "baseline_mean": 1519.6713615023475,
+      "cgraph_mean": 1571.4929577464789,
+      "baseline_median": 1381,
+      "cgraph_median": 1322.3333333333333,
+      "diff_mean": 51.82159624413145,
+      "diff_mean_ci95": [
+        -44.735680751173724,
+        167.06995305164315
+      ],
+      "diff_median": -2,
+      "diff_median_ci95": [
+        -72.33333333333337,
+        37.33333333333326
+      ],
+      "tasks_cgraph_lower": 36,
+      "tasks_cgraph_higher": 35,
+      "ratio_of_totals": 1.0341005282832338,
+      "ratio_lo": 0.969811239069597,
+      "ratio_hi": 1.1084831388035694
+    },
+    "cache_read_input_tokens": {
+      "baseline_mean": 85925.91079812207,
+      "cgraph_mean": 92225.84037558685,
+      "baseline_median": 80258.33333333333,
+      "cgraph_median": 81674.66666666667,
+      "diff_mean": 6299.929577464789,
+      "diff_mean_ci95": [
+        612.2786384976525,
+        12723.83861502347
+      ],
+      "diff_median": 275,
+      "diff_median_ci95": [
+        -1471.3333333333285,
+        6598.6666666666715
+      ],
+      "tasks_cgraph_lower": 34,
+      "tasks_cgraph_higher": 37,
+      "ratio_of_totals": 1.0733181588527598,
+      "ratio_lo": 1.0071237585676347,
+      "ratio_hi": 1.1443791580162173
+    },
+    "cache_creation_input_tokens": {
+      "baseline_mean": 10268.798122065728,
+      "cgraph_mean": 10542.13615023474,
+      "baseline_median": 10190.666666666666,
+      "cgraph_median": 10066,
+      "diff_mean": 273.33802816901397,
+      "diff_mean_ci95": [
+        9.7990610328638,
+        574.6015258215957
+      ],
+      "diff_median": 93.66666666666606,
+      "diff_median_ci95": [
+        -30.66666666666606,
+        188.33333333333303
+      ],
+      "tasks_cgraph_lower": 30,
+      "tasks_cgraph_higher": 41,
+      "ratio_of_totals": 1.026618307704547,
+      "ratio_lo": 1.0009641760531829,
+      "ratio_hi": 1.0554722403463361
+    },
+    "tool_calls_total": {
+      "baseline_mean": 3.976525821596244,
+      "cgraph_mean": 4.211267605633803,
+      "baseline_median": 3.6666666666666665,
+      "cgraph_median": 4,
+      "diff_mean": 0.23474178403755874,
+      "diff_mean_ci95": [
+        4.9725481948000254e-17,
+        0.48356807511737093
+      ],
+      "diff_median": 0,
+      "diff_median_ci95": [
+        -0.33333333333333304,
+        0.3333333333333335
+      ],
+      "tasks_cgraph_lower": 29,
+      "tasks_cgraph_higher": 32,
+      "ratio_of_totals": 1.0590318772136955,
+      "ratio_lo": 1.0,
+      "ratio_hi": 1.12083883626206
+    },
+    "first_request_prefix_tokens": {
+      "baseline_mean": 17377.309859154928,
+      "cgraph_mean": 17513.220657276994,
+      "baseline_median": 17239.333333333332,
+      "cgraph_median": 17377,
+      "diff_mean": 135.9107981220656,
+      "diff_mean_ci95": [
+        134.92957746478854,
+        136.8779342723003
+      ],
+      "diff_median": 136.33333333333212,
+      "diff_median_ci95": [
+        134.66666666666424,
+        137.66666666666424
+      ],
+      "tasks_cgraph_lower": 0,
+      "tasks_cgraph_higher": 71,
+      "ratio_of_totals": 1.0078211644508637,
+      "ratio_lo": 1.0077403669877103,
+      "ratio_hi": 1.0079020697051504
+    }
+  },
+  "spend_usd": {
+    "baseline": 13.8203099,
+    "cgraph": 14.2979624,
+    "all": 28.1182723
+  },
+  "solved_runs": {
+    "baseline": "102/213",
+    "cgraph": "112/213"
+  },
+  "cgraph_usage": {
+    "runs_with_any_cgraph_call": 0,
+    "cgraph_runs": 213,
+    "total_cgraph_calls": 0,
+    "skill_calls": 0,
+    "by_tool": {},
+    "mcp_connected_runs": 213
+  },
+  "paired_by_cgraph_use": {
+    "called": {
+      "n": 0,
+      "cost_diff_mean": null,
+      "turns_diff_mean": null,
+      "resolved_diff_mean": null
+    },
+    "not_called": {
+      "n": 213,
+      "cost_diff_mean": 0.0022424999999999997,
+      "turns_diff_mean": 0.2347417840375587,
+      "resolved_diff_mean": 0.046948356807511735
+    }
+  },
+  "fitted_price_per_mtok": {
+    "input_tokens": 1.999999999974092,
+    "output_tokens": 10.000000000000002,
+    "cache_read_input_tokens": 0.100000000000001,
+    "cache_creation_input_tokens": 4.000000000000002
+  },
+  "fitted_price_max_abs_residual_usd": 3.885780586188048e-16,
+  "cost_breakdown_usd": {
+    "baseline": {
+      "input_tokens": 0.004171999999945956,
+      "output_tokens": 3.2369000000000003,
+      "cache_read_input_tokens": 1.8302219000000184,
+      "cache_creation_input_tokens": 8.749016000000005
+    },
+    "cgraph": {
+      "input_tokens": 0.004371999999943365,
+      "output_tokens": 3.3472800000000005,
+      "cache_read_input_tokens": 1.9644104000000198,
+      "cache_creation_input_tokens": 8.981900000000003
+    }
+  },
+  "per_task": [
+    {
+      "instance_id": "astropy__astropy-13398",
+      "baseline_total_cost_usd": 0.07319596666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 16.3,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.06623590000000001,
+      "cgraph_num_turns": 3.3333333333333335,
+      "cgraph_wall_s": 16.266666666666666,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "astropy__astropy-14369",
+      "baseline_total_cost_usd": 0.0605858,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 15.766666666666667,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.054703133333333334,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 13.9,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "astropy__astropy-8707",
+      "baseline_total_cost_usd": 0.05375946666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 13.966666666666667,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.05956103333333334,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 14.8,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-10554",
+      "baseline_total_cost_usd": 0.07117953333333334,
+      "baseline_num_turns": 6.333333333333333,
+      "baseline_wall_s": 20.2,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.06652866666666667,
+      "cgraph_num_turns": 6,
+      "cgraph_wall_s": 18.2,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-11138",
+      "baseline_total_cost_usd": 0.135004,
+      "baseline_num_turns": 6.333333333333333,
+      "baseline_wall_s": 36.06666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.11600993333333333,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 29.266666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-11333",
+      "baseline_total_cost_usd": 0.05427673333333334,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 17.933333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04978493333333334,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 15.1,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-11400",
+      "baseline_total_cost_usd": 0.0558659,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 16.8,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.07666373333333333,
+      "cgraph_num_turns": 6,
+      "cgraph_wall_s": 21.233333333333334,
+      "cgraph_resolved": 0.6666666666666666
+    },
+    {
+      "instance_id": "django__django-11532",
+      "baseline_total_cost_usd": 0.051503766666666666,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 12.833333333333334,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.0535097,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 16.03333333333333,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-11734",
+      "baseline_total_cost_usd": 0.05989726666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 14.0,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.0563728,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 13.566666666666666,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-11885",
+      "baseline_total_cost_usd": 0.0505526,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 14.700000000000001,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.07949006666666666,
+      "cgraph_num_turns": 5.333333333333333,
+      "cgraph_wall_s": 22.233333333333334,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-12155",
+      "baseline_total_cost_usd": 0.03619286666666667,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 9.066666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04058166666666667,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 10.9,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-12325",
+      "baseline_total_cost_usd": 0.04170146666666667,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 10.0,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04142853333333333,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.1,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-12406",
+      "baseline_total_cost_usd": 0.068432,
+      "baseline_num_turns": 6.333333333333333,
+      "baseline_wall_s": 20.533333333333335,
+      "baseline_resolved": 0.6666666666666666,
+      "cgraph_total_cost_usd": 0.06816286666666667,
+      "cgraph_num_turns": 5.666666666666667,
+      "cgraph_wall_s": 18.6,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-12741",
+      "baseline_total_cost_usd": 0.0421505,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 11.633333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04547983333333333,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 14.166666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-13121",
+      "baseline_total_cost_usd": 0.09835673333333333,
+      "baseline_num_turns": 7,
+      "baseline_wall_s": 29.966666666666665,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.10941466666666667,
+      "cgraph_num_turns": 7.666666666666667,
+      "cgraph_wall_s": 33.0,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-13195",
+      "baseline_total_cost_usd": 0.058473366666666665,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 18.833333333333336,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.05858683333333334,
+      "cgraph_num_turns": 5.333333333333333,
+      "cgraph_wall_s": 16.466666666666665,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-13212",
+      "baseline_total_cost_usd": 0.06860483333333334,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 14.966666666666667,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.07491850000000001,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 18.766666666666666,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-13344",
+      "baseline_total_cost_usd": 0.12941303333333334,
+      "baseline_num_turns": 10.333333333333334,
+      "baseline_wall_s": 44.7,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.1940396,
+      "cgraph_num_turns": 14.333333333333334,
+      "cgraph_wall_s": 75.63333333333334,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-13512",
+      "baseline_total_cost_usd": 0.04747793333333333,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 14.7,
+      "baseline_resolved": 0.6666666666666666,
+      "cgraph_total_cost_usd": 0.03625663333333333,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.0,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-14011",
+      "baseline_total_cost_usd": 0.0702804,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 21.400000000000002,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.06175223333333333,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 17.533333333333335,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-14170",
+      "baseline_total_cost_usd": 0.048763666666666663,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 13.033333333333333,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.04898106666666666,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 13.2,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-14315",
+      "baseline_total_cost_usd": 0.037555,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.2,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.0382441,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 8.833333333333334,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-14376",
+      "baseline_total_cost_usd": 0.04816096666666667,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 13.6,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04431206666666667,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 11.7,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-14631",
+      "baseline_total_cost_usd": 0.06971536666666667,
+      "baseline_num_turns": 4.333333333333333,
+      "baseline_wall_s": 19.266666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.07102119999999999,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 21.066666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-15103",
+      "baseline_total_cost_usd": 0.04655316666666667,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 12.8,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04610263333333334,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 14.933333333333334,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-15561",
+      "baseline_total_cost_usd": 0.03943463333333334,
+      "baseline_num_turns": 3.3333333333333335,
+      "baseline_wall_s": 10.433333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0403233,
+      "cgraph_num_turns": 3.3333333333333335,
+      "cgraph_wall_s": 10.6,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-15563",
+      "baseline_total_cost_usd": 0.06683666666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 19.933333333333334,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.07351046666666666,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 23.666666666666668,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-15629",
+      "baseline_total_cost_usd": 0.08327426666666667,
+      "baseline_num_turns": 6,
+      "baseline_wall_s": 21.5,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.0942303,
+      "cgraph_num_turns": 7,
+      "cgraph_wall_s": 27.733333333333334,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-16032",
+      "baseline_total_cost_usd": 0.07755176666666666,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 27.633333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.07586916666666668,
+      "cgraph_num_turns": 6.333333333333333,
+      "cgraph_wall_s": 27.866666666666667,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-16256",
+      "baseline_total_cost_usd": 0.05059456666666667,
+      "baseline_num_turns": 3.3333333333333335,
+      "baseline_wall_s": 11.433333333333334,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.05568636666666667,
+      "cgraph_num_turns": 3.6666666666666665,
+      "cgraph_wall_s": 13.266666666666667,
+      "cgraph_resolved": 0.3333333333333333
+    },
+    {
+      "instance_id": "django__django-16263",
+      "baseline_total_cost_usd": 0.08409966666666667,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 31.3,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.07983606666666668,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 27.8,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "django__django-16315",
+      "baseline_total_cost_usd": 0.0749462,
+      "baseline_num_turns": 6,
+      "baseline_wall_s": 18.7,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.07619606666666667,
+      "cgraph_num_turns": 7,
+      "cgraph_wall_s": 18.53333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-16560",
+      "baseline_total_cost_usd": 0.10944346666666667,
+      "baseline_num_turns": 5.666666666666667,
+      "baseline_wall_s": 26.0,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.10603296666666667,
+      "cgraph_num_turns": 5.333333333333333,
+      "cgraph_wall_s": 26.066666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-16631",
+      "baseline_total_cost_usd": 0.0647106,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 18.433333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.07049293333333334,
+      "cgraph_num_turns": 5.333333333333333,
+      "cgraph_wall_s": 21.0,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-16938",
+      "baseline_total_cost_usd": 0.04660276666666667,
+      "baseline_num_turns": 3.3333333333333335,
+      "baseline_wall_s": 9.866666666666667,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0448945,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.733333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-14623",
+      "baseline_total_cost_usd": 0.06730686666666666,
+      "baseline_num_turns": 6,
+      "baseline_wall_s": 19.733333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.059375366666666665,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 16.46666666666667,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24870",
+      "baseline_total_cost_usd": 0.0697903,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 19.9,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.058622266666666666,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 17.3,
+      "cgraph_resolved": 0.3333333333333333
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25479",
+      "baseline_total_cost_usd": 0.06508636666666667,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 12.733333333333334,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.06498323333333333,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 11.633333333333333,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25775",
+      "baseline_total_cost_usd": 0.08109423333333333,
+      "baseline_num_turns": 6.333333333333333,
+      "baseline_wall_s": 23.566666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.1111885,
+      "cgraph_num_turns": 8.333333333333334,
+      "cgraph_wall_s": 31.866666666666667,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "mwaskom__seaborn-3187",
+      "baseline_total_cost_usd": 0.06380816666666667,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 16.7,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.05987766666666667,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 16.6,
+      "cgraph_resolved": 0.6666666666666666
+    },
+    {
+      "instance_id": "pydata__xarray-3095",
+      "baseline_total_cost_usd": 0.06290106666666667,
+      "baseline_num_turns": 6.333333333333333,
+      "baseline_wall_s": 17.866666666666667,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.06350386666666667,
+      "cgraph_num_turns": 6.666666666666667,
+      "cgraph_wall_s": 16.9,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "pydata__xarray-3305",
+      "baseline_total_cost_usd": 0.06534833333333333,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 17.9,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.05693553333333334,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 14.0,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "pydata__xarray-3993",
+      "baseline_total_cost_usd": 0.050026433333333335,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 11.5,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0543739,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 14.166666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "pydata__xarray-6938",
+      "baseline_total_cost_usd": 0.048986133333333334,
+      "baseline_num_turns": 4.333333333333333,
+      "baseline_wall_s": 11.933333333333334,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.05682896666666666,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 14.366666666666665,
+      "cgraph_resolved": 0.3333333333333333
+    },
+    {
+      "instance_id": "pydata__xarray-6992",
+      "baseline_total_cost_usd": 0.05693306666666667,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 13.033333333333333,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.06816526666666667,
+      "cgraph_num_turns": 5.333333333333333,
+      "cgraph_wall_s": 15.9,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4551",
+      "baseline_total_cost_usd": 0.05930476666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 17.066666666666666,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.07432613333333334,
+      "cgraph_num_turns": 6.333333333333333,
+      "cgraph_wall_s": 21.733333333333334,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4604",
+      "baseline_total_cost_usd": 0.04449706666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 11.4,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.04488003333333333,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 10.266666666666667,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4661",
+      "baseline_total_cost_usd": 0.05767076666666667,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 15.666666666666666,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.0561239,
+      "cgraph_num_turns": 5.666666666666667,
+      "cgraph_wall_s": 15.533333333333333,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "pylint-dev__pylint-6386",
+      "baseline_total_cost_usd": 0.0807983,
+      "baseline_num_turns": 8.333333333333334,
+      "baseline_wall_s": 22.8,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.10096316666666666,
+      "cgraph_num_turns": 10.333333333333334,
+      "cgraph_wall_s": 30.400000000000002,
+      "cgraph_resolved": 0.3333333333333333
+    },
+    {
+      "instance_id": "pylint-dev__pylint-6528",
+      "baseline_total_cost_usd": 0.06939733333333334,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 18.3,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.08159836666666666,
+      "cgraph_num_turns": 7.333333333333333,
+      "cgraph_wall_s": 24.733333333333334,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "pylint-dev__pylint-8898",
+      "baseline_total_cost_usd": 0.06262056666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 15.5,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.05911426666666667,
+      "cgraph_num_turns": 3.6666666666666665,
+      "cgraph_wall_s": 14.433333333333334,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5840",
+      "baseline_total_cost_usd": 0.06352246666666667,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 18.9,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.054988499999999996,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 17.3,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "pytest-dev__pytest-8399",
+      "baseline_total_cost_usd": 0.0358676,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.233333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0375386,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 8.766666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-12682",
+      "baseline_total_cost_usd": 0.07424956666666667,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 17.7,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0767179,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 19.0,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25102",
+      "baseline_total_cost_usd": 0.08236366666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 25.7,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.08534233333333334,
+      "cgraph_num_turns": 5.333333333333333,
+      "cgraph_wall_s": 26.866666666666667,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10673",
+      "baseline_total_cost_usd": 0.09267213333333332,
+      "baseline_num_turns": 7.666666666666667,
+      "baseline_wall_s": 28.133333333333333,
+      "baseline_resolved": 0.6666666666666666,
+      "cgraph_total_cost_usd": 0.0872752,
+      "cgraph_num_turns": 6.666666666666667,
+      "cgraph_wall_s": 23.166666666666664,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7462",
+      "baseline_total_cost_usd": 0.0434529,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 10.2,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.04400306666666667,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.466666666666667,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7590",
+      "baseline_total_cost_usd": 0.06896083333333333,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 21.400000000000002,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.09328233333333334,
+      "cgraph_num_turns": 7.333333333333333,
+      "cgraph_wall_s": 27.466666666666665,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8120",
+      "baseline_total_cost_usd": 0.048788,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 10.5,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04756173333333333,
+      "cgraph_num_turns": 3.3333333333333335,
+      "cgraph_wall_s": 10.266666666666667,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8548",
+      "baseline_total_cost_usd": 0.09038383333333334,
+      "baseline_num_turns": 7.333333333333333,
+      "baseline_wall_s": 27.2,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.09364186666666667,
+      "cgraph_num_turns": 8.666666666666666,
+      "cgraph_wall_s": 27.166666666666668,
+      "cgraph_resolved": 0.6666666666666666
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8551",
+      "baseline_total_cost_usd": 0.07820306666666667,
+      "baseline_num_turns": 7.333333333333333,
+      "baseline_wall_s": 20.9,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0716961,
+      "cgraph_num_turns": 6.333333333333333,
+      "cgraph_wall_s": 18.4,
+      "cgraph_resolved": 0.6666666666666666
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8593",
+      "baseline_total_cost_usd": 0.0503656,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 12.733333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.048421066666666665,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 13.566666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9461",
+      "baseline_total_cost_usd": 0.07763386666666666,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 20.333333333333336,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.07856413333333334,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 20.933333333333334,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sympy__sympy-13091",
+      "baseline_total_cost_usd": 0.06819696666666668,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 16.1,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.06722993333333334,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 17.4,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-13877",
+      "baseline_total_cost_usd": 0.05518053333333334,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 13.533333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.055466666666666664,
+      "cgraph_num_turns": 3.6666666666666665,
+      "cgraph_wall_s": 11.533333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-14248",
+      "baseline_total_cost_usd": 0.10254836666666667,
+      "baseline_num_turns": 7.333333333333333,
+      "baseline_wall_s": 32.03333333333333,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.09482159999999999,
+      "cgraph_num_turns": 6.666666666666667,
+      "cgraph_wall_s": 32.33333333333333,
+      "cgraph_resolved": 0.3333333333333333
+    },
+    {
+      "instance_id": "sympy__sympy-16597",
+      "baseline_total_cost_usd": 0.062399633333333336,
+      "baseline_num_turns": 7,
+      "baseline_wall_s": 22.1,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.05794710000000001,
+      "cgraph_num_turns": 6.666666666666667,
+      "cgraph_wall_s": 18.9,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sympy__sympy-17318",
+      "baseline_total_cost_usd": 0.059517233333333336,
+      "baseline_num_turns": 4.333333333333333,
+      "baseline_wall_s": 14.5,
+      "baseline_resolved": 0.6666666666666666,
+      "cgraph_total_cost_usd": 0.0649675,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 17.133333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-19783",
+      "baseline_total_cost_usd": 0.05085833333333334,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 14.233333333333333,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.04806916666666667,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 12.5,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sympy__sympy-20438",
+      "baseline_total_cost_usd": 0.06246273333333334,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 15.1,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.0646287,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 14.4,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sympy__sympy-22080",
+      "baseline_total_cost_usd": 0.05842593333333333,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 19.03333333333333,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.047749066666666666,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 14.733333333333333,
+      "cgraph_resolved": 0.0
+    }
+  ]
+}

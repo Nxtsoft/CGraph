@@ -58,6 +58,50 @@ The supplementary hard set (13 tasks rated "1-4 hours" in SWE-bench Verified) gi
 result. CGraph cost 6.6% more (95% CI 0.7% to 12.9%), solved 13/39 runs against the baseline's
 14/39, and made 0 CGraph calls in 39 runs.
 
+## Multi-file tasks: does the agent use CGraph when the fix spans files?
+
+Same harness, binary (Claude Code 2.1.296), model, prompt and seeds (1-3), on a new task set:
+`select_tasks.py multi` picks every SWE-bench Verified instance whose gold patch edits at least
+two files (71 tasks, 10 repos; `tasks-multi.json`). Three arms: baseline, cgraph (the plugin as
+merged in #195: four tools, search hits with source, one-line skill description), and the
+diagnostic `cgraph_directed` arm. Results: `results/multi-cgraph.json`,
+`results/multi-cgraph_directed.json`.
+
+| 71 tasks x 3 seeds | cgraph vs baseline | cgraph_directed vs baseline |
+|---|--:|--:|
+| Billed cost, ratio of totals | 1.035 [0.997, 1.078] | 1.070 [1.028, 1.117] |
+| Paired cost per run, mean | +$0.0022 [-$0.0002, +$0.0051] | +$0.0045 [+$0.0018, +$0.0076] |
+| Paired cost per run, median | +$0.0003 [-$0.0012, +$0.0013] | +$0.0023 [+$0.0008, +$0.0041] |
+| Solved (baseline 102/213) | 112/213, paired +4.7 points [0.0, +9.4] | 100/213, paired -0.9 [-5.2, +3.3] |
+| Turns per run, paired | +0.23 [0.00, +0.48] | +0.43 [+0.16, +0.72] |
+| Runs that called a CGraph tool | **0 of 213** | 16 of 213 (18 `graph_query` calls) |
+| Spend (both arms) | $28.12 | $28.61 |
+
+**Verdict.** Bigger tasks do not make the agent reach for CGraph: 0 of 213 undirected runs called
+it, and only 16 of 213 directed runs did, despite the prompt. The cgraph arm's solve rate is higher,
+but it made no CGraph call, so the only difference from baseline is about 133 tokens of prompt;
+its CI touches zero, so read it as noise until it reproduces. The gate (cost at or below baseline,
+CI upper bound at or below 1) does not pass: 1.035 [0.997, 1.078].
+
+**When the agent does use CGraph, the skill is the cost.** In the 16 directed runs that called it,
+cost against the same task and seed's baseline run:
+
+| | Runs | Median | Mean |
+|---|--:|--:|--:|
+| Loaded the `cgraph` skill first | 8 | +75% | +79% |
+| Called the tool without the skill | 8 | +39% | +27% |
+
+Loading the skill added 7,866 tokens of context that every later turn re-reads; the
+`graph_query` answer added about 1,400. PR #196 cuts the skill body to 950 tokens.
+
+**The pre-edit hook never fired.** It asks only a daemon that is already running and never starts
+one, and no daemon existed in any of the 309 plugin runs across this and the footprint run
+(`graphd_stopped` is 0 in every result.json). On these tasks the hook has a lot to do: the baseline
+patch misses at least one gold source file in 72.4% of runs (mean gold-file recall 0.573;
+`gold_recall.py`, 70 tasks with two or more gold `.py` files), while missing every gold file is
+rare (2.1% on the main set, 5.2% here). The `pre-edit-live` change starts the daemon in git
+repositories so the hook can fire, and is measured with `gold_recall.py`.
+
 ## Setup
 
 - **Tasks.** The main set is 32 SWE-bench Verified instances that are also in ContextBench Lite
