@@ -36,6 +36,12 @@ struct IndexManifest {
 // cache. Stable across calls and across binaries built from the same logic.
 [[nodiscard]] std::string index_version_key();
 
+// Creates the project output dir (cgraph-out/) and, when it has none, a
+// .gitignore inside it that ignores everything, so a daemon started on a
+// repository leaves `git status` clean. An existing .gitignore is never
+// rewritten. Returns false if the dir or the file could not be written.
+[[nodiscard]] bool ensure_output_dir_ignored(const std::filesystem::path& out_dir);
+
 // Atomic write (temp + rename). Returns false if the file could not be written.
 [[nodiscard]] bool write_index_manifest(const IndexManifest& manifest, const std::filesystem::path& path);
 
