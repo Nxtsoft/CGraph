@@ -488,11 +488,11 @@ pre-edit hook. Claude Code names every listed MCP tool and every model-invocable
 request, so the plugin keeps that list short: the server lists `graph_query`, `graph_context`,
 `graph_impact` and `graph_status`, and `cgraph-enrich` runs only when you type `/cgraph-enrich`. Set
 `CGRAPH_MCP_TOOLS=all` (or a comma-separated list of tool names) before starting Claude Code to
-list more. In a git repository (or a project CGraph has indexed before) the server starts the
-daemon when the session starts, so the graph is building while the agent reads the task and the
+list more. When Claude Code opens at the root of a git repository (a directory holding `.git`) or a
+project CGraph has indexed before, the server starts the daemon when the session starts, so the graph is building while the agent reads the task and the
 pre-edit hook has a daemon to ask. The daemon writes `cgraph-out/` with a `.gitignore` that
-ignores everything in it, so `git status` stays clean. Elsewhere, such as a home directory, the
-first tool call starts it. On first use it downloads the release archive for your platform (Linux x64/arm64,
+ignores everything in it, so `git status` stays clean. Elsewhere, such as a subdirectory of a
+repository or a home directory that is not a git repository, the first tool call starts it. On first use it downloads the release archive for your platform (Linux x64/arm64,
 macOS arm64/x64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
 the plugin's data directory. It needs `node` and `tar` on `PATH`.
 

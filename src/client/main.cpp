@@ -73,22 +73,6 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
-  if (request.operation == "read-hook") {
-    // Claude Code PostToolUse hook for Read and Bash: same contract as pre-edit.
-    const char* wait_env = std::getenv("CGRAPH_HOOK_WAIT_MS");
-    const auto budget = wait_env != nullptr ? std::chrono::milliseconds(std::atol(wait_env)) : cgraph::kHookDefaultBudget;
-    try {
-      std::string text{std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>()};
-      const auto input = nlohmann::json::parse(text, nullptr, false);
-      if (const auto output = cgraph::read_hook_output(input, request, budget)) {
-        std::cout << output->dump() << '\n';
-      }
-    } catch (const std::exception& failure) {
-      std::cerr << "cgraph read-hook: " << failure.what() << '\n';
-    }
-    return 0;
-  }
-
   if (request.operation == "cross-service") {
     if (!request.params.contains("file")) {
       std::cerr << "cross-service needs {\"file\": PATH}\n";

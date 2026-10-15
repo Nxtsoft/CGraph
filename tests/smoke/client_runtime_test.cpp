@@ -57,34 +57,6 @@ void write_file(const std::filesystem::path& path, const std::string& text) {
 }  // namespace
 
 int main() {
-  {
-    // files_named_by_tool: Read's file_path; for Bash, the tokens that are
-    // existing files under cwd, unquoted, with a grep-style :line dropped,
-    // in order and without repeats. Directories, flags and globs are not files.
-    namespace fs = std::filesystem;
-    const auto dir = fs::temp_directory_path() / "cgraph_files_named_by_tool";
-    fs::remove_all(dir);
-    fs::create_directories(dir / "pkg");
-    std::ofstream(dir / "pkg" / "a.py") << "x = 1\n";
-    std::ofstream(dir / "pkg" / "b.py") << "y = 2\n";
-    const auto bash = [&](const std::string& command) {
-      return cgraph::files_named_by_tool(
-          {{"tool_name", "Bash"}, {"cwd", dir.generic_string()}, {"tool_input", {{"command", command}}}});
-    };
-    const auto named = bash("sed -n '1,9p' pkg/a.py && cat \"pkg/b.py\" pkg/a.py:3 | grep -rn x pkg/ --include=*.py");
-    const auto a = fs::weakly_canonical(dir / "pkg" / "a.py");
-    const auto b = fs::weakly_canonical(dir / "pkg" / "b.py");
-    const auto read = cgraph::files_named_by_tool(
-        {{"tool_name", "Read"}, {"tool_input", {{"file_path", (dir / "pkg" / "b.py").generic_string()}}}});
-    const bool ok = named == std::vector<fs::path>{a, b} && read == std::vector<fs::path>{b} &&
-                    bash("ls pkg").empty() &&
-                    cgraph::files_named_by_tool({{"tool_name", "Edit"}, {"tool_input", {{"file_path", a.generic_string()}}}}).empty();
-    fs::remove_all(dir);
-    if (!ok) {
-      std::cerr << "files_named_by_tool\n";
-      return 1;
-    }
-  }
   using namespace std::chrono_literals;
 
   {
@@ -615,29 +587,6 @@ int main() {
     }
     write_file(api / "src" / "util.ts", "export const one = 1;\n");
     if (const auto quiet = hook_for(api / "src" / "util.ts")) return fail("pre-edit hook spoke for a plain file", *quiet);
-    // After a Read or a Bash command that names the routes file, the read hook
-    // gives the same message as a PostToolUse event, once per file per session:
-    // the agent learns what changes with the file while it still explores.
-    const auto read_hook = [&](const nlohmann::json& tool, const std::string& session) {
-      nlohmann::json input{{"hook_event_name", "PostToolUse"}, {"session_id", session}, {"cwd", api.generic_string()}};
-      input.update(tool);
-      return cgraph::read_hook_output(input, cgraph::ClientRequest{}, std::chrono::milliseconds(5000));
-    };
-    const nlohmann::json sed_call{{"tool_name", "Bash"},
-                                  {"tool_input", {{"command", "sed -n '1,20p' src/routes/stats.ts | head"}}}};
-    const auto first_read = read_hook(sed_call, "s1");
-    const auto read_text = first_read ? first_read->at("hookSpecificOutput").value("additionalContext", std::string{})
-                                      : std::string{};
-    if (read_text.find("GET /api/v1/stats, called from web src/stats.ts") == std::string::npos ||
-        first_read->at("hookSpecificOutput").value("hookEventName", std::string{}) != "PostToolUse") {
-      return fail("read hook on a Bash sed", first_read ? *first_read : nlohmann::json{});
-    }
-    if (const auto again = read_hook(sed_call, "s1")) return fail("read hook repeated a file in one session", *again);
-    const nlohmann::json read_call{{"tool_name", "Read"},
-                                   {"tool_input", {{"file_path", (api / "src" / "routes" / "stats.ts").generic_string()}}}};
-    if (!read_hook(read_call, "s2")) return fail("read hook silent for a new session's Read", nlohmann::json{});
-    const nlohmann::json grep_dir{{"tool_name", "Bash"}, {"tool_input", {{"command", "grep -rn total src/"}}}};
-    if (const auto none = read_hook(grep_dir, "s3")) return fail("read hook spoke for a command naming no file", *none);
     // A file that only imports a routes file or a caller serves and calls
     // nothing itself: silent, never the imported file's endpoints.
     write_file(api / "src" / "types.ts",

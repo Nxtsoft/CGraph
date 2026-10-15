@@ -123,26 +123,4 @@ inline constexpr std::chrono::milliseconds kHookDefaultBudget{250};
                                                                  const ClientRequest& base,
                                                                  std::chrono::milliseconds budget);
 
-// The files a Read or Bash tool call names, in order and without repeats: Read's
-// `file_path`, or each token of a Bash `command` that, resolved against the hook's
-// `cwd`, is an existing regular file. Agents mostly read and edit through Bash
-// (`sed -n`, `cat`, `python3` scripts), not the Edit tool.
-[[nodiscard]] std::vector<std::filesystem::path> files_named_by_tool(const nlohmann::json& hook_input);
-
-// Most files a read hook reports per tool call; the rest wait for a later call.
-inline constexpr std::size_t kReadHookFilesPerCall = 2;
-
-// A Claude Code PostToolUse hook for Read and Bash: for up to
-// kReadHookFilesPerCall files the call names (files_named_by_tool) that this
-// session has not been told about yet, the same message pre_edit_hook_output
-// gives before a whole-file edit, so the agent learns which other files change
-// with the one it is looking at while it still explores. Each file is reported
-// once per `session_id`: the reported paths are kept in
-// `<root>/cgraph-out/read-hook-<session_id>.txt`. Same rules otherwise: only
-// running daemons are asked, one `budget` for everything, silent when there is
-// nothing to say.
-[[nodiscard]] std::optional<nlohmann::json> read_hook_output(const nlohmann::json& hook_input,
-                                                             const ClientRequest& base,
-                                                             std::chrono::milliseconds budget);
-
 }  // namespace cgraph
