@@ -32,9 +32,6 @@ namespace {
   return node;
 }
 
-// Calls `visit` on every named descendant of `node` (not `node` itself). With
-// `skip_functions`, a nested function's subtree is not entered: its calls run
-// in another scope.
 // Calls `visit` on each named child of `node` in order until it returns true;
 // true when one did. A cursor, because ts_node_named_child(node, i) costs O(i).
 template <class Visit>
@@ -53,6 +50,9 @@ bool find_named_child(const TSNode& node, Visit&& visit) {
 
 // Walks with a cursor: ts_node_named_child(node, i) costs O(i), which made a
 // node with thousands of children (a minified bundle) quadratic.
+// Calls `visit` on every named descendant of `node` (not `node` itself). With
+// `skip_functions`, a nested function's subtree is not entered: its calls run
+// in another scope.
 template <class Visit>
 void visit_named_descendants(const TSNode& node, bool skip_functions, Visit&& visit) {
   TSTreeCursor cursor = ts_tree_cursor_new(node);
