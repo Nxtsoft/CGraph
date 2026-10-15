@@ -55,6 +55,20 @@ int main() {
     return 1;
   }
 
+  // Unfiltered, tools/list advertises every tool; a host's listed_tools narrows it
+  // to exactly those names, in tools/list order, so a host pays only for the core.
+  if (listed["result"]["tools"].size() != cgraph::mcp_tool_names().size()) {
+    return 1;
+  }
+  const auto narrowed = cgraph::handle_mcp_request(
+      nlohmann::json{{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/list"}, {"params", nlohmann::json::object()}},
+      forwarder, {}, {"graph_impact", "graph_query"});
+  const auto& narrowed_tools = narrowed["result"]["tools"];
+  if (narrowed_tools.size() != 2 || narrowed_tools[0]["name"] != "graph_query" ||
+      narrowed_tools[1]["name"] != "graph_impact") {
+    return 1;
+  }
+
   // Arguments forward verbatim so optional params (kind, file, limit) reach the
   // daemon instead of being silently dropped.
   const auto called = cgraph::handle_mcp_request(

@@ -5,6 +5,7 @@
 #include "cgraph/protocol.hpp"
 #include "cgraph/report.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -297,8 +298,17 @@ namespace {
 
 }  // namespace
 
+std::vector<std::string> mcp_tool_names() {
+  std::vector<std::string> names;
+  for (const auto& tool : tools()) {
+    names.push_back(tool.at("name").get<std::string>());
+  }
+  return names;
+}
+
 nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder,
-                                  const McpChangeContext& change_context_runner) {
+                                  const McpChangeContext& change_context_runner,
+                                  const std::set<std::string>& listed_tools) {
   const auto id = request.value("id", nlohmann::json(nullptr));
   const auto method = request.value("method", std::string{});
   if (request.value("jsonrpc", std::string{}) != "2.0" || method.empty()) {
@@ -313,7 +323,15 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
                                 std::string{cgraph::build_info().revision}}}}});
   }
   if (method == "tools/list") {
-    return response(id, {{"tools", tools()}});
+    auto listed = tools();
+    if (!listed_tools.empty()) {
+      listed.erase(std::remove_if(listed.begin(), listed.end(),
+                                  [&](const nlohmann::json& tool) {
+                                    return !listed_tools.contains(tool.at("name").get<std::string>());
+                                  }),
+                   listed.end());
+    }
+    return response(id, {{"tools", std::move(listed)}});
   }
   if (method == "notifications/initialized") {
     return nlohmann::json{};

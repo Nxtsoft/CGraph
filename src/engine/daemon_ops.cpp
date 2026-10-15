@@ -45,6 +45,8 @@ namespace {
 // token-cheap even for a large function body.
 constexpr std::size_t kMaxSnippetLines = 40;
 constexpr std::size_t kMaxSnippetChars = 2000;
+// Search hits that carry their source span (each capped as above).
+constexpr std::size_t kSearchSourceHits = 3;
 
 // Default caps so a broad query or a wide blast radius stays bounded. 0 means
 // "no limit" when a caller passes it explicitly.
@@ -963,9 +965,18 @@ struct StructuralIntent {
   if (limit > 0 && matches.size() > limit) {
     matches.resize(limit);
   }
+  // The first few code symbols carry their source, as the entity route does, so
+  // a search answers "show me X" without a follow-up file read. Files (their
+  // source is the whole file) and host-authored enrichment nodes stay briefs.
   auto nodes = nlohmann::json::array();
+  std::size_t with_snippet = 0;
   for (const auto* node : matches) {
-    nodes.push_back(node_brief(*node));
+    if (with_snippet < kSearchSourceHits && node->kind != "file" && !is_enrichment_node_id(node->id)) {
+      nodes.push_back(with_source(node_brief(*node), *node, source_reader));
+      ++with_snippet;
+    } else {
+      nodes.push_back(node_brief(*node));
+    }
   }
   const auto returned = nodes.size();  // capture before the move below
   nlohmann::json result{{"route", "search"}, {"nodes", std::move(nodes)}, {"total", total},

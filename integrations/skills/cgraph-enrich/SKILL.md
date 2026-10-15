@@ -2,6 +2,7 @@
 name: cgraph-enrich
 description: "Use to fill cgraph's semantic layer — connect documentation, design notes, and other prose to the deterministic code graph — when graph_status shows enrichment_pending > 0, or the user asks to enrich / index docs, build the knowledge graph over non-code files, or make documentation queryable alongside code. Drives the plan -> author fragment -> drop -> ingest loop: cgraph plans bounded chunks of uncached docs, you (the host model) author one validated fragment per chunk, and the daemon merges them. cgraph owns planning, validation, caching, and mutation; you own the semantic reading and authoring."
 trigger: /cgraph-enrich
+disable-model-invocation: true
 ---
 
 # cgraph-enrich
