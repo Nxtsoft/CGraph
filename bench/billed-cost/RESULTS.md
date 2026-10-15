@@ -58,6 +58,102 @@ The supplementary hard set (13 tasks rated "1-4 hours" in SWE-bench Verified) gi
 result. CGraph cost 6.6% more (95% CI 0.7% to 12.9%), solved 13/39 runs against the baseline's
 14/39, and made 0 CGraph calls in 39 runs.
 
+## Multi-file tasks: does the agent use CGraph when the fix spans files?
+
+Same harness, binary (Claude Code 2.1.296), model, prompt and seeds (1-3), on a new task set:
+`select_tasks.py multi` picks every SWE-bench Verified instance whose gold patch edits at least
+two files (71 tasks, 10 repos; `tasks-multi.json`). Three arms: baseline, cgraph (the plugin as
+merged in #195: four tools, search hits with source, one-line skill description), and the
+diagnostic `cgraph_directed` arm. Results: `results/multi-cgraph.json`,
+`results/multi-cgraph_directed.json`.
+
+| 71 tasks x 3 seeds | cgraph vs baseline | cgraph_directed vs baseline |
+|---|--:|--:|
+| Billed cost, ratio of totals | 1.035 [0.997, 1.078] | 1.070 [1.028, 1.117] |
+| Paired cost per run, mean | +$0.0022 [-$0.0002, +$0.0051] | +$0.0045 [+$0.0018, +$0.0076] |
+| Paired cost per run, median | +$0.0003 [-$0.0012, +$0.0013] | +$0.0023 [+$0.0008, +$0.0041] |
+| Solved (baseline 102/213) | 112/213, paired +4.7 points [0.0, +9.4] | 100/213, paired -0.9 [-5.2, +3.3] |
+| Turns per run, paired | +0.23 [0.00, +0.48] | +0.43 [+0.16, +0.72] |
+| Runs that called a CGraph tool | **0 of 213** | 16 of 213 (18 `graph_query` calls) |
+| Spend (both arms) | $28.12 | $28.61 |
+
+**Verdict.** Bigger tasks do not make the agent reach for CGraph: 0 of 213 undirected runs called
+it, and only 16 of 213 directed runs did, despite the prompt. The cgraph arm's solve rate is higher,
+but it made no CGraph call, so the only difference from baseline is about 133 tokens of prompt;
+its CI touches zero, so read it as noise until it reproduces. The gate (cost at or below baseline,
+CI upper bound at or below 1) does not pass: 1.035 [0.997, 1.078].
+
+**When the agent does use CGraph, the skill is the cost.** In the 16 directed runs that called it,
+cost against the same task and seed's baseline run:
+
+| | Runs | Median | Mean |
+|---|--:|--:|--:|
+| Loaded the `cgraph` skill first | 8 | +75% | +79% |
+| Called the tool without the skill | 8 | +39% | +27% |
+
+Loading the skill added 7,866 tokens of context that every later turn re-reads; the
+`graph_query` answer added about 1,400. PR #196 cuts the skill body to 950 tokens.
+
+**The pre-edit hook never fired.** It asks only a daemon that is already running and never starts
+one, and no daemon existed in any of the 309 plugin runs across this and the footprint run
+(`graphd_stopped` is 0 in every result.json). On these tasks the hook has a lot to do: the baseline
+patch misses at least one gold source file in 72.4% of runs (mean gold-file recall 0.573;
+`gold_recall.py`, 70 tasks with two or more gold `.py` files), while missing every gold file is
+rare (2.1% on the main set, 5.2% here). The `pre-edit-live` change starts the daemon in git
+repositories so the hook can fire, and is measured with `gold_recall.py`.
+
+## Multi-file tasks with the pre-edit hook live (openspec `pre-edit-live`)
+
+The same 71 tasks, seeds and arms (baseline and cgraph), with the `pre-edit-live` branch: `cgraph-mcp`
+starts the daemon when the session starts in a git repository, and `cgraph-out/` ignores itself.
+Results: `results/multi-hook-live-cgraph.json`, `results/multi-hook-live-gold-recall.json` (and
+`results/multi-gold-recall.json` for the hook-silent run above).
+
+| 71 tasks x 3 seeds | Hook silent (run above) | Hook live |
+|---|--:|--:|
+| Plugin runs with a daemon | 0 of 213 | **213 of 213** |
+| Runs whose patch misses a gold source file, baseline / CGraph | 72.4% / 72.4% | 72.9% / 72.9% |
+| Paired difference in that share | +0.0 [-4.8, +4.8] points | **+0.0 [-3.8, +3.8] points** |
+| Gold source-file recall, baseline / CGraph | 0.573 / 0.582 | 0.585 / 0.583 |
+| Billed cost, ratio of totals | 1.035 [0.997, 1.078] | 1.022 [0.994, 1.051] |
+| Solved, baseline / CGraph | 102/213 / 112/213 | 108/213 / 105/213 |
+| Runs that called a CGraph tool | 0 | 0 |
+
+**Verdict: the hook changes nothing, because it almost never runs.** It is a `PreToolUse` hook on
+`Edit|Write|MultiEdit`, and these agents edit through `Bash` (`python3` or `sed` scripts): across
+the 213 hook-live plugin runs there were 801 `Bash` calls and 22 `Edit` calls, and only 20 runs used
+`Edit`, `Write` or `MultiEdit` at all. Even a hook that always named the missing file could move the
+miss rate by at most 9 points (20 of 213 runs), short of the 10-point gate. Starting the daemon was
+necessary but not sufficient: the hook needs a trigger these agents actually hit.
+
+The solve-rate gap in the hook-silent run (+4.7 points for CGraph) did not reproduce with the same
+plugin a day later (-1.4 points), which supports reading it as noise.
+
+## Multi-file tasks with a read hook (PostToolUse on Read|Bash, `pre-edit-live` branch)
+
+Because the agents edit through `Bash`, the `pre-edit-live` branch added `cgraph-client read-hook`:
+after a `Read` or a `Bash` command that names a repository file, it gives the whole-file pre-edit
+message (files likely to change with it, services behind its endpoints) for up to two files per
+call, once per file per session. Same 71 tasks, seeds and arms. Results:
+`results/multi-read-hook-cgraph.json`, `results/multi-read-hook-gold-recall.json`.
+
+| 71 tasks x 3 seeds | Read hook live |
+|---|--:|
+| Plugin runs with a daemon | 212 of 213 |
+| Runs whose patch misses a gold source file, baseline / CGraph | 75.7% / 73.8% |
+| Paired difference in that share | -1.9 [-6.2, +2.4] points |
+| Gold source-file recall, paired difference | +0.014 [-0.011, +0.038] |
+| Billed cost, ratio of totals | **1.042 [1.017, 1.069]** |
+| Solved, baseline / CGraph | 103/213 / 101/213, paired -0.9 [-6.6, +4.2] points |
+| Runs that called a CGraph tool | 0 |
+
+**Verdict: the read hook reaches the agent but does not help it, and it costs about 4%.** The
+miss-rate change is inside noise and far from the 10-point gate, while the injected text makes runs
+measurably more expensive (the CI excludes 1). Two django instances (13195, 13212, CGraph seed 1)
+were re-graded after the harness failed to stop their containers; both are unresolved either way. The
+price fit in that file does not hold (`fitted_price_per_mtok.input_tokens` is negative, max residual
+$0.07), so ignore its `cost_breakdown_usd`; the ratio above uses billed totals and is unaffected.
+
 ## Setup
 
 - **Tasks.** The main set is 32 SWE-bench Verified instances that are also in ContextBench Lite
@@ -252,7 +348,7 @@ W=/var/tmp/cgr29                                    # work dir; no CLAUDE.md in 
 export CLAUDE_CODE_OAUTH_TOKEN=...                  # from `claude setup-token`
 # run_ab.py takes --claude <executable> when `claude` on PATH is not Claude Code 2.1.296
 for r in django/django sympy/sympy scikit-learn/scikit-learn sphinx-doc/sphinx pydata/xarray \
-         astropy/astropy pylint-dev/pylint pytest-dev/pytest; do
+         astropy/astropy pylint-dev/pylint pytest-dev/pytest matplotlib/matplotlib mwaskom/seaborn; do
   git clone --bare https://github.com/$r.git $W/mirrors/${r//\//__}.git
 done
 python select_tasks.py main  <ContextBench selected_500_instances.csv> tasks.json
@@ -270,6 +366,15 @@ for t in main hard; do f=tasks.json; [ $t = hard ] && f=tasks-hard.json
   python analyze.py --runs $W/runs --tasks $f --out results/$t-cgraph.json
   python analyze.py --runs $W/runs --tasks $f --arm-b cgraph_directed --out results/$t-cgraph_directed.json
 done
+# multi-file set: each variant (hook silent, hook live, read hook) is a separate work dir whose
+# templates come from `run_ab.py templates --marketplace <branch or local checkout>`
+python select_tasks.py multi tasks-multi.json
+python run_ab.py run --work $W --tasks tasks-multi.json --seeds 1 2 3 --jobs 6
+python run_ab.py run --work $W --tasks tasks-multi.json --arms cgraph_directed --seeds 1 2 3 --jobs 6
+python evaluate.py --work $W --tasks tasks-multi.json --jobs 8
+python analyze.py --runs $W/runs --tasks tasks-multi.json --out results/multi-cgraph.json
+python analyze.py --runs $W/runs --tasks tasks-multi.json --arm-b cgraph_directed --out results/multi-cgraph_directed.json
+python gold_recall.py --runs $W/runs --tasks tasks-multi.json --out results/multi-gold-recall.json
 ```
 
 The run logs are not in the repository. They are published as `cgr29-runs.tar.gz` on the
@@ -277,8 +382,8 @@ The run logs are not in the repository. They are published as `cgr29-runs.tar.gz
 (sha256 `4102ac4149f2f9b323d8be62b16609b5398fc17190b85187b41234375a697735`). It unpacks to
 `runs/<instance>/<arm>-s<seed>/`, one directory per run (405 in all), each holding the run's
 `result.json` (cost, usage, turns, tool calls, SWE-bench verdict), the agent's `patch.diff`, and
-the full stream-json transcript (`stream.jsonl.gz`). The committed `results/*.json` reproduce
-byte for byte from it:
+the full stream-json transcript (`stream.jsonl.gz`). The committed `results/main-*.json` and
+`results/hard-*.json` reproduce byte for byte from it; the multi-file run logs are not published:
 
 ```bash
 tar xzf cgr29-runs.tar.gz
