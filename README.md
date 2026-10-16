@@ -496,6 +496,21 @@ repository or a home directory that is not a git repository, the first tool call
 macOS arm64/x64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
 the plugin's data directory. It needs `node` and `tar` on `PATH`.
 
+### Homebrew
+
+On macOS (Apple silicon or Intel) or Linux x64:
+
+```sh
+brew install nxtsoft/cgraph/cgraph
+
+# Run this from any source repository.
+cgraph --root . --out cgraph-out
+```
+
+The formula installs all four executables from the current release archive. The tap is
+[Nxtsoft/homebrew-cgraph](https://github.com/Nxtsoft/homebrew-cgraph); its `Formula/cgraph.rb` is
+`packaging/homebrew/cgraph.rb` from this repository.
+
 ### Release archive
 
 Download the current Linux x64 release and build your first graph:
