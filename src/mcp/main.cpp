@@ -37,11 +37,10 @@ int main(int argc, char** argv) {
     }
   }
 
-  // A project CGraph has indexed before (cgraph-out/ exists) gets its daemon
-  // started now, so the first tool call reads a fast-loaded graph instead of
-  // waiting for one. A project without cgraph-out/ is left alone: starting a
-  // daemon there would write cgraph-out/ into a repository nobody asked to index.
-  if (std::filesystem::is_directory(base.project_root / "cgraph-out")) {
+  // Start the daemon now in a repository (see should_prewarm), so the graph is
+  // building while the agent reads the task and the pre-edit hook has a daemon
+  // to ask. The daemon's cgraph-out/ ignores itself, so git status stays clean.
+  if (cgraph::should_prewarm(base.project_root)) {
     std::thread([request = base]() mutable {
       request.operation = "status";
       (void)cgraph::send_thin_client_request(request, cgraph::default_client_runtime_hooks(request));

@@ -470,6 +470,9 @@ ExtractionResult extract_with_config(
   // node positions, and node_text all read the rewritten buffer transparently.
   std::string rewritten;
   ExtractionContext local = context;
+  // The memo holds nodes of the tree parsed below, so it lives and dies with
+  // this parse, even when a caller reuses one context for several.
+  local.memo = make_extraction_memo();
   if (config.preprocess_source) {
     rewritten = config.preprocess_source(context.source);
     if (!rewritten.empty()) {

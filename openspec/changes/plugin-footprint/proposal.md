@@ -14,9 +14,8 @@ graph, and a search answer held only names and lines, so it re-read the files an
   `${CGRAPH_MCP_TOOLS:-graph_query,graph_context,graph_impact,graph_status}`, so a user can list more.
 - The `cgraph` skill description is one short line; `cgraph-enrich` sets
   `disable-model-invocation: true` and runs only as `/cgraph-enrich`.
-- `cgraph-mcp` starts the project's daemon when it starts, only when `<root>/cgraph-out/` already
-  exists, so a previously indexed project answers its first call from a loaded graph and an
-  unindexed repository is never written to.
+- `cgraph-mcp` starts the project's daemon when it starts, for a git repository root or a root that
+  holds `cgraph-out/` (widened from `cgraph-out/` only by the `pre-edit-live` change).
 - The `query` op's search route attaches the source span (location, `snippet`, capped as
   everywhere else at 40 lines / 2000 chars) to its first three code hits; file and enrichment
   hits stay briefs.

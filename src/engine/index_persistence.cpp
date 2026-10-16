@@ -88,6 +88,26 @@ bool write_index_manifest(const IndexManifest& manifest, const std::filesystem::
   return true;
 }
 
+bool ensure_output_dir_ignored(const std::filesystem::path& out_dir) {
+  std::error_code error;
+  std::filesystem::create_directories(out_dir, error);
+  if (error) {
+    std::cerr << "graphd: cannot create " << out_dir << ": " << error.message() << '\n';
+    return false;
+  }
+  const auto ignore = out_dir / ".gitignore";
+  if (std::filesystem::exists(ignore, error)) {
+    return true;
+  }
+  if (const auto failure = try_write_file_atomically(
+          ignore, "# Written by cgraph: everything in this directory is generated.\n*\n", WriteDurability::Durable);
+      !failure.empty()) {
+    std::cerr << "graphd: " << failure << '\n';
+    return false;
+  }
+  return true;
+}
+
 std::optional<IndexManifest> read_index_manifest(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input) {

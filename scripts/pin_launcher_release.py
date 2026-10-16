@@ -6,7 +6,8 @@
 Reads the release's tarball assets and their SHA-256 digests from GitHub
 (`gh release view`), rewrites integrations/launcher/release.json, and sets the
 same version (the tag without its `bin-v` prefix) in the plugin manifest, the
-npm package and server.json, so the four never disagree.
+npm package and server.json, and renders the Homebrew formula from the same
+assets, so the five never disagree.
 """
 
 import json
@@ -39,6 +40,57 @@ def release_assets(tag: str) -> dict:
     return dict(sorted(assets.items()))
 
 
+FORMULA = """class Cgraph < Formula
+  desc "Code graph and change-context engine for coding agents"
+  homepage "https://github.com/{repository}"
+  version "{version}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "{base}/{macos-arm64[name]}"
+      sha256 "{macos-arm64[sha256]}"
+    end
+    on_intel do
+      url "{base}/{macos-x64[name]}"
+      sha256 "{macos-x64[sha256]}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "{base}/{linux-arm64[name]}"
+      sha256 "{linux-arm64[sha256]}"
+    end
+    on_intel do
+      url "{base}/{linux-x64[name]}"
+      sha256 "{linux-x64[sha256]}"
+    end
+  end
+
+  def install
+    bin.install "cgraph", "graphd", "cgraph-client", "cgraph-mcp"
+  end
+
+  test do
+    (testpath/"app.py").write "def alpha():\\n    return 1\\n"
+    answer = shell_output("#{{bin}}/cgraph-client --root #{{testpath}} query '{{\\"query\\": \\"alpha\\"}}'")
+    assert_match "alpha", answer
+    system bin/"cgraph-client", "--root", testpath, "shutdown"
+  end
+end
+"""
+
+
+def render_formula(release: dict, version: str) -> str:
+    assets = release["assets"]
+    missing = {"linux-arm64", "linux-x64", "macos-arm64", "macos-x64"} - assets.keys()
+    if missing:
+        raise SystemExit(f"{release['tag']} lacks {', '.join(sorted(missing))} for the Homebrew formula")
+    base = f"https://github.com/{release['repository']}/releases/download/{release['tag']}"
+    return FORMULA.format(repository=release["repository"], version=version, base=base, **assets)
+
+
 def rewrite(path: Path, update) -> None:
     data = json.loads(path.read_text())
     update(data)
@@ -64,6 +116,7 @@ def main() -> None:
     rewrite(ROOT / "integrations/.claude-plugin/plugin.json", set_version)
     rewrite(ROOT / "packaging/npm/package.json", set_version)
     rewrite(ROOT / "server.json", set_server)
+    (ROOT / "packaging/homebrew/cgraph.rb").write_text(render_formula(release, version))
     print(f"pinned {tag}: {', '.join(release['assets'])}")
 
 

@@ -307,6 +307,12 @@ std::vector<std::string> mcp_tool_names() {
   return names;
 }
 
+bool should_prewarm(const std::filesystem::path& project_root) {
+  std::error_code error;
+  return std::filesystem::exists(project_root / ".git", error) ||
+         std::filesystem::is_directory(project_root / "cgraph-out", error);
+}
+
 std::set<std::string> parse_mcp_tool_list(const std::string& value) {
   const auto known = mcp_tool_names();
   std::set<std::string> names;

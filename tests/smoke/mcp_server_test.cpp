@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -76,6 +78,24 @@ int main() {
           std::set<std::string>{"graph_query", "graph_impact"} ||
       !cgraph::parse_mcp_tool_list("all,graph_query").empty() || !cgraph::parse_mcp_tool_list("").empty()) {
     return 1;
+  }
+  // Prewarm: a git repository (a .git dir, or a .git file in a worktree) or a root
+  // indexed before; never a plain directory.
+  {
+    namespace fs = std::filesystem;
+    const auto base = fs::temp_directory_path() / "cgraph_mcp_prewarm_test";
+    fs::remove_all(base);
+    fs::create_directories(base / "plain");
+    fs::create_directories(base / "repo" / ".git");
+    fs::create_directories(base / "worktree");
+    std::ofstream(base / "worktree" / ".git") << "gitdir: /elsewhere\n";
+    fs::create_directories(base / "indexed" / "cgraph-out");
+    const bool ok = !cgraph::should_prewarm(base / "plain") && cgraph::should_prewarm(base / "repo") &&
+                    cgraph::should_prewarm(base / "worktree") && cgraph::should_prewarm(base / "indexed");
+    fs::remove_all(base);
+    if (!ok) {
+      return 1;
+    }
   }
   bool refused = false;
   try {
