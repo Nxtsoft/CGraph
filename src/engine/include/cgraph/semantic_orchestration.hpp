@@ -38,6 +38,9 @@ struct EnrichmentIngestResult {
   std::size_t fragments_rejected = 0;
   std::size_t deterministic_nodes = 0;  // node count before enrichment
   std::vector<std::string> errors;
+  // Notices that are not a rejected fragment, e.g. an unusable semantic cache
+  // that was set aside instead of being overwritten.
+  std::vector<std::string> warnings;
 };
 
 // Builds the deterministic graph for `root`, then validates and merges every

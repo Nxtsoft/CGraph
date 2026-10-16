@@ -411,7 +411,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // Session-memory checkpoint sidecars live here, separate from semantic-drop, so
   // the two host-authored layers are overlaid and managed independently.
   const auto memory_dir = identity.project_root / "cgraph-out" / "memory";
-  SemanticCache cache = read_semantic_cache(cache_path);
+  std::string cache_problem;
+  SemanticCache cache = read_semantic_cache(cache_path, &cache_problem);
+  if (!cache_problem.empty()) {
+    // Starting empty is safe only because the next write sets the file aside
+    // instead of replacing it.
+    std::cerr << "graphd: ignoring semantic cache " << cache_path.string() << ": " << cache_problem << '\n';
+  }
   // Stat cache for the enrichment plan walk: lets a refresh reuse stored hashes
   // for unchanged docs/media instead of re-reading and re-hashing every file.
   // Persisted next to the semantic cache so a restart stays cheap.
@@ -671,7 +677,9 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
     ingest_all_memory(overlay_state);
     try {
-      write_semantic_cache(cache, cache_path);
+      if (const auto set_aside = write_semantic_cache(cache, cache_path)) {
+        std::cerr << "graphd: the unusable semantic cache was moved to " << set_aside->string() << '\n';
+      }
     } catch (const FileWriteError& error) {
       // Logged, never fatal: the live overlay is already built; an unwritten
       // cache only means the next restart re-enriches.

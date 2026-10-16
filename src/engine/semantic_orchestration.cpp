@@ -193,7 +193,8 @@ EnrichmentIngestResult ingest_enrichment(const std::filesystem::path& root, cons
   DaemonState state;
   publish_graph_snapshot(state, std::move(pipeline.graph));
 
-  auto cache = read_semantic_cache(drop_dir / kCacheName);
+  std::string cache_problem;
+  auto cache = read_semantic_cache(drop_dir / kCacheName, &cache_problem);
 
   // Map chunk index -> its source input paths, recovered from the manifest, so
   // each merged fragment is cached against the document(s) it enriches.
@@ -230,7 +231,11 @@ EnrichmentIngestResult ingest_enrichment(const std::filesystem::path& root, cons
     }
   }
 
-  write_semantic_cache(cache, drop_dir / kCacheName);
+  if (const auto set_aside = write_semantic_cache(cache, drop_dir / kCacheName)) {
+    result.warnings.push_back(
+        "the existing semantic cache was unusable" + (cache_problem.empty() ? std::string{} : " (" + cache_problem + ")") +
+        " and was moved to " + set_aside->string() + "; the cache was rebuilt from the fragments in the drop directory");
+  }
   result.graph = *read_graph_snapshot(state);
   return result;
 }
