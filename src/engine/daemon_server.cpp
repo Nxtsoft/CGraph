@@ -694,6 +694,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // write graph.json plus a version-stamped manifest of the file set it was built
   // from, so a later restart with an unchanged tree can serve straight from disk.
   const auto out_dir = identity.project_root / "cgraph-out";
+  (void)ensure_output_dir_ignored(out_dir);  // reports its own failure; the daemon still serves
   const auto graph_path = out_dir / "graph.json";
   const auto manifest_path = out_dir / "index-manifest.json";
 

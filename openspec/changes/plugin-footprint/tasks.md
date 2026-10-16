@@ -10,6 +10,7 @@
 ## 2. First answer
 
 - [x] 2.1 Prewarm when `cgraph-out/` exists; no daemon and no writes otherwise.
+- [x] 2.1a (pre-edit-live) Prewarm any git repository too; `cgraph-out/` ignores itself.
 - [x] 2.2 Search route attaches source to the first three code hits.
 
 ## 3. Measure

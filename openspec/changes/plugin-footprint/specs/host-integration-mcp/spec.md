@@ -24,15 +24,16 @@ model-invocable.
 - **THEN** the session lists exactly the four core cgraph tools, and its first request's prefix
   is at most 150 tokens larger than the same session without the plugin
 
-### Requirement: MCP server prewarms an indexed project
-When `cgraph-mcp` starts and `<project root>/cgraph-out/` exists, it SHALL start the project's
-daemon in the background without waiting for it. When that directory does not exist it SHALL NOT
-start a daemon, so an unindexed repository is not written to until a tool is called.
+### Requirement: MCP server prewarms a repository
+When `cgraph-mcp` starts for a project root that is a git repository (`.git` as a directory, or a
+file in a worktree) or holds `cgraph-out/`, it SHALL start the project's daemon in the background
+without waiting for it. For any other root it SHALL NOT start a daemon until a tool is called.
 
-#### Scenario: Indexed project
-- **WHEN** `cgraph-mcp` starts for a root with `cgraph-out/` and receives only `initialize`
-- **THEN** a daemon for that root is running within seconds
+#### Scenario: Repository
+- **WHEN** `cgraph-mcp` starts for a git repository root and receives only `initialize`
+- **THEN** a daemon for that root is running within seconds, and `git status` in the root shows
+  nothing new
 
-#### Scenario: Unindexed project
-- **WHEN** `cgraph-mcp` starts for a root without `cgraph-out/`
+#### Scenario: Not a repository
+- **WHEN** `cgraph-mcp` starts for a root with neither `.git` nor `cgraph-out/`
 - **THEN** no daemon starts and the root gains no `cgraph-out/`
