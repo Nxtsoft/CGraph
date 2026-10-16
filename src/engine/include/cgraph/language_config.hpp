@@ -69,6 +69,12 @@ struct RawRelation {
   bool allow_same_file = false;  // heritage may resolve to a same-file declaration; references may not
 };
 
+// Per-parse memo an extractor may fill (what it computes once and reads many
+// times while walking one file's tree). Defined by its user; the extractor gives
+// each parse a fresh one, since it holds that parse's tree nodes.
+struct ExtractionMemo;
+[[nodiscard]] std::shared_ptr<ExtractionMemo> make_extraction_memo();
+
 struct ExtractionContext {
   // Where the bytes were read from; every emitted node's `source_file`, and the
   // key its hash is recorded under.
@@ -78,6 +84,7 @@ struct ExtractionContext {
   // yields byte-identical ids and no id carries the machine's directory layout.
   std::string relative_path;
   std::string_view source;
+  std::shared_ptr<ExtractionMemo> memo = make_extraction_memo();
 };
 
 using ImportHandler = std::function<void(const TSNode&, const ExtractionContext&, Fragment&)>;
