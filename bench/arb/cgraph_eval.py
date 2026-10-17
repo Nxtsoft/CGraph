@@ -317,6 +317,18 @@ def rrf(lists: list[list[str]]) -> list[str]:
     return sorted(score, key=lambda p: (-score[p], first[p], p))
 
 
+def fuse(lists: dict[str, list[str]]) -> list[str]:
+    """The scored recipe: every op list votes once by RRF, except the anchors.
+    They are views of one change (two build-tag twins, three locale files) whose
+    near-identical lists outvoted the query's own lists one vote each, so they
+    are fused among themselves first and vote once (CGR-38)."""
+    anchor_lists = [v for k, v in lists.items() if k.startswith("context_anchor_")]
+    voices = [v for k, v in lists.items() if not k.startswith("context_anchor_")]
+    if anchor_lists:
+        voices.append(rrf(anchor_lists))
+    return rrf(voices)
+
+
 def retrieve(daemon: Daemon, sample: dict[str, Any], index: SnapshotIndex, files: set[str]) -> dict[str, Any]:
     prefix = str(daemon.root.resolve()) + "/"
     text = query_text(sample)
@@ -347,7 +359,7 @@ def retrieve(daemon: Daemon, sample: dict[str, Any], index: SnapshotIndex, files
         impacted.sort(key=lambda node: int(node.get("depth") or 0))  # stable: per-seed order kept within a depth
         lists["impact_changed"] = node_files(impacted, prefix)
 
-    fused = rrf(list(lists.values()))
+    fused = fuse(lists)
     in_candidates = [path for path in fused if path in files]
     ops["dropped_non_candidate"] = len(fused) - len(in_candidates)
     return {"ranked_files": in_candidates, "lists": {k: v[:50] for k, v in lists.items()}, "ops": ops}

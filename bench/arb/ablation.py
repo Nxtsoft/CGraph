@@ -23,7 +23,7 @@ VARIANTS = {
     "query(q) only": lambda lists: [lists["query_text"]],
     "context(q) + query(q)": lambda lists: [lists["context_text"], lists["query_text"]],
     "anchor ops only": lambda lists: [v for k, v in lists.items() if k.startswith("context_anchor") or k == "impact_changed"],
-    "all ops (scored recipe)": lambda lists: list(lists.values()),
+    "all ops, one vote each": lambda lists: list(lists.values()),
 }
 
 
@@ -46,9 +46,13 @@ def main(argv: list[str] | None = None) -> int:
                 candidates[chunks] = set(bcy_curve.load_file_texts(chunks))
             files = candidates[chunks]
             gold = set(row["gold_files"])
-            for name, pick in VARIANTS.items():
-                lists = pick(row["cgraph"]["lists"])
-                ranked = [p for p in cgraph_eval.rrf(lists) if p in files] if lists else []
+            for name, pick in [*VARIANTS.items(), ("scored recipe (cgraph_eval.fuse)", None)]:
+                if pick is None:
+                    fused = cgraph_eval.fuse(row["cgraph"]["lists"])
+                else:
+                    lists = pick(row["cgraph"]["lists"])
+                    fused = cgraph_eval.rrf(lists) if lists else []
+                ranked = [p for p in fused if p in files]
                 recall = len(gold & set(ranked[:20])) / len(gold)
                 rr = next((1.0 / i for i, p in enumerate(ranked, start=1) if p in gold), 0.0)
                 scores[name]["overall"].append((recall, rr))
@@ -60,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         cells = []
         for g in groups:
             vals = by_group[g]
+            if not vals:  # a split run (--split dev) can hold no sample of a task
+                cells.append("-")
+                continue
             cells.append(f"{sum(v[0] for v in vals) / len(vals):.4f} / {sum(v[1] for v in vals) / len(vals):.4f}")
         print(f"| {name} | " + " | ".join(cells) + " |")
     return 0
