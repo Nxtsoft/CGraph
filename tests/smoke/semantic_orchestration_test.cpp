@@ -171,6 +171,7 @@ int main() {
     if (!linked) {
       return 2;  // the doc's input must carry the real code-node id it mentions
     }
+    manifest_file.close();  // Windows cannot delete a file that is still open
     fs::remove_all(croot);
   }
 
@@ -197,6 +198,7 @@ int main() {
     if (fs::exists(gdrop / fragment_name)) {
       return 4;  // must not collide with anything already on disk
     }
+    manifest_file.close();  // Windows cannot delete a file that is still open
     fs::remove_all(groot);
   }
 

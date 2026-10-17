@@ -19,7 +19,7 @@ int fail(std::string_view message) {
 
 void write_file(const fs::path& path, std::string_view contents) {
   fs::create_directories(path.parent_path());
-  std::ofstream(path) << contents;
+  std::ofstream(path, std::ios::binary) << contents;
 }
 
 std::vector<std::string> names_of(const std::vector<cgraph::WorkspacePackage>& packages) {

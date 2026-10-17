@@ -28,7 +28,7 @@ namespace {
 
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   output << contents;
 }
 
@@ -697,6 +697,9 @@ int main() {
              "reconcile: one shared fragment fingerprint preserves both records");
     }
   }
+#else
+  std::cout << "semantic_cache_test: SKIP shared-fragment read-count case on Windows: it observes repeated "
+               "reads through a FIFO, and Windows has no filesystem FIFOs\n";
 #endif
 
   // remove() deletes by source path

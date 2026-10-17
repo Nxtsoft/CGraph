@@ -51,7 +51,7 @@ bool remove_environment(const char* name) {
 
 void write_file(const std::filesystem::path& path, const std::string& text) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream(path) << text;
+  std::ofstream(path, std::ios::binary) << text;
 }
 
 }  // namespace
@@ -312,9 +312,11 @@ int main() {
       return 1;
     }
   }
+#else
+  std::cout << "client_runtime_test: SKIP cold-workspace case on Windows: it parks a daemon build on a "
+               "FIFO, and Windows has no filesystem FIFOs\n";
 #endif
 
-#ifndef _WIN32
   // Opened in one service repo, an agent sees the other services where a change
   // crosses into them. Real daemons for `api` and `web`; `billing` is listed but
   // has no daemon and none can be spawned here, so it must be named unreachable.
@@ -705,7 +707,6 @@ int main() {
       return 1;
     }
   }
-#endif
   // The hook's whole message, services rows included, stays within the token
   // budget; rows that do not fit are counted, and files fill what is left.
   {
@@ -820,6 +821,9 @@ int main() {
     (void)remove_environment("CGRAPH_DAEMON_PATH");
     fs::remove_all(repo);
   }
+#else
+  std::cout << "client_runtime_test: SKIP hook-deadline case on Windows: it freezes a live graphd with "
+               "SIGSTOP/SIGCONT, which Windows has no equivalent of\n";
 #endif
 
   // Daemon discovery precedence: an explicit path wins, then CGRAPH_DAEMON_PATH,

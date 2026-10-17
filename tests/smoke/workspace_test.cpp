@@ -15,6 +15,24 @@ using nlohmann::json;
 
 namespace {
 
+// $HOME is the workspace search's ceiling (cgraph::home_directory reads it
+// first on every platform).
+void set_home(const std::string& value) {
+#ifdef _WIN32
+  (void)::_putenv_s("HOME", value.c_str());
+#else
+  (void)::setenv("HOME", value.c_str(), 1);
+#endif
+}
+
+void unset_home() {
+#ifdef _WIN32
+  (void)::_putenv_s("HOME", "");
+#else
+  (void)::unsetenv("HOME");
+#endif
+}
+
 int fail(std::string_view message) {
   std::cerr << "workspace_test: " << message << '\n';
   return 1;
@@ -22,7 +40,7 @@ int fail(std::string_view message) {
 
 void write_file(const fs::path& path, const std::string& contents) {
   fs::create_directories(path.parent_path());
-  std::ofstream(path) << contents;
+  std::ofstream(path, std::ios::binary) << contents;
 }
 
 // A transport over canned per-repo answers: `answers[repo][op]` is the envelope
@@ -408,7 +426,7 @@ int test_enclosing_workspace(const fs::path& root) {
   // A manifest above $HOME is outside the search.
   const char* saved = std::getenv("HOME");
   const std::string saved_home = saved == nullptr ? "" : saved;
-  ::setenv("HOME", (ws / "api").c_str(), 1);
+  set_home((ws / "api").string());
   if (cgraph::find_enclosing_workspace(nested)) {
     std::cerr << "enclosing: the search climbed above $HOME\n";
     ++failures;
@@ -416,15 +434,15 @@ int test_enclosing_workspace(const fs::path& root) {
   // $HOME spelled through a symlink (macOS's /var -> /private/var) still stops
   // the walk along the path as given: the manifest above it is not used.
   fs::create_directories(root / "code" / "shared" / "sub");
-  ::setenv("HOME", (linked_ws / "shared").c_str(), 1);
+  set_home((linked_ws / "shared").string());
   if (cgraph::find_enclosing_workspace(linked_ws / "shared" / "sub")) {
     std::cerr << "enclosing: a symlinked $HOME did not stop the search\n";
     ++failures;
   }
   if (saved == nullptr) {
-    ::unsetenv("HOME");
+    unset_home();
   } else {
-    ::setenv("HOME", saved_home.c_str(), 1);
+    set_home(saved_home);
   }
   return failures;
 }

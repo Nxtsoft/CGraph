@@ -1,6 +1,7 @@
 #include "cgraph/workspace.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/platform.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -708,7 +709,7 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
   // $HOME in both spellings: the walk follows the path as given and as
   // resolved, and on macOS the temp and home trees sit behind /private symlinks.
   std::set<std::filesystem::path> homes;
-  if (const char* value = std::getenv("HOME"); value != nullptr && value[0] != '\0') {
+  if (const auto value = home_directory(); !value.empty()) {
     homes.insert(std::filesystem::absolute(value, error).lexically_normal());
     homes.insert(std::filesystem::weakly_canonical(value, error));
   }

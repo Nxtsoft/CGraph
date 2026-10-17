@@ -6,8 +6,19 @@
 #include <algorithm>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
 #include <unordered_set>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 namespace cgraph {
 namespace {
@@ -111,6 +122,37 @@ namespace {
 }  // namespace
 
 FileChangeToken read_file_change_token(const std::filesystem::path& path) {
+#ifdef _WIN32
+  // The Windows analogue of (st_dev, st_ino, st_ctim): the volume serial
+  // number, the NTFS file index, and the change time (which, like ctime,
+  // moves on content and metadata changes).
+  const HANDLE file = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return {};
+  }
+  BY_HANDLE_FILE_INFORMATION identity{};
+  FILE_BASIC_INFO basic{};
+  const bool ok = ::GetFileInformationByHandle(file, &identity) &&
+                  ::GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic));
+  ::CloseHandle(file);
+  if (!ok) {
+    return {};
+  }
+  FileChangeToken token;
+  token.device = identity.dwVolumeSerialNumber;
+  token.inode = (static_cast<std::uint64_t>(identity.nFileIndexHigh) << 32U) | identity.nFileIndexLow;
+  // File times count 100 ns ticks; split into seconds + nanoseconds.
+  const auto split = [](LARGE_INTEGER time, std::int64_t& sec, long& nsec) {
+    sec = static_cast<std::int64_t>(time.QuadPart / 10'000'000);
+    nsec = static_cast<long>((time.QuadPart % 10'000'000) * 100);
+  };
+  split(basic.ChangeTime, token.ctime_sec, token.ctime_nsec);
+  split(basic.LastWriteTime, token.mtime_sec, token.mtime_nsec);
+  token.size = (static_cast<std::uint64_t>(identity.nFileSizeHigh) << 32U) | identity.nFileSizeLow;
+  return token;
+#else
   struct stat sb {};
   if (::stat(path.c_str(), &sb) != 0) {
     return {};
@@ -118,14 +160,20 @@ FileChangeToken read_file_change_token(const std::filesystem::path& path) {
   FileChangeToken token;
   token.device = static_cast<std::uint64_t>(sb.st_dev);
   token.inode = static_cast<std::uint64_t>(sb.st_ino);
+  token.size = static_cast<std::uint64_t>(sb.st_size);
 #if defined(__APPLE__)
   token.ctime_sec = static_cast<std::int64_t>(sb.st_ctimespec.tv_sec);
   token.ctime_nsec = static_cast<long>(sb.st_ctimespec.tv_nsec);
+  token.mtime_sec = static_cast<std::int64_t>(sb.st_mtimespec.tv_sec);
+  token.mtime_nsec = static_cast<long>(sb.st_mtimespec.tv_nsec);
 #else
   token.ctime_sec = static_cast<std::int64_t>(sb.st_ctim.tv_sec);
   token.ctime_nsec = static_cast<long>(sb.st_ctim.tv_nsec);
+  token.mtime_sec = static_cast<std::int64_t>(sb.st_mtim.tv_sec);
+  token.mtime_nsec = static_cast<long>(sb.st_mtim.tv_nsec);
 #endif
   return token;
+#endif
 }
 
 FileWatcher::FileWatcher(std::filesystem::path root, FileWatcherOptions options)

@@ -842,7 +842,7 @@ namespace {
 
 void write_ts(const std::filesystem::path& path, const char* contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream(path) << contents;
+  std::ofstream(path, std::ios::binary) << contents;
 }
 
 // TypeScript barrels: `import { competitors } from '../../db/schema'` lands on

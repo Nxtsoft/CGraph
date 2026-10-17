@@ -292,6 +292,7 @@ int main() {
     if (aggregate_op_stats_ledger(back, *since)["query"]["count"] != 1) {
       return 42;
     }
+    input.close();  // Windows cannot delete a file that is still open
     std::filesystem::remove_all(dir);
   }
 

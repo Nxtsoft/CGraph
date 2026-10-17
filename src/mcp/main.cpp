@@ -1,5 +1,6 @@
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/mcp_server.hpp"
+#include "cgraph/platform.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -10,6 +11,8 @@
 #include <thread>
 
 int main(int argc, char** argv) {
+  // JSON-RPC over stdio is newline-delimited: no "\r\n" translation on Windows.
+  cgraph::use_binary_stdio();
   cgraph::ClientRequest base;
   std::set<std::string> listed_tools;
   // Claude Code (and other hosts) set CLAUDE_PROJECT_DIR to the project root and

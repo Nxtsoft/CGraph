@@ -1,5 +1,7 @@
 #include "cgraph/enrich_drainer.hpp"
 
+#include "cgraph/platform.hpp"
+
 #include <string>
 #include <system_error>
 
@@ -51,8 +53,8 @@ LaunchAgentSpec drainer_spec(const DrainerConfig& config) {
   spec.start_interval = config.interval_seconds;
   // Sweep decisions (which repos, gate skips, drain failures) must be auditable:
   // launchd swallows stdout/stderr unless a log path is set.
-  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    spec.log_path = std::filesystem::path(home) / "Library" / "Logs" / "cgraph-enrich-drain.log";
+  if (const auto home = home_directory(); !home.empty()) {
+    spec.log_path = home / "Library" / "Logs" / "cgraph-enrich-drain.log";
   }
   if (!config.host_cli.empty()) {
     spec.env.emplace_back("CGRAPH_HOST_CLI", config.host_cli);

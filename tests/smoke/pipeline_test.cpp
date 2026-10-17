@@ -12,7 +12,7 @@ namespace {
 
 void write_file(const std::filesystem::path& path, const char* contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   output << contents;
 }
 

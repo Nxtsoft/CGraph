@@ -2,6 +2,7 @@
 #include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_server.hpp"
 #include "cgraph/file_cache.hpp"
+#include "cgraph/local_socket.hpp"
 #include "cgraph/protocol.hpp"
 
 #include <array>
@@ -15,37 +16,30 @@
 #include <optional>
 #include <thread>
 
+#include "unreadable_file.hpp"
+
+#ifndef _WIN32
 #include <fcntl.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/un.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
-// Opens a raw connected client socket to `socket_path`, or -1. Lets the wire
-// hardening tests send hand-crafted (hostile) bytes the protocol codec would
-// never produce -- an oversized length header, a truncated frame -- straight at
-// the real daemon.
-int raw_connect(const std::filesystem::path& socket_path) {
-  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return -1;
-  }
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  const auto path = socket_path.string();
-  if (path.size() >= sizeof(addr.sun_path)) {
-    ::close(fd);
-    return -1;
-  }
-  std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return -1;
-  }
-  return fd;
+// Opens a raw connected client socket to `socket_path` (invalid on failure).
+// Lets the wire hardening tests send hand-crafted (hostile) bytes the protocol
+// codec would never produce -- an oversized length header, a truncated frame --
+// straight at the real daemon.
+cgraph::LocalSocket raw_connect(const std::filesystem::path& socket_path) {
+  return cgraph::connect_local_socket(socket_path);
 }
+
+template <std::size_t N>
+void raw_send(const cgraph::LocalSocket& socket, const std::array<std::uint8_t, N>& bytes) {
+  (void)cgraph::send_all(socket, bytes.data(), bytes.size());
+}
+
+using cgraph_test::UnreadableFile;
 
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
@@ -129,6 +123,10 @@ int main() {
   namespace fs = std::filesystem;
   bool ok = true;
 
+#ifdef _WIN32
+  std::cout << "daemon_server_test: SKIP atomic-overlay case on Windows: it parks semantic replay on a "
+               "FIFO, and Windows has no filesystem FIFOs\n";
+#else
   // Hold semantic replay on a real FIFO after deterministic extraction has
   // finished. Until that reader is released, the public daemon snapshot must
   // remain the initial empty/building graph; after release, one snapshot must
@@ -213,6 +211,7 @@ int main() {
     expect(ok, atomic_rc == 0, "atomic-overlay: daemon exited cleanly");
     fs::remove_all(atomic_root);
   }
+#endif
 
   const auto root = fs::temp_directory_path() / "cgraph_daemon_server_test";
   fs::remove_all(root);
@@ -428,12 +427,12 @@ int main() {
   // sizes the frame buffer; if it still allocated 0xFFFFFFFF bytes the process
   // would OOM/crash here instead of the next status answering.
   {
-    const int fd = raw_connect(socket_path);
-    expect(ok, fd >= 0, "raw connect for oversized-frame test");
-    if (fd >= 0) {
+    auto fd = raw_connect(socket_path);
+    expect(ok, fd.valid(), "raw connect for oversized-frame test");
+    if (fd.valid()) {
       const std::array<std::uint8_t, 4> huge{0xFF, 0xFF, 0xFF, 0xFF};  // 0xFFFFFFFF body length
-      (void)::write(fd, huge.data(), huge.size());
-      ::close(fd);  // send no body: the daemon must not wait on ~4 GB it never allocates
+      raw_send(fd, huge);
+      fd = cgraph::LocalSocket{};  // send no body: the daemon must not wait on ~4 GB it never allocates
     }
   }
   const auto after_huge = request_with_retry(socket_path, cgraph::make_request("status"));
@@ -445,11 +444,11 @@ int main() {
   // stalled read after a few seconds; the proof is that a normal status on a
   // fresh connection still round-trips (the loop was never permanently blocked).
   {
-    const int fd = raw_connect(socket_path);
-    expect(ok, fd >= 0, "raw connect for stalled-reader test");
-    if (fd >= 0) {
+    auto fd = raw_connect(socket_path);
+    expect(ok, fd.valid(), "raw connect for stalled-reader test");
+    if (fd.valid()) {
       const std::array<std::uint8_t, 2> partial{0x10, 0x00};  // 2 of 4 header bytes, then stall
-      (void)::write(fd, partial.data(), partial.size());
+      raw_send(fd, partial);
       // Hold the socket open, sending nothing. The daemon serves inline on one
       // thread, so while it is stuck in read_exact on the missing header bytes it
       // cannot service another request -- until SO_RCVTIMEO (a few seconds) fires
@@ -466,7 +465,7 @@ int main() {
       }
       expect(ok, concurrent && (*concurrent)["ok"] == true,
              "daemon recovers and answers status after a stalled mid-frame reader is timed out");
-      ::close(fd);
+      fd = cgraph::LocalSocket{};
     }
   }
   const auto after_stall = request_with_retry(socket_path, cgraph::make_request("status"));
@@ -483,17 +482,17 @@ int main() {
       return status ? (*status)["result"].value("ops", nlohmann::json::object()) : nlohmann::json::object();
     };
     const auto before = ops_of();
-    const int busy = raw_connect(socket_path);
-    expect(ok, busy >= 0, "raw connect for the busy peer");
+    auto busy = raw_connect(socket_path);
+    expect(ok, busy.valid(), "raw connect for the busy peer");
     const std::array<std::uint8_t, 2> partial{0x10, 0x00};
-    (void)::write(busy, partial.data(), partial.size());
+    raw_send(busy, partial);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));  // the daemon is now reading `busy`
-    const int gone = raw_connect(socket_path);  // queued in the listen backlog
-    expect(ok, gone >= 0, "raw connect for the abandoning client");
+    auto gone = raw_connect(socket_path);  // queued in the listen backlog
+    expect(ok, gone.valid(), "raw connect for the abandoning client");
     const auto frame = cgraph::encode_frame(cgraph::make_request("query", {{"q", "anything"}}));
-    (void)::write(gone, frame.data(), frame.size());
-    ::close(gone);
-    ::close(busy);
+    (void)cgraph::send_all(gone, frame.data(), frame.size());
+    gone = cgraph::LocalSocket{};
+    busy = cgraph::LocalSocket{};
     nlohmann::json after;
     for (int attempt = 0; attempt < 100; ++attempt) {
       after = ops_of();
@@ -1157,7 +1156,8 @@ int main() {
             "remember", {{"title", "coverage checkpoint"}, {"summary", "refusal regression"}}));
     expect(ok, remember && remember->value("ok", false), "coverage: remember accepted");
 
-    expect(ok, ::chmod(cov_source.c_str(), 0) == 0, "coverage: made verified source unreadable");
+    UnreadableFile unreadable(cov_source);
+    expect(ok, unreadable.active(), "coverage: made verified source unreadable");
     const auto refused = request_with_retry(cov_socket, cgraph::make_request("update", {{"path", "."}}));
     expect(ok,
            refused && refused->value("ok", false) &&
@@ -1167,7 +1167,7 @@ int main() {
     expect(ok, wait_for_label(cov_socket, "Covered", "Covered", true),
            "coverage: served graph kept the last verified code after the refusal");
 
-    expect(ok, ::chmod(cov_source.c_str(), 0600) == 0, "coverage: restored source permissions");
+    expect(ok, unreadable.release(), "coverage: restored source permissions");
     const auto cov_shutdown = request_with_retry(cov_socket, cgraph::make_request("shutdown"));
     expect(ok, cov_shutdown && cov_shutdown->value("ok", false), "coverage: shutdown accepted");
     cov_server.join();
@@ -1189,6 +1189,7 @@ int main() {
     expect(ok, !overlay_in_persisted && code_in_persisted,
            "coverage: graph.json stayed deterministic-only across the refused update");
 
+    persisted.close();  // Windows cannot delete a file that is still open
     fs::remove_all(cov_root);
   }
 

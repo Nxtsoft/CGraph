@@ -18,7 +18,7 @@ void expect(bool& ok, bool condition, const char* what) {
 
 void write_file(const fs::path& path, const std::string& contents) {
   fs::create_directories(path.parent_path());
-  std::ofstream(path) << contents;
+  std::ofstream(path, std::ios::binary) << contents;
 }
 
 }  // namespace

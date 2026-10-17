@@ -14,6 +14,7 @@
 #include "cgraph/launch_agent.hpp"
 #include "cgraph/operation_stats.hpp"
 #include "cgraph/pipeline.hpp"
+#include "cgraph/platform.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/report.hpp"
 #include "cgraph/seam.hpp"
@@ -33,12 +34,6 @@
 #include <unordered_map>
 #include <vector>
 
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>
-#include <vector>
-#elif defined(__linux__)
-#include <unistd.h>
-#endif
 
 namespace {
 
@@ -826,26 +821,11 @@ int run_seam_query(int argc, char** argv) {
 // Absolute path to the running cgraph binary, so generated LaunchAgents reference
 // it (and its sibling graphd) by absolute path regardless of how it was invoked.
 std::filesystem::path current_executable_path(const char* argv0) {
-#if defined(__APPLE__)
-  uint32_t size = 0;
-  _NSGetExecutablePath(nullptr, &size);
-  std::vector<char> buffer(size);
-  if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+  if (auto self = cgraph::current_executable_path(); !self.empty()) {
     std::error_code ec;
-    auto p = std::filesystem::weakly_canonical(std::filesystem::path(buffer.data()), ec);
-    if (!ec) {
-      return p;
-    }
+    auto canonical = std::filesystem::weakly_canonical(self, ec);
+    return ec ? self : canonical;
   }
-#elif defined(__linux__)
-  {
-    std::error_code ec;
-    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec) {
-      return p;
-    }
-  }
-#endif
   std::error_code ec;
   return std::filesystem::weakly_canonical(std::filesystem::path(argv0), ec);
 }
@@ -853,21 +833,22 @@ std::filesystem::path current_executable_path(const char* argv0) {
 // graphd lives next to cgraph (installed layout) or under ../daemon/ (build tree).
 std::filesystem::path resolve_graphd_binary(const std::filesystem::path& self) {
   const auto bin_dir = self.parent_path();
-  for (const auto& candidate : {bin_dir / "graphd", bin_dir.parent_path() / "daemon" / "graphd"}) {
+  const auto graphd = cgraph::executable_file_name("graphd");
+  for (const auto& candidate : {bin_dir / graphd, bin_dir.parent_path() / "daemon" / graphd}) {
     std::error_code ec;
     if (std::filesystem::exists(candidate, ec)) {
       return std::filesystem::weakly_canonical(candidate, ec);
     }
   }
-  return bin_dir / "graphd";  // best guess; sync will report if it never comes up
+  return bin_dir / graphd;  // best guess; sync will report if it never comes up
 }
 
 std::filesystem::path supervisor_config_path() {
   if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0') {
     return std::filesystem::path(xdg) / "cgraph" / "supervisor.json";
   }
-  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    return std::filesystem::path(home) / ".config" / "cgraph" / "supervisor.json";
+  if (const auto home = cgraph::home_directory(); !home.empty()) {
+    return home / ".config" / "cgraph" / "supervisor.json";
   }
   return {};
 }
@@ -1117,7 +1098,7 @@ int run_drain_command(int argc, char** argv) {
   config.launch_agents_dir = cgraph::default_launch_agents_dir();
   const auto self = current_executable_path(argv[0]);
   config.cgraph_binary = self;
-  config.client_binary = self.parent_path().parent_path() / "client" / "cgraph-client";
+  config.client_binary = self.parent_path().parent_path() / "client" / cgraph::executable_file_name("cgraph-client");
 
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];

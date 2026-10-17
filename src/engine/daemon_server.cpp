@@ -34,20 +34,11 @@
 #include <thread>
 #include <vector>
 
-#ifndef _WIN32
-#include <cerrno>
-#include <fcntl.h>
-#include <poll.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#endif
+#include "cgraph/local_socket.hpp"
+#include "cgraph/platform.hpp"
 
 namespace cgraph {
 namespace {
-
-#ifndef _WIN32
 
 // Per-connection I/O timeout. The daemon serves each connection inline on its
 // single serve-loop thread, so a client that stalls mid-frame would otherwise
@@ -56,107 +47,11 @@ namespace {
 // the thin client makes; a slower peer is dropped and the serve loop continues.
 constexpr std::chrono::seconds kConnectionIoTimeout{5};
 
-// Applies SO_RCVTIMEO + SO_SNDTIMEO to an accepted connection so a blocking
-// read/write cannot hang the single serve thread indefinitely. Best-effort:
-// a failed setsockopt only means the fallback (no timeout) for that one socket,
-// which is logged; it never aborts serving.
-// Where send() has no MSG_NOSIGNAL (macOS), the socket itself must not raise
-// SIGPIPE on a write to a peer that hung up.
-void suppress_sigpipe(int fd) {
-#if !defined(MSG_NOSIGNAL) && defined(SO_NOSIGPIPE)
-  const int on = 1;
-  (void)::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
-#else
-  (void)fd;
-#endif
-}
-
-void apply_connection_timeout(int conn) {
-  suppress_sigpipe(conn);
-  timeval tv{};
-  tv.tv_sec = static_cast<time_t>(kConnectionIoTimeout.count());
-  tv.tv_usec = 0;
-  if (::setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||
-      ::setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
-    std::cerr << "graphd: setsockopt(timeout) failed: " << std::strerror(errno) << '\n';
-  }
-}
-
-// Fills a sockaddr_un for `path`. Returns false if the path is too long for the
-// platform's sun_path (a hard limit, ~104 bytes on macOS) — a clear failure
-// rather than a silently truncated, wrong endpoint.
-[[nodiscard]] bool fill_sockaddr(sockaddr_un& addr, const std::string& path) {
-  if (path.size() >= sizeof(addr.sun_path)) {
-    return false;
-  }
-  addr.sun_family = AF_UNIX;
-  std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
-  return true;
-}
-
-using Deadline = std::optional<std::chrono::steady_clock::time_point>;
-
-// Waits until `fd` is ready for `events` or `deadline` passes; true when ready.
-// No deadline: always ready (the blocking call itself waits).
-[[nodiscard]] bool ready_before(int fd, short events, const Deadline& deadline) {
-  if (!deadline) return true;
-  while (true) {
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(*deadline - std::chrono::steady_clock::now());
-    if (left.count() <= 0) return false;
-    pollfd entry{.fd = fd, .events = events, .revents = 0};
-    const int got = ::poll(&entry, 1, static_cast<int>(left.count()));
-    if (got > 0) return true;
-    if (got == 0 || errno != EINTR) return false;
-  }
-}
-
-[[nodiscard]] bool write_all(int fd, const std::uint8_t* data, std::size_t size, const Deadline& deadline = {}) {
-  std::size_t sent = 0;
-  while (sent < size) {
-    if (!ready_before(fd, POLLOUT, deadline)) return false;
-    // A peer that hung up (a client that gave up at its deadline, a daemon
-    // that went away) is a failed write, never a SIGPIPE that kills this
-    // process: MSG_NOSIGNAL here, SO_NOSIGPIPE on the socket where it is absent.
-#ifdef MSG_NOSIGNAL
-    const auto written = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
-#else
-    const auto written = ::write(fd, data + sent, size - sent);
-#endif
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    sent += static_cast<std::size_t>(written);
-  }
-  return true;
-}
-
-[[nodiscard]] bool read_exact(int fd, std::uint8_t* data, std::size_t size, const Deadline& deadline = {}) {
-  std::size_t received = 0;
-  while (received < size) {
-    if (!ready_before(fd, POLLIN, deadline)) return false;
-    const auto got = ::read(fd, data + received, size - received);
-    if (got == 0) {
-      return false;  // peer closed early
-    }
-    if (got < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    received += static_cast<std::size_t>(got);
-  }
-  return true;
-}
-
 // Reads one length-prefixed frame (4-byte little-endian length + body) and
 // decodes it, reusing the shared protocol codec.
-[[nodiscard]] std::optional<nlohmann::json> read_frame(int fd, const Deadline& deadline = {}) {
+[[nodiscard]] std::optional<nlohmann::json> read_frame(const LocalSocket& socket, const SocketDeadline& deadline = {}) {
   std::array<std::uint8_t, 4> header{};
-  if (!read_exact(fd, header.data(), header.size(), deadline)) {
+  if (!receive_exact(socket, header.data(), header.size(), deadline)) {
     return std::nullopt;
   }
   const auto length =
@@ -173,38 +68,24 @@ using Deadline = std::optional<std::chrono::steady_clock::time_point>;
   }
   std::vector<std::uint8_t> frame(static_cast<std::size_t>(length) + 4);
   std::memcpy(frame.data(), header.data(), header.size());
-  if (length > 0 && !read_exact(fd, frame.data() + 4, length, deadline)) {
+  if (length > 0 && !receive_exact(socket, frame.data() + 4, length, deadline)) {
     return std::nullopt;
   }
   return decode_frame(frame);
 }
 
-// Whether the client on `conn` has already hung up (a hook that gave up at its
-// deadline while this request waited in the queue). The thin client never
-// half-closes: it writes its frame and reads the answer, so a hang-up seen
-// right after its frame was read means nobody will read the answer.
-[[nodiscard]] bool peer_hung_up(int conn) {
-#ifdef POLLRDHUP
-  pollfd entry{.fd = conn, .events = POLLIN | POLLRDHUP, .revents = 0};
-  return ::poll(&entry, 1, 0) > 0 && (entry.revents & (POLLHUP | POLLRDHUP | POLLERR)) != 0;
-#else
-  pollfd entry{.fd = conn, .events = POLLIN, .revents = 0};
-  if (::poll(&entry, 1, 0) <= 0) return false;
-  if ((entry.revents & (POLLHUP | POLLERR)) != 0) return true;
-  char byte = 0;
-  return (entry.revents & POLLIN) != 0 && ::recv(conn, &byte, 1, MSG_PEEK | MSG_DONTWAIT) == 0;
-#endif
-}
-
-[[nodiscard]] bool write_frame(int fd, const nlohmann::json& payload, const Deadline& deadline = {}) {
+[[nodiscard]] bool write_frame(const LocalSocket& socket, const nlohmann::json& payload,
+                               const SocketDeadline& deadline = {}) {
   const auto frame = encode_frame(payload);
-  return write_all(fd, frame.data(), frame.size(), deadline);
+  return send_all(socket, frame.data(), frame.size(), deadline);
 }
 
 // The thin client uses one connection per request: read it, answer it. A
 // request whose client has already gone is counted and not computed, so
-// abandoned asks do not hold up the ones behind them.
-void answer_connection(DaemonState& state, int conn) {
+// abandoned asks do not hold up the ones behind them. The thin client never
+// half-closes: it writes its frame and reads the answer, so a hang-up seen
+// right after its frame was read means nobody will read the answer.
+void answer_connection(DaemonState& state, const LocalSocket& conn) {
   if (const auto request = read_frame(conn)) {
     if (peer_hung_up(conn)) {
       ++state.op_stats.abandoned;
@@ -215,69 +96,42 @@ void answer_connection(DaemonState& state, int conn) {
   }
 }
 
-#endif  // !_WIN32
+// What open_listen_socket found at the endpoint.
+struct ListenResult {
+  LocalSocket listener;
+  bool already_served = false;  // a healthy daemon serves this root: exit 0
+};
 
-}  // namespace
-
-#ifdef _WIN32
-
-int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions) {
-  (void)root;
-  std::cerr << "graphd: the Unix-socket server is not implemented on Windows yet\n";
-  return 1;
-}
-
-std::optional<nlohmann::json> request_over_unix_socket(const std::filesystem::path&, const nlohmann::json&,
-                                                       std::optional<std::chrono::steady_clock::time_point>) {
-  return std::nullopt;
-}
-
-#else
-
-namespace {
-
-// Sentinel returned by open_listen_socket when a healthy daemon already serves
-// this root: the caller should exit cleanly (0) rather than treat it as an error.
-constexpr int kEndpointAlreadyServed = -2;
-
-// Open a Unix-domain listening socket at socket_path. If a healthy daemon already
-// serves this root, returns kEndpointAlreadyServed without touching the endpoint.
-// Otherwise clears any stale endpoint from a crashed daemon and binds. Returns the
-// listen fd, or -1 on failure (already logged).
+// Opens the listening socket at socket_path. If a healthy daemon already
+// serves this root, reports already_served without touching the endpoint.
+// Otherwise clears any stale endpoint from a crashed daemon and binds. An
+// invalid listener with already_served false is a failure (already logged).
 // Shared by the full build-and-watch server and the static seam server.
-[[nodiscard]] int open_listen_socket(const std::filesystem::path& socket_path) {
+[[nodiscard]] ListenResult open_listen_socket(const std::filesystem::path& socket_path) {
   ensure_unix_socket_dir(socket_path);
   // Never unlink a live endpoint out from under a running daemon: probe first so
   // a start race (supervisor + MCP auto-spawn) defers instead of stealing it.
   if (unix_endpoint_is_live(socket_path)) {
     std::cerr << "graphd: already serving " << socket_path << ", deferring to the resident daemon\n";
-    return kEndpointAlreadyServed;
+    return {.listener = {}, .already_served = true};
   }
-  ::unlink(socket_path.c_str());
-
-  const int listen_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (listen_fd < 0) {
-    std::cerr << "graphd: socket() failed: " << std::strerror(errno) << '\n';
-    return -1;
-  }
-  sockaddr_un addr{};
-  if (!fill_sockaddr(addr, socket_path.string())) {
-    std::cerr << "graphd: socket path too long: " << socket_path << '\n';
-    ::close(listen_fd);
-    return -1;
-  }
-  if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    std::cerr << "graphd: bind() failed: " << std::strerror(errno) << '\n';
-    ::close(listen_fd);
-    return -1;
-  }
-  if (::listen(listen_fd, 16) != 0) {
-    std::cerr << "graphd: listen() failed: " << std::strerror(errno) << '\n';
-    ::close(listen_fd);
+  (void)remove_socket_file(socket_path);
+  std::string error;
+  auto listener = listen_on_local_socket(socket_path, error);
+  if (!listener.valid()) {
+    std::cerr << "graphd: " << error << '\n';
     (void)cleanup_daemon_endpoint(socket_path);
-    return -1;
   }
-  return listen_fd;
+  return {.listener = std::move(listener), .already_served = false};
+}
+
+// One serve-loop wait for a client. Failed is logged; the caller stops.
+[[nodiscard]] SocketWait wait_for_client(const LocalSocket& listener, std::chrono::milliseconds tick) {
+  const auto result = wait_for_connection(listener, tick);
+  if (result == SocketWait::Failed) {
+    std::cerr << "graphd: poll() failed: " << last_socket_error() << '\n';
+  }
+  return result;
 }
 
 // Logged, never fatal: an unwritten stat index only means the next plan
@@ -300,21 +154,22 @@ void persist_stat_index(const SemanticStatIndex& index, const std::filesystem::p
 int run_static_seam_server(const std::filesystem::path& root, DaemonServerOptions options) {
   const auto identity = daemon_identity_for(root);
   const auto socket_path = unix_socket_path(identity);
-  const int listen_fd = open_listen_socket(socket_path);
-  if (listen_fd == kEndpointAlreadyServed) {
+  auto opened = open_listen_socket(socket_path);
+  auto& listener = opened.listener;
+  if (opened.already_served) {
     return 0;  // a resident daemon already serves this root; defer cleanly
   }
-  if (listen_fd < 0) {
+  if (!listener.valid()) {
     return 1;
   }
 
   DaemonState state;
-  state.pid = ::getpid();
+  state.pid = static_cast<int>(current_process_id());
   state.project_root = identity.project_root;
   const auto graph_path = root / "graph.json";
   if (!load_graph_snapshot(state, graph_path)) {
     std::cerr << "graphd: failed to load seam graph: " << graph_path << '\n';
-    ::close(listen_fd);
+    listener = LocalSocket{};  // close before removing the socket file
     (void)cleanup_daemon_endpoint(socket_path);
     return 1;
   }
@@ -333,19 +188,11 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
 
   auto last_activity = FileWatcherClock::now();
   while (!state.shutdown_requested) {
-    fd_set read_set;
-    FD_ZERO(&read_set);
-    FD_SET(listen_fd, &read_set);
-    timeval timeout{};
-    timeout.tv_sec = 1;
-    const int ready = ::select(listen_fd + 1, &read_set, nullptr, nullptr, &timeout);
-    if (ready < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
+    const auto ready = wait_for_client(listener, std::chrono::seconds{1});
+    if (ready == SocketWait::Failed) {
       break;
     }
-    if (ready == 0) {
+    if (ready == SocketWait::TimedOut) {
       // A non-positive idle timeout disables idle shutdown entirely: the daemon
       // stays resident (and watching) until an explicit shutdown op or signal.
       if (options.idle_timeout > std::chrono::seconds::zero() &&
@@ -355,19 +202,15 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
       }
       continue;
     }
-    const int conn = ::accept(listen_fd, nullptr, nullptr);
-    if (conn < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
+    // The I/O timeout keeps a stalled peer from wedging the serve loop.
+    const auto conn = accept_local_connection(listener, kConnectionIoTimeout);
+    if (!conn.valid()) {
       break;
     }
     last_activity = FileWatcherClock::now();
-    apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
     answer_connection(state, conn);
-    ::close(conn);
   }
-  ::close(listen_fd);
+  listener = LocalSocket{};  // close before removing the socket file
   (void)cleanup_daemon_endpoint(socket_path);
   return 0;
 }
@@ -375,17 +218,18 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
 int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions options) {
   const auto identity = daemon_identity_for(root);
   const auto socket_path = unix_socket_path(identity);
-  const int listen_fd = open_listen_socket(socket_path);
-  if (listen_fd == kEndpointAlreadyServed) {
+  auto opened = open_listen_socket(socket_path);
+  auto& listener = opened.listener;
+  if (opened.already_served) {
     return 0;  // a resident daemon already serves this root; defer cleanly,
                // leaving its socket and snapshots untouched
   }
-  if (listen_fd < 0) {
+  if (!listener.valid()) {
     return 1;
   }
 
   DaemonState state;
-  state.pid = ::getpid();
+  state.pid = static_cast<int>(current_process_id());
   state.project_root = identity.project_root;
 
   // Serve immediately. Publish an empty graph so status/query answer right away
@@ -935,21 +779,8 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   auto last_activity = FileWatcherClock::now();
   auto last_code_poll = FileWatcherClock::now();
   while (!state.shutdown_requested) {
-    fd_set read_set;
-    FD_ZERO(&read_set);
-    FD_SET(listen_fd, &read_set);
-    timeval timeout{};
-    timeout.tv_usec = static_cast<int>(
-        std::chrono::duration_cast<std::chrono::microseconds>(options.drop_poll_interval).count() % 1'000'000);
-    timeout.tv_sec = static_cast<time_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(options.drop_poll_interval).count());
-
-    const int ready = ::select(listen_fd + 1, &read_set, nullptr, nullptr, &timeout);
-    if (ready < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      std::cerr << "graphd: select() failed: " << std::strerror(errno) << '\n';
+    const auto ready = wait_for_client(listener, options.drop_poll_interval);
+    if (ready == SocketWait::Failed) {
       break;
     }
 
@@ -1071,7 +902,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       std::cerr << "graphd: persisted incremental graph state\n";
     }
 
-    if (ready == 0) {
+    if (ready == SocketWait::TimedOut) {
       // A non-positive idle timeout disables idle shutdown entirely: the daemon
       // stays resident (and watching) until an explicit shutdown op or signal.
       if (options.idle_timeout > std::chrono::seconds::zero() &&
@@ -1082,17 +913,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       continue;  // no connection this tick; keep polling drops
     }
 
-    const int conn = ::accept(listen_fd, nullptr, nullptr);
-    if (conn < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
+    // The I/O timeout keeps a stalled peer from wedging the serve loop.
+    const auto conn = accept_local_connection(listener, kConnectionIoTimeout);
+    if (!conn.valid()) {
       break;
     }
     last_activity = FileWatcherClock::now();
-    apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
     answer_connection(state, conn);
-    ::close(conn);
   }
 
   if (build_thread.joinable()) {
@@ -1125,7 +952,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   }
   refresh_cv.notify_one();
   enrichment_worker.join();  // also captures locals by reference; join before scope exit
-  ::close(listen_fd);
+  listener = LocalSocket{};  // close before removing the socket file
   (void)cleanup_daemon_endpoint(socket_path);
   return 0;
 }
@@ -1134,38 +961,14 @@ std::optional<nlohmann::json> request_over_unix_socket(
     const std::filesystem::path& socket_path,
     const nlohmann::json& request,
     std::optional<std::chrono::steady_clock::time_point> deadline) {
-  if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+  const auto socket = connect_local_socket(socket_path, deadline);
+  if (!socket.valid()) {
+    return std::nullopt;  // refused / absent -> caller spawns and retries
+  }
+  if (!write_frame(socket, request, deadline)) {
     return std::nullopt;
   }
-  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return std::nullopt;
-  }
-  suppress_sigpipe(fd);
-  sockaddr_un addr{};
-  if (!fill_sockaddr(addr, socket_path.string())) {
-    ::close(fd);
-    return std::nullopt;
-  }
-  // With a deadline nothing blocks: a connect the listener's full backlog
-  // would park fails at once (EAGAIN), and every read and write waits in
-  // poll() for what is left of the deadline.
-  if (deadline && ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK) != 0) {
-    ::close(fd);
-    return std::nullopt;
-  }
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);  // ECONNREFUSED / ENOENT -> caller spawns and retries
-    return std::nullopt;
-  }
-  std::optional<nlohmann::json> response;
-  if (write_frame(fd, request, deadline)) {
-    response = read_frame(fd, deadline);
-  }
-  ::close(fd);
-  return response;
+  return read_frame(socket, deadline);
 }
-
-#endif  // _WIN32
 
 }  // namespace cgraph

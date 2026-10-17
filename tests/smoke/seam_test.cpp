@@ -25,7 +25,7 @@ using nlohmann::json;
 
 void write_json(const fs::path& path, const json& value) {
   fs::create_directories(path.parent_path());
-  std::ofstream(path) << value.dump(2);
+  std::ofstream(path, std::ios::binary) << value.dump(2);
 }
 
 const cgraph::Node* find_node(const cgraph::Fragment& frag, const std::string& id) {
@@ -1081,7 +1081,7 @@ int main() {
   if (cgraph::is_seam_directory(seamdir)) {
     return 1;  // no marker yet
   }
-  std::ofstream(seamdir / std::string(cgraph::kSeamMarkerFile)) << "x";
+  std::ofstream(seamdir / std::string(cgraph::kSeamMarkerFile), std::ios::binary) << "x";
   if (!cgraph::is_seam_directory(seamdir)) {
     return 1;  // marker present
   }
