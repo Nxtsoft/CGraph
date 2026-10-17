@@ -197,6 +197,9 @@ int run_enrich_ingest(const Args& args) {
   for (const auto& error : ingest.errors) {
     std::cerr << "rejected: " << error << '\n';
   }
+  for (const auto& warning : ingest.warnings) {
+    std::cerr << "warning: " << warning << '\n';
+  }
   return 0;
 }
 
