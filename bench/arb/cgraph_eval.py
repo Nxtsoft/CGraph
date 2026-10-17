@@ -43,8 +43,9 @@ import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import snapshots
 
@@ -120,6 +121,34 @@ class Daemon:
         deadline = time.monotonic() + 60
         while pid and Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
             time.sleep(0.1)
+
+
+@contextmanager
+def served_snapshot(bin_dir: Path, cache: Path, repo: str, sha: str, root: Path, keep: bool = False) -> Iterator[tuple[Daemon, dict[str, Any], dict[str, Any]]]:
+    """Check ``repo@sha`` out at ``root``, build its graph and serve it; yields (daemon, build, status).
+
+    On exit the daemon is stopped and, unless ``keep``, the snapshot is removed.
+    """
+    if root.exists():
+        snapshots.remove_tree(root)
+    snapshots.materialize(cache, repo, sha, root)
+    daemon = Daemon(bin_dir, root)
+    serving = False
+    pid: int | None = None
+    try:
+        build = daemon.build()
+        serving = True  # the first client call spawns graphd
+        status = daemon.wait_ready()
+        pid = int(status["pid"])
+        yield daemon, build, status
+    finally:
+        try:
+            # cgraph-client spawns a daemon when none is running, so only stop one we started.
+            if serving:
+                daemon.shutdown(pid)
+        finally:
+            if not keep:
+                snapshots.remove_tree(root)
 
 
 def query_text(sample: dict[str, Any]) -> str:
@@ -349,18 +378,8 @@ def evaluate_snapshot(
     jobs: list[tuple[str, dict[str, Any], Path]],
 ) -> list[tuple[str, dict[str, Any]]]:
     root = args.work / f"{snapshots.repo_slug(repo)}-{sha[:12]}"
-    if root.exists():
-        snapshots.remove_tree(root)
-    snapshots.materialize(args.cache, repo, sha, root)
-    daemon = Daemon(args.cgraph_bin_dir, root)
     out: list[tuple[str, dict[str, Any]]] = []
-    serving = False
-    pid: int | None = None
-    try:
-        build = daemon.build()
-        serving = True  # the first client call spawns graphd
-        status = daemon.wait_ready()
-        pid = int(status["pid"])
+    with served_snapshot(args.cgraph_bin_dir, args.cache, repo, sha, root, args.keep_snapshots) as (daemon, build, status):
         index = SnapshotIndex(root)
         corpus_texts: dict[Path, dict[str, str]] = {}
         for task, sample, chunks_path in jobs:
@@ -406,14 +425,6 @@ def evaluate_snapshot(
                 },
             }
             out.append((task, detail))
-    finally:
-        try:
-            # cgraph-client spawns a daemon when none is running, so only stop one we started.
-            if serving:
-                daemon.shutdown(pid)
-        finally:
-            if not args.keep_snapshots:
-                snapshots.remove_tree(root)
     return out
 
 
