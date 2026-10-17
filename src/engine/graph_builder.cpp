@@ -1734,22 +1734,56 @@ void resolve_test_subjects(GraphSnapshot& graph) {
     return stem.starts_with("test_") || stem.ends_with("_test") || stem.ends_with("_tests") ||
            stem.ends_with(".test") || stem.ends_with(".spec") || stem.ends_with("_spec");
   };
+  const auto test_root_segment = [](std::string_view segment) {
+    return segment == "test" || segment == "tests" || segment == "__tests__" || segment == "spec" ||
+           segment == "specs" || segment == "e2e" || segment == "integrationTest";
+  };
   // `tests/http/client_test.py` mirrors `http/`: the directory with every test
-  // root segment removed.
-  const auto mirrored_directory = [](std::string_view dir) {
-    std::string out;
+  // root segment removed. `package` is what precedes the first test root
+  // (`clap_complete/` for `clap_complete/tests/x.rs`): a package's tests test it.
+  struct TestLocation {
+    std::string mirror;
+    std::string_view package;
+  };
+  const auto locate = [&](std::string_view dir) {
+    TestLocation out;
+    bool in_test_root = false;
     std::size_t start = 0;
     while (start <= dir.size()) {
       const auto end = std::min(dir.find('/', start), dir.size());
       const auto segment = dir.substr(start, end - start);
-      if (!segment.empty() && segment != "test" && segment != "tests" && segment != "__tests__" &&
-          segment != "spec" && segment != "specs" && segment != "e2e" && segment != "integrationTest") {
-        if (!out.empty()) out += '/';
-        out += segment;
+      if (test_root_segment(segment)) {
+        if (!in_test_root) out.package = dir.substr(0, start);
+        in_test_root = true;
+      } else if (!segment.empty()) {
+        if (!out.mirror.empty()) out.mirror += '/';
+        out.mirror += segment;
       }
       start = end + 1;
     }
     return out;
+  };
+  // Entry points and helper modules share their name across packages by
+  // convention, so a test named for one pairs only within its own directory.
+  const auto generic_stem = [](std::string_view stem) {
+    return stem == "main" || stem == "mod" || stem == "lib" || stem == "index" || stem == "__init__" ||
+           stem == "utils" || stem == "util" || stem == "helpers" || stem == "common" || stem == "conftest" ||
+           stem == "setup";
+  };
+  // Examples, docs and benchmarks use the library; they are not what a test covers.
+  const auto non_subject = [](std::string_view relative) {
+    std::size_t start = 0;
+    while (start < relative.size()) {
+      const auto end = relative.find('/', start);
+      if (end == std::string_view::npos) break;
+      const auto segment = relative.substr(start, end - start);
+      if (segment == "examples" || segment == "example" || segment == "docs" || segment == "doc" ||
+          segment == "benches" || segment == "bench" || segment == "benchmarks") {
+        return true;
+      }
+      start = end + 1;
+    }
+    return false;
   };
 
   struct File {
@@ -1766,7 +1800,7 @@ void resolve_test_subjects(GraphSnapshot& graph) {
     const auto stem = stem_of(file.relative);
     if (is_test_source_path(file.relative) || named_as_test(stem)) {
       tests.push_back(file);
-    } else {
+    } else if (!non_subject(file.relative)) {
       sources_by_stem[stem].push_back(file);
     }
   }
@@ -1788,37 +1822,42 @@ void resolve_test_subjects(GraphSnapshot& graph) {
     }
   };
   for (const auto& test : tests) {
-    const auto found = sources_by_stem.find(test_core(stem_of(test.relative)));
+    const auto core = test_core(stem_of(test.relative));
+    const auto found = sources_by_stem.find(core);
     if (found == sources_by_stem.end()) {
       continue;
     }
-    const auto& candidates = found->second;
     const auto dir = directory_of(test.relative);
     bool linked = false;
-    for (const auto& candidate : candidates) {
+    for (const auto& candidate : found->second) {
       if (directory_of(candidate.relative) == dir) {
         link(test, candidate);
         linked = true;
       }
     }
-    if (linked) {
+    if (linked || generic_stem(core)) {
       continue;
+    }
+    const auto location = locate(dir);
+    std::vector<const File*> candidates;
+    for (const auto& candidate : found->second) {
+      if (candidate.relative.starts_with(location.package)) candidates.push_back(&candidate);
     }
     if (candidates.size() == 1) {
-      link(test, candidates.front());
+      link(test, *candidates.front());
       continue;
     }
-    const auto mirror = mirrored_directory(dir);
-    if (mirror.empty()) {
+    if (location.mirror.empty()) {
       continue;
     }
     const File* only = nullptr;
     std::size_t matches = 0;
-    for (const auto& candidate : candidates) {
-      const auto candidate_dir = directory_of(candidate.relative);
+    for (const auto* candidate : candidates) {
+      const auto candidate_dir = directory_of(candidate->relative);
+      const auto& mirror = location.mirror;
       if (candidate_dir == mirror ||
           (candidate_dir.ends_with(mirror) && candidate_dir[candidate_dir.size() - mirror.size() - 1] == '/')) {
-        only = &candidate;
+        only = candidate;
         ++matches;
       }
     }

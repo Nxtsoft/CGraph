@@ -83,9 +83,11 @@ void resolve_interface_dispatch(GraphSnapshot& graph, std::span<const RawCall> r
 // its name pairs with (`path_test.go` -> `path.go`, `test_core.py` -> `core.py`,
 // `button.spec.ts` -> `button.ts`, `tests/help.rs` -> `src/help.rs`). Calls
 // from a test reach its subject only when call resolution is unambiguous, so
-// without this most tests are islands. A stem several source files share pairs
-// only within the test's own directory, the directory its test-root-free path
-// mirrors, or a unique match; otherwise no edge.
+// without this most tests are islands. Beyond the test's own directory a pair
+// must be the unique match inside the test's package (what precedes its test
+// root) or the one file in the directory its test-root-free path mirrors.
+// Generic names (`main`, `mod`, `index`, `utils`...) pair only in-directory,
+// and example/doc/bench files are never subjects.
 void resolve_test_subjects(GraphSnapshot& graph);
 
 void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> raw_relations);

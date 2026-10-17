@@ -1038,6 +1038,15 @@ int test_resolve_test_subjects() {
   const auto other_mod = file("src/b/mod.rs");
   const auto tests_mod = file("tests/mod.rs");
   const auto lonely_test = file("orphan_test.go");
+  // A package's tests pair inside that package, even when the stem is unique to neither.
+  const auto widget_a = file("pkg_a/src/widget.rs");
+  const auto widget_b = file("pkg_b/src/widget.rs");
+  const auto widget_test = file("pkg_a/tests/widget.rs");
+  // Generic names and example files never pair across directories.
+  const auto suite_main = file("crate/tests/testsuite/main.rs");
+  const auto example_main = file("examples/demo/main.rs");
+  const auto completion_test = file("other/tests/completion.rs");
+  const auto example_completion = file("lib/examples/completion.rs");
   const auto plain = file("server.go");
 
   cgraph::resolve_test_subjects(graph);
@@ -1051,10 +1060,13 @@ int test_resolve_test_subjects() {
   // tests/test_client.py mirrors the root, where no client.py lives: ambiguous, no edge.
   if (has_edge(graph, test_other_client, http_client, "tests") || has_edge(graph, test_other_client, db_client, "tests")) return 1;
   if (has_edge(graph, tests_mod, lib_mod, "tests") || has_edge(graph, tests_mod, other_mod, "tests")) return 1;
+  if (!has_edge(graph, widget_test, widget_a, "tests") || has_edge(graph, widget_test, widget_b, "tests")) return 1;
+  if (has_edge(graph, suite_main, example_main, "tests")) return 1;
+  if (has_edge(graph, completion_test, example_completion, "tests")) return 1;
   (void)lonely_test;
   (void)plain;
-  if (tests_edges != 4) {
-    std::fprintf(stderr, "expected 4 tests edges, got %td\n", tests_edges);
+  if (tests_edges != 5) {
+    std::fprintf(stderr, "expected 5 tests edges, got %td\n", tests_edges);
     return 1;
   }
   // Idempotent: a second pass (incremental rebuild) adds nothing.
