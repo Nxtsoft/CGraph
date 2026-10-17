@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import snapshots
+from score import SPLITS
 
 RRF_K = 60
 CONTEXT_BUDGET = 8000
@@ -442,6 +443,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--limit", type=int, default=0, help="Evaluate at most N samples per task (0 = all).")
     parser.add_argument("--keep-snapshots", action="store_true")
+    parser.add_argument("--split", choices=sorted(SPLITS), default="all",
+                        help="Evaluate only the dev or held-out repos (score.DEV_REPOS).")
     args = parser.parse_args(argv)
     if args.cgraph_bin_dir is None:
         parser.error("no cgraph on PATH; pass --cgraph-bin-dir")
@@ -460,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     skipped: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for task in args.tasks:
         details_path = args.out / f"{task}_details.jsonl"
+        details_path.touch()  # a split can hold no sample of a task; score.py still expects the file
         done[task] = set()
         if details_path.exists():
             done[task] = {json.loads(l)["sample_id"] for l in details_path.read_text().splitlines() if l.strip()}
@@ -468,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.limit:
             samples = samples[: args.limit]
         for sample in samples:
-            if sample["id"] in done[task]:
+            if sample["id"] in done[task] or not SPLITS[args.split](sample["repo"]):
                 continue
             if task != "abstention" and baseline.query_has_leakage(sample, baseline.query_text_for_eval(sample)):
                 skipped[task]["query_leakage"] += 1

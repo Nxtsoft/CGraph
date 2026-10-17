@@ -1093,6 +1093,22 @@ std::vector<std::string> cypher_text_labels(std::string_view text, bool require_
   return out;
 }
 
+std::string_view stem_of(std::string_view path) {
+  const auto slash = path.rfind('/');
+  const auto base = slash == std::string_view::npos ? path : path.substr(slash + 1);
+  const auto dot = base.rfind('.');
+  return dot == std::string_view::npos || dot == 0 ? base : base.substr(0, dot);
+}
+
+std::string_view test_core(std::string_view stem) {
+  if (stem.starts_with("test_") && stem.size() > 5) return stem.substr(5);
+  static constexpr std::array<std::string_view, 7> kSuffixes{"_tests", "_test", ".test", ".spec", "_spec", "Tests", "Test"};
+  for (const auto suffix : kSuffixes) {
+    if (stem.ends_with(suffix) && stem.size() > suffix.size()) return stem.substr(0, stem.size() - suffix.size());
+  }
+  return stem;
+}
+
 bool is_test_source_path(std::string_view relative_path) {
   const std::filesystem::path path{std::string(relative_path)};
   for (const auto& part : path.parent_path()) {

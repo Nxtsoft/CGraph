@@ -96,6 +96,7 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
     resolve_raw_relations(result.graph, raw_relations);
     resolve_contracts(result.graph, raw_relations, &result.stats.contracts);
     resolve_interface_dispatch(result.graph, raw_calls);
+    resolve_test_subjects(result.graph);
   }
   {
     ScopedTimer timer(&result.stats.dedup_ms);

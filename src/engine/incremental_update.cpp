@@ -78,6 +78,7 @@ namespace {
   resolve_raw_relations(graph, raw_relations);
   resolve_contracts(graph, raw_relations, &contracts);
   resolve_interface_dispatch(graph, raw_calls);
+  resolve_test_subjects(graph);
   return graph;
 }
 
