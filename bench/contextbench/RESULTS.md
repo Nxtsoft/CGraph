@@ -40,7 +40,7 @@ At the file level it is:
 
 `gold` is `Gold.files()`: the files of every gold-context span, with paths normalized by
 ContextBench (`contextbench/parsers/gold.py`). Appendix H of the paper says "all reported
-metrics are averaged over tasks". The headline is therefore the macro mean over instances.
+metrics are averaged over evaluated tasks". The headline is therefore the macro mean over instances.
 The micro aggregate that ContextBench's CLI prints (`aggregate_results` in
 `contextbench/evaluate.py`) is reported next to it. An empty prediction is an error in
 ContextBench's evaluator (`no_context_extracted`) and leaves the average. This run had
@@ -88,7 +88,7 @@ than 0.001.
 | top-10 | overall | 500 (499) | 10.00 | 0.110 [0.100, 0.120] | 0.441 [0.406, 0.477] | 0.158 | 0.110 | 0.316 | 0.110 | 0.440 |
 | top-20 | overall | 500 (499) | 19.97 | 0.070 [0.065, 0.076] | 0.555 [0.520, 0.591] | 0.116 | 0.070 | 0.404 | 0.070 | 0.554 |
 
-Per-source rows for every K are in `runs/<rev>/results.md`. The highest precision on any
+Per-source rows for every K are in `runs/<rev>/results.json`. The highest precision on any
 row is Pro at top-1: 0.377 (CI 0.245-0.509, n=53).
 
 Full curve (overall, macro):
@@ -145,8 +145,10 @@ the 0.5 gate sits. They are not a like-for-like baseline.
    minified bundle. The thread's stack was:
    `ts_node_parent <- branch_path <- exclusive_branches <- local_values <- collect_url_template
    <- analyze_client_call <- http_call_handler <- js_extra_walk <- walk_node`. This is the
-   HTTP-client contract extractor, and it is super-linear on minified code. It is reported
-   here and not fixed. `run.sh` hits it again on a rerun.
+   HTTP-client contract extractor, and it was super-linear on minified code. #204 (a41425e)
+   fixed it on main after this run: the same file now builds in 17-28 s with an identical
+   graph. The numbers here stay pinned to 43453f3; a 500/500 rerun on a build with #204
+   has not been done.
 5. **ContextBench path quirk, unchanged.** `_normalize_rel_path` in
    `contextbench/parsers/gold.py` ends with `p.lstrip("./")`. That call strips the leading dot
    of `.github/...`, so gold `github/workflows/*.yml` matches no repository file. In total, 18

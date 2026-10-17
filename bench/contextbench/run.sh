@@ -74,7 +74,7 @@ echo "$LITE_SHA256  data/$LITE_FILE" | sha256sum -c --quiet -
 "$PY" "$HERE/instances.py" "data/$LITE_FILE" instances.jsonl
 
 # 4. Repository snapshots.
-python3 "$HERE/../arb/snapshots.py" --cache repos --jobs "$JOBS" instances.jsonl
+"$PY" "$HERE/../arb/snapshots.py" --cache repos --jobs "$JOBS" instances.jsonl
 
 # 5. CGraph. Output is keyed by engine revision so a dev build never mixes with a release run.
 REV="$("$BIN_DIR/cgraph" --version | awk '{gsub(/[()]/, "", $3); print $3}')"
@@ -82,7 +82,7 @@ RUN="runs/cgraph-$REV"
 if [[ "$LIMIT" != 0 ]]; then RUN="$RUN-limit$LIMIT"; fi
 # A failed instance does not stop scoring: score.py counts it as an error. The script still exits non-zero.
 STATUS=0
-python3 "$HERE/cgraph_eval.py" --instances instances.jsonl --cache repos --work "$WORK/snapshots" \
+"$PY" "$HERE/cgraph_eval.py" --instances instances.jsonl --cache repos --work "$WORK/snapshots" \
   --out "$RUN" --cgraph-bin-dir "$BIN_DIR" --jobs "$JOBS" --limit "$LIMIT" || STATUS=$?
 
 # 6. Score.
