@@ -72,12 +72,15 @@ int main() {
   if (!watcher.poll(start + 100ms).empty()) {
     return 1;
   }
-  if (!watcher.poll(start + 130ms).empty()) {
-    return 1;
-  }
-  const auto modified = watcher.poll(start + 160ms);
+  // The debounce window runs from the FIRST write (seen at +70ms), so the event
+  // is due at +120ms and the second write does not push it out. It carries the
+  // latest state, and nothing is left pending afterwards.
+  const auto modified = watcher.poll(start + 130ms);
   if (modified.size() != 1 ||
       !has_event(modified, code, cgraph::FileWatchChange::Modified, cgraph::WatchedFileKind::Code)) {
+    return 1;
+  }
+  if (!watcher.poll(start + 160ms).empty()) {
     return 1;
   }
 
@@ -118,6 +121,47 @@ int main() {
   if (overflow.size() != 1 || overflow[0].change != cgraph::FileWatchChange::Overflow ||
       overflow[0].path != root) {
     return 1;
+  }
+
+  // === Debounce anchors to the first change (CGR-19) ===
+  //
+  // A file that changes on every poll must still be reported once the debounce
+  // window since its FIRST change has elapsed, not starve because each new
+  // change restarts the wait.
+  {
+    const auto busy_root = std::filesystem::temp_directory_path() / "cgraph-watcher-busy-test";
+    std::filesystem::remove_all(busy_root);
+    std::filesystem::create_directories(busy_root);
+    const auto busy = busy_root / "src" / "busy.py";
+    write_file(busy, "x = 0\n");
+
+    cgraph::FileWatcher busy_watcher(busy_root, cgraph::FileWatcherOptions{.debounce = 50ms});
+    const auto b0 = cgraph::FileWatcherClock::time_point{} + 2000s;
+    (void)busy_watcher.poll(b0);  // prime
+
+    // Each poll sees a new size, so a Modified is queued every 20ms. The first
+    // change is seen at +20ms; the 50ms window ends by +80ms, not never.
+    std::vector<std::chrono::milliseconds> emitted_at;
+    std::string contents = "x = 0\n";
+    for (int step = 1; step <= 8; ++step) {
+      contents += "x = " + std::to_string(step) + "\n";
+      write_file(busy, contents);
+      const auto at = std::chrono::milliseconds(step * 20);
+      const auto events = busy_watcher.poll(b0 + at);
+      if (!events.empty()) {
+        if (events.size() != 1 ||
+            !has_event(events, busy, cgraph::FileWatchChange::Modified, cgraph::WatchedFileKind::Code)) {
+          return 2;
+        }
+        emitted_at.push_back(at);
+      }
+    }
+    // First flush at +80ms (change at +20ms, 60ms elapsed >= 50ms; at +60ms only
+    // 40ms had). The next change starts a fresh window at +100ms, flushed at +160ms.
+    if (emitted_at.size() != 2 || emitted_at[0] != 80ms || emitted_at[1] != 160ms) {
+      return 3;
+    }
+    std::filesystem::remove_all(busy_root);
   }
 
   // === POSIX file change token: same-size rewrite with restored mtime ===

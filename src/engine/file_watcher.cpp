@@ -139,21 +139,28 @@ std::vector<FileWatchEvent> FileWatcher::poll(FileWatcherClock::time_point now) 
     return {};
   }
 
+  // first_seen anchors to the FIRST unflushed change for a path: a later change
+  // replaces the pending event but must not push its deadline out, or a file
+  // that changes on every poll (a log, a generated file, one an agent is still
+  // writing) would never leave the debounce window. Same rule as
+  // mark_graph_dirty in daemon_lifecycle.cpp.
+  const auto queue = [&](const std::string& key, FileWatchChange change, WatchedFileKind kind) {
+    FileWatchEvent event{.path = std::filesystem::path(key), .change = change, .kind = kind};
+    const auto [pending, inserted] = pending_.try_emplace(key, PendingEvent{.event = event, .first_seen = now});
+    if (!inserted) {
+      pending->second.event = std::move(event);
+    }
+  };
+
   for (const auto& [key, state] : current) {
     const auto previous = known_.find(key);
     if (previous == known_.end()) {
-      pending_[key] = PendingEvent{
-          .event = FileWatchEvent{.path = std::filesystem::path(key), .change = FileWatchChange::Created, .kind = state.kind},
-          .first_seen = now,
-      };
+      queue(key, FileWatchChange::Created, state.kind);
       continue;
     }
     if (previous->second.size != state.size || previous->second.modified_at != state.modified_at ||
         previous->second.token != state.token) {
-      pending_[key] = PendingEvent{
-          .event = FileWatchEvent{.path = std::filesystem::path(key), .change = FileWatchChange::Modified, .kind = state.kind},
-          .first_seen = now,
-      };
+      queue(key, FileWatchChange::Modified, state.kind);
     }
   }
 
@@ -161,10 +168,7 @@ std::vector<FileWatchEvent> FileWatcher::poll(FileWatcherClock::time_point now) 
     if (current.contains(key)) {
       continue;
     }
-    pending_[key] = PendingEvent{
-        .event = FileWatchEvent{.path = std::filesystem::path(key), .change = FileWatchChange::Deleted, .kind = state.kind},
-        .first_seen = now,
-    };
+    queue(key, FileWatchChange::Deleted, state.kind);
   }
 
   known_ = current;
