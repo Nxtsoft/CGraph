@@ -23,6 +23,15 @@ from typing import Any
 POSITIVE_TASKS = ("code2test", "comment2context", "trace2code", "edit2ripple")
 RANK_KEYS = ("Recall@5", "Recall@10", "Recall@20", "MRR")
 BUDGETS = (4_000, 8_000, 16_000, 32_000)
+# Declared 2026-10-17 (CGR-38), before any retrieval change was tuned against it. Retrieval
+# work is developed and diagnosed on the dev repos only (they hold the 40 samples CGR-25 was
+# tuned on) and reported on the held-out remainder. Changing this set invalidates held-out numbers.
+DEV_REPOS = frozenset({"gin-gonic/gin", "caddyserver/caddy", "clap-rs/clap"})
+SPLITS = {
+    "all": lambda repo: True,
+    "dev": lambda repo: repo in DEV_REPOS,
+    "heldout": lambda repo: repo not in DEV_REPOS,
+}
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -163,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--markdown", type=Path, help="Also write the tables as Markdown.")
+    parser.add_argument("--split", choices=sorted(SPLITS), default="all", help="Score only the dev or held-out repos (DEV_REPOS).")
     parser.add_argument("methods", nargs="+", help="LABEL=DIR (CGraph layout) or LABEL=DIR:suffix (ARB baseline layout)")
     args = parser.parse_args(argv)
     sys.path.insert(0, str(args.arb_src / "src"))
@@ -186,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                 details.extend(read_jsonl(path))
             elif task != "abstention":
                 parser.error(f"{path} missing")
+        details = [d for d in details if SPLITS[args.split](d["repo"])]
         entry = {
             "metrics": score_method(details, cache, bcy_curve),
             "given_excluded": score_given_excluded(details, samples, cache, bcy_curve),
