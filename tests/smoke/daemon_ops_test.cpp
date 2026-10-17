@@ -8,6 +8,7 @@
 #include "cgraph/protocol.hpp"
 #include "cgraph/semantic_fragment_validation.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -18,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 int main() {
   namespace fs = std::filesystem;
@@ -2510,6 +2512,46 @@ int main() {
       }
     }
     fs::remove_all(base);
+  }
+
+  // --- a seed's tests are reached at depth 1 (CGR-38) ---
+  // `tests` hangs off the file node, a hop past a symbol seed, and a test file
+  // has little centrality, so it used to rank under every file the seed's file
+  // imports. It now sits with the seed's own file.
+  {
+    cgraph::DaemonState s;
+    cgraph::GraphSnapshot g;
+    g.build_state = cgraph::BuildState::DeterministicReady;
+    const auto file = [&](const std::string& id, const std::string& centrality) {
+      g.nodes.push_back(cgraph::Node{.id = id, .label = id, .source_file = "/r/" + id, .kind = "file",
+                                     .properties = {{"degree_centrality", centrality}}});
+    };
+    file("path.go", "0.300000");
+    file("path_test.go", "0.010000");
+    file("hub1.go", "0.900000");
+    file("hub2.go", "0.800000");
+    g.nodes.push_back(cgraph::Node{.id = "clean", .label = "cleanPath", .source_file = "/r/path.go", .kind = "function"});
+    g.edges.push_back(cgraph::Edge{.source = "path.go", .target = "clean", .relation = "contains"});
+    g.edges.push_back(cgraph::Edge{.source = "path.go", .target = "hub1.go", .relation = "imports"});
+    g.edges.push_back(cgraph::Edge{.source = "path.go", .target = "hub2.go", .relation = "imports"});
+    g.edges.push_back(cgraph::Edge{.source = "path_test.go", .target = "path.go", .relation = "tests"});
+    cgraph::publish_graph_snapshot(s, std::move(g));
+
+    for (const char* gather : {"fixed", "adaptive"}) {
+      const auto r = cgraph::handle_daemon_request(
+          s, cgraph::make_request("context", {{"id", "clean"}, {"budget", 5000}, {"gather", gather}}));
+      const auto& included = r["result"]["included"];
+      std::vector<std::string> order;
+      int test_depth = -1;
+      for (const auto& item : included) {
+        order.push_back(item.value("label", std::string{}));
+        if (order.back() == "path_test.go") test_depth = item.value("depth", -1);
+      }
+      const auto at = [&](const std::string& label) { return std::ranges::find(order, label) - order.begin(); };
+      if (test_depth != 1 || at("path_test.go") > at("hub1.go") || at("path_test.go") > at("hub2.go")) {
+        return 130;
+      }
+    }
   }
 
   return 0;
