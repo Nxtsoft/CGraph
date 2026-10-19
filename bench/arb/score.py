@@ -7,7 +7,7 @@ ARB's canonical ``bcy_curve.evaluate_run`` (token-based greedy file packing of
 the stored top-20 ranking against the released corpus file texts), so CGraph and
 the reproduced baselines are packed by exactly the same code.
 
-Usage: score.py --arb-src DIR --data DIR --out results.json METHOD=DETAILS_DIR ...
+Usage: score.py --arb-src DIR --data DIR --out results.json [--tasks TASK ...] METHOD=DETAILS_DIR ...
 where DETAILS_DIR holds ``<task>_details.jsonl`` (CGraph) or
 ``<task>_<method>_details.jsonl`` files (pass ``METHOD=DIR:suffix``).
 """
@@ -42,19 +42,19 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def merged_manifest(data: Path, bcy_curve) -> dict[tuple[str, str], Path]:
+def merged_manifest(data: Path, bcy_curve, tasks: tuple[str, ...]) -> dict[tuple[str, str], Path]:
     manifest: dict[tuple[str, str], Path] = {}
-    for task in POSITIVE_TASKS:
+    for task in tasks:
         for key, rel in bcy_curve.load_corpus_manifest(data / "corpus" / f"v2_{task}" / "corpus_manifest.jsonl").items():
             manifest[key] = data.parent / rel
     return manifest
 
 
-def score_method(details: list[dict[str, Any]], cache, bcy_curve) -> dict[str, Any]:
+def score_method(details: list[dict[str, Any]], cache, bcy_curve, tasks: tuple[str, ...]) -> dict[str, Any]:
     positives = [d for d in details if d.get("gold_files")]
     bcy = bcy_curve.evaluate_run("method", "", Path("."), positives, cache, BUDGETS)
     out: dict[str, Any] = {}
-    groups = {"overall": positives, **{t: [d for d in positives if d["task_type"] == t] for t in POSITIVE_TASKS}}
+    groups = {"overall": positives, **{t: [d for d in positives if d["task_type"] == t] for t in tasks}}
     for name, rows in groups.items():
         bcy_row = bcy["overall"] if name == "overall" else bcy["by_task"].get(name, {})
         out[name] = {
@@ -63,6 +63,10 @@ def score_method(details: list[dict[str, Any]], cache, bcy_curve) -> dict[str, A
             **{f"BCY@{b // 1000}k": float(bcy_row.get(f"BCY@{b}", 0.0)) for b in BUDGETS},
         }
     return out
+
+
+def given_groups(tasks: tuple[str, ...]) -> tuple[str, ...]:
+    return ("overall", *(t for t in ("comment2context", "edit2ripple") if t in tasks))
 
 
 def given_files(sample: dict[str, Any]) -> set[str]:
@@ -75,7 +79,7 @@ def given_files(sample: dict[str, Any]) -> set[str]:
     return set()
 
 
-def score_given_excluded(details: list[dict[str, Any]], samples: dict[str, Any], cache, bcy_curve) -> dict[str, Any]:
+def score_given_excluded(details: list[dict[str, Any]], samples: dict[str, Any], cache, bcy_curve, tasks: tuple[str, ...]) -> dict[str, Any]:
     """Every method scored identically on its stored top 20 with the query's given/anchor file removed.
 
     Only the top 20 of each ranking is stored, so after removal a list can hold 19 files:
@@ -89,7 +93,7 @@ def score_given_excluded(details: list[dict[str, Any]], samples: dict[str, Any],
         positives.append({**d, "top_files": [p for p in d.get("top_files") or [] if p not in drop]})
     bcy = bcy_curve.evaluate_run("method", "", Path("."), positives, cache, BUDGETS)
     out: dict[str, Any] = {}
-    for name in ("overall", "comment2context", "edit2ripple"):
+    for name in given_groups(tasks):
         rows = positives if name == "overall" else [d for d in positives if d["task_type"] == name]
         bcy_row = bcy["overall"] if name == "overall" else bcy["by_task"].get(name, {})
 
@@ -126,10 +130,10 @@ def selective(details: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def render_markdown(result: dict[str, Any]) -> str:
+def render_markdown(result: dict[str, Any], tasks: tuple[str, ...]) -> str:
     cols = (*RANK_KEYS, *(f"BCY@{b // 1000}k" for b in BUDGETS))
     lines: list[str] = []
-    for group in ("overall", *POSITIVE_TASKS):
+    for group in ("overall", *tasks):
         lines += [f"### {group}", "", "| Method | n | " + " | ".join(cols) + " |", "|---|---:|" + "---:|" * len(cols)]
         for label, entry in result["methods"].items():
             row = entry["metrics"][group]
@@ -143,7 +147,7 @@ def render_markdown(result: dict[str, Any]) -> str:
         "| Method | Group | n | Recall@20 (lower bound) | MRR@20 | BCY@8k |",
         "|---|---|---:|---:|---:|---:|",
     ]
-    for group in ("overall", "comment2context", "edit2ripple"):
+    for group in given_groups(tasks):
         for label, entry in result["methods"].items():
             row = entry["given_excluded"][group]
             lines.append(
@@ -173,15 +177,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--markdown", type=Path, help="Also write the tables as Markdown.")
     parser.add_argument("--split", choices=sorted(SPLITS), default="all", help="Score only the dev or held-out repos (DEV_REPOS).")
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        choices=POSITIVE_TASKS,
+        default=list(POSITIVE_TASKS),
+        help="Positive tasks the dataset holds (default all four); use for a dataset with only some tasks.",
+    )
     parser.add_argument("methods", nargs="+", help="LABEL=DIR (CGraph layout) or LABEL=DIR:suffix (ARB baseline layout)")
     args = parser.parse_args(argv)
+    tasks = tuple(t for t in POSITIVE_TASKS if t in args.tasks)
     sys.path.insert(0, str(args.arb_src / "src"))
     from agent_retrieval_bench import bcy_curve  # noqa: PLC0415
 
-    cache = bcy_curve.CorpusFileCache(merged_manifest(args.data, bcy_curve))
+    cache = bcy_curve.CorpusFileCache(merged_manifest(args.data, bcy_curve, tasks))
     samples = {
         row["id"]: row
-        for task in POSITIVE_TASKS
+        for task in tasks
         for row in read_jsonl(args.data / "benchmark" / f"v2_{task}" / "samples.jsonl")
     }
     result: dict[str, Any] = {"methods": {}}
@@ -189,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         label, location = spec.split("=", 1)
         directory, _, suffix = location.partition(":")
         details: list[dict[str, Any]] = []
-        for task in (*POSITIVE_TASKS, "abstention"):
+        for task in (*tasks, "abstention"):
             name = f"{task}_{suffix}_details.jsonl" if suffix else f"{task}_details.jsonl"
             path = Path(directory) / name
             if path.exists():
@@ -198,8 +210,8 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(f"{path} missing")
         details = [d for d in details if SPLITS[args.split](d["repo"])]
         entry = {
-            "metrics": score_method(details, cache, bcy_curve),
-            "given_excluded": score_given_excluded(details, samples, cache, bcy_curve),
+            "metrics": score_method(details, cache, bcy_curve, tasks),
+            "given_excluded": score_given_excluded(details, samples, cache, bcy_curve, tasks),
         }
         if any(d.get("no_gold") for d in details):
             entry["selective"] = selective(details)
@@ -213,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.markdown:
-        args.markdown.write_text(render_markdown(result), encoding="utf-8")
+        args.markdown.write_text(render_markdown(result, tasks), encoding="utf-8")
     return 0
 
 

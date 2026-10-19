@@ -1,0 +1,3 @@
+# finalize.py writes <task>.jsonl as a byte copy of samples.jsonl.
+data/benchmark/*/code2test.jsonl
+data/benchmark/*/edit2ripple.jsonl
