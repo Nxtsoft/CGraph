@@ -1047,6 +1047,13 @@ int test_resolve_test_subjects() {
   const auto example_main = file("examples/demo/main.rs");
   const auto completion_test = file("other/tests/completion.rs");
   const auto example_completion = file("lib/examples/completion.rs");
+  // Outside a test root a test pairs only beside its subject: reverseproxy's
+  // headers_test.go is not a test of the headers module.
+  const auto headers = file("modules/headers/headers.go");
+  const auto proxy_headers_test = file("modules/reverseproxy/headers_test.go");
+  // A Rust `tests.rs` unit-test module is a test, never a test's subject.
+  const auto builder_tests = file("src/builder/tests.rs");
+  const auto suite_tests = file("tests/builder/tests.rs");
   const auto plain = file("server.go");
 
   cgraph::resolve_test_subjects(graph);
@@ -1063,6 +1070,8 @@ int test_resolve_test_subjects() {
   if (!has_edge(graph, widget_test, widget_a, "tests") || has_edge(graph, widget_test, widget_b, "tests")) return 1;
   if (has_edge(graph, suite_main, example_main, "tests")) return 1;
   if (has_edge(graph, completion_test, example_completion, "tests")) return 1;
+  if (has_edge(graph, proxy_headers_test, headers, "tests")) return 1;
+  if (has_edge(graph, suite_tests, builder_tests, "tests")) return 1;
   (void)lonely_test;
   (void)plain;
   if (tests_edges != 5) {

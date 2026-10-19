@@ -2552,6 +2552,12 @@ int main() {
         return 130;
       }
     }
+    // max_depth 0 asks for the seed alone; its tests are a hop away.
+    const auto alone = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"id", "clean"}, {"budget", 5000}, {"max_depth", 0}}));
+    if (!alone["result"]["included"].empty()) {
+      return 131;
+    }
   }
 
   return 0;

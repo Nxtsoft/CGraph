@@ -1238,8 +1238,8 @@ struct StructuralIntent {
   // being asked about, but the `tests` edge hangs off the file node, a hop past
   // a symbol seed, and test files carry little centrality -- so depth-then-
   // centrality ranks every imported file above them. Reach them at depth 1, the
-  // footing of the seed's own file.
-  {
+  // footing of the seed's own file. A radius of 0 asks for the seed alone.
+  if (max_depth >= 1) {
     std::unordered_map<std::string_view, const std::string*> file_node_by_source;
     for (const auto& node : graph.nodes) {
       if (node.kind == "file" && !node.source_file.empty()) {

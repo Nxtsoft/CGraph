@@ -1731,8 +1731,8 @@ void resolve_test_subjects(GraphSnapshot& graph) {
   // outside a test directory still counts; Java's `XTest` is left to
   // is_test_source_path, which guards it against `ABTest`.
   const auto named_as_test = [](std::string_view stem) {
-    return stem.starts_with("test_") || stem.ends_with("_test") || stem.ends_with("_tests") ||
-           stem.ends_with(".test") || stem.ends_with(".spec") || stem.ends_with("_spec");
+    return stem == "test" || stem == "tests" || stem.starts_with("test_") || stem.ends_with("_test") ||
+           stem.ends_with("_tests") || stem.ends_with(".test") || stem.ends_with(".spec") || stem.ends_with("_spec");
   };
   const auto test_root_segment = [](std::string_view segment) {
     return segment == "test" || segment == "tests" || segment == "__tests__" || segment == "spec" ||
@@ -1742,12 +1742,13 @@ void resolve_test_subjects(GraphSnapshot& graph) {
   // root segment removed. `package` is what precedes the first test root
   // (`clap_complete/` for `clap_complete/tests/x.rs`): a package's tests test it.
   struct TestLocation {
+    bool in_test_root = false;
     std::string mirror;
     std::string_view package;
   };
   const auto locate = [&](std::string_view dir) {
     TestLocation out;
-    bool in_test_root = false;
+    bool& in_test_root = out.in_test_root;
     std::size_t start = 0;
     while (start <= dir.size()) {
       const auto end = std::min(dir.find('/', start), dir.size());
@@ -1838,7 +1839,12 @@ void resolve_test_subjects(GraphSnapshot& graph) {
     if (linked || generic_stem(core)) {
       continue;
     }
+    // A test outside any test root (`pkg/headers_test.go`) sits beside the code
+    // it tests by convention; a same-named file elsewhere is a guess.
     const auto location = locate(dir);
+    if (!location.in_test_root) {
+      continue;
+    }
     std::vector<const File*> candidates;
     for (const auto& candidate : found->second) {
       if (candidate.relative.starts_with(location.package)) candidates.push_back(&candidate);
