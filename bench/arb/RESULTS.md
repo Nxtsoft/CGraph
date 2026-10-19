@@ -6,7 +6,7 @@ The benchmark is [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882) (ARB,
 repository is checked out at its base commit, because ARB's released corpus is chunked
 and truncated and CGraph has to index the real tree.
 
-## CGR-38: tuned without ARB samples (branch build, pending release)
+## CGR-38: tuned without ARB samples (bin-v0.9.6)
 
 bin-v0.9.1's numbers below were tuned on a 40-sample ARB subset (clap, caddy, gin). This section
 reports work done without that: every change was developed on a declared dev side and the rest of
@@ -24,8 +24,12 @@ ARB was scored only to measure it.
 - **Held-out looks.** All diagnosis used dev and extdev only; held-out samples were never
   inspected one by one. Held-out aggregates were read three times:
   1. the bin-v0.9.5 baseline, before any change;
-  2. the branch build below;
-  3. the released binary.
+  2. the PR #209 branch build;
+  3. the released bin-v0.9.6 (`cgraph --version`: `7bb2413`), which reproduced look 2 on every
+     metric, as a deterministic engine should.
+
+  Reproduce: `bench/arb/run.sh --cgraph-bin-dir <bin-v0.9.6 dir>`, then
+  `score.py ... --split heldout` (or `--split all`).
 
   One earlier held-out run of a pre-review build lost a snapshot to a host memory fault and was
   discarded without its scores being read.
@@ -43,7 +47,7 @@ ARB was scored only to measure it.
 |---|---:|---:|---:|
 | RepoMap (rerun) | 0.5402 | 0.1785 | 0.3363 |
 | CGraph bin-v0.9.5 | 0.5164 | 0.2076 | 0.3184 |
-| **CGraph branch** | **0.5628** | **0.2076** | **0.3167** |
+| **CGraph bin-v0.9.6** | **0.5628** | **0.2076** | **0.3167** |
 
 Against RepoMap on held-out:
 
@@ -52,7 +56,7 @@ Against RepoMap on held-out:
 
 By task:
 
-| Held-out task | n | RepoMap R@20 / MRR / BCY@8k | CGraph branch R@20 / MRR / BCY@8k |
+| Held-out task | n | RepoMap R@20 / MRR / BCY@8k | CGraph bin-v0.9.6 R@20 / MRR / BCY@8k |
 |---|---:|---|---|
 | code2test | 87 | 0.4950 / 0.1667 / 0.3280 | 0.4927 / 0.1516 / 0.2188 |
 | comment2context | 80 | 0.4708 / 0.1527 / 0.2896 | 0.5125 / 0.2223 / 0.3104 |
@@ -69,11 +73,11 @@ What changed against bin-v0.9.5 on held-out:
 |---|---:|---:|---:|
 | RepoMap (rerun) | 0.6311 | 0.2156 | 0.3846 |
 | CGraph bin-v0.9.5 | 0.6353 | 0.2759 | 0.4309 |
-| **CGraph branch** | **0.6692** | **0.2951** | **0.4395** |
+| **CGraph bin-v0.9.6** | **0.6692** | **0.2951** | **0.4395** |
 
 Dev sides, for reference (both were used for tuning, so they are not evidence on their own):
 
-| | n | bin-v0.9.5 R@20 / MRR / BCY@8k | branch R@20 / MRR / BCY@8k | RepoMap R@20 / MRR / BCY@8k |
+| | n | bin-v0.9.5 R@20 / MRR / BCY@8k | bin-v0.9.6 R@20 / MRR / BCY@8k | RepoMap R@20 / MRR / BCY@8k |
 |---|---:|---|---|---|
 | ARB dev (gin, caddy, clap) | 111 | 0.8859 / 0.4199 / 0.6682 | 0.8934 / 0.4797 / 0.6982 | 0.8228 / 0.2939 / 0.4865 |
 | External dev set | 416 | 0.6891 / 0.3119 / 0.4752 | 0.7418 / 0.4101 / 0.5517 | 0.8099 / 0.4543 / 0.5815 |

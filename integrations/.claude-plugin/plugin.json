@@ -1,7 +1,7 @@
 {
   "name": "cgraph",
   "displayName": "CGraph",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Code graph for coding agents: ranked symbol search, callers and callees, blast radius, token-budgeted context and cross-service impact, served by a resident per-project daemon over MCP.",
   "author": {
     "name": "Nxtsoft",
