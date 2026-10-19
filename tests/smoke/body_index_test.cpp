@@ -137,6 +137,33 @@ int main() {
   expect(removed != respanned && removed->stats().files_tokenized == 0 && removed->stats().files == 1 && removed->stats().documents == 1,
          "an index over the remaining file only");
 
+  // A file node's document is the text no symbol encloses plus its path: a
+  // test file's anonymous top-level blocks are otherwise in no document, and a
+  // named helper's body must not be counted a second time in the file's.
+  const auto spec = root / "widget.test.ts";
+  const auto spec_text = write(spec,
+                               "import { render } from './widget'\n"
+                               "function mountFixture() {\n"
+                               "  return renderShadowRoot(paletteSwatch)\n"
+                               "}\n"
+                               "test('rejects an expired session token', () => {\n"
+                               "  expect(refreshCookie()).toThrow()\n"
+                               "})\n");
+  cgraph::GraphSnapshot files;
+  files.nodes = {cgraph::Node{.id = "spec_file", .label = "ui/widget.test.ts", .source_file = spec.generic_string(),
+                              .source_location = cgraph::SourceLocation{.start_line = 1, .end_line = 1},
+                              .kind = "file"},
+                 fn("mountFixture", spec, 2, 4)};
+  record(files, spec, spec_text);
+  const auto file_docs = cgraph::BodyIndex::refresh(files, nullptr);
+  expect(file_docs->stats().documents == 2, "the file node and its helper each have a document");
+  expect(top(*file_docs, "expired session token cookie refresh") == "spec_file",
+         "top-level test block text belongs to the file's document");
+  expect(top(*file_docs, "widget") == "spec_file", "path terms belong to the file's document");
+  const auto swatch = file_docs->rank(cgraph::stem_terms(cgraph::lexical_terms("palette swatch shadow")), 5);
+  expect(swatch.size() == 1 && *swatch.front().second == "mountFixture",
+         "a symbol's body is not counted again in its file's document");
+
   // A snapshot without source hashes (a bare graph.json load) has nothing
   // verified to index.
   cgraph::GraphSnapshot unhashed;

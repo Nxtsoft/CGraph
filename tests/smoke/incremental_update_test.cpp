@@ -5,6 +5,7 @@
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/pipeline.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -224,6 +225,14 @@ int main() {
     return 1;
   }
 
+  // A test file next to beta.py gets the same `tests` edge from the daemon's
+  // rebuild as from the one-shot pipeline (both run resolve_test_subjects).
+  write_file(root / "test_beta.py", "def test_delta():\n    assert True\n");
+  result = cgraph::full_stat_index_rescan(state, index, root);
+  const auto tests_edges = [](const cgraph::GraphSnapshot& g) {
+    return std::count_if(g.edges.begin(), g.edges.end(), [](const cgraph::Edge& e) { return e.relation == "tests"; });
+  };
+
   // The daemon's rescan must produce the same graph as the canonical one-shot
   // pipeline: identical labels AND identical node/edge counts. The count check
   // guards the pipeline ordering — the daemon must dedup before community
@@ -236,6 +245,9 @@ int main() {
   }
   if (graph->nodes.size() != full_build.graph.nodes.size() ||
       graph->edges.size() != full_build.graph.edges.size()) {
+    return 1;
+  }
+  if (tests_edges(*graph) != 1 || tests_edges(full_build.graph) != 1) {
     return 1;
   }
   // The daemon graph carries community + centrality (computed after dedup), so

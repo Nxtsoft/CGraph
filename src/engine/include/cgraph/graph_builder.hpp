@@ -74,6 +74,23 @@ void resolve_raw_calls(GraphSnapshot& graph, std::span<const RawCall> raw_calls,
 // alone cannot bind. Runs after resolve_raw_relations (needs `method_of`).
 void resolve_interface_dispatch(GraphSnapshot& graph, std::span<const RawCall> raw_calls);
 
+// The directory every file node's (absolute) source file shares, with a
+// trailing slash: the project root, so `source_file.substr(root.size())` is
+// repo-relative. Empty when no file node has a source file.
+[[nodiscard]] std::string common_source_root(const GraphSnapshot& graph);
+
+// Test-to-subject edges: `tests` from a test file node to the source file node
+// its name pairs with (`path_test.go` -> `path.go`, `test_core.py` -> `core.py`,
+// `button.spec.ts` -> `button.ts`, `tests/help.rs` -> `src/help.rs`). Calls
+// from a test reach its subject only when call resolution is unambiguous, so
+// without this most tests are islands. A test outside any test-root directory
+// pairs only within its own directory. One under a test root may also pair with
+// the unique match inside its package (what precedes the test root) or the one
+// file in the directory its test-root-free path mirrors.
+// Generic names (`main`, `mod`, `index`, `utils`...) pair only in-directory,
+// and example/doc/bench files are never subjects.
+void resolve_test_subjects(GraphSnapshot& graph);
+
 void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> raw_relations);
 
 }  // namespace cgraph

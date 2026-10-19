@@ -179,8 +179,35 @@ void mix(std::uint64_t& hash, std::uint32_t value) {
   const auto line_count = static_cast<std::uint32_t>(line_first_token.size());
   line_first_token.push_back(stream.size());
 
-  std::vector<std::uint32_t> counts(file.terms.size(), 0);
+  // A file node's own span is its first line, so text no symbol encloses --
+  // top-level statements, a test file's anonymous `test("...", () => ...)`
+  // blocks, a data module -- was in no document at all. The file's document is
+  // that residue (lines no other node's span covers, so nothing is counted
+  // twice) plus the terms of its path, which is how a file is usually named.
+  std::vector<bool> covered(static_cast<std::size_t>(line_count) + 1, false);
+  for (const auto* node : nodes) {
+    if (node->kind == "file") continue;
+    const auto start = node->source_location->start_line;
+    const auto end = std::min(std::max(start, node->source_location->end_line), line_count);
+    for (auto line = start; line <= end; ++line) covered[line] = true;
+  }
+  const auto term_id = [&](const std::string& raw) {
+    const auto [entry, inserted] = vocabulary.try_emplace(stem_term(raw), static_cast<std::uint32_t>(file.terms.size()));
+    if (inserted) {
+      file.terms.push_back(entry->first);
+    }
+    return entry->second;
+  };
+
+  std::vector<std::uint32_t> counts;
   std::vector<std::uint32_t> touched;
+  const auto count = [&](std::uint32_t term, BodyIndex::Doc& doc) {
+    if (counts.size() <= term) counts.resize(file.terms.size(), 0);
+    if (counts[term]++ == 0) {
+      touched.push_back(term);
+    }
+    ++doc.length;
+  };
   file.docs.reserve(nodes.size());
   for (const auto* node : nodes) {
     const auto start = node->source_location->start_line;
@@ -190,12 +217,16 @@ void mix(std::uint64_t& hash, std::uint32_t value) {
     }
     BodyIndex::Doc doc;
     doc.node_id = node->id;
-    for (auto i = line_first_token[start - 1]; i < line_first_token[end]; ++i) {
-      const auto term = stream[i];
-      if (counts[term]++ == 0) {
-        touched.push_back(term);
+    if (node->kind == "file") {
+      for (std::uint32_t line = 1; line <= line_count; ++line) {
+        if (covered[line]) continue;
+        for (auto i = line_first_token[line - 1]; i < line_first_token[line]; ++i) count(stream[i], doc);
       }
-      ++doc.length;
+      for_each_word(node->label, [&](std::string_view word) {
+        split_word(word, [&](const std::string& raw) { count(term_id(raw), doc); });
+      });
+    } else {
+      for (auto i = line_first_token[start - 1]; i < line_first_token[end]; ++i) count(stream[i], doc);
     }
     if (doc.length == 0) {
       continue;

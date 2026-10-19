@@ -1,6 +1,7 @@
 #include "cgraph/graph_builder.hpp"
 
 #include "cgraph/claim_contracts.hpp"
+#include "cgraph/data_contracts.hpp"
 #include "cgraph/detect.hpp"
 #include "cgraph/normalize.hpp"
 
@@ -1699,6 +1700,179 @@ void resolve_raw_relations(GraphSnapshot& graph, std::span<const RawRelation> ra
   }
 }
 
+
+
+std::string common_source_root(const GraphSnapshot& graph) {
+  std::string root;
+  bool first_file = true;
+  for (const auto& node : graph.nodes) {
+    if (node.kind != "file" || node.source_file.empty()) {
+      continue;
+    }
+    if (first_file) {
+      root = node.source_file;
+      first_file = false;
+    } else {
+      const auto mismatch = std::ranges::mismatch(root, node.source_file);
+      root.resize(static_cast<std::size_t>(mismatch.in1 - root.begin()));
+    }
+  }
+  root.resize(root.rfind('/') == std::string::npos ? 0 : root.rfind('/') + 1);
+  return root;
+}
+
+void resolve_test_subjects(GraphSnapshot& graph) {
+  const auto root = common_source_root(graph);
+  const auto directory_of = [](std::string_view path) {
+    const auto slash = path.rfind('/');
+    return slash == std::string_view::npos ? std::string_view{} : path.substr(0, slash);
+  };
+  // Test markers in the name, so a Rust `foo_test.rs` or a `button.spec.ts`
+  // outside a test directory still counts; Java's `XTest` is left to
+  // is_test_source_path, which guards it against `ABTest`.
+  const auto named_as_test = [](std::string_view stem) {
+    return stem == "test" || stem == "tests" || stem.starts_with("test_") || stem.ends_with("_test") ||
+           stem.ends_with("_tests") || stem.ends_with(".test") || stem.ends_with(".spec") || stem.ends_with("_spec");
+  };
+  const auto test_root_segment = [](std::string_view segment) {
+    return segment == "test" || segment == "tests" || segment == "__tests__" || segment == "spec" ||
+           segment == "specs" || segment == "e2e" || segment == "integrationTest";
+  };
+  // `tests/http/client_test.py` mirrors `http/`: the directory with every test
+  // root segment removed. `package` is what precedes the first test root
+  // (`clap_complete/` for `clap_complete/tests/x.rs`): a package's tests test it.
+  struct TestLocation {
+    bool in_test_root = false;
+    std::string mirror;
+    std::string_view package;
+  };
+  const auto locate = [&](std::string_view dir) {
+    TestLocation out;
+    bool& in_test_root = out.in_test_root;
+    std::size_t start = 0;
+    while (start <= dir.size()) {
+      const auto end = std::min(dir.find('/', start), dir.size());
+      const auto segment = dir.substr(start, end - start);
+      if (test_root_segment(segment)) {
+        if (!in_test_root) out.package = dir.substr(0, start);
+        in_test_root = true;
+      } else if (!segment.empty()) {
+        if (!out.mirror.empty()) out.mirror += '/';
+        out.mirror += segment;
+      }
+      start = end + 1;
+    }
+    return out;
+  };
+  // Entry points and helper modules share their name across packages by
+  // convention, so a test named for one pairs only within its own directory.
+  const auto generic_stem = [](std::string_view stem) {
+    return stem == "main" || stem == "mod" || stem == "lib" || stem == "index" || stem == "__init__" ||
+           stem == "utils" || stem == "util" || stem == "helpers" || stem == "common" || stem == "conftest" ||
+           stem == "setup";
+  };
+  // Examples, docs and benchmarks use the library; they are not what a test covers.
+  const auto non_subject = [](std::string_view relative) {
+    std::size_t start = 0;
+    while (start < relative.size()) {
+      const auto end = relative.find('/', start);
+      if (end == std::string_view::npos) break;
+      const auto segment = relative.substr(start, end - start);
+      if (segment == "examples" || segment == "example" || segment == "docs" || segment == "doc" ||
+          segment == "benches" || segment == "bench" || segment == "benchmarks") {
+        return true;
+      }
+      start = end + 1;
+    }
+    return false;
+  };
+
+  struct File {
+    const Node* node;
+    std::string_view relative;
+  };
+  std::vector<File> tests;
+  std::unordered_map<std::string_view, std::vector<File>> sources_by_stem;
+  for (const auto& node : graph.nodes) {
+    if (node.kind != "file" || node.source_file.empty() || !node.source_file.starts_with(root)) {
+      continue;
+    }
+    const File file{&node, std::string_view(node.source_file).substr(root.size())};
+    const auto stem = stem_of(file.relative);
+    if (is_test_source_path(file.relative) || named_as_test(stem)) {
+      tests.push_back(file);
+    } else if (!non_subject(file.relative)) {
+      sources_by_stem[stem].push_back(file);
+    }
+  }
+  if (tests.empty()) {
+    return;
+  }
+
+  std::unordered_set<std::string> seen_edges;
+  seen_edges.reserve(graph.edges.size());
+  for (const auto& edge : graph.edges) {
+    seen_edges.insert(edge_key(edge));
+  }
+  std::vector<Edge> added;
+  const auto link = [&](const File& test, const File& subject) {
+    Edge edge{.source = test.node->id, .target = subject.node->id, .relation = "tests",
+              .confidence = Confidence::Inferred};
+    if (seen_edges.insert(edge_key(edge)).second) {
+      added.push_back(std::move(edge));
+    }
+  };
+  for (const auto& test : tests) {
+    const auto core = test_core(stem_of(test.relative));
+    const auto found = sources_by_stem.find(core);
+    if (found == sources_by_stem.end()) {
+      continue;
+    }
+    const auto dir = directory_of(test.relative);
+    bool linked = false;
+    for (const auto& candidate : found->second) {
+      if (directory_of(candidate.relative) == dir) {
+        link(test, candidate);
+        linked = true;
+      }
+    }
+    if (linked || generic_stem(core)) {
+      continue;
+    }
+    // A test outside any test root (`pkg/headers_test.go`) sits beside the code
+    // it tests by convention; a same-named file elsewhere is a guess.
+    const auto location = locate(dir);
+    if (!location.in_test_root) {
+      continue;
+    }
+    std::vector<const File*> candidates;
+    for (const auto& candidate : found->second) {
+      if (candidate.relative.starts_with(location.package)) candidates.push_back(&candidate);
+    }
+    if (candidates.size() == 1) {
+      link(test, *candidates.front());
+      continue;
+    }
+    if (location.mirror.empty()) {
+      continue;
+    }
+    const File* only = nullptr;
+    std::size_t matches = 0;
+    for (const auto* candidate : candidates) {
+      const auto candidate_dir = directory_of(candidate->relative);
+      const auto& mirror = location.mirror;
+      if (candidate_dir == mirror ||
+          (candidate_dir.ends_with(mirror) && candidate_dir[candidate_dir.size() - mirror.size() - 1] == '/')) {
+        only = candidate;
+        ++matches;
+      }
+    }
+    if (matches == 1) {
+      link(test, *only);
+    }
+  }
+  graph.edges.insert(graph.edges.end(), std::make_move_iterator(added.begin()), std::make_move_iterator(added.end()));
+}
 
 void resolve_interface_dispatch(GraphSnapshot& graph, std::span<const RawCall> raw_calls) {
   // Interface method nodes, grouped by their owning interface (the `method`

@@ -1012,7 +1012,83 @@ int check_shared_stub_alias_binds_both_names() {
 
 }  // namespace
 
+// resolve_test_subjects pairs each test file with the source file its name
+// names, using repo-relative paths (the project root here sits under a `tests`
+// directory, which must not make every file a test). A stem several source files
+// share pairs only by same directory or mirrored directory, never by guess.
+int test_resolve_test_subjects() {
+  const std::string root = "/work/tests/proj/";
+  cgraph::GraphSnapshot graph;
+  const auto file = [&](const std::string& relative) {
+    const auto id = cgraph::make_id(root + relative);
+    graph.nodes.push_back({.id = id, .label = relative, .source_file = root + relative, .kind = "file"});
+    return id;
+  };
+  const auto path_go = file("path.go");
+  const auto path_test_go = file("path_test.go");
+  const auto http_client = file("http/client.py");
+  const auto db_client = file("db/client.py");
+  const auto test_http_client = file("tests/http/test_client.py");
+  const auto test_other_client = file("tests/test_client.py");
+  const auto help_rs = file("src/output/help.rs");
+  const auto tests_help_rs = file("tests/builder/help.rs");
+  const auto button = file("ui/button.ts");
+  const auto button_spec = file("ui/button.spec.ts");
+  const auto lib_mod = file("src/a/mod.rs");
+  const auto other_mod = file("src/b/mod.rs");
+  const auto tests_mod = file("tests/mod.rs");
+  const auto lonely_test = file("orphan_test.go");
+  // A package's tests pair inside that package, even when the stem is unique to neither.
+  const auto widget_a = file("pkg_a/src/widget.rs");
+  const auto widget_b = file("pkg_b/src/widget.rs");
+  const auto widget_test = file("pkg_a/tests/widget.rs");
+  // Generic names and example files never pair across directories.
+  const auto suite_main = file("crate/tests/testsuite/main.rs");
+  const auto example_main = file("examples/demo/main.rs");
+  const auto completion_test = file("other/tests/completion.rs");
+  const auto example_completion = file("lib/examples/completion.rs");
+  // Outside a test root a test pairs only beside its subject: reverseproxy's
+  // headers_test.go is not a test of the headers module.
+  const auto headers = file("modules/headers/headers.go");
+  const auto proxy_headers_test = file("modules/reverseproxy/headers_test.go");
+  // A Rust `tests.rs` unit-test module is a test, never a test's subject.
+  const auto builder_tests = file("src/builder/tests.rs");
+  const auto suite_tests = file("tests/builder/tests.rs");
+  const auto plain = file("server.go");
+
+  cgraph::resolve_test_subjects(graph);
+
+  const auto tests_edges = std::ranges::count_if(graph.edges, [](const cgraph::Edge& e) { return e.relation == "tests"; });
+  if (!has_edge(graph, path_test_go, path_go, "tests")) return 1;            // same directory
+  if (!has_edge(graph, test_http_client, http_client, "tests")) return 1;    // mirrored tests/http -> http
+  if (has_edge(graph, test_http_client, db_client, "tests")) return 1;
+  if (!has_edge(graph, tests_help_rs, help_rs, "tests")) return 1;           // unique stem anywhere
+  if (!has_edge(graph, button_spec, button, "tests")) return 1;              // `.spec` marker
+  // tests/test_client.py mirrors the root, where no client.py lives: ambiguous, no edge.
+  if (has_edge(graph, test_other_client, http_client, "tests") || has_edge(graph, test_other_client, db_client, "tests")) return 1;
+  if (has_edge(graph, tests_mod, lib_mod, "tests") || has_edge(graph, tests_mod, other_mod, "tests")) return 1;
+  if (!has_edge(graph, widget_test, widget_a, "tests") || has_edge(graph, widget_test, widget_b, "tests")) return 1;
+  if (has_edge(graph, suite_main, example_main, "tests")) return 1;
+  if (has_edge(graph, completion_test, example_completion, "tests")) return 1;
+  if (has_edge(graph, proxy_headers_test, headers, "tests")) return 1;
+  if (has_edge(graph, suite_tests, builder_tests, "tests")) return 1;
+  (void)lonely_test;
+  (void)plain;
+  if (tests_edges != 5) {
+    std::fprintf(stderr, "expected 5 tests edges, got %td\n", tests_edges);
+    return 1;
+  }
+  // Idempotent: a second pass (incremental rebuild) adds nothing.
+  cgraph::resolve_test_subjects(graph);
+  if (std::ranges::count_if(graph.edges, [](const cgraph::Edge& e) { return e.relation == "tests"; }) != tests_edges) return 1;
+  return 0;
+}
+
 int main() {
+  if (test_resolve_test_subjects() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_test_subjects\n");
+    return 1;
+  }
   if (test_contract_facts_are_not_edges() != 0) {
     std::fprintf(stderr, "FAIL test_contract_facts_are_not_edges\n");
     return 1;

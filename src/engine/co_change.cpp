@@ -1,4 +1,5 @@
 #include "cgraph/co_change.hpp"
+#include "cgraph/data_contracts.hpp"
 
 #include <algorithm>
 #include <array>
@@ -34,29 +35,6 @@ struct Candidate {
 [[nodiscard]] std::string_view directory_of(std::string_view path) {
   const auto slash = path.rfind('/');
   return slash == std::string_view::npos ? std::string_view{} : path.substr(0, slash);
-}
-
-[[nodiscard]] std::string_view basename_of(std::string_view path) {
-  const auto slash = path.rfind('/');
-  return slash == std::string_view::npos ? path : path.substr(slash + 1);
-}
-
-// The file name without its last extension: `a.test.ts` -> `a.test`.
-[[nodiscard]] std::string_view stem_of(std::string_view path) {
-  const auto base = basename_of(path);
-  const auto dot = base.rfind('.');
-  return dot == std::string_view::npos || dot == 0 ? base : base.substr(0, dot);
-}
-
-// The stem with one test marker removed (`test_x`, `x_test`, `x_tests`,
-// `x.test`, `x.spec`, `x_spec`, `XTest`, `XTests`), or the stem itself.
-[[nodiscard]] std::string_view test_core(std::string_view stem) {
-  if (stem.starts_with("test_") && stem.size() > 5) return stem.substr(5);
-  static constexpr std::array<std::string_view, 7> kSuffixes{"_tests", "_test", ".test", ".spec", "_spec", "Tests", "Test"};
-  for (const auto suffix : kSuffixes) {
-    if (stem.ends_with(suffix) && stem.size() > suffix.size()) return stem.substr(0, stem.size() - suffix.size());
-  }
-  return stem;
 }
 
 [[nodiscard]] std::string ticked(std::string_view label) {

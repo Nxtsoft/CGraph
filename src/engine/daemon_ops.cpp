@@ -1234,6 +1234,35 @@ struct StructuralIntent {
     }
   }
 
+  // A seed's own tests (or, for a test, the file it tests) are part of the unit
+  // being asked about, but the `tests` edge hangs off the file node, a hop past
+  // a symbol seed, and test files carry little centrality -- so depth-then-
+  // centrality ranks every imported file above them. Reach them at depth 1, the
+  // footing of the seed's own file. A radius of 0 asks for the seed alone.
+  if (max_depth >= 1) {
+    std::unordered_map<std::string_view, const std::string*> file_node_by_source;
+    for (const auto& node : graph.nodes) {
+      if (node.kind == "file" && !node.source_file.empty()) {
+        file_node_by_source.emplace(node.source_file, &node.id);
+      }
+    }
+    std::unordered_set<std::string_view> seed_files;
+    for (const auto* seed : seeds) {
+      if (const auto file = file_node_by_source.find(seed->source_file); file != file_node_by_source.end()) {
+        seed_files.insert(*file->second);
+      }
+    }
+    for (const auto& edge : graph.edges) {
+      if (edge.relation != "tests") continue;
+      const std::string* counterpart = seed_files.contains(edge.source)   ? &edge.target
+                                       : seed_files.contains(edge.target) ? &edge.source
+                                                                          : nullptr;
+      if (counterpart == nullptr) continue;
+      const auto [it, fresh] = reached.try_emplace(*counterpart, Reached{1, "tests"});
+      if (!fresh && it->second.depth > 1) it->second = Reached{1, "tests"};
+    }
+  }
+
   // The graph has no direct sibling edge between otherwise-unrelated symbols in
   // one file. Under adaptive gathering only, admit siblings from the primary
   // focal's file as direct, query-ranked candidates. They do not enter `frontier`:

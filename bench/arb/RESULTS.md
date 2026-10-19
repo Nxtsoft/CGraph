@@ -6,6 +6,80 @@ The benchmark is [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882) (ARB,
 repository is checked out at its base commit, because ARB's released corpus is chunked
 and truncated and CGraph has to index the real tree.
 
+## CGR-38: tuned without ARB samples (branch build, pending release)
+
+bin-v0.9.1's numbers below were tuned on a 40-sample ARB subset (clap, caddy, gin). This section
+reports work done without that: every change was developed on a declared dev side and the rest of
+ARB was scored only to measure it.
+
+**Protocol.**
+
+- **Split, declared before any change** (`score.py` `DEV_REPOS`, commit bee900e). Dev = every
+  gin, caddy and clap sample (111, a superset of CGR-25's 40). Held-out = the other 234 samples
+  from 22 repositories.
+- **External dev set.** The ARB dev split has no comment2context and only 19 code2test samples,
+  so it cannot drive tuning on its own. A second dev set was built with ARB's own miners at the
+  pinned commit from 10 repositories ARB never used (`extdev/`): 229 code2test and 187
+  edit2ripple samples.
+- **Held-out looks.** All diagnosis used dev and extdev only; held-out samples were never
+  inspected one by one. Held-out aggregates were read three times:
+  1. the bin-v0.9.5 baseline, before any change;
+  2. the branch build below;
+  3. the released binary.
+
+  One earlier held-out run of a pre-review build lost a snapshot to a host memory fault and was
+  discarded without its scores being read.
+
+**Changes** (openspec `test-subjects-and-file-documents`):
+
+1. **`tests` edges.** Each test file is linked to the source file its name pairs with.
+2. **File body documents.** A file node's BM25 document is now its text outside any symbol, plus
+   its path.
+3. **Tests in context.** `context` reaches a seed's tests at depth 1.
+4. **Anchor fusion (harness).** The per-file anchor op lists are fused among themselves and vote
+   once, not once per file.
+
+| Held-out, 234 samples | R@20 | MRR | BCY@8k |
+|---|---:|---:|---:|
+| RepoMap (rerun) | 0.5402 | 0.1785 | 0.3363 |
+| CGraph bin-v0.9.5 | 0.5164 | 0.2076 | 0.3184 |
+| **CGraph branch** | **0.5628** | **0.2076** | **0.3167** |
+
+Against RepoMap on held-out:
+
+- R@20 is +0.0226 and MRR +0.0291, both outside the noise floor.
+- BCY@8k is -0.0196.
+
+By task:
+
+| Held-out task | n | RepoMap R@20 / MRR / BCY@8k | CGraph branch R@20 / MRR / BCY@8k |
+|---|---:|---|---|
+| code2test | 87 | 0.4950 / 0.1667 / 0.3280 | 0.4927 / 0.1516 / 0.2188 |
+| comment2context | 80 | 0.4708 / 0.1527 / 0.2896 | 0.5125 / 0.2223 / 0.3104 |
+| trace2code | 37 | 0.8829 / 0.2773 / 0.5270 | 0.8694 / 0.3094 / 0.5811 |
+| edit2ripple | 30 | 0.4333 / 0.1597 / 0.2500 | 0.5222 / 0.2054 / 0.2917 |
+
+What changed against bin-v0.9.5 on held-out:
+
+- **code2test** gains the most: R@20 0.3870 to 0.4927.
+- **trace2code** falls: MRR 0.3551 to 0.3094, BCY@8k 0.6261 to 0.5811. The extra test files now
+  compete with the source files a stack trace names. This is why overall MRR is flat.
+
+| All 345 samples | R@20 | MRR | BCY@8k |
+|---|---:|---:|---:|
+| RepoMap (rerun) | 0.6311 | 0.2156 | 0.3846 |
+| CGraph bin-v0.9.5 | 0.6353 | 0.2759 | 0.4309 |
+| **CGraph branch** | **0.6692** | **0.2951** | **0.4395** |
+
+Dev sides, for reference (both were used for tuning, so they are not evidence on their own):
+
+| | n | bin-v0.9.5 R@20 / MRR / BCY@8k | branch R@20 / MRR / BCY@8k | RepoMap R@20 / MRR / BCY@8k |
+|---|---:|---|---|---|
+| ARB dev (gin, caddy, clap) | 111 | 0.8859 / 0.4199 / 0.6682 | 0.8934 / 0.4797 / 0.6982 | 0.8228 / 0.2939 / 0.4865 |
+| External dev set | 416 | 0.6891 / 0.3119 / 0.4752 | 0.7418 / 0.4101 / 0.5517 | 0.8099 / 0.4543 / 0.5815 |
+
+On the external dev set CGraph still trails RepoMap on every metric.
+
 ## bin-v0.9.1 (BM25 code-text search, CGR-25)
 
 Same harness and data pins as below, engine release bin-v0.9.1 (`cgraph --version`:

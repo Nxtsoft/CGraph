@@ -940,21 +940,7 @@ void resolve_contracts(GraphSnapshot& graph, std::span<const RawRelation> raw_re
   // otherwise unused reader exercises it, no request reaches it.
   // Paths read relative to the directory every file node shares, the
   // project root (node source files are absolute).
-  std::string project_root;
-  bool first_file = true;
-  for (const auto& node : graph.nodes) {
-    if (node.kind != "file" || node.source_file.empty()) {
-      continue;
-    }
-    if (first_file) {
-      project_root = node.source_file;
-      first_file = false;
-    } else {
-      const auto mismatch = std::ranges::mismatch(project_root, node.source_file);
-      project_root.resize(static_cast<std::size_t>(mismatch.in1 - project_root.begin()));
-    }
-  }
-  project_root.resize(project_root.rfind('/') == std::string::npos ? 0 : project_root.rfind('/') + 1);
+  const auto project_root = common_source_root(graph);
   const auto from_test = [&](const std::string& id) {
     const auto source = by_id.find(id);
     if (source == by_id.end() || !source->second->source_file.starts_with(project_root)) {
