@@ -1,4 +1,5 @@
 #include "cgraph/file_extraction.hpp"
+#include "cgraph/configured_extractors.hpp"
 #include "cgraph/detect.hpp"
 #include "cgraph/file_cache.hpp"
 #include "cgraph/normalize.hpp"
@@ -6,6 +7,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -13,7 +16,7 @@ namespace {
 
 void write_file(const std::filesystem::path& path, const char* contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   output << contents;
 }
 
@@ -63,6 +66,60 @@ int main() {
   if (!missing.fragment.nodes.empty() || missing.fragment.warnings.empty() || !missing.source_sha256.empty()) {
     std::filesystem::remove_all(root);
     return 1;
+  }
+
+  // An extractor that throws once must not leave the file recorded as extracted
+  // (CGR-18). The source hash tells incremental update "this content was already
+  // extracted", so the failed result carries none; the next pass over the same
+  // unchanged file then extracts it for real.
+  {
+    int calls = 0;
+    const cgraph::LanguageExtractor throws_once =
+        [&calls](cgraph::DetectedLanguage language,
+                 const cgraph::ExtractionContext& context) -> std::optional<cgraph::ExtractionResult> {
+      if (++calls == 1) {
+        throw std::runtime_error("extractor crashed");
+      }
+      return cgraph::extract_configured_language(language, context);
+    };
+    const cgraph::DetectedFile flaky{.path = source_path, .language = cgraph::DetectedLanguage::Python};
+
+    const auto crashed = cgraph::extract_detected_file(flaky, root, throws_once);
+    if (!crashed.fragment.nodes.empty() || !crashed.source_sha256.empty() ||
+        crashed.fragment.warnings.size() != 1 ||
+        crashed.fragment.warnings.front().find("extractor crashed") == std::string::npos) {
+      std::filesystem::remove_all(root);
+      return 8;
+    }
+
+    const auto retried = cgraph::extract_detected_file(flaky, root, throws_once);
+    if (retried.fragment.nodes.empty() || !retried.fragment.warnings.empty() ||
+        retried.source_sha256 != cgraph::sha256_hex(source)) {
+      std::filesystem::remove_all(root);
+      return 9;
+    }
+
+    // A non-std exception takes the other catch block and is held to the same rule.
+    const cgraph::LanguageExtractor throws_unknown =
+        [](cgraph::DetectedLanguage, const cgraph::ExtractionContext&) -> std::optional<cgraph::ExtractionResult> {
+      throw 42;
+    };
+    const auto unknown = cgraph::extract_detected_file(flaky, root, throws_unknown);
+    if (!unknown.fragment.nodes.empty() || !unknown.source_sha256.empty() || unknown.fragment.warnings.empty()) {
+      std::filesystem::remove_all(root);
+      return 10;
+    }
+
+    // "No extractor registered" is a settled result, not a failure: the hash stays.
+    const cgraph::LanguageExtractor unregistered =
+        [](cgraph::DetectedLanguage, const cgraph::ExtractionContext&) -> std::optional<cgraph::ExtractionResult> {
+      return std::nullopt;
+    };
+    const auto none = cgraph::extract_detected_file(flaky, root, unregistered);
+    if (none.source_sha256 != cgraph::sha256_hex(source) || none.fragment.warnings.size() != 1) {
+      std::filesystem::remove_all(root);
+      return 11;
+    }
   }
 
   // Parallel extraction must produce, in detection order, results identical to

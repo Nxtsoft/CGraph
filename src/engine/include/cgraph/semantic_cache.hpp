@@ -67,7 +67,22 @@ struct ReconciliationResult {
     const GraphSnapshot& graph);
 
 // Atomic; throws FileWriteError (atomic_write.hpp) if the file cannot be fully written.
-void write_semantic_cache(const SemanticCache& cache, const std::filesystem::path& path);
-[[nodiscard]] SemanticCache read_semantic_cache(const std::filesystem::path& path);
+//
+// If `path` already holds a file read_semantic_cache cannot use (truncated, a
+// malformed record, an unsupported version), that file is first moved to
+// `<path>.invalid` instead of being overwritten, and the new location is
+// returned so the caller can tell the user. If it cannot be moved the write
+// throws and nothing is overwritten.
+std::optional<std::filesystem::path> write_semantic_cache(
+    const SemanticCache& cache,
+    const std::filesystem::path& path);
+
+// A missing file is an empty cache. A file that exists but cannot be used
+// (not JSON, not schema v2, a malformed or duplicate record) also reads as an
+// empty cache, never partially; when `problem` is given it receives the reason
+// (and stays untouched for a missing or usable file).
+[[nodiscard]] SemanticCache read_semantic_cache(
+    const std::filesystem::path& path,
+    std::string* problem = nullptr);
 
 }  // namespace cgraph

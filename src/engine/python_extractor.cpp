@@ -2,6 +2,7 @@
 
 #include "cgraph/env_contracts.hpp"
 #include "cgraph/header_contracts.hpp"
+#include "cgraph/messaging_contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -566,6 +567,7 @@ void python_extra_walk(const TSNode& node, const ExtractionContext& context, con
     python_router_mount(node, context, raw_relations);
   }
   python_header_contracts(node, context, function_scope, raw_relations);
+  python_messaging_contracts(node, context, function_scope, raw_relations);
 }
 
 // `@router.get("/x")`, `@app.api_route("/x", methods=["GET", "POST"])` on a
@@ -667,6 +669,8 @@ LanguageConfig python_language_config() {
 ExtractionResult extract_python(const ExtractionContext& context) {
   auto config = python_language_config();
   intern_node_symbols(config, tree_sitter_python());
+  const EnvContractsFileScope env_contracts;
+  const MessagingContractsFileScope messaging_contracts;
   return extract_with_config(tree_sitter_python(), config, context);
 }
 

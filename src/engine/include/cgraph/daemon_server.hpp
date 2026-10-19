@@ -51,9 +51,13 @@ struct DaemonServerOptions {
 
 // Connects to a daemon's Unix socket, sends one request frame, and returns the
 // decoded response. Returns nullopt if the socket is absent/unreachable or the
-// exchange fails — the signal the thin client uses to spawn and retry.
+// exchange fails — the signal the thin client uses to spawn and retry. With a
+// `deadline`, nothing blocks past it: the connect does not wait for a full
+// backlog, and a daemon that has not answered by then (busy, stopped) yields
+// nullopt at the deadline.
 [[nodiscard]] std::optional<nlohmann::json> request_over_unix_socket(
     const std::filesystem::path& socket_path,
-    const nlohmann::json& request);
+    const nlohmann::json& request,
+    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 }  // namespace cgraph

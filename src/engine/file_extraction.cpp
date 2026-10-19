@@ -62,12 +62,18 @@ constexpr std::uintmax_t kMaxExtractionFileBytes = 8 * 1024 * 1024;
 }  // namespace
 
 ExtractionResult extract_detected_file(const DetectedFile& file, const std::filesystem::path& project_root) {
+  return extract_detected_file(file, project_root, extract_configured_language);
+}
+
+ExtractionResult extract_detected_file(const DetectedFile& file,
+                                       const std::filesystem::path& project_root,
+                                       const LanguageExtractor& extractor) {
   ExtractionResult empty;
   try {
     const auto relative_path = relative_to_root(file.path, project_root);
     const auto source = read_file(file.path);
-    empty.source_sha256 = sha256_hex(source);
-    auto result = extract_configured_language(
+    const auto source_sha256 = sha256_hex(source);
+    auto result = extractor(
         file.language,
         ExtractionContext{
             .source_file = file.path.generic_string(),
@@ -75,10 +81,13 @@ ExtractionResult extract_detected_file(const DetectedFile& file, const std::file
             .source = source,
         });
     if (result.has_value()) {
-      result->source_sha256 = empty.source_sha256;
+      result->source_sha256 = source_sha256;
       return *result;
     }
 
+    // Nothing is registered for this language, so there is nothing to retry:
+    // the empty fragment is the settled result for this content.
+    empty.source_sha256 = source_sha256;
     empty.fragment.warnings.push_back("no extractor registered for detected language");
     return empty;
   } catch (const std::exception& error) {
@@ -87,6 +96,9 @@ ExtractionResult extract_detected_file(const DetectedFile& file, const std::file
     empty.fragment.warnings.push_back(std::string{"failed to extract "} + file.path.generic_string() + ": unknown error");
   }
 
+  // A failed extraction leaves source_sha256 empty. Incremental update treats a
+  // recorded hash as "this content was already extracted", so a hash here would
+  // turn one crash into a permanent zero-node entry that is never retried.
   return empty;
 }
 

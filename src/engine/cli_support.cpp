@@ -27,8 +27,16 @@ double number_flag(std::string_view flag, std::string_view value) {
 
 std::string describe_exception(const std::exception& error) {
 #if defined(_MSC_VER)
-  // MSVC's type_info::name() is already human-readable ("class std::out_of_range").
-  return std::string(typeid(error).name()) + ": " + error.what();
+  // MSVC's type_info::name() is already demangled but keyed ("class std::out_of_range");
+  // drop the key so every platform names the type the same way.
+  std::string_view name = typeid(error).name();
+  for (const std::string_view key : {std::string_view{"class "}, std::string_view{"struct "}}) {
+    if (name.substr(0, key.size()) == key) {
+      name.remove_prefix(key.size());
+      break;
+    }
+  }
+  return std::string(name) + ": " + error.what();
 #else
   const char* mangled = typeid(error).name();
   int status = 0;

@@ -15,7 +15,7 @@ namespace cgraph {
 namespace {
 
 constexpr std::array<const char*, kDaemonOpCount> kOpNames = {
-    "query", "path", "explain", "impact", "context", "update", "status", "shutdown", "remember", "recall", "report",
+    "query", "path", "explain", "impact", "context", "update", "status", "shutdown", "remember", "recall", "report", "co-change",
 };
 
 // Human-readable duration: ms under a second, seconds under a minute, otherwise
@@ -169,6 +169,7 @@ nlohmann::json build_stats_json(const BuildStats& stats) {
            {"dropped_self", stats.calls.dropped_self},
            {"dropped_scope_mismatch", stats.calls.dropped_scope_mismatch},
            {"dropped_library_member", stats.calls.dropped_library_member},
+           {"dropped_closure_guess", stats.calls.dropped_closure_guess},
            {"resolved_rate", stats.calls.resolved_rate()},
            {"balances", stats.calls.balances()},
        }},
@@ -225,6 +226,7 @@ nlohmann::json op_stats_json(const DaemonOpStats& stats) {
       {"context_zero_hits", stats.context_zero_hits},
       {"recall_zero_hits", stats.recall_zero_hits},
       {"not_ready", stats.not_ready},
+      {"abandoned", stats.abandoned},
       {"query_routes",
        {{"entity", stats.query_route_entity},
         {"structural", stats.query_route_structural},

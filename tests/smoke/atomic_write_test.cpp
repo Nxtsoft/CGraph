@@ -1,4 +1,5 @@
 #include "cgraph/atomic_write.hpp"
+#include "cgraph/platform.hpp"
 
 #include <chrono>
 #include <csignal>
@@ -9,9 +10,11 @@
 #include <string>
 #include <thread>
 
+#ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -44,6 +47,7 @@ bool no_temp_files(const fs::path& directory) {
   return true;
 }
 
+#ifndef _WIN32
 // Runs try_write_file_atomically in a child whose file-size limit is
 // `limit_bytes` (SIGXFSZ ignored, so write() fails with EFBIG once the file
 // reaches the limit -- exactly how a full disk truncates a file mid-write, but
@@ -70,6 +74,7 @@ int write_under_file_size_limit(const fs::path& path, const std::string& content
   ::waitpid(child, &status, 0);
   return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
+#endif
 
 // Two writers (threads in this process, or separate processes) replacing the
 // same file `rounds` times each, each with its own full-size content. Every
@@ -77,46 +82,74 @@ int write_under_file_size_limit(const fs::path& path, const std::string& content
 // complete content: a temp name shared between writers would let them
 // interleave into one temp file and rename a mixed file, or make one writer's
 // rename fail because the other already moved the temp away.
-bool concurrent_writers_never_mix(const fs::path& path, bool use_processes) {
-  constexpr int rounds = 200;
-  const std::string a(256 * 1024, 'a');
-  const std::string b(256 * 1024, 'b');
-  const auto writer = [&](const std::string& contents) {
-    int failures = 0;
-    for (int round = 0; round < rounds; ++round) {
-      if (const auto error = cgraph::try_write_file_atomically(path, contents); !error.empty()) {
-        if (failures++ == 0) {
-          std::cerr << "concurrent writer failed: " << error << '\n';
-        }
-      }
-      const auto now = read_file(path);
-      if (now != a && now != b) {
-        std::cerr << "concurrent writers produced a mixed or partial file (" << now.size() << " bytes)\n";
-        ++failures;
+constexpr int kRounds = 200;
+const std::string kContentA(256 * 1024, 'a');
+const std::string kContentB(256 * 1024, 'b');
+
+// One writer replacing `path` kRounds times with `contents`; returns failures.
+int replace_repeatedly(const fs::path& path, const std::string& contents) {
+  int failures = 0;
+  for (int round = 0; round < kRounds; ++round) {
+    if (const auto error = cgraph::try_write_file_atomically(path, contents); !error.empty()) {
+      if (failures++ == 0) {
+        std::cerr << "concurrent writer failed: " << error << '\n';
       }
     }
-    return failures;
-  };
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+#ifdef _WIN32
+      // While the other writer's MoveFileExW holds the name, Windows refuses
+      // new opens for an instant (a sharing violation): a missed sample, not a
+      // torn file. Any file a reader does open must still be whole.
+      continue;
+#else
+      std::cerr << "concurrent writers left the path unopenable\n";
+      ++failures;
+      continue;
+#endif
+    }
+    const std::string now{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    if (now != kContentA && now != kContentB) {
+      std::cerr << "concurrent writers produced a mixed or partial file (" << now.size() << " bytes)\n";
+      ++failures;
+    }
+  }
+  return failures;
+}
+
+// Two writers (threads in this process, or separate processes) replacing the
+// same file kRounds times each, each with its own full-size content. Every
+// write must succeed and the file must always be exactly one writer's
+// complete content: a temp name shared between writers would let them
+// interleave into one temp file and rename a mixed file, or make one writer's
+// rename fail because the other already moved the temp away. Processes are
+// this binary re-run in --writer mode, each reporting into a result file.
+bool concurrent_writers_never_mix(const fs::path& path, bool use_processes) {
   int failures = 0;
   if (use_processes) {
-    pid_t children[2];
-    const std::string* contents[2] = {&a, &b};
+    const auto self = cgraph::current_executable_path();
+    const fs::path results[2] = {path.string() + ".a.result", path.string() + ".b.result"};
     for (int index = 0; index < 2; ++index) {
-      children[index] = ::fork();
-      if (children[index] == 0) {
-        ::_exit(writer(*contents[index]) == 0 ? 0 : 1);
+      fs::remove(results[index]);
+      if (!cgraph::spawn_detached(self, {"--writer", index == 0 ? "a" : "b", path, results[index]})) {
+        std::cerr << "cannot start writer process\n";
+        return false;
       }
     }
-    for (const auto child : children) {
-      int status = 0;
-      ::waitpid(child, &status, 0);
-      failures += (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : 1;
+    for (const auto& result : results) {
+      std::string verdict;
+      for (int wait = 0; wait < 1200 && verdict.empty(); ++wait) {  // up to two minutes
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        verdict = read_file(result);
+      }
+      failures += verdict == "ok" ? 0 : 1;
+      fs::remove(result);
     }
   } else {
     int failures_a = 0;
     int failures_b = 0;
-    std::thread first([&] { failures_a = writer(a); });
-    std::thread second([&] { failures_b = writer(b); });
+    std::thread first([&] { failures_a = replace_repeatedly(path, kContentA); });
+    std::thread second([&] { failures_b = replace_repeatedly(path, kContentB); });
     first.join();
     second.join();
     failures = failures_a + failures_b;
@@ -126,9 +159,19 @@ bool concurrent_writers_never_mix(const fs::path& path, bool use_processes) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // Writer-process mode for concurrent_writers_never_mix: the verdict lands in
+  // a temp file renamed into place, so the parent never reads a partial one.
+  if (argc == 5 && std::string(argv[1]) == "--writer") {
+    const auto failures = replace_repeatedly(argv[3], std::string(argv[2]) == "a" ? kContentA : kContentB);
+    const fs::path result = argv[4];
+    std::ofstream(result.string() + ".part", std::ios::binary) << (failures == 0 ? "ok" : "failed");
+    fs::rename(result.string() + ".part", result);
+    return failures == 0 ? 0 : 1;
+  }
+
   bool ok = true;
-  const auto root = fs::temp_directory_path() / ("cgraph_atomic_write_test_" + std::to_string(::getpid()));
+  const auto root = fs::temp_directory_path() / ("cgraph_atomic_write_test_" + std::to_string(cgraph::current_process_id()));
   fs::remove_all(root);
   fs::create_directories(root);
 
@@ -145,6 +188,10 @@ int main() {
   // A write that runs out of space part-way: the helper must report it, the
   // prior file must be untouched (never truncated or replaced by a partial
   // file), and the partial temp must be removed.
+#ifdef _WIN32
+  std::cout << "atomic_write_test: SKIP short-write cases on Windows: they need RLIMIT_FSIZE to make "
+               "write() fail part-way, and Windows has no per-process file-size limit\n";
+#else
   const std::string big(64 * 1024, 'x');
   expect(ok, write_under_file_size_limit(path, big, 4096) == 0, "a short write is reported, naming the path");
   expect(ok, read_file(path) == "second\n", "a failed write leaves the prior file untouched");
@@ -155,6 +202,7 @@ int main() {
   expect(ok, write_under_file_size_limit(fresh, big, 4096) == 0, "a short fresh write is reported");
   expect(ok, !fs::exists(fresh), "a failed fresh write leaves no file at the path");
   expect(ok, no_temp_files(root), "a failed fresh write leaves no temp file");
+#endif
 
   // Concurrent writers to one destination never mix and never fail spuriously.
   expect(ok, concurrent_writers_never_mix(root / "threads.json", false),
@@ -178,7 +226,7 @@ int main() {
   const auto foreign_pattern = root / "graph.json.tmp";
   const auto other_file_temp = root / "other.json.123.4.tmp";
   for (const auto& stray : {stale, fresh_temp, foreign_pattern, other_file_temp}) {
-    std::ofstream(stray) << "stray";
+    std::ofstream(stray, std::ios::binary) << "stray";
   }
   const auto two_hours_ago = fs::file_time_type::clock::now() - std::chrono::hours(2);
   for (const auto& old : {stale, foreign_pattern, other_file_temp}) {
@@ -212,6 +260,7 @@ int main() {
   const auto nested = root / "a" / "b";
   cgraph::create_output_directories(nested);
   expect(ok, fs::is_directory(nested), "create_output_directories creates missing parents");
+#ifndef _WIN32  // the read-only parent relies on POSIX directory permissions
   if (::geteuid() != 0) {  // root bypasses directory permissions
     const auto read_only = root / "read-only";
     fs::create_directories(read_only);
@@ -227,6 +276,7 @@ int main() {
            ("create_output_directories under a read-only parent throws FileWriteError: " + message).c_str());
     fs::permissions(read_only, fs::perms::owner_all, fs::perm_options::replace);
   }
+#endif
 
   fs::remove_all(root);
   if (ok) {

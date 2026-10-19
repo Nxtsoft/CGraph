@@ -11,6 +11,17 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+
+// The stdin/stdout harness below is fork/pipe based. Exit code 77 is the
+// test's SKIP_RETURN_CODE (tests/smoke/CMakeLists.txt), so ctest reports a skip.
+int main() {
+  std::cout << "mcp_main_test: SKIP on Windows: the stdio harness needs fork and pipe\n";
+  return 77;
+}
+
+#else
+
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -120,3 +131,5 @@ int main(int argc, char** argv) {
   }
   return ok ? 0 : 1;
 }
+
+#endif  // _WIN32

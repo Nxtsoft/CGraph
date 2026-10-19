@@ -29,6 +29,14 @@ jobs:
             platform: linux-arm64
           - os: macos-latest
             platform: macos-arm64
+          # GitHub's last x86_64 macOS image; Intel runners end with it (fall 2027).
+          - os: macos-15-intel
+            platform: macos-x64
+          # MSVC, static vcpkg deps against the dynamic CRT (x64-windows-static-md),
+          # so the four .exe files need nothing beyond the OS.
+          - os: windows-latest
+            platform: windows-x64
+            preset: windows-release
 
     steps:
       - uses: actions/checkout@v4
@@ -37,27 +45,27 @@ jobs:
 
       - uses: lukka/get-cmake@latest
 
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgJsonGlob: vcpkg.json
 
       - name: Configure
-        run: cmake --preset release
+        run: cmake --preset ${{ matrix.preset || 'release' }}
 
       - name: Build
-        run: cmake --build --preset release
+        run: cmake --build --preset ${{ matrix.preset || 'release' }}
 
+      # The launcher extracts every platform's asset with `tar -xzf` (bsdtar
+      # ships with Windows 10+), so Windows gets a .tar.gz too.
       - name: Package
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          cp build/release/src/cli/cgraph \
-             build/release/src/daemon/graphd \
-             build/release/src/client/cgraph-client \
-             build/release/src/mcp/cgraph-mcp dist/
-          tar -czf "cgraph-${{ matrix.platform }}.tar.gz" -C dist .
+        shell: bash
+        run: scripts/package_release.sh "build/${{ matrix.preset || 'release' }}" "${{ matrix.platform }}"
 
       - name: Upload to release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -66,5 +74,7 @@ jobs:
             || gh release create "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" \
                  --title "Binaries ${{ inputs.tag }}" \
                  --notes "Prebuilt release binaries (cgraph, graphd, cgraph-client, cgraph-mcp)."
+          # No --clobber: launchers pin each asset's SHA-256 (integrations/launcher/
+          # release.json), so replacing a published asset would break every install.
           gh release upload "${{ inputs.tag }}" "cgraph-${{ matrix.platform }}.tar.gz" \
-            --repo "$GITHUB_REPOSITORY" --clobber
+            --repo "$GITHUB_REPOSITORY"

@@ -84,6 +84,13 @@ namespace cgraph {
 // Whether a repo-relative path is a test file (above).
 [[nodiscard]] bool is_test_source_path(std::string_view relative_path);
 
+// The file name without its last extension: `a.test.ts` -> `a.test`.
+[[nodiscard]] std::string_view stem_of(std::string_view path);
+
+// The stem with one test marker removed (`test_x`, `x_test`, `x_tests`,
+// `x.test`, `x.spec`, `x_spec`, `XTest`, `XTests`), or the stem itself.
+[[nodiscard]] std::string_view test_core(std::string_view stem);
+
 // Facts for one parsed source file of a tree-sitter language: SQL and Cypher
 // string literals for every language named above, Spring Data Neo4j
 // annotations for Kotlin and Java, Drizzle query-builder table arguments

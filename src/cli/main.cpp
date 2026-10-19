@@ -15,6 +15,7 @@
 #include "cgraph/launch_agent.hpp"
 #include "cgraph/operation_stats.hpp"
 #include "cgraph/pipeline.hpp"
+#include "cgraph/platform.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/report.hpp"
 #include "cgraph/seam.hpp"
@@ -34,12 +35,6 @@
 #include <unordered_map>
 #include <vector>
 
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>
-#include <vector>
-#elif defined(__linux__)
-#include <unistd.h>
-#endif
 
 namespace {
 
@@ -89,7 +84,8 @@ void print_usage() {
       "  cgraph seam query --graph FUSED.json <query|path|explain|impact|context> [PARAMS_JSON]\n"
       "        run a read op against a fused seam graph (cross-service); read-only\n"
       "  cgraph daemon <install|sync|status|uninstall> [--search-root DIR] [--exclude DIR]\n"
-      "        keep a resident, auto-refreshing graphd per tracked repo (login LaunchAgents)\n"
+      "        keep a resident, auto-refreshing graphd per tracked repo (login LaunchAgents on macOS,\n"
+      "        systemd --user units on Linux)\n"
       "  cgraph skills <install|status|uninstall> [--source DIR] [--skills-dir DIR ...]\n"
       "        symlink the repo's host skills (integrations/skills/*) into host skill dirs\n"
       "  cgraph drain <install|status|uninstall> [--interval SECONDS] [--chunk-cap N]\n"
@@ -196,6 +192,9 @@ int run_enrich_ingest(const Args& args) {
   std::cerr << "wrote exports to " << args.output << '\n';
   for (const auto& error : ingest.errors) {
     std::cerr << "rejected: " << error << '\n';
+  }
+  for (const auto& warning : ingest.warnings) {
+    std::cerr << "warning: " << warning << '\n';
   }
   return 0;
 }
@@ -822,26 +821,11 @@ int run_seam_query(int argc, char** argv) {
 // Absolute path to the running cgraph binary, so generated LaunchAgents reference
 // it (and its sibling graphd) by absolute path regardless of how it was invoked.
 std::filesystem::path current_executable_path(const char* argv0) {
-#if defined(__APPLE__)
-  uint32_t size = 0;
-  _NSGetExecutablePath(nullptr, &size);
-  std::vector<char> buffer(size);
-  if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+  if (auto self = cgraph::current_executable_path(); !self.empty()) {
     std::error_code ec;
-    auto p = std::filesystem::weakly_canonical(std::filesystem::path(buffer.data()), ec);
-    if (!ec) {
-      return p;
-    }
+    auto canonical = std::filesystem::weakly_canonical(self, ec);
+    return ec ? self : canonical;
   }
-#elif defined(__linux__)
-  {
-    std::error_code ec;
-    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec) {
-      return p;
-    }
-  }
-#endif
   std::error_code ec;
   return std::filesystem::weakly_canonical(std::filesystem::path(argv0), ec);
 }
@@ -849,21 +833,22 @@ std::filesystem::path current_executable_path(const char* argv0) {
 // graphd lives next to cgraph (installed layout) or under ../daemon/ (build tree).
 std::filesystem::path resolve_graphd_binary(const std::filesystem::path& self) {
   const auto bin_dir = self.parent_path();
-  for (const auto& candidate : {bin_dir / "graphd", bin_dir.parent_path() / "daemon" / "graphd"}) {
+  const auto graphd = cgraph::executable_file_name("graphd");
+  for (const auto& candidate : {bin_dir / graphd, bin_dir.parent_path() / "daemon" / graphd}) {
     std::error_code ec;
     if (std::filesystem::exists(candidate, ec)) {
       return std::filesystem::weakly_canonical(candidate, ec);
     }
   }
-  return bin_dir / "graphd";  // best guess; sync will report if it never comes up
+  return bin_dir / graphd;  // best guess; sync will report if it never comes up
 }
 
 std::filesystem::path supervisor_config_path() {
   if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0') {
     return std::filesystem::path(xdg) / "cgraph" / "supervisor.json";
   }
-  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    return std::filesystem::path(home) / ".config" / "cgraph" / "supervisor.json";
+  if (const auto home = cgraph::home_directory(); !home.empty()) {
+    return home / ".config" / "cgraph" / "supervisor.json";
   }
   return {};
 }
@@ -873,7 +858,7 @@ std::filesystem::path supervisor_config_path() {
 // (repeatable), --exclude PATH, --launch-agents-dir DIR, --graphd PATH,
 // --cgraph PATH, --interval SECONDS. Returns false on a malformed flag.
 [[nodiscard]] bool load_supervisor_config(int argc, char** argv, const char* argv0, cgraph::SupervisorConfig& config) {
-  config.launch_agents_dir = cgraph::default_launch_agents_dir();
+  config.launch_agents_dir = cgraph::default_user_service_dir();
   const auto self = current_executable_path(argv0);
   config.cgraph_binary = self;
   config.graphd_binary = resolve_graphd_binary(self);
@@ -901,8 +886,10 @@ std::filesystem::path supervisor_config_path() {
     const std::string arg = argv[index];
     if (arg == "--search-root" && index + 1 < argc) {
       config.search_roots.emplace_back(argv[++index]);
+      config.flag_search_roots.emplace_back(config.search_roots.back());
     } else if (arg == "--exclude" && index + 1 < argc) {
       config.exclude.emplace_back(argv[++index]);
+      config.flag_exclude.emplace_back(config.exclude.back());
     } else if (arg == "--launch-agents-dir" && index + 1 < argc) {
       config.launch_agents_dir = argv[++index];
     } else if (arg == "--graphd" && index + 1 < argc) {
@@ -921,12 +908,11 @@ std::filesystem::path supervisor_config_path() {
 
 // cgraph daemon <install|sync|status|uninstall> [flags]
 int run_daemon_command(int argc, char** argv) {
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__linux__)
   (void)argc;
   (void)argv;
-  std::cerr << "cgraph daemon: launchd-based supervision is only supported on macOS. "
-               "On this platform run `graphd --root PATH` directly (or supervise it "
-               "with your init system, e.g. a systemd user unit).\n";
+  std::cerr << "cgraph daemon: supervision needs launchd (macOS) or systemd --user (Linux). "
+               "On this platform run `graphd --root PATH` directly.\n";
   return 1;
 #endif
   const std::string sub = argc >= 3 ? argv[2] : "";
@@ -982,7 +968,13 @@ int run_daemon_command(int argc, char** argv) {
 
   if (sub == "install") {
     if (!cgraph::supervisor_install(config)) {
-      std::cerr << "cgraph daemon install: failed (check launchctl and binary paths)\n";
+      std::cerr << "cgraph daemon install: failed (check "
+#if defined(__linux__)
+                   "systemctl --user"
+#else
+                   "launchctl"
+#endif
+                   " and binary paths)\n";
       return 1;
     }
     std::cout << "installed supervisor (" << cgraph::kSupervisorLabel << ") + per-repo daemons\n";
@@ -991,7 +983,7 @@ int run_daemon_command(int argc, char** argv) {
 
   // uninstall
   if (!cgraph::supervisor_uninstall(config)) {
-    std::cerr << "cgraph daemon uninstall: some plists could not be removed\n";
+    std::cerr << "cgraph daemon uninstall: some service definitions could not be removed\n";
     return 1;
   }
   std::cout << "uninstalled supervisor and all managed daemons\n";
@@ -1106,7 +1098,7 @@ int run_drain_command(int argc, char** argv) {
   config.launch_agents_dir = cgraph::default_launch_agents_dir();
   const auto self = current_executable_path(argv[0]);
   config.cgraph_binary = self;
-  config.client_binary = self.parent_path().parent_path() / "client" / "cgraph-client";
+  config.client_binary = self.parent_path().parent_path() / "client" / cgraph::executable_file_name("cgraph-client");
 
   for (int index = 3; index < argc; ++index) {
     const std::string arg = argv[index];

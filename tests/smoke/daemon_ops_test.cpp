@@ -4,9 +4,11 @@
 #include "cgraph/file_cache.hpp"
 #include "cgraph/fragment_json.hpp"
 #include "cgraph/graph_builder.hpp"
+#include "cgraph/pipeline.hpp"
 #include "cgraph/protocol.hpp"
 #include "cgraph/semantic_fragment_validation.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -17,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 int main() {
   namespace fs = std::filesystem;
@@ -487,6 +490,18 @@ int main() {
       still_search["result"]["nodes"].size() != 2) {
     return 1;
   }
+  // A search hit carries its source span, as an entity does, so "show me X" needs no
+  // follow-up file read: Alpha's snippet is read from disk and starts at its declaration.
+  bool alpha_has_source = false;
+  for (const auto& hit : still_search["result"]["nodes"]) {
+    if (hit.value("id", std::string{}) == "a") {
+      alpha_has_source = hit.value("snippet", std::string{}).rfind("class Alpha {", 0) == 0 &&
+                         hit["location"].value("start_line", 0U) == 2U;
+    }
+  }
+  if (!alpha_has_source) {
+    return 1;
+  }
 
   // Blast radius: what breaks if "b" changes? Its dependents are "a" (depth 1,
   // calls b) then "c" (depth 2, calls a). Ordered by depth.
@@ -929,8 +944,20 @@ int main() {
   // focus). "d" is disconnected (no edges) and reachable ONLY as its own seed,
   // and "a" is reachable only from the alpha seeds, so both appearing in the
   // bundle proves the gather unions several ego graphs, not just the focal's.
+  // That idf ordering is the LABEL path's guarantee: it holds where no body
+  // index exists (a snapshot without source hashes, as here) and for
+  // identifier-like queries. On a snapshot with a body index a prose query is
+  // ranked by fusion instead -- asserted right after this block on `state`.
+  cgraph::DaemonState label_only;
+  {
+    auto unhashed = *cgraph::read_graph_snapshot(state);
+    unhashed.source_hashes.clear();
+    unhashed.body_index = nullptr;
+    unhashed.code_generation = cgraph::next_code_generation();  // code hashes changed on a copy
+    cgraph::publish_graph_snapshot(label_only, std::move(unhashed));
+  }
   const auto multi = cgraph::handle_daemon_request(
-      state, cgraph::make_request("context", {{"q", "alpha gamma"}, {"budget", 50000}}));
+      label_only, cgraph::make_request("context", {{"q", "alpha gamma"}, {"budget", 50000}}));
   if (multi["result"]["focus"].value("id", std::string{}) != "d") {
     return 1;  // idf: the rare-term match outranks the ubiquitous-term matches
   }
@@ -942,6 +969,160 @@ int main() {
   }
   if (!multi_found_alpha) {
     return 1;  // the lower-ranked alpha seeds' ego graphs are still unioned in
+  }
+
+  // Fused ranking on the hashed snapshot: "a" is the label ranking's second
+  // match and the body ranking's first ("class Alpha" is its span), "d" is the
+  // label ranking's first and has no body. Reciprocal-rank fusion promises
+  // that agreement wins -- "a" becomes the focus -- and that the rare-term
+  // match is still a seed: "d" is reachable ONLY as its own seed.
+  const auto fused = cgraph::handle_daemon_request(
+      state, cgraph::make_request("context", {{"q", "alpha gamma"}, {"budget", 50000}}));
+  if (fused["result"]["focus"].value("id", std::string{}) != "a") {
+    return 234;
+  }
+  bool fused_found_gamma = false;
+  for (const auto& item : fused["result"]["included"]) {
+    fused_found_gamma = fused_found_gamma || item.value("id", std::string{}) == "d";
+  }
+  if (!fused_found_gamma) {
+    return 235;
+  }
+
+  // --- body BM25 seeding with query-type routing (CGR-25) ---
+  // Labels share no word with the query; only the bodies do. A prose query
+  // resolves through the body index; an identifier-like one stays on the label
+  // path, where no label matches, and is an honest miss.
+  {
+    const auto retry_go = src.parent_path() / "retry.go";
+    const auto write_retry = [&](const std::string& text) {
+      std::ofstream(retry_go, std::ios::binary) << text;
+      return cgraph::sha256_hex(text);
+    };
+    cgraph::GraphSnapshot g;
+    g.build_state = cgraph::BuildState::DeterministicReady;
+    const auto located = [&](const std::string& id, std::uint32_t start, std::uint32_t end) {
+      return cgraph::Node{.id = id, .label = id, .source_file = retry_go.generic_string(),
+                          .source_location = cgraph::SourceLocation{.start_line = start, .end_line = end},
+                          .kind = "function"};
+    };
+    g.nodes = {located("handler", 1, 3), located("worker", 4, 7)};
+    // A helper whose body is all "call" words: a structural phrase's verb
+    // ("callers" stems to "call") must not reach it through the body ranking.
+    const auto helper_go = src.parent_path() / "helper.go";
+    const std::string helper_text = "func testHelper() {\n  // callers call this to call the handler\n}\n";
+    std::ofstream(helper_go, std::ios::binary) << helper_text;
+    g.source_hashes[helper_go.lexically_normal().generic_string()] = cgraph::sha256_hex(helper_text);
+    g.nodes.push_back(cgraph::Node{.id = "testHelper", .label = "testHelper", .source_file = helper_go.generic_string(),
+                                   .source_location = cgraph::SourceLocation{.start_line = 1, .end_line = 3},
+                                   .kind = "function"});
+    g.edges.push_back(cgraph::Edge{.source = "handler", .target = "worker", .relation = "CALLS"});
+    g.source_hashes[retry_go.lexically_normal().generic_string()] = write_retry(
+        "func handler() {\n"
+        "  serveHTTP(responseWriter)\n"
+        "}\n"
+        "func worker() {\n"
+        "  // exponential backoff between attempts\n"
+        "  sleep(backoffDelay)\n"
+        "}\n");
+    cgraph::DaemonState s;
+    cgraph::publish_graph_snapshot(s, g);
+
+    const auto prose = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "requests stall in exponential backoff"}, {"budget", 5000}}));
+    if (prose["result"]["focus"].value("id", std::string{}) != "worker") {
+      return 230;  // body vocabulary seeds the focus a label match never could
+    }
+    const auto search = cgraph::handle_daemon_request(
+        s, cgraph::make_request("query", {{"q", "requests stall in exponential backoff"}}));
+    if (search["result"]["nodes"].empty() || search["result"]["nodes"][0].value("id", std::string{}) != "worker") {
+      return 231;  // the query op's lexical route ranks the same way
+    }
+    // No label matches: `total` (name matches) stays 0, the body-only
+    // candidates are counted apart, and the call is not a zero hit.
+    if (search["result"].value("total", -1) != 0 || search["result"].value("body_candidates", 0) != 1 ||
+        search["result"].contains("suggestions")) {
+      return 237;
+    }
+    // "callers of exponential": the operand resolves no symbol, so the phrase
+    // falls through to search -- and only the operand is scored on bodies.
+    const auto phrase = cgraph::handle_daemon_request(
+        s, cgraph::make_request("query", {{"q", "callers of exponential"}}));
+    bool phrase_found_worker = false;
+    for (const auto& node : phrase["result"]["nodes"]) {
+      if (node.value("id", std::string{}) == "testHelper") {
+        return 238;  // the verb leaked into the body query
+      }
+      phrase_found_worker = phrase_found_worker || node.value("id", std::string{}) == "worker";
+    }
+    if (!phrase_found_worker) {
+      return 239;
+    }
+    const auto identifier = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "backoffDelay"}, {"budget", 5000}}));
+    if (!identifier["result"]["focus"].is_null()) {
+      return 232;  // an identifier-like query keeps the label-only path
+    }
+
+    // A mutation that leaves code content alone (memory, overlays, enrichment)
+    // keeps the very same index: publishing it does no per-node work.
+    const auto index_before = cgraph::read_graph_snapshot(s)->body_index;
+    cgraph::mutate_graph_snapshot(s, [](cgraph::GraphSnapshot& current) {
+      current.nodes.push_back(cgraph::Node{.id = "memory:note", .label = "note", .kind = "memory"});
+    });
+    if (index_before == nullptr || cgraph::read_graph_snapshot(s)->body_index != index_before) {
+      return 236;
+    }
+
+    // Why types.hpp says code edits on a copy MUST take a new code_generation:
+    // the generation, not the nodes, decides reuse. Shrinking worker's span to
+    // drop its "sleep(backoffDelay)" line on a copy that keeps the generation
+    // republishes the stale index (the dropped words still find worker);
+    // assigning a fresh generation re-cuts the span and they no longer do.
+    const auto sleep_query = [&](cgraph::DaemonState& st) {
+      return cgraph::handle_daemon_request(
+          st, cgraph::make_request("context", {{"q", "sleep delay"}, {"budget", 5000}}))["result"]["focus"];
+    };
+    if (sleep_query(s).value("id", std::string{}) != "worker") {
+      return 240;
+    }
+    auto respanned = *cgraph::read_graph_snapshot(s);
+    for (auto& node : respanned.nodes) {
+      if (node.id == "worker") {
+        node.source_location->end_line = 5;
+      }
+    }
+    const auto unchanged_generation = respanned;
+    cgraph::publish_graph_snapshot(s, unchanged_generation);
+    if (cgraph::read_graph_snapshot(s)->body_index != index_before ||
+        sleep_query(s).value("id", std::string{}) != "worker") {
+      return 241;  // same generation: the index is reused as is, stale by contract
+    }
+    respanned.code_generation = cgraph::next_code_generation();
+    cgraph::publish_graph_snapshot(s, respanned);
+    if (cgraph::read_graph_snapshot(s)->body_index == index_before || !sleep_query(s).is_null()) {
+      return 242;  // a fresh generation re-indexes: the cut line's words are gone
+    }
+
+    // An edit republished through the single-writer path is searchable at
+    // once; the replaced body is not.
+    g.source_hashes[retry_go.lexically_normal().generic_string()] = write_retry(
+        "func handler() {\n"
+        "  serveHTTP(responseWriter)\n"
+        "}\n"
+        "func worker() {\n"
+        "  // drain the circuit breaker queue\n"
+        "  flushQueue()\n"
+        "}\n");
+    g.code_generation = cgraph::next_code_generation();  // a re-extraction is new code content
+    cgraph::publish_graph_snapshot(s, g);
+    const auto edited = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "circuit breaker trips"}, {"budget", 5000}}));
+    const auto stale = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"q", "requests stall in exponential backoff"}, {"budget", 5000}}));
+    if (edited["result"]["focus"].value("id", std::string{}) != "worker" || !stale["result"]["focus"].is_null()) {
+      return 233;
+    }
   }
 
   fs::remove_all(src.parent_path());
@@ -1529,6 +1710,9 @@ int main() {
     if (cps.size() != 2 || cps[0].value("label", std::string{}) != "Second task" ||
         cps[1].value("label", std::string{}) != "Refactor charge") {
       return 96;  // newest-first
+    }
+    if (rec["result"].value("returned", 0) != 2) {
+      return 96;  // returned counts the checkpoints actually sent
     }
     if (cps[1].value("snippet", std::string{}).find("did X") == std::string::npos) {
       return 97;  // body is snippet-readable through source_file
@@ -2275,6 +2459,104 @@ int main() {
         cgraph::make_request("context", {{"id", "EditorState::member7"}, {"budget", 3000}}))["result"];
     if (field_ctx["focus"].value("id", std::string{}) != "EditorState::member7") {
       return 112;
+    }
+  }
+
+  // --- context packs the same entries wherever the project is checked out
+  //     (CGR-33). One tree is built at a short root and at one 142 characters
+  //     longer; a budget that sheds candidates must pack identical entries
+  //     in identical order, because an entry names its file relative to the
+  //     root (given once, at top level) and is charged only for that. ---
+  {
+    const auto base = fs::temp_directory_path() / "cgraph-context-root-test";
+    fs::remove_all(base);
+    const auto short_root = base / "s";
+    const auto long_root = base / std::string(120, 'l') / "a-much-deeper-checkout";
+    std::string hub = "from pkg.leaves import *\n\n\ndef hub():\n";
+    std::string leaves;
+    for (int i = 0; i < 40; ++i) {
+      const auto name = "leaf_" + std::to_string(i);
+      hub += "    " + name + "()\n";
+      leaves += "def " + name + "():\n    value = " + std::to_string(i) +
+                "\n    return value * value\n\n\n";
+    }
+    for (const auto& root : {short_root, long_root}) {
+      fs::create_directories(root / "pkg");
+      std::ofstream(root / "pkg" / "__init__.py", std::ios::binary) << "";
+      std::ofstream(root / "pkg" / "hub.py", std::ios::binary) << hub;
+      std::ofstream(root / "pkg" / "leaves.py", std::ios::binary) << leaves;
+    }
+
+    const auto context_at = [](const fs::path& root, const std::string& packing) {
+      cgraph::DaemonState s;
+      s.project_root = fs::weakly_canonical(root);
+      cgraph::publish_graph_snapshot(s, cgraph::run_one_shot(s.project_root).graph);
+      return cgraph::handle_daemon_request(
+          s, cgraph::make_request("context", {{"id", "pkg_hub_py_hub"}, {"budget", 1500}, {"packing", packing}}))["result"];
+    };
+    for (const auto* packing : {"greedy", "knapsack"}) {
+      const auto near = context_at(short_root, packing);
+      const auto far = context_at(long_root, packing);
+      if (near["focus"].value("source_file", std::string{}) != "pkg/hub.py" ||
+          near.value("root", std::string{}) != fs::weakly_canonical(short_root).generic_string() ||
+          far.value("root", std::string{}) != fs::weakly_canonical(long_root).generic_string()) {
+        return 120;  // entries name files relative to the root, given once
+      }
+      if (!near.value("truncated", false) || near["included"].size() < 3U) {
+        return 121;  // the budget must shed, or packing cannot depend on the path
+      }
+      if (near["focus"] != far["focus"] || near["included"] != far["included"] ||
+          near.value("omitted", 0U) != far.value("omitted", 0U) ||
+          near.value("tokens_used", 0U) != far.value("tokens_used", 0U)) {
+        return 122;  // same tree, same entries, same order, same charge
+      }
+    }
+    fs::remove_all(base);
+  }
+
+  // --- a seed's tests are reached at depth 1 (CGR-38) ---
+  // `tests` hangs off the file node, a hop past a symbol seed, and a test file
+  // has little centrality, so it used to rank under every file the seed's file
+  // imports. It now sits with the seed's own file.
+  {
+    cgraph::DaemonState s;
+    cgraph::GraphSnapshot g;
+    g.build_state = cgraph::BuildState::DeterministicReady;
+    const auto file = [&](const std::string& id, const std::string& centrality) {
+      g.nodes.push_back(cgraph::Node{.id = id, .label = id, .source_file = "/r/" + id, .kind = "file",
+                                     .properties = {{"degree_centrality", centrality}}});
+    };
+    file("path.go", "0.300000");
+    file("path_test.go", "0.010000");
+    file("hub1.go", "0.900000");
+    file("hub2.go", "0.800000");
+    g.nodes.push_back(cgraph::Node{.id = "clean", .label = "cleanPath", .source_file = "/r/path.go", .kind = "function"});
+    g.edges.push_back(cgraph::Edge{.source = "path.go", .target = "clean", .relation = "contains"});
+    g.edges.push_back(cgraph::Edge{.source = "path.go", .target = "hub1.go", .relation = "imports"});
+    g.edges.push_back(cgraph::Edge{.source = "path.go", .target = "hub2.go", .relation = "imports"});
+    g.edges.push_back(cgraph::Edge{.source = "path_test.go", .target = "path.go", .relation = "tests"});
+    cgraph::publish_graph_snapshot(s, std::move(g));
+
+    for (const char* gather : {"fixed", "adaptive"}) {
+      const auto r = cgraph::handle_daemon_request(
+          s, cgraph::make_request("context", {{"id", "clean"}, {"budget", 5000}, {"gather", gather}}));
+      const auto& included = r["result"]["included"];
+      std::vector<std::string> order;
+      int test_depth = -1;
+      for (const auto& item : included) {
+        order.push_back(item.value("label", std::string{}));
+        if (order.back() == "path_test.go") test_depth = item.value("depth", -1);
+      }
+      const auto at = [&](const std::string& label) { return std::ranges::find(order, label) - order.begin(); };
+      if (test_depth != 1 || at("path_test.go") > at("hub1.go") || at("path_test.go") > at("hub2.go")) {
+        return 130;
+      }
+    }
+    // max_depth 0 asks for the seed alone; its tests are a hop away.
+    const auto alone = cgraph::handle_daemon_request(
+        s, cgraph::make_request("context", {{"id", "clean"}, {"budget", 5000}, {"max_depth", 0}}));
+    if (!alone["result"]["included"].empty()) {
+      return 131;
     }
   }
 

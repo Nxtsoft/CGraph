@@ -35,18 +35,11 @@
 #include <thread>
 #include <vector>
 
-#ifndef _WIN32
-#include <cerrno>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#endif
+#include "cgraph/local_socket.hpp"
+#include "cgraph/platform.hpp"
 
 namespace cgraph {
 namespace {
-
-#ifndef _WIN32
 
 // Per-connection I/O timeout. The daemon serves each connection inline on its
 // single serve-loop thread, so a client that stalls mid-frame would otherwise
@@ -55,70 +48,24 @@ namespace {
 // the thin client makes; a slower peer is dropped and the serve loop continues.
 constexpr std::chrono::seconds kConnectionIoTimeout{5};
 
-// Applies SO_RCVTIMEO + SO_SNDTIMEO to an accepted connection so a blocking
-// read/write cannot hang the single serve thread indefinitely. Best-effort:
-// a failed setsockopt only means the fallback (no timeout) for that one socket,
-// which is logged; it never aborts serving.
-void apply_connection_timeout(int conn) {
-  timeval tv{};
-  tv.tv_sec = static_cast<time_t>(kConnectionIoTimeout.count());
-  tv.tv_usec = 0;
-  if (::setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||
-      ::setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
-    std::cerr << "graphd: setsockopt(timeout) failed: " << std::strerror(errno) << '\n';
-  }
-}
+// Runs `cleanup` when the scope exits, by return or by exception.
+template <typename Cleanup>
+class ScopeExit {
+ public:
+  explicit ScopeExit(Cleanup cleanup) : cleanup_(std::move(cleanup)) {}
+  ~ScopeExit() { cleanup_(); }
+  ScopeExit(const ScopeExit&) = delete;
+  ScopeExit& operator=(const ScopeExit&) = delete;
 
-// Fills a sockaddr_un for `path`. Returns false if the path is too long for the
-// platform's sun_path (a hard limit, ~104 bytes on macOS) — a clear failure
-// rather than a silently truncated, wrong endpoint.
-[[nodiscard]] bool fill_sockaddr(sockaddr_un& addr, const std::string& path) {
-  if (path.size() >= sizeof(addr.sun_path)) {
-    return false;
-  }
-  addr.sun_family = AF_UNIX;
-  std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
-  return true;
-}
-
-[[nodiscard]] bool write_all(int fd, const std::uint8_t* data, std::size_t size) {
-  std::size_t sent = 0;
-  while (sent < size) {
-    const auto written = ::write(fd, data + sent, size - sent);
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    sent += static_cast<std::size_t>(written);
-  }
-  return true;
-}
-
-[[nodiscard]] bool read_exact(int fd, std::uint8_t* data, std::size_t size) {
-  std::size_t received = 0;
-  while (received < size) {
-    const auto got = ::read(fd, data + received, size - received);
-    if (got == 0) {
-      return false;  // peer closed early
-    }
-    if (got < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    received += static_cast<std::size_t>(got);
-  }
-  return true;
-}
+ private:
+  Cleanup cleanup_;
+};
 
 // Reads one length-prefixed frame (4-byte little-endian length + body) and
 // decodes it, reusing the shared protocol codec.
-[[nodiscard]] std::optional<nlohmann::json> read_frame(int fd) {
+[[nodiscard]] std::optional<nlohmann::json> read_frame(const LocalSocket& socket, const SocketDeadline& deadline = {}) {
   std::array<std::uint8_t, 4> header{};
-  if (!read_exact(fd, header.data(), header.size())) {
+  if (!receive_exact(socket, header.data(), header.size(), deadline)) {
     return std::nullopt;
   }
   const auto length =
@@ -135,92 +82,70 @@ void apply_connection_timeout(int conn) {
   }
   std::vector<std::uint8_t> frame(static_cast<std::size_t>(length) + 4);
   std::memcpy(frame.data(), header.data(), header.size());
-  if (length > 0 && !read_exact(fd, frame.data() + 4, length)) {
+  if (length > 0 && !receive_exact(socket, frame.data() + 4, length, deadline)) {
     return std::nullopt;
   }
   return decode_frame(frame);
 }
 
-[[nodiscard]] bool write_frame(int fd, const nlohmann::json& payload) {
+[[nodiscard]] bool write_frame(const LocalSocket& socket, const nlohmann::json& payload,
+                               const SocketDeadline& deadline = {}) {
   const auto frame = encode_frame(payload);
-  return write_all(fd, frame.data(), frame.size());
+  return send_all(socket, frame.data(), frame.size(), deadline);
 }
 
-#endif  // !_WIN32
-
-}  // namespace
-
-#ifdef _WIN32
-
-int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions) {
-  (void)root;
-  std::cerr << "graphd: the Unix-socket server is not implemented on Windows yet\n";
-  return 1;
+// The thin client uses one connection per request: read it, answer it. A
+// request whose client has already gone is counted and not computed, so
+// abandoned asks do not hold up the ones behind them. The thin client never
+// half-closes: it writes its frame and reads the answer, so a hang-up seen
+// right after its frame was read means nobody will read the answer.
+void answer_connection(DaemonState& state, const LocalSocket& conn) {
+  if (const auto request = read_frame(conn)) {
+    if (peer_hung_up(conn)) {
+      ++state.op_stats.abandoned;
+      return;
+    }
+    const auto response = handle_daemon_request(state, *request);
+    (void)write_frame(conn, response);
+  }
 }
 
-std::optional<nlohmann::json> request_over_unix_socket(const std::filesystem::path&, const nlohmann::json&) {
-  return std::nullopt;
-}
-
-#else
-
-namespace {
-
-// Runs `cleanup` when the scope exits, by return or by exception.
-template <typename Cleanup>
-class ScopeExit {
- public:
-  explicit ScopeExit(Cleanup cleanup) : cleanup_(std::move(cleanup)) {}
-  ~ScopeExit() { cleanup_(); }
-  ScopeExit(const ScopeExit&) = delete;
-  ScopeExit& operator=(const ScopeExit&) = delete;
-
- private:
-  Cleanup cleanup_;
+// What open_listen_socket found at the endpoint.
+struct ListenResult {
+  LocalSocket listener;
+  bool already_served = false;  // a healthy daemon serves this root: exit 0
 };
 
-// Sentinel returned by open_listen_socket when a healthy daemon already serves
-// this root: the caller should exit cleanly (0) rather than treat it as an error.
-constexpr int kEndpointAlreadyServed = -2;
-
-// Open a Unix-domain listening socket at socket_path. If a healthy daemon already
-// serves this root, returns kEndpointAlreadyServed without touching the endpoint.
-// Otherwise clears any stale endpoint from a crashed daemon and binds. Returns the
-// listen fd, or -1 on failure (already logged).
+// Opens the listening socket at socket_path. If a healthy daemon already
+// serves this root, reports already_served without touching the endpoint.
+// Otherwise clears any stale endpoint from a crashed daemon and binds. An
+// invalid listener with already_served false is a failure (already logged).
 // Shared by the full build-and-watch server and the static seam server.
-[[nodiscard]] int open_listen_socket(const std::filesystem::path& socket_path) {
+[[nodiscard]] ListenResult open_listen_socket(const std::filesystem::path& socket_path) {
   ensure_unix_socket_dir(socket_path);
   // Never unlink a live endpoint out from under a running daemon: probe first so
   // a start race (supervisor + MCP auto-spawn) defers instead of stealing it.
   if (unix_endpoint_is_live(socket_path)) {
     std::cerr << "graphd: already serving " << socket_path << ", deferring to the resident daemon\n";
-    return kEndpointAlreadyServed;
+    return {.listener = {}, .already_served = true};
   }
-  ::unlink(socket_path.c_str());
-
-  const int listen_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (listen_fd < 0) {
-    std::cerr << "graphd: socket() failed: " << std::strerror(errno) << '\n';
-    return -1;
-  }
-  sockaddr_un addr{};
-  if (!fill_sockaddr(addr, socket_path.string())) {
-    std::cerr << "graphd: socket path too long: " << socket_path << '\n';
-    ::close(listen_fd);
-    return -1;
-  }
-  if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    std::cerr << "graphd: bind() failed: " << std::strerror(errno) << '\n';
-    ::close(listen_fd);
-    return -1;
-  }
-  if (::listen(listen_fd, 16) != 0) {
-    std::cerr << "graphd: listen() failed: " << std::strerror(errno) << '\n';
-    ::close(listen_fd);
+  (void)remove_socket_file(socket_path);
+  std::string error;
+  auto listener = listen_on_local_socket(socket_path, error);
+  if (!listener.valid()) {
+    std::cerr << "graphd: " << error << '\n';
     (void)cleanup_daemon_endpoint(socket_path);
-    return -1;
   }
-  return listen_fd;
+  return {.listener = std::move(listener), .already_served = false};
+}
+
+// One serve-loop wait for a client. Failed is logged; the caller stops.
+[[nodiscard]] SocketWait wait_for_client(const LocalSocket& listener, std::chrono::milliseconds tick) {
+  const auto result = wait_for_connection(listener, tick);
+  if (result == SocketWait::Failed) {
+    std::cerr << "graphd: poll() failed: " << last_socket_error() << '\n';
+  }
+  return result;
 }
 
 // Logged, never fatal: an unwritten stat index only means the next plan
@@ -243,21 +168,22 @@ void persist_stat_index(const SemanticStatIndex& index, const std::filesystem::p
 int run_static_seam_server(const std::filesystem::path& root, DaemonServerOptions options) {
   const auto identity = daemon_identity_for(root);
   const auto socket_path = unix_socket_path(identity);
-  const int listen_fd = open_listen_socket(socket_path);
-  if (listen_fd == kEndpointAlreadyServed) {
+  auto opened = open_listen_socket(socket_path);
+  auto& listener = opened.listener;
+  if (opened.already_served) {
     return 0;  // a resident daemon already serves this root; defer cleanly
   }
-  if (listen_fd < 0) {
+  if (!listener.valid()) {
     return 1;
   }
 
   DaemonState state;
-  state.pid = ::getpid();
+  state.pid = static_cast<int>(current_process_id());
   state.project_root = identity.project_root;
   const auto graph_path = root / "graph.json";
   if (!load_graph_snapshot(state, graph_path)) {
     std::cerr << "graphd: failed to load seam graph: " << graph_path << '\n';
-    ::close(listen_fd);
+    listener = LocalSocket{};  // close before removing the socket file
     (void)cleanup_daemon_endpoint(socket_path);
     return 1;
   }
@@ -276,19 +202,11 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
 
   auto last_activity = FileWatcherClock::now();
   while (!state.shutdown_requested) {
-    fd_set read_set;
-    FD_ZERO(&read_set);
-    FD_SET(listen_fd, &read_set);
-    timeval timeout{};
-    timeout.tv_sec = 1;
-    const int ready = ::select(listen_fd + 1, &read_set, nullptr, nullptr, &timeout);
-    if (ready < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
+    const auto ready = wait_for_client(listener, std::chrono::seconds{1});
+    if (ready == SocketWait::Failed) {
       break;
     }
-    if (ready == 0) {
+    if (ready == SocketWait::TimedOut) {
       // A non-positive idle timeout disables idle shutdown entirely: the daemon
       // stays resident (and watching) until an explicit shutdown op or signal.
       if (options.idle_timeout > std::chrono::seconds::zero() &&
@@ -298,22 +216,15 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
       }
       continue;
     }
-    const int conn = ::accept(listen_fd, nullptr, nullptr);
-    if (conn < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
+    // The I/O timeout keeps a stalled peer from wedging the serve loop.
+    const auto conn = accept_local_connection(listener, kConnectionIoTimeout);
+    if (!conn.valid()) {
       break;
     }
     last_activity = FileWatcherClock::now();
-    apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
-    if (const auto request = read_frame(conn)) {
-      const auto response = handle_daemon_request(state, *request);
-      (void)write_frame(conn, response);
-    }
-    ::close(conn);
+    answer_connection(state, conn);
   }
-  ::close(listen_fd);
+  listener = LocalSocket{};  // close before removing the socket file
   (void)cleanup_daemon_endpoint(socket_path);
   return 0;
 }
@@ -321,17 +232,18 @@ int run_static_seam_server(const std::filesystem::path& root, DaemonServerOption
 int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions options) {
   const auto identity = daemon_identity_for(root);
   const auto socket_path = unix_socket_path(identity);
-  const int listen_fd = open_listen_socket(socket_path);
-  if (listen_fd == kEndpointAlreadyServed) {
+  auto opened = open_listen_socket(socket_path);
+  auto& listener = opened.listener;
+  if (opened.already_served) {
     return 0;  // a resident daemon already serves this root; defer cleanly,
                // leaving its socket and snapshots untouched
   }
-  if (listen_fd < 0) {
+  if (!listener.valid()) {
     return 1;
   }
 
   DaemonState state;
-  state.pid = ::getpid();
+  state.pid = static_cast<int>(current_process_id());
   state.project_root = identity.project_root;
 
   // Serve immediately. Publish an empty graph so status/query answer right away
@@ -357,7 +269,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // Session-memory checkpoint sidecars live here, separate from semantic-drop, so
   // the two host-authored layers are overlaid and managed independently.
   const auto memory_dir = identity.project_root / "cgraph-out" / "memory";
-  SemanticCache cache = read_semantic_cache(cache_path);
+  std::string cache_problem;
+  SemanticCache cache = read_semantic_cache(cache_path, &cache_problem);
+  if (!cache_problem.empty()) {
+    // Starting empty is safe only because the next write sets the file aside
+    // instead of replacing it.
+    std::cerr << "graphd: ignoring semantic cache " << cache_path.string() << ": " << cache_problem << '\n';
+  }
   // Stat cache for the enrichment plan walk: lets a refresh reuse stored hashes
   // for unchanged docs/media instead of re-reading and re-hashing every file.
   // Persisted next to the semantic cache so a restart stays cheap.
@@ -617,7 +535,9 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
     ingest_all_memory(overlay_state);
     try {
-      write_semantic_cache(cache, cache_path);
+      if (const auto set_aside = write_semantic_cache(cache, cache_path)) {
+        std::cerr << "graphd: the unusable semantic cache was moved to " << set_aside->string() << '\n';
+      }
     } catch (const FileWriteError& error) {
       // Logged, never fatal: the live overlay is already built; an unwritten
       // cache only means the next restart re-enriches.
@@ -640,6 +560,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   // write graph.json plus a version-stamped manifest of the file set it was built
   // from, so a later restart with an unchanged tree can serve straight from disk.
   const auto out_dir = identity.project_root / "cgraph-out";
+  (void)ensure_output_dir_ignored(out_dir);  // reports its own failure; the daemon still serves
   const auto graph_path = out_dir / "graph.json";
   const auto manifest_path = out_dir / "index-manifest.json";
 
@@ -693,6 +614,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     // initial build, the empty/building) snapshot until rebuild_final_overlay
     // publishes the fused deterministic+overlay result in one step.
     DaemonState scan_state;
+    // Staged on the served snapshot (never visible to readers) so the
+    // rescan's publish re-tokenizes only the files whose bytes or spans
+    // changed (body_index.hpp) instead of every file.
+    scan_state.graph_snapshot = read_graph_snapshot(state);
     const auto result = full_stat_index_rescan(scan_state, index, identity.project_root);
     if (result.applied) {
       {
@@ -755,6 +680,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       return false;
     }
     auto graph = *read_graph_snapshot(persisted_state);
+    graph.code_generation = next_code_generation();  // source hashes attached below change the code identity
     graph.content_root = manifest->content_root;
     graph.source_hashes.reserve(manifest->files.size());
     for (const auto& entry : manifest->files) {
@@ -762,7 +688,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         graph.source_hashes[incremental_file_key(entry.path)] = entry.sha256;
       }
     }
-    deterministic_graph = std::move(graph);
+    // Publish once more through the staged state so the canonical
+    // deterministic graph carries a body index verified for its own code
+    // generation. Assigning the bare copy would leave the load's empty index
+    // attached, and every overlay publish (rebuild_final_overlay) would
+    // re-index the whole tree until the first code edit.
+    publish_graph_snapshot(persisted_state, std::move(graph));
+    deterministic_graph = *read_graph_snapshot(persisted_state);
     // The persisted graph does not hydrate extraction fragments, but its file
     // entries were just content-verified and remain the canonical manifest
     // source until the first full rescan. Without this cache hydration, a later
@@ -886,7 +818,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
     }
     refresh_cv.notify_one();
     enrichment_worker.join();
-    ::close(listen_fd);
+    listener = LocalSocket{};  // close before removing the socket file
     (void)cleanup_daemon_endpoint(socket_path);
   });
 
@@ -898,21 +830,8 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
   auto last_code_poll = FileWatcherClock::now();
   try {
     while (!state.shutdown_requested && !fatal_error.load()) {
-      fd_set read_set;
-      FD_ZERO(&read_set);
-      FD_SET(listen_fd, &read_set);
-      timeval timeout{};
-      timeout.tv_usec = static_cast<int>(
-          std::chrono::duration_cast<std::chrono::microseconds>(options.drop_poll_interval).count() % 1'000'000);
-      timeout.tv_sec = static_cast<time_t>(
-          std::chrono::duration_cast<std::chrono::seconds>(options.drop_poll_interval).count());
-
-      const int ready = ::select(listen_fd + 1, &read_set, nullptr, nullptr, &timeout);
-      if (ready < 0) {
-        if (errno == EINTR) {
-          continue;
-        }
-        std::cerr << "graphd: select() failed: " << std::strerror(errno) << '\n';
+      const auto ready = wait_for_client(listener, options.drop_poll_interval);
+      if (ready == SocketWait::Failed) {
         break;
       }
 
@@ -972,6 +891,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
             // full rescan (a per-file rebuild here would wipe the graph), staged
             // like every rescan so readers never see an intermediate; subsequent
             // events go incremental.
+            hydration_state.graph_snapshot = read_graph_snapshot(state);  // body-index reuse, as in rescan
             result = full_stat_index_rescan(hydration_state, index, identity.project_root);
           }
           for (const auto& warning : result.warnings) {
@@ -1033,7 +953,7 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         std::cerr << "graphd: persisted incremental graph state\n";
       }
 
-      if (ready == 0) {
+      if (ready == SocketWait::TimedOut) {
         // A non-positive idle timeout disables idle shutdown entirely: the daemon
         // stays resident (and watching) until an explicit shutdown op or signal.
         if (options.idle_timeout > std::chrono::seconds::zero() &&
@@ -1044,21 +964,13 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         continue;  // no connection this tick; keep polling drops
       }
 
-      const int conn = ::accept(listen_fd, nullptr, nullptr);
-      if (conn < 0) {
-        if (errno == EINTR) {
-          continue;
-        }
+      // The I/O timeout keeps a stalled peer from wedging the serve loop.
+      const auto conn = accept_local_connection(listener, kConnectionIoTimeout);
+      if (!conn.valid()) {
         break;
       }
       last_activity = FileWatcherClock::now();
-      apply_connection_timeout(conn);  // a stalled peer must not wedge the serve loop
-      // The thin client uses one connection per request: read it, answer it, close.
-      const ScopeExit close_conn([conn] { ::close(conn); });
-      if (const auto request = read_frame(conn)) {
-        const auto response = handle_daemon_request(state, *request);
-        (void)write_frame(conn, response);
-      }
+      answer_connection(state, conn);
     }
   } catch (const std::exception& error) {
     record_fatal("serve loop", error);
@@ -1095,28 +1007,16 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
 
 std::optional<nlohmann::json> request_over_unix_socket(
     const std::filesystem::path& socket_path,
-    const nlohmann::json& request) {
-  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
+    const nlohmann::json& request,
+    std::optional<std::chrono::steady_clock::time_point> deadline) {
+  const auto socket = connect_local_socket(socket_path, deadline);
+  if (!socket.valid()) {
+    return std::nullopt;  // refused / absent -> caller spawns and retries
+  }
+  if (!write_frame(socket, request, deadline)) {
     return std::nullopt;
   }
-  sockaddr_un addr{};
-  if (!fill_sockaddr(addr, socket_path.string())) {
-    ::close(fd);
-    return std::nullopt;
-  }
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);  // ECONNREFUSED / ENOENT -> caller spawns and retries
-    return std::nullopt;
-  }
-  std::optional<nlohmann::json> response;
-  if (write_frame(fd, request)) {
-    response = read_frame(fd);
-  }
-  ::close(fd);
-  return response;
+  return read_frame(socket, deadline);
 }
-
-#endif  // _WIN32
 
 }  // namespace cgraph

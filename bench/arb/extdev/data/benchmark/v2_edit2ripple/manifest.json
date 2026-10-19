@@ -1,0 +1,85 @@
+{
+  "audit": "extdev: no human audit; ARB miner filters + corpus gates + ARB fatal-leakage filter only",
+  "funnel": {
+    "after_arb_leakage_filter": {
+      "Textualize/rich": 28,
+      "colinhacks/zod": 28,
+      "honojs/hono": 28,
+      "labstack/echo": 28,
+      "nushell/nushell": 28,
+      "prometheus/prometheus": 28,
+      "psf/black": 29,
+      "sharkdp/bat": 28,
+      "spf13/cobra": 31,
+      "tokio-rs/axum": 28
+    },
+    "after_per_repo_limit_20": {
+      "Textualize/rich": 19,
+      "colinhacks/zod": 20,
+      "honojs/hono": 13,
+      "labstack/echo": 17,
+      "nushell/nushell": 20,
+      "prometheus/prometheus": 20,
+      "psf/black": 20,
+      "sharkdp/bat": 18,
+      "spf13/cobra": 20,
+      "tokio-rs/axum": 20
+    },
+    "after_test_only_policy_and_repo_cap": {
+      "Textualize/rich": 19,
+      "colinhacks/zod": 20,
+      "honojs/hono": 13,
+      "labstack/echo": 17,
+      "nushell/nushell": 20,
+      "prometheus/prometheus": 20,
+      "psf/black": 20,
+      "sharkdp/bat": 18,
+      "spf13/cobra": 20,
+      "tokio-rs/axum": 20
+    },
+    "mined_with_corpus_gates": {
+      "Textualize/rich": 28,
+      "colinhacks/zod": 28,
+      "honojs/hono": 28,
+      "labstack/echo": 28,
+      "nushell/nushell": 28,
+      "prometheus/prometheus": 28,
+      "psf/black": 29,
+      "sharkdp/bat": 28,
+      "spf13/cobra": 31,
+      "tokio-rs/axum": 28
+    }
+  },
+  "name": "v2_edit2ripple",
+  "paths": {
+    "benchmark": "data/benchmark/v2_edit2ripple",
+    "corpus": "data/corpus/v2_edit2ripple"
+  },
+  "repo_counts": {
+    "Textualize/rich": 19,
+    "colinhacks/zod": 20,
+    "honojs/hono": 13,
+    "labstack/echo": 17,
+    "nushell/nushell": 20,
+    "prometheus/prometheus": 20,
+    "psf/black": 20,
+    "sharkdp/bat": 18,
+    "spf13/cobra": 20,
+    "tokio-rs/axum": 20
+  },
+  "sample_count": 187,
+  "schema": "arb_extdev_v2",
+  "selection": {
+    "fatal_leakage_dropped_by_type": {},
+    "order": "recency",
+    "per_repo_limit": 20,
+    "repo_cap": 20,
+    "repo_share": 0.25,
+    "test_only_dropped": 0,
+    "test_only_ratio": 0.23529411764705882
+  },
+  "task_counts": {
+    "edit2ripple": 187
+  },
+  "task_type": "edit2ripple"
+}

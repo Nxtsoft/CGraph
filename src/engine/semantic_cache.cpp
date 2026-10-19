@@ -392,36 +392,88 @@ ReconciliationResult reconcile_semantic_cache(
   return result;
 }
 
-void write_semantic_cache(const SemanticCache& cache, const std::filesystem::path& path) {
+namespace {
+
+// An existing cache file that read_semantic_cache cannot use is moved to
+// `<name>.invalid` (`.invalid.1`, ... when taken) before a write replaces it.
+// The reader returns an empty cache for such a file, so without this the next
+// write would overwrite the only copy of LLM-authored enrichment. Throws
+// FileWriteError when the file cannot be moved: not overwriting is the point.
+[[nodiscard]] std::optional<std::filesystem::path> set_aside_unusable_cache(const std::filesystem::path& path) {
+  std::error_code error;
+  if (!std::filesystem::exists(path, error)) {
+    return std::nullopt;
+  }
+  std::string problem;
+  (void)read_semantic_cache(path, &problem);
+  if (problem.empty()) {
+    return std::nullopt;
+  }
+
+  constexpr int kMaxAside = 1000;
+  for (int attempt = 0; attempt < kMaxAside; ++attempt) {
+    auto target = path;
+    target += attempt == 0 ? std::string{".invalid"} : ".invalid." + std::to_string(attempt);
+    if (std::filesystem::exists(target, error)) {
+      continue;
+    }
+    std::filesystem::rename(path, target, error);
+    if (error) {
+      throw FileWriteError("failed to write " + path.string() + ": the existing file is unusable (" + problem +
+                           ") and could not be moved aside (" + error.message() + ")");
+    }
+    return target;
+  }
+  throw FileWriteError("failed to write " + path.string() + ": the existing file is unusable (" + problem +
+                       ") and " + std::to_string(kMaxAside) + " earlier copies are already set aside");
+}
+
+}  // namespace
+
+std::optional<std::filesystem::path> write_semantic_cache(
+    const SemanticCache& cache,
+    const std::filesystem::path& path) {
   create_output_directories(path.parent_path());
   auto records = nlohmann::json::array();
   for (const auto& record : cache.records()) {
     records.push_back(record_to_json(record));
   }
 
+  auto set_aside = set_aside_unusable_cache(path);
   write_file_atomically(path, nlohmann::json{{"version", 2}, {"records", std::move(records)}}.dump(2));
+  return set_aside;
 }
 
-SemanticCache read_semantic_cache(const std::filesystem::path& path) {
+SemanticCache read_semantic_cache(const std::filesystem::path& path, std::string* problem) {
   SemanticCache cache;
+  const auto unusable = [problem](std::string reason) {
+    if (problem != nullptr) {
+      *problem = std::move(reason);
+    }
+    return SemanticCache{};
+  };
+
   std::ifstream input(path, std::ios::binary);
   if (!input) {
-    return cache;
+    // A missing file is a first run and not a problem; one that exists but
+    // cannot be opened is.
+    std::error_code error;
+    return std::filesystem::exists(path, error) ? unusable("it cannot be opened") : cache;
   }
 
   const auto root = nlohmann::json::parse(input, nullptr, false);
   if (!root.is_object()) {
-    return cache;
+    return unusable("it is not valid JSON");
   }
   const auto version = root.find("version");
   const auto records = root.find("records");
   if (version == root.end() || !version->is_number_integer() ||
       *version != 2 || records == root.end() || !records->is_array()) {
-    return cache;
+    return unusable("it is not a version 2 semantic cache");
   }
   for (const auto& item : *records) {
     if (!is_cache_record_json(item)) {
-      return SemanticCache{};
+      return unusable("a record is malformed");
     }
   }
   std::unordered_set<std::string> source_identities;
@@ -431,7 +483,7 @@ SemanticCache read_semantic_cache(const std::filesystem::path& path) {
     const auto source_identity =
         normalize_semantic_source_path(record.source_path);
     if (!source_identities.insert(source_identity).second) {
-      return SemanticCache{};
+      return unusable("two records name the same source");
     }
     cache.upsert(std::move(record));
   }

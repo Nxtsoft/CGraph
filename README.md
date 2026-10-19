@@ -22,6 +22,7 @@
 [What it produces](#what-it-produces) ·
 [Output formats](#output-formats) ·
 [Performance](#performance) ·
+[Retrieval benchmark](#retrieval-benchmark) ·
 [Languages](#languages) ·
 [Quick start](#quick-start) ·
 [Install & Setup](#install--setup) ·
@@ -103,6 +104,37 @@ The interactive viewer used to run an O(N²) force simulation in the browser on 
 | graph | time-to-settle **before** | **after** | per-frame repaint |
 | --- | --- | --- | --- |
 | 10,000 nodes | **35.2 s** (main thread pinned) | **~0 ms** (static layout) | **20–34× cheaper** (zoom/pan) |
+
+## Retrieval benchmark
+
+CGraph has been scored on [Agent Retrieval Bench](https://arxiv.org/abs/2607.24882): 427
+samples from 25 repositories, each checked out at its base commit, scored with the
+benchmark's own metric code. The table covers all 345 positive samples.
+
+| Method | Recall@20 | MRR | BCY@8k |
+| --- | ---: | ---: | ---: |
+| CGraph bin-v0.9.1 (label + code-text search) | 0.6362 | 0.2787 | 0.4319 |
+| CGraph bin-v0.8.3 (label-only text search) | 0.5726 | 0.2356 | 0.3790 |
+| RepoMap (published) | 0.6333 | 0.2158 | 0.3788 |
+| RepoMap (rerun on this harness) | 0.6311 | 0.2156 | 0.3846 |
+| Qwen3-Embedding-8B (published) | 0.7029 | 0.2336 | 0.3732 |
+| Qwen3-Embedding-4B (published) | 0.6306 | 0.2379 | 0.3409 |
+| BM25 (published) | 0.4452 | 0.1520 | 0.2051 |
+
+How bin-v0.9.1 compares:
+
+- **Recall@20.** Level with RepoMap (the difference is inside run-to-run noise of about
+  0.006). Below Qwen3-Embedding-8B. Above the other published single methods.
+- **MRR.** Higher than every published single method.
+- **BCY@8k.** Higher than every published single method, by more than the noise floor.
+- **Against the paper's fusion of Qwen3-Embedding-8B and RepoMap**, on the 287-sample core
+  it reports: MRR is level (the fusion scores only its top 20; CGraph's MRR over its top 20
+  is 0.276 vs 0.271, inside the noise floor); Recall@20 (0.633 vs 0.733) and BCY@8k (0.440
+  vs 0.488) are lower.
+- **Abstention.** CGraph does not abstain on no-gold samples.
+
+Per-task tables, pins, the noise floor and caveats are in
+[bench/arb/RESULTS.md](bench/arb/RESULTS.md). Reproduce with `bench/arb/run.sh`.
 
 ## Languages
 
@@ -290,7 +322,8 @@ declared, not guessed.
 
 Contracts other than endpoints are recorded by extractors as `provides_contract` /
 `uses_contract` facts: `header:<name>` (case-folded), `claim:<name>`, `env:<NAME>`, DynamoDB tables
-as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
+as `dynamo:<name>`, gRPC methods as `grpc:<Service>/<Method>`, message topics and queues as
+`topic:<broker>:<name>`, and tables and graph labels as `table:<database>:<name>` /
 `label:<database>:<name>`. They do not all join alike:
 
 - **Claims and non-standard headers** (`x-tenant-id`) join like endpoints, by id. A standard HTTP
@@ -346,6 +379,28 @@ as `dynamo:<name>`, and tables and graph labels as `table:<database>:<name>` /
   name joins every repository given to the workspace or seam that names it, whatever account each
   runs in: two services in different accounts that each have a `sessions` table would join. An
   optional account declaration is a recorded follow-up.
+- **gRPC methods and topics** (`src/engine/messaging_contracts.cpp`) join by name with no
+  declaration. A gRPC method is `grpc:<Service>/<Method>` without the proto package (a Go
+  `pb.NewCartServiceClient` or a Python `CartServiceStub` call never spells it), the method as the
+  proto spells it (Java's and JavaScript's `getCart` and C#'s `GetCartAsync` read as `GetCart`). A
+  server provides it: a method of a class implementing the generated base (Java `<S>ImplBase`, C#
+  `<S>.<S>Base`, Python `<S>Servicer`, C++ `<S>::Service`), a key of a Node `addService(<S>.service,
+  {...})`, or in Go a handler method of the type registered with `Register<S>Server`, with the unary
+  shape and its messages from the registration's package. A call on a generated client uses it: Go
+  `New<S>Client`, Java `<S>Grpc.new*Stub` or a `<S>BlockingStub` field, Python `<S>Stub`, C#
+  `<S>.<S>Client`, TypeScript `new <S>Client` with `@grpc/grpc-js` imported, each only where the
+  file shows generated gRPC code (a generated-stub import path, a `*_pb2_grpc` module, an `<S>Grpc`
+  class named in code, a `Grpc.*` namespace); through a local, a field or `self`/`this` member bound
+  to one anywhere in the file, and only if the file binds that name to nothing else. gRPC's own
+  services (`Health`, `ServerReflection`, `Channelz`) and OTLP's are never recorded. A topic is
+  `topic:<broker>:<name>` (`kafka`, `rabbitmq`, `sqs`, `sns`, `pubsub`, `jms`): the producer provides
+  it, the consumer uses it (Kafka in Java/Kotlin/C#/Go/Python/JavaScript, Spring Kafka and Kafka
+  Streams, RabbitMQ on the default exchange, SQS queue URLs, SNS topic ARNs, Pub/Sub topics), and the
+  call's receiver must be that broker's client. The name is a literal, the literal default of an env
+  read, or a name every binding of which in the file is one such literal: a name that is also a
+  parameter, a loop variable, a pattern or bound to another expression reads as nothing. Caveat: two
+  proto packages that each define a `CartService` meet at one id. `messaging_contracts.hpp` lists
+  every pattern read.
 - **Env names** join only when declared: `--env ML_BACKEND_URL=ml-backend` names the service the
   variable addresses (`SERVED_BY`). An undeclared one (`NODE_ENV`) stays in its repository.
 
@@ -421,16 +476,53 @@ Changing a route's path or mount counts as removing the old route, so its caller
 
 ## Quick start
 
+### Claude Code plugin
+
+```sh
+claude plugin marketplace add Nxtsoft/CGraph
+claude plugin install cgraph@cgraph
+```
+
+The plugin registers the `cgraph` MCP server, the `cgraph` and `cgraph-enrich` skills and the
+pre-edit hook. Claude Code names every listed MCP tool and every model-invocable skill in each
+request, so the plugin keeps that list short: the server lists `graph_query`, `graph_context`,
+`graph_impact` and `graph_status`, and `cgraph-enrich` runs only when you type `/cgraph-enrich`. Set
+`CGRAPH_MCP_TOOLS=all` (or a comma-separated list of tool names) before starting Claude Code to
+list more. When Claude Code opens at the root of a git repository (a directory holding `.git`) or a
+project CGraph has indexed before, the server starts the daemon when the session starts, so the graph is building while the agent reads the task and the
+pre-edit hook has a daemon to ask. The daemon writes `cgraph-out/` with a `.gitignore` that
+ignores everything in it, so `git status` stays clean. Elsewhere, such as a subdirectory of a
+repository or a home directory that is not a git repository, the first tool call starts it. On first use it downloads the release archive for your platform (Linux x64/arm64,
+macOS arm64/x64), checks its SHA-256 against `integrations/launcher/release.json` and unpacks it into
+the plugin's data directory. It needs `node` and `tar` on `PATH`.
+
+### Homebrew
+
+On macOS (Apple silicon or Intel) or Linux x64:
+
+```sh
+brew install nxtsoft/cgraph/cgraph
+
+# Run this from any source repository.
+cgraph --root . --out cgraph-out
+```
+
+The formula installs all four executables from the current release archive. The tap is
+[Nxtsoft/homebrew-cgraph](https://github.com/Nxtsoft/homebrew-cgraph); its `Formula/cgraph.rb` is
+`packaging/homebrew/cgraph.rb` from this repository.
+
+### Release archive
+
 Download the current Linux x64 release and build your first graph:
 
 ```sh
-mkdir -p "$HOME/.local/lib/cgraph/bin-v0.8.3" "$HOME/.local/bin"
-curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.3/cgraph-linux-x64.tar.gz \
-  -o "$HOME/.local/lib/cgraph/bin-v0.8.3/cgraph.tar.gz"
-tar -xzf "$HOME/.local/lib/cgraph/bin-v0.8.3/cgraph.tar.gz" \
-  -C "$HOME/.local/lib/cgraph/bin-v0.8.3"
+mkdir -p "$HOME/.local/lib/cgraph/bin-v0.9.5" "$HOME/.local/bin"
+curl -fL https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.5/cgraph-linux-x64.tar.gz \
+  -o "$HOME/.local/lib/cgraph/bin-v0.9.5/cgraph.tar.gz"
+tar -xzf "$HOME/.local/lib/cgraph/bin-v0.9.5/cgraph.tar.gz" \
+  -C "$HOME/.local/lib/cgraph/bin-v0.9.5"
 for name in cgraph graphd cgraph-client cgraph-mcp; do
-  ln -sf "$HOME/.local/lib/cgraph/bin-v0.8.3/$name" "$HOME/.local/bin/$name"
+  ln -sf "$HOME/.local/lib/cgraph/bin-v0.9.5/$name" "$HOME/.local/bin/$name"
 done
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -442,15 +534,16 @@ Open `cgraph-out/graph.html` in a browser (`open cgraph-out/graph.html` on macOS
 
 ## Install & Setup
 
-Release `bin-v0.8.3` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
+Release `bin-v0.9.5` provides all four executables (`cgraph`, `graphd`, `cgraph-client`, and `cgraph-mcp`) in each archive:
 
 | Platform | Architecture | Archive |
 | --- | --- | --- |
-| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.3/cgraph-linux-x64.tar.gz) |
-| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.3/cgraph-linux-arm64.tar.gz) |
-| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.8.3/cgraph-macos-arm64.tar.gz) |
+| Linux | x86_64 / amd64 | [`cgraph-linux-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.5/cgraph-linux-x64.tar.gz) |
+| Linux | arm64 / aarch64 | [`cgraph-linux-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.5/cgraph-linux-arm64.tar.gz) |
+| macOS | Apple silicon / arm64 | [`cgraph-macos-arm64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.5/cgraph-macos-arm64.tar.gz) |
+| macOS | Intel / x86_64 | [`cgraph-macos-x64.tar.gz`](https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.5/cgraph-macos-x64.tar.gz) |
 
-Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.8.3` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
+Use `uname -s` and `uname -m` to select the archive. The quick start installs versioned files under `~/.local/lib/cgraph/bin-v0.9.5` and puts stable symlinks in `~/.local/bin`; add that directory to your `PATH` if needed. MCP client configs should use the absolute versioned path, because clients may not inherit your shell's `PATH`.
 
 ### Build from source
 
@@ -530,10 +623,11 @@ The fuzzer preset requires a Clang toolchain with the libFuzzer runtime; use an 
 | `graph_report` | `view: "modules"`: module dependency map (layers, cycles, import/call counts); `view: "types"`: identical, duplicate, overlapping and unreferenced type definitions; `view: "clones"`: near-duplicate function bodies grouped into classes; `view: "design"`: entry points, top call flows, layers by call distance; all sized to a budget |
 | `graph_update` | Content-verified sync; returns a `content_root` to pin reads |
 | `graph_status` | Daemon, graph, and enrichment status |
-| `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after |
+| `graph_change_context` | Impact and budgeted context for an explicit unified diff between two source roots |
+| `graph_remember` / `graph_recall` | Session memory — checkpoint before `/compact`, recall after; recall flags checkpoints whose code changed ([details](#checkpoints-that-notice-changed-code)) |
 | `graph_shutdown` | Stop the daemon |
 
-`graph_context` has two gather modes. The default (`gather: "fixed"`) packs the whole k-hop neighborhood. With a task query in hand, `gather: "adaptive"` keeps the full 2-hop core but expands the third hop only along query-relevant nodes — on the retrieval eval it lifted grade-2 recall **+0.057** for **+13%** candidate tokens, versus the **+96%** a full 3-hop gather costs (needs a `query`/`q`).
+`graph_context` has two gather modes. The default (`gather: "adaptive"`) keeps the full 2-hop core but expands the third hop only along query-relevant nodes — on the retrieval eval it lifted grade-2 recall **+0.057** for **+13%** candidate tokens, versus the **+96%** a full 3-hop gather costs (pass a `query`/`q` describing the task). `gather: "fixed"` packs the plain k-hop neighborhood instead.
 
 The server resolves the project root from `--root`, then `CLAUDE_PROJECT_DIR`, then the working directory, and finds `graphd` on its own (explicit `--daemon` wins, then `CGRAPH_DAEMON_PATH`, then a `graphd` next to `cgraph-mcp`). The first call triggers a one-time build (seconds). Graph reads wait up to 30 seconds for it (for a workspace, 30 seconds for the whole request); a result that still carries `"graph_state": "building"` is short because the build has not finished, so an empty result is never mistaken for "no match". Subsequent queries are warm (~10 ms). In the examples below, replace `/home/you` with your absolute home directory.
 
@@ -546,8 +640,8 @@ Claude Code sets `CLAUDE_PROJECT_DIR` per session, so a single registration work
 
 ```sh
 claude mcp add --scope user --transport stdio cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.8.3/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.8.3/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.9.5/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.9.5/graphd
 ```
 
 Or commit a project-scoped `.mcp.json` at the repo root to share it with collaborators:
@@ -556,8 +650,8 @@ Or commit a project-scoped `.mcp.json` at the repo root to share it with collabo
 {
   "mcpServers": {
     "cgraph": {
-      "command": "/home/you/.local/lib/cgraph/bin-v0.8.3/cgraph-mcp",
-      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.8.3/graphd"]
+      "command": "/home/you/.local/lib/cgraph/bin-v0.9.5/cgraph-mcp",
+      "args": ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.9.5/graphd"]
     }
   }
 }
@@ -571,16 +665,16 @@ Codex does not set `CLAUDE_PROJECT_DIR`, so the server falls back to the working
 
 ```sh
 codex mcp add cgraph \
-  -- /home/you/.local/lib/cgraph/bin-v0.8.3/cgraph-mcp \
-     --daemon /home/you/.local/lib/cgraph/bin-v0.8.3/graphd
+  -- /home/you/.local/lib/cgraph/bin-v0.9.5/cgraph-mcp \
+     --daemon /home/you/.local/lib/cgraph/bin-v0.9.5/graphd
 ```
 
 …or edit `~/.codex/config.toml` directly (add `"--root", "/abs/path/to/your/project"` to `args` to pin a project regardless of working directory):
 
 ```toml
 [mcp_servers.cgraph]
-command = "/home/you/.local/lib/cgraph/bin-v0.8.3/cgraph-mcp"
-args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.8.3/graphd"]
+command = "/home/you/.local/lib/cgraph/bin-v0.9.5/cgraph-mcp"
+args = ["--daemon", "/home/you/.local/lib/cgraph/bin-v0.9.5/graphd"]
 ```
 
 Restart Codex and run `/mcp` in the TUI to confirm.
@@ -596,6 +690,32 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
 ```
 
 </details>
+
+### Checkpoints that notice changed code
+
+`graph_remember` stores a checkpoint (a title and a short summary) and links it to the symbols it `touches`. Each link records a sha256 of that symbol's own source span. `graph_recall` re-hashes the span and reports every link as:
+
+- `valid`: the symbol's code is unchanged since the checkpoint.
+- `changed`: it was edited since, or its file was edited and the graph has not caught up yet. Re-read it before trusting the summary.
+- `unanchored`: it cannot be checked (for example a module node with no source span).
+
+Symbols that were renamed or deleted are listed under `gone`. The checkpoint itself is `stale` when anything changed or is gone, `unverified` when it has no links or some link cannot be checked, and `valid` otherwise. The anchor covers the span, not the file: an edit to another function in the same file, or code that only moved down, leaves a link `valid`. Checkpoints live in `cgraph-out/memory/` and keep their anchors across daemon restarts.
+
+```sh
+cgraph-client --root . update '{"path":"."}'
+cgraph-client --root . remember '{"title":"Billing refactor","body":"next: wire refund into the API","touches":["charge","refund"]}'
+# edit the body of refund(), then sync
+cgraph-client --root . update '{"path":"."}'
+cgraph-client --root . recall '{}'
+```
+
+```json
+{"label": "Billing refactor", "validity": "stale", "gone": [],
+ "concerns": [{"label": "charge", "validity": "valid"},
+              {"label": "refund", "validity": "changed"}]}
+```
+
+Renaming `refund` afterwards drops its link and lists it under `gone`. A link follows the symbol name it was written with, so `refund_all` is not picked up in its place.
 
 ## CLI, daemon and MCP reference
 
@@ -748,17 +868,27 @@ integrations/hooks/cgraph-hook.sh query '{"q":"GraphSnapshot"}'
 ```
 
 `integrations/hooks/cgraph-pre-edit.sh` is a Claude Code `PreToolUse` hook. Before an agent edits a
-file in a repository that a `cgraph.workspace.json` in a parent directory lists, it adds to the
-agent's context every other service on the far side of an endpoint the file serves or calls
-(`… serves GET /api/v1/org/stats, called from turing-webapp lib/org-api.ts:83 (getOrgStats)`). It
-prints nothing when there is nothing to say and never blocks an edit; it checks at most 8 of a file's
-endpoints per edit (naming the rest), and `CGRAPH_HOOK_WAIT_MS` (default `3000`) bounds the wait for
-daemons that are still building. A file that only imports a routes file claims none of its routes. Register it in `.claude/settings.json`:
+file in a git repository, it adds to the agent's context up to five files most likely to change with
+the edited lines, one line each with the reason (``src/routes.ts: calls `record` ``,
+`src/metrics_test.go: test for this file`), from the daemon's `co-change` op: files that call or use
+the edited symbols (directly, then through one more symbol), the file's test or source counterpart by
+name, and the other files joined to it in the graph. When a `cgraph.workspace.json` in a parent
+directory lists the repository, it also names every other service on the far side of an endpoint the
+file serves or calls (`… serves GET /api/v1/org/stats, called from turing-webapp lib/org-api.ts:83
+(getOrgStats)`). The whole message, both sections, stays within 800 tokens. It prints nothing when
+there is nothing to say and never blocks an edit; it checks at most 8 of a file's endpoints per edit
+(naming the rest). It only asks daemons that are already running (the MCP server or `cgraph-client`
+starts them): it never starts one, never waits for a build, and gives up, silently, once one
+deadline for the whole hook passes, `CGRAPH_HOOK_WAIT_MS` (default `250`). A file that only imports
+a routes file claims none of its routes. Register it in `.claude/settings.json`:
 
 ```json
 {"hooks": {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit",
   "hooks": [{"type": "command", "command": "/path/to/CGraph/integrations/hooks/cgraph-pre-edit.sh"}]}]}}
 ```
+
+The [Claude Code plugin](#claude-code-plugin) already registers this hook; if you installed the
+plugin, do not also add `cgraph-pre-edit.sh` to your settings, or every edit runs the lookup twice.
 
 The same lookup is `cgraph-client --root REPO cross-service '{"file": "src/routes.ts"}'`.
 

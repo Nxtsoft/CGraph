@@ -7,7 +7,7 @@
 #include <sstream>
 #include <system_error>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -34,9 +34,15 @@ std::string xml_escape(const std::string& value) {
 }
 
 #if defined(__APPLE__)
-// Run argv to completion without a shell (no quoting pitfalls). Returns the exit
-// status, or -1 if the process could not be spawned.
-int run_command(const std::vector<std::string>& argv) {
+std::string gui_domain() {
+  return "gui/" + std::to_string(::getuid());
+}
+#endif
+
+}  // namespace
+
+#if defined(__APPLE__) || defined(__linux__)
+int run_service_command(const std::vector<std::string>& argv) {
   std::vector<char*> raw;
   raw.reserve(argv.size() + 1);
   for (const auto& arg : argv) {
@@ -54,13 +60,7 @@ int run_command(const std::vector<std::string>& argv) {
   }
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
-
-std::string gui_domain() {
-  return "gui/" + std::to_string(::getuid());
-}
 #endif
-
-}  // namespace
 
 std::string render_launch_agent(const LaunchAgentSpec& spec) {
   std::ostringstream out;
@@ -144,7 +144,7 @@ bool launchctl_bootstrap(const std::filesystem::path& plist_path) {
 #if defined(__APPLE__)
   // Re-bootstrap cleanly: bootout any prior instance (ignore failure) so a rewrite
   // of the plist takes effect, then bootstrap the new one.
-  return run_command({"launchctl", "bootstrap", gui_domain(), plist_path.string()}) == 0;
+  return run_service_command({"launchctl", "bootstrap", gui_domain(), plist_path.string()}) == 0;
 #else
   (void)plist_path;
   return false;
@@ -153,7 +153,7 @@ bool launchctl_bootstrap(const std::filesystem::path& plist_path) {
 
 bool launchctl_bootout(const std::string& label) {
 #if defined(__APPLE__)
-  return run_command({"launchctl", "bootout", gui_domain() + "/" + label}) == 0;
+  return run_service_command({"launchctl", "bootout", gui_domain() + "/" + label}) == 0;
 #else
   (void)label;
   return false;
@@ -164,7 +164,7 @@ bool launchctl_is_loaded(const std::string& label) {
 #if defined(__APPLE__)
   // `launchctl print gui/<uid>/<label>` exits 0 when the service is registered
   // in the domain and non-zero (with "Could not find service") when it is not.
-  return run_command({"launchctl", "print", gui_domain() + "/" + label}) == 0;
+  return run_service_command({"launchctl", "print", gui_domain() + "/" + label}) == 0;
 #else
   (void)label;
   return false;

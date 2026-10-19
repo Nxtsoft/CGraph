@@ -308,6 +308,7 @@ std::optional<ExtractionResult> extract_non_grammar_language(
     case DetectedLanguage::LangGraphConfig:
       return extract_langgraph_config(context);
     case DetectedLanguage::SpringConfig: {
+      const EnvContractsFileScope env_contracts;
       auto result = extract_spring_application_config(context);
       append_spring_config_env_reads(context, result);
       return result;

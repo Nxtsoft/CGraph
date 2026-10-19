@@ -1,12 +1,15 @@
 #include "cgraph/client_runtime.hpp"
 
 #include "cgraph/change_context.hpp"
+#include "cgraph/co_change.hpp"
 #include "cgraph/contracts.hpp"
 #include "cgraph/normalize.hpp"
 
 #include "cgraph/daemon_endpoint.hpp"
 #include "cgraph/daemon_server.hpp"
+#include "cgraph/platform.hpp"
 #include "cgraph/protocol.hpp"
+#include "cgraph/report.hpp"
 #include "cgraph/workspace.hpp"
 
 #include <algorithm>
@@ -14,6 +17,8 @@
 #include <string_view>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -21,15 +26,6 @@
 #include <thread>
 #include <unordered_map>
 
-#ifndef _WIN32
-#include <fcntl.h>
-#include <sys/types.h>
-#include <unistd.h>
-#endif
-
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
 
 namespace cgraph {
 namespace {
@@ -61,8 +57,8 @@ std::chrono::milliseconds backoff_for(const ClientRequest& request, int attempt)
 }
 
 [[nodiscard]] bool waits_for_build(std::string_view operation) {
-  static constexpr std::array<std::string_view, 7> kGraphReads{"query",   "path",   "explain", "impact",
-                                                               "context", "report", "recall"};
+  static constexpr std::array<std::string_view, 8> kGraphReads{"query",   "path",   "explain", "impact",
+                                                               "context", "report", "recall",  "co-change"};
   return std::find(kGraphReads.begin(), kGraphReads.end(), operation) != kGraphReads.end();
 }
 
@@ -92,27 +88,6 @@ void settle_building_answer(const ClientRequest& request, const ClientRuntimeHoo
   }
 }
 
-[[nodiscard]] std::filesystem::path current_executable_path() {
-#if defined(__APPLE__)
-  std::uint32_t size = 0;
-  _NSGetExecutablePath(nullptr, &size);
-  std::string buffer(size, '\0');
-  if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
-    return {};
-  }
-  buffer.resize(std::strlen(buffer.c_str()));
-  std::error_code ec;
-  const auto canonical = std::filesystem::canonical(buffer, ec);
-  return ec ? std::filesystem::path{buffer} : canonical;
-#elif defined(__linux__)
-  std::error_code ec;
-  const auto path = std::filesystem::read_symlink("/proc/self/exe", ec);
-  return ec ? std::filesystem::path{} : path;
-#else
-  return {};
-#endif
-}
-
 }  // namespace
 
 std::filesystem::path resolve_daemon_path(const std::filesystem::path& requested) {
@@ -126,7 +101,8 @@ std::filesystem::path resolve_daemon_path(const std::filesystem::path& requested
   // or under the sibling daemon/ directory (the CMake build tree).
   if (const auto self = current_executable_path(); !self.empty()) {
     const auto bin_dir = self.parent_path();
-    for (const auto& candidate : {bin_dir / "graphd", bin_dir.parent_path() / "daemon" / "graphd"}) {
+    const auto graphd = executable_file_name("graphd");
+    for (const auto& candidate : {bin_dir / graphd, bin_dir.parent_path() / "daemon" / graphd}) {
       std::error_code ec;
       if (std::filesystem::exists(candidate, ec)) {
         return candidate;
@@ -138,42 +114,17 @@ std::filesystem::path resolve_daemon_path(const std::filesystem::path& requested
 
 ClientRuntimeHooks default_client_runtime_hooks(const ClientRequest& request) {
   ClientRuntimeHooks hooks;
-  hooks.connect = [](const DaemonIdentity& identity, const nlohmann::json& frame) -> std::optional<nlohmann::json> {
-    return request_over_unix_socket(unix_socket_path(identity), frame);
+  hooks.connect = [deadline = request.deadline](const DaemonIdentity& identity,
+                                                const nlohmann::json& frame) -> std::optional<nlohmann::json> {
+    return request_over_unix_socket(unix_socket_path(identity), frame, deadline);
   };
   hooks.spawn = [daemon_path = resolve_daemon_path(request.daemon_path)](const DaemonIdentity& identity) {
     if (daemon_path.empty()) {
       return false;
     }
-#ifdef _WIN32
-    (void)identity;
-    return false;
-#else
-    const auto pid = ::fork();
-    if (pid < 0) {
-      return false;
-    }
-    if (pid == 0) {
-      // Detach the daemon from the client: a new session (no controlling
-      // terminal) and stdio pointed at /dev/null, so the resident daemon never
-      // holds the client's pipes open (which would make the client's caller
-      // hang waiting for EOF) and outlives this short-lived client cleanly.
-      ::setsid();
-      if (const int devnull = ::open("/dev/null", O_RDWR); devnull >= 0) {
-        ::dup2(devnull, STDIN_FILENO);
-        ::dup2(devnull, STDOUT_FILENO);
-        ::dup2(devnull, STDERR_FILENO);
-        if (devnull > STDERR_FILENO) {
-          ::close(devnull);
-        }
-      }
-      const auto daemon = daemon_path.string();
-      const auto root = identity.project_root.string();
-      ::execl(daemon.c_str(), daemon.c_str(), "--root", root.c_str(), nullptr);
-      std::_Exit(127);
-    }
-    return true;
-#endif
+    // Detached: the resident daemon never holds the client's pipes open (which
+    // would make the client's caller hang waiting for EOF) and outlives it.
+    return spawn_detached(daemon_path, {"--root", identity.project_root});
   };
   hooks.sleep = [](std::chrono::milliseconds delay) {
     std::this_thread::sleep_for(delay);
@@ -327,6 +278,10 @@ ClientResult send_thin_client_request(const ClientRequest& request, ClientRuntim
       settle_building_answer(request, hooks, identity, frame, result);
       return result;
     }
+    if (!request.spawn) {
+      result.error = "no daemon is running for " + request.project_root.string() + " (this request starts none)";
+      return result;
+    }
     result.spawned = hooks.spawn(identity);
     if (!result.spawned) {
       result.error =
@@ -455,21 +410,154 @@ nlohmann::json cross_service_for_file(const ClientRequest& base, const std::file
   return out;
 }
 
+namespace {
+
+// The 1-based line spans an Edit or MultiEdit replaces; empty for a Write (the
+// whole file); none when an edit's text is not in the file.
+std::optional<std::vector<std::pair<std::size_t, std::size_t>>> edit_line_ranges(const nlohmann::json& hook_input,
+                                                                                    std::string_view text) {
+  const auto tool_field = hook_input.find("tool_name");
+  const auto tool = tool_field != hook_input.end() && tool_field->is_string() ? tool_field->get<std::string>() : "";
+  const auto tool_input = hook_input.value("tool_input", nlohmann::json::object());
+  std::vector<std::pair<std::size_t, std::size_t>> ranges;
+  if (tool == "Write" || !tool_input.is_object()) {
+    return ranges;
+  }
+  // The line span of every place `old` occurs (the first only, unless the
+  // edit replaces them all), counted in the file as it is before the edit.
+  const auto locate = [&](const nlohmann::json& edit) {
+    if (!edit.is_object()) return;
+    const auto old_field = edit.find("old_string");
+    if (old_field == edit.end() || !old_field->is_string()) return;
+    const auto old = old_field->get<std::string>();
+    if (old.empty()) return;
+    const auto all_field = edit.find("replace_all");
+    const bool all = all_field != edit.end() && all_field->is_boolean() && all_field->get<bool>();
+    const auto old_lines = static_cast<std::size_t>(std::count(old.begin(), old.end(), '\n')) - (old.ends_with('\n') ? 1 : 0);
+    std::size_t line = 1;
+    std::size_t counted = 0;
+    for (auto at = text.find(old); at != std::string_view::npos; at = text.find(old, at + old.size())) {
+      line += static_cast<std::size_t>(std::count(text.begin() + static_cast<std::ptrdiff_t>(counted),
+                                                  text.begin() + static_cast<std::ptrdiff_t>(at), '\n'));
+      counted = at;
+      ranges.emplace_back(line, line + old_lines);
+      if (!all) break;
+    }
+  };
+  if (tool_input.contains("edits")) {
+    const auto& edits = tool_input.at("edits");
+    if (edits.is_array()) {
+      for (const auto& edit : edits) locate(edit);
+    }
+  } else {
+    locate(tool_input);
+  }
+  // An edit whose text is not in the file fails before it changes anything.
+  if (ranges.empty()) return std::nullopt;
+  return ranges;
+}
+
+std::vector<std::string> co_change_lines(const ClientRequest& base, const std::filesystem::path& root,
+                                         const std::filesystem::path& file, const nlohmann::json& hook_input) {
+  std::ifstream in(file, std::ios::binary);
+  const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  const auto ranges = edit_line_ranges(hook_input, text);
+  if (!ranges) return {};
+  ClientRequest request = base;
+  request.project_root = root;
+  request.operation = "co-change";
+  request.params = {{"id", make_id(file.lexically_relative(root).generic_string())},
+                    {"lines", nlohmann::json::array()},
+                    {"limit", kCoChangeDefaultLimit}};
+  for (const auto& [first, last] : *ranges) request.params["lines"].push_back({first, last});
+  const auto answer = send_thin_client_request(request, default_client_runtime_hooks(request));
+  // Silent when the graph cannot say: the daemon is unreachable, still
+  // building, or does not know the file (a new or unindexed one).
+  if (!answer.response || !answer.response->value("ok", false)) return {};
+  const auto& result = answer.response->at("result");
+  if (result.value("graph_state", std::string{}) == "building") return {};
+  std::vector<std::string> lines;
+  for (const auto& row : result.value("files", nlohmann::json::array())) {
+    const std::filesystem::path other = row.value("source_file", std::string{});
+    lines.push_back(other.lexically_relative(root).generic_string() + ": " + row.value("why", std::string{}));
+  }
+  return lines;
+}
+
+}  // namespace
+
+std::string pre_edit_context(const nlohmann::json& found, const std::string& file,
+                             const std::vector<std::string>& neighbors) {
+  // The whole message stays within kHookTokenBudget. The services section is
+  // placed first (its rows outrank the file list), then the files fill what is
+  // left; each section keeps the rows that fit.
+  std::size_t used = 0;
+  const auto room_for = [&](std::size_t chars) {
+    return estimate_report_tokens(used + chars) <= kHookTokenBudget;
+  };
+  std::string services;
+  const auto& summary = found.at("summary");
+  if (!summary.empty()) {
+    const bool crosses = found.value("crossings", std::size_t{0}) > 0;
+    const auto header = std::string("cgraph: ") +
+                        (crosses ? "editing " + found.value("file", std::string{}) + " crosses into other services"
+                                 : "could not fully check " + found.value("file", std::string{}) + " for other services") +
+                        " (" + found.value("workspace", std::string{}) + " workspace):";
+    const std::string footer = crosses ? "\nCheck those callers before changing a route, request or response shape." : "";
+    // Room kept for the line that counts rows left out.
+    constexpr std::size_t kOmittedLine = 64;
+    std::string rows;
+    std::size_t kept = 0;
+    for (const auto& line : summary) {
+      const auto row = "\n- " + line.get<std::string>();
+      if (!room_for(header.size() + rows.size() + row.size() + footer.size() + kOmittedLine)) break;
+      rows += row;
+      ++kept;
+    }
+    if (kept < summary.size()) {
+      rows += "\n- " + std::to_string(summary.size() - kept) + " more line(s) left out to stay within " +
+              std::to_string(kHookTokenBudget) + " tokens";
+    }
+    services = header + rows + footer;
+    used += services.size();
+  }
+  std::string files;
+  if (!neighbors.empty()) {
+    const auto header = "cgraph: files likely to change with " + file +
+                        " (open the ones your change affects):";
+    std::string rows;
+    for (const auto& line : neighbors) {
+      const auto row = "\n- " + line;
+      if (!room_for(header.size() + rows.size() + row.size() + 2)) break;
+      rows += row;
+    }
+    if (!rows.empty()) files = header + rows;
+  }
+  auto context = files;
+  if (!services.empty()) context += (context.empty() ? "" : "\n\n") + services;
+  return context;
+}
+
 std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_input, const ClientRequest& base,
-                                                   std::chrono::milliseconds wait) {
+                                                   std::chrono::milliseconds budget) {
+  const auto deadline = std::chrono::steady_clock::now() + budget;
   if (!hook_input.is_object()) {
     return std::nullopt;
   }
   const auto tool_input = hook_input.value("tool_input", nlohmann::json::object());
-  const auto file_text = tool_input.is_object() ? tool_input.value("file_path", std::string{}) : std::string{};
+  const auto path_field = tool_input.is_object() ? tool_input.find("file_path") : tool_input.end();
+  if (!tool_input.is_object() || path_field == tool_input.end() || !path_field->is_string()) {
+    return std::nullopt;
+  }
+  const auto file_text = path_field->get<std::string>();
   std::error_code error;
   if (file_text.empty() || !std::filesystem::is_regular_file(file_text, error)) {
     return std::nullopt;
   }
   const auto file = std::filesystem::weakly_canonical(file_text, error);
   // The project root: the file's repository (nearest `.git`; a worktree's is a
-  // file) when a workspace lists it, else the workspace member that holds the
-  // file (members sharing one repository, as in a monorepo).
+  // file), unless a workspace lists not it but the member that holds the file
+  // (members sharing one repository, as in a monorepo).
   std::filesystem::path repo;
   for (auto dir = file.parent_path(); !dir.empty(); dir = dir.parent_path()) {
     if (std::filesystem::exists(dir / ".git", error)) {
@@ -478,32 +566,35 @@ std::optional<nlohmann::json> pre_edit_hook_output(const nlohmann::json& hook_in
     }
     if (dir == dir.parent_path()) break;
   }
-  std::filesystem::path root;
-  if (!repo.empty() && find_enclosing_workspace(repo)) {
-    root = repo;
-  } else if (const auto enclosing = find_enclosing_workspace(file.parent_path())) {
-    root = enclosing->home_root;
+  std::filesystem::path root = repo;
+  if (repo.empty() || !find_enclosing_workspace(repo)) {
+    if (const auto enclosing = find_enclosing_workspace(file.parent_path())) {
+      root = enclosing->home_root;
+    }
   }
   if (root.empty()) {
     return std::nullopt;
   }
+  // One deadline for everything the hook asks, and only daemons already
+  // running are asked: none is started and no build is waited for.
   ClientRequest request = base;
   request.project_root = root;
-  request.build_wait = wait;
+  request.build_wait = std::chrono::milliseconds(0);
+  request.spawn = false;
+  request.deadline = deadline;
+
   const auto found = cross_service_for_file(request, file, kHookMaxContracts);
-  const auto& lines = found.at("summary");
-  if (lines.empty()) {
+  const auto neighbors = co_change_lines(request, root, file, hook_input);
+  // Past the deadline every unanswered ask failed for want of time, not for a
+  // reason worth showing: say nothing.
+  if (std::chrono::steady_clock::now() >= deadline) {
     return std::nullopt;
   }
-  const bool crosses = found.value("crossings", std::size_t{0}) > 0;
-  std::string context = std::string("cgraph: ") +
-                        (crosses ? "editing " + found.value("file", std::string{}) + " crosses into other services"
-                                 : "could not fully check " + found.value("file", std::string{}) + " for other services") +
-                        " (" + found.value("workspace", std::string{}) + " workspace):";
-  for (const auto& line : lines) {
-    context += "\n- " + line.get<std::string>();
+
+  const auto context = pre_edit_context(found, file.lexically_relative(root).generic_string(), neighbors);
+  if (context.empty()) {
+    return std::nullopt;
   }
-  if (crosses) context += "\nCheck those callers before changing a route, request or response shape.";
   return nlohmann::json{{"hookSpecificOutput", {{"hookEventName", "PreToolUse"}, {"additionalContext", context}}}};
 }
 

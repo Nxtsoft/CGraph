@@ -3,6 +3,7 @@
 #include "cgraph/atomic_write.hpp"
 #include "cgraph/export_json.hpp"
 #include "cgraph/fragment_json.hpp"
+#include "cgraph/local_socket.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -47,9 +48,7 @@ bool cleanup_daemon_endpoint(const std::filesystem::path& endpoint_path) {
   if (endpoint_path.empty()) {
     return true;
   }
-  std::error_code error;
-  std::filesystem::remove(endpoint_path, error);
-  return !error;
+  return remove_socket_file(endpoint_path);
 }
 
 namespace {

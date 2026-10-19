@@ -1,0 +1,85 @@
+{
+  "audit": "extdev: no human audit; ARB miner filters + corpus gates + ARB fatal-leakage filter only",
+  "funnel": {
+    "after_arb_leakage_filter": {
+      "Textualize/rich": 33,
+      "colinhacks/zod": 34,
+      "honojs/hono": 34,
+      "labstack/echo": 33,
+      "nushell/nushell": 26,
+      "prometheus/prometheus": 31,
+      "psf/black": 32,
+      "sharkdp/bat": 32,
+      "spf13/cobra": 30,
+      "tokio-rs/axum": 4
+    },
+    "after_per_repo_limit_25": {
+      "Textualize/rich": 25,
+      "colinhacks/zod": 25,
+      "honojs/hono": 25,
+      "labstack/echo": 25,
+      "nushell/nushell": 25,
+      "prometheus/prometheus": 25,
+      "psf/black": 25,
+      "sharkdp/bat": 25,
+      "spf13/cobra": 25,
+      "tokio-rs/axum": 4
+    },
+    "after_test_only_policy_and_repo_cap": {
+      "Textualize/rich": 25,
+      "colinhacks/zod": 25,
+      "honojs/hono": 25,
+      "labstack/echo": 25,
+      "nushell/nushell": 25,
+      "prometheus/prometheus": 25,
+      "psf/black": 25,
+      "sharkdp/bat": 25,
+      "spf13/cobra": 25,
+      "tokio-rs/axum": 4
+    },
+    "mined_with_corpus_gates": {
+      "Textualize/rich": 33,
+      "colinhacks/zod": 34,
+      "honojs/hono": 34,
+      "labstack/echo": 33,
+      "nushell/nushell": 26,
+      "prometheus/prometheus": 31,
+      "psf/black": 32,
+      "sharkdp/bat": 32,
+      "spf13/cobra": 30,
+      "tokio-rs/axum": 4
+    }
+  },
+  "name": "v2_code2test",
+  "paths": {
+    "benchmark": "data/benchmark/v2_code2test",
+    "corpus": "data/corpus/v2_code2test"
+  },
+  "repo_counts": {
+    "Textualize/rich": 25,
+    "colinhacks/zod": 25,
+    "honojs/hono": 25,
+    "labstack/echo": 25,
+    "nushell/nushell": 25,
+    "prometheus/prometheus": 25,
+    "psf/black": 25,
+    "sharkdp/bat": 25,
+    "spf13/cobra": 25,
+    "tokio-rs/axum": 4
+  },
+  "sample_count": 229,
+  "schema": "arb_extdev_v2",
+  "selection": {
+    "fatal_leakage_dropped_by_type": {},
+    "order": "recency",
+    "per_repo_limit": 25,
+    "repo_cap": 25,
+    "repo_share": 0.25,
+    "test_only_dropped": 0,
+    "test_only_ratio": null
+  },
+  "task_counts": {
+    "code2test": 229
+  },
+  "task_type": "code2test"
+}

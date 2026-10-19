@@ -52,6 +52,10 @@ int main() {
   // the CI run measured a snippet-free graph and the budget never bound.
   auto portable_graph = *cgraph::read_graph_snapshot(state);
   const fs::path repo_root = CGRAPH_REPO_ROOT;
+  // Served as the daemon serves it: context entries name files relative to the
+  // project root, so the measured recall does not depend on where the gate's
+  // checkout sits (CGR-33).
+  state.project_root = repo_root;
   for (auto& node : portable_graph.nodes) {
     if (node.source_file.empty()) {
       continue;
@@ -63,6 +67,7 @@ int main() {
     }
     node.source_file = (repo_root / source_file).lexically_normal().string();
   }
+  portable_graph.code_generation = cgraph::next_code_generation();  // source paths changed on a copy
   cgraph::publish_graph_snapshot(state, std::move(portable_graph));
 
   struct Row {
@@ -141,8 +146,13 @@ int main() {
   // where the project is checked out. On the same graph and engine, recall moved
   // 0.241528 -> 0.257310 (2000), 0.358842 -> 0.353199 (4000), 0.390547 ->
   // 0.398673 (6000), 0.435563 -> 0.440166 (8000).
+  // Re-pinned for openspec/changes/path-independent-context-budget (CGR-33): the
+  // gate now serves with the daemon's project root, so entries carry repo-relative
+  // source paths and recall no longer depends on where the checkout sits. Measured
+  // in a worktree whose absolute-path run gave 0.256012/0.359515/0.397060/0.438453,
+  // recall moved to 0.265124 (2000), 0.362848 (4000), 0.403391 (6000), 0.451748 (8000).
   const std::vector<Target> targets = {
-      {2000, 0.2573}, {4000, 0.3532}, {6000, 0.3987}, {8000, 0.4402}};
+      {2000, 0.2651}, {4000, 0.3628}, {6000, 0.4034}, {8000, 0.4517}};
   constexpr double kTol = 0.03;
 
   std::cout << "end-to-end retrieval gate  (N=" << rows.size() << " symbol rows, q-only, engine defaults)\n";

@@ -175,8 +175,8 @@ int test_pipeline_serves_endpoints() {
   const auto root = std::filesystem::temp_directory_path() / "cgraph_langgraph_config_test";
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root / "src");
-  std::ofstream(root / "langgraph.json") << kConfig;
-  std::ofstream(root / "src" / "client.ts")
+  std::ofstream(root / "langgraph.json", std::ios::binary) << kConfig;
+  std::ofstream(root / "src" / "client.ts", std::ios::binary)
       << "export async function startRun() {\n"
          "  const agentUrl = process.env.AGENTS_API_URL;\n"
          "  return fetch(`${agentUrl}/runs/wait`, { method: 'POST' });\n"

@@ -4,6 +4,7 @@
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/normalize.hpp"
 
+#include <chrono>
 #include <iostream>
 #include <set>
 #include <string>
@@ -621,6 +622,34 @@ export const api = { list: () => fetch('/api/v1/listed') };
     };
     if (facts != expected) {
       for (const auto& fact : facts) std::cerr << "module-level fact: " << fact << '\n';
+      return 1;
+    }
+  }
+
+  // Scale: one function holding thousands of locals, unrelated writes and
+  // calls that read a local (a minified bundle's shape). Each read used to walk
+  // the whole scope and rescan its block, which took hours on a 2.9 MB
+  // mermaid.min.js; every call must still resolve its local's value.
+  {
+    constexpr int kCount = 3000;
+    std::string source = "export function load() {\n";
+    for (int i = 0; i < kCount; ++i) source += "  let u" + std::to_string(i) + " = '/api/v1/items/" + std::to_string(i) + "';\n";
+    for (int i = 0; i < kCount; ++i) source += "  x" + std::to_string(i) + " = " + std::to_string(i) + ";\n";
+    for (int i = 0; i < kCount; ++i) source += "  fetch(u" + std::to_string(i) + ");\n";
+    source += "}\n";
+    const auto started = std::chrono::steady_clock::now();
+    const auto calls = cgraph::extract_typescript({.source_file = "lib/bundle.ts", .relative_path = "lib/bundle.ts", .source = source});
+    const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    std::set<std::string> paths;
+    for (const auto& relation : calls.raw_relations) {
+      if (relation.relation == "http_call" && relation.target_label == "fetch") paths.insert(relation.context);
+    }
+    if (paths.size() != kCount || !paths.contains(" /api/v1/items/0") || !paths.contains(" /api/v1/items/2999")) {
+      std::cerr << "scale: " << paths.size() << " fetch paths resolved of " << kCount << "\n";
+      return 1;
+    }
+    if (seconds > 10.0) {
+      std::cerr << "scale: extraction took " << seconds << " s\n";
       return 1;
     }
   }

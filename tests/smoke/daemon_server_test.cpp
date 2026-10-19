@@ -2,6 +2,7 @@
 #include "cgraph/daemon_identity.hpp"
 #include "cgraph/daemon_server.hpp"
 #include "cgraph/file_cache.hpp"
+#include "cgraph/local_socket.hpp"
 #include "cgraph/protocol.hpp"
 
 #include <array>
@@ -16,37 +17,30 @@
 #include <system_error>
 #include <thread>
 
+#include "unreadable_file.hpp"
+
+#ifndef _WIN32
 #include <fcntl.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/un.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
-// Opens a raw connected client socket to `socket_path`, or -1. Lets the wire
-// hardening tests send hand-crafted (hostile) bytes the protocol codec would
-// never produce -- an oversized length header, a truncated frame -- straight at
-// the real daemon.
-int raw_connect(const std::filesystem::path& socket_path) {
-  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return -1;
-  }
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  const auto path = socket_path.string();
-  if (path.size() >= sizeof(addr.sun_path)) {
-    ::close(fd);
-    return -1;
-  }
-  std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return -1;
-  }
-  return fd;
+// Opens a raw connected client socket to `socket_path` (invalid on failure).
+// Lets the wire hardening tests send hand-crafted (hostile) bytes the protocol
+// codec would never produce -- an oversized length header, a truncated frame --
+// straight at the real daemon.
+cgraph::LocalSocket raw_connect(const std::filesystem::path& socket_path) {
+  return cgraph::connect_local_socket(socket_path);
 }
+
+template <std::size_t N>
+void raw_send(const cgraph::LocalSocket& socket, const std::array<std::uint8_t, N>& bytes) {
+  (void)cgraph::send_all(socket, bytes.data(), bytes.size());
+}
+
+using cgraph_test::UnreadableFile;
 
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
@@ -130,6 +124,10 @@ int main() {
   namespace fs = std::filesystem;
   bool ok = true;
 
+#ifdef _WIN32
+  std::cout << "daemon_server_test: SKIP atomic-overlay case on Windows: it parks semantic replay on a "
+               "FIFO, and Windows has no filesystem FIFOs\n";
+#else
   // Hold semantic replay on a real FIFO after deterministic extraction has
   // finished. Until that reader is released, the public daemon snapshot must
   // remain the initial empty/building graph; after release, one snapshot must
@@ -214,6 +212,7 @@ int main() {
     expect(ok, atomic_rc == 0, "atomic-overlay: daemon exited cleanly");
     fs::remove_all(atomic_root);
   }
+#endif
 
   const auto root = fs::temp_directory_path() / "cgraph_daemon_server_test";
   fs::remove_all(root);
@@ -429,12 +428,12 @@ int main() {
   // sizes the frame buffer; if it still allocated 0xFFFFFFFF bytes the process
   // would OOM/crash here instead of the next status answering.
   {
-    const int fd = raw_connect(socket_path);
-    expect(ok, fd >= 0, "raw connect for oversized-frame test");
-    if (fd >= 0) {
+    auto fd = raw_connect(socket_path);
+    expect(ok, fd.valid(), "raw connect for oversized-frame test");
+    if (fd.valid()) {
       const std::array<std::uint8_t, 4> huge{0xFF, 0xFF, 0xFF, 0xFF};  // 0xFFFFFFFF body length
-      (void)::write(fd, huge.data(), huge.size());
-      ::close(fd);  // send no body: the daemon must not wait on ~4 GB it never allocates
+      raw_send(fd, huge);
+      fd = cgraph::LocalSocket{};  // send no body: the daemon must not wait on ~4 GB it never allocates
     }
   }
   const auto after_huge = request_with_retry(socket_path, cgraph::make_request("status"));
@@ -446,11 +445,11 @@ int main() {
   // stalled read after a few seconds; the proof is that a normal status on a
   // fresh connection still round-trips (the loop was never permanently blocked).
   {
-    const int fd = raw_connect(socket_path);
-    expect(ok, fd >= 0, "raw connect for stalled-reader test");
-    if (fd >= 0) {
+    auto fd = raw_connect(socket_path);
+    expect(ok, fd.valid(), "raw connect for stalled-reader test");
+    if (fd.valid()) {
       const std::array<std::uint8_t, 2> partial{0x10, 0x00};  // 2 of 4 header bytes, then stall
-      (void)::write(fd, partial.data(), partial.size());
+      raw_send(fd, partial);
       // Hold the socket open, sending nothing. The daemon serves inline on one
       // thread, so while it is stuck in read_exact on the missing header bytes it
       // cannot service another request -- until SO_RCVTIMEO (a few seconds) fires
@@ -467,12 +466,49 @@ int main() {
       }
       expect(ok, concurrent && (*concurrent)["ok"] == true,
              "daemon recovers and answers status after a stalled mid-frame reader is timed out");
-      ::close(fd);
+      fd = cgraph::LocalSocket{};
     }
   }
   const auto after_stall = request_with_retry(socket_path, cgraph::make_request("status"));
   expect(ok, after_stall && (*after_stall)["ok"] == true,
          "daemon serve loop survived a stalled half-frame reader");
+
+  // A request whose client hung up while the daemon was busy is skipped: not
+  // computed, not answered, counted as abandoned. A peer stalled mid-header
+  // keeps the single serve loop busy while the second client sends a whole
+  // query and closes; once the stalled peer goes, the query is found abandoned.
+  {
+    const auto ops_of = [&] {
+      const auto status = request_with_retry(socket_path, cgraph::make_request("status"));
+      return status ? (*status)["result"].value("ops", nlohmann::json::object()) : nlohmann::json::object();
+    };
+    const auto before = ops_of();
+    auto busy = raw_connect(socket_path);
+    expect(ok, busy.valid(), "raw connect for the busy peer");
+    const std::array<std::uint8_t, 2> partial{0x10, 0x00};
+    raw_send(busy, partial);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));  // the daemon is now reading `busy`
+    auto gone = raw_connect(socket_path);  // queued in the listen backlog
+    expect(ok, gone.valid(), "raw connect for the abandoning client");
+    const auto frame = cgraph::encode_frame(cgraph::make_request("query", {{"q", "anything"}}));
+    (void)cgraph::send_all(gone, frame.data(), frame.size());
+    gone = cgraph::LocalSocket{};
+    busy = cgraph::LocalSocket{};
+    nlohmann::json after;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      after = ops_of();
+      if (after.value("abandoned", 0) > before.value("abandoned", 0)) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    expect(ok, after.value("abandoned", 0) == before.value("abandoned", 0) + 1,
+           "a request whose client hung up is counted as abandoned");
+    expect(ok, after.value("query_count", 0) == before.value("query_count", 0),
+           "an abandoned query is not computed");
+    // A live client is still answered.
+    const auto live = request_with_retry(socket_path, cgraph::make_request("query", {{"q", "anything"}}));
+    expect(ok, live && (*live)["ok"] == true && ops_of().value("query_count", 0) == before.value("query_count", 0) + 1,
+           "a live client's query is still computed and answered");
+  }
 
   // An unknown op is an error, not a crash; shutdown stops the loop cleanly.
   const auto bad = cgraph::request_over_unix_socket(socket_path, cgraph::make_request("nonsense"));
@@ -1121,7 +1157,8 @@ int main() {
             "remember", {{"title", "coverage checkpoint"}, {"summary", "refusal regression"}}));
     expect(ok, remember && remember->value("ok", false), "coverage: remember accepted");
 
-    expect(ok, ::chmod(cov_source.c_str(), 0) == 0, "coverage: made verified source unreadable");
+    UnreadableFile unreadable(cov_source);
+    expect(ok, unreadable.active(), "coverage: made verified source unreadable");
     const auto refused = request_with_retry(cov_socket, cgraph::make_request("update", {{"path", "."}}));
     expect(ok,
            refused && refused->value("ok", false) &&
@@ -1131,7 +1168,7 @@ int main() {
     expect(ok, wait_for_label(cov_socket, "Covered", "Covered", true),
            "coverage: served graph kept the last verified code after the refusal");
 
-    expect(ok, ::chmod(cov_source.c_str(), 0600) == 0, "coverage: restored source permissions");
+    expect(ok, unreadable.release(), "coverage: restored source permissions");
     const auto cov_shutdown = request_with_retry(cov_socket, cgraph::make_request("shutdown"));
     expect(ok, cov_shutdown && cov_shutdown->value("ok", false), "coverage: shutdown accepted");
     cov_server.join();
@@ -1153,6 +1190,7 @@ int main() {
     expect(ok, !overlay_in_persisted && code_in_persisted,
            "coverage: graph.json stayed deterministic-only across the refused update");
 
+    persisted.close();  // Windows cannot delete a file that is still open
     fs::remove_all(cov_root);
   }
 
@@ -1161,7 +1199,9 @@ int main() {
   // filesystem_error -- must stop the daemon with exit 1 and release its
   // endpoint. It must not escape a worker thread or unwind past a joinable
   // one, either of which calls std::terminate (abort, exit 134). Skipped as
-  // root, which bypasses directory permissions.
+  // root, which bypasses directory permissions, and on Windows, which has no
+  // POSIX search permission.
+#ifndef _WIN32
   if (::geteuid() != 0) {
     const auto fatal_parent = fs::temp_directory_path() / "cgraph_daemon_fatal_test";
     const auto fatal_root = fatal_parent / "proj";
@@ -1197,6 +1237,133 @@ int main() {
 
     expect(ok, ::chmod(fatal_parent.c_str(), 0700) == 0, "fatal: restored the root's parent");
     fs::remove_all(fatal_parent);
+  }
+#endif
+
+  // Stale-checkpoint detection through the real daemon: graph_remember anchors
+  // each touched symbol to its own source span, and graph_recall grades each
+  // touch valid / changed after a real edit is extracted, keeps grading it the
+  // same after a restart (sidecar re-overlaid onto the fast-loaded graph), and
+  // lists a renamed or deleted symbol under "gone". Watching is off, so the
+  // explicit `update` (graph_update) is the only synchronizer.
+  {
+    const auto mem_root = fs::temp_directory_path() / "cgraph_daemon_stale_checkpoint_test";
+    const auto billing = mem_root / "src" / "billing.py";
+    fs::remove_all(mem_root);
+    write_file(billing,
+               "def charge(amount):\n    return amount + 1\n\n\n"
+               "def refund(amount):\n    return amount - 1\n");
+    const auto mem_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(mem_root));
+    fs::remove(mem_socket);
+
+    cgraph::DaemonServerOptions mem_options;
+    mem_options.idle_timeout = std::chrono::seconds(60);
+    mem_options.build_graph_on_start = true;
+    mem_options.code_poll_interval = std::chrono::milliseconds::zero();
+
+    const auto sync = [&](const char* what) {
+      const auto response = request_with_retry(mem_socket, cgraph::make_request("update", {{"path", "."}}));
+      expect(ok, response && response->value("ok", false), what);
+    };
+    const auto recall = [&]() {
+      const auto response = request_with_retry(mem_socket, cgraph::make_request("recall", {}));
+      return response && response->value("ok", false) ? (*response)["result"] : nlohmann::json::object();
+    };
+    // A touch's validity by symbol name ("absent" when recall lists no link to it).
+    const auto touch_state = [](const nlohmann::json& checkpoint, std::string_view symbol) {
+      for (const auto& link : checkpoint.value("concerns", nlohmann::json::array())) {
+        const auto label = link.value("label", std::string{});
+        if (std::string_view{label}.substr(0, label.find('(')) == symbol) {
+          return link.value("validity", std::string{});
+        }
+      }
+      return std::string{"absent"};
+    };
+    const auto only_checkpoint = [](const nlohmann::json& rec) {
+      return rec.value("total", 0) == 1 && rec.value("returned", 0) == 1 ? rec["checkpoints"][0]
+                                                                          : nlohmann::json::object();
+    };
+
+    int mem_rc = -1;
+    std::thread mem_server([&] { mem_rc = cgraph::run_daemon_server(mem_root, mem_options); });
+    sync("stale-checkpoint: initial update synchronized the graph");
+
+    const auto remembered = request_with_retry(
+        mem_socket, cgraph::make_request("remember", {{"title", "Billing refactor"},
+                                                      {"body", "charge and refund reviewed"},
+                                                      {"touches", {"charge", "refund"}}}));
+    expect(ok,
+           remembered && remembered->value("ok", false) && (*remembered)["result"].value("concerns", 0) == 2 &&
+               (*remembered)["result"].value("anchored", 0) == 2,
+           "stale-checkpoint: both touched functions resolved and anchored");
+    {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             touch_state(cp, "charge") == "valid" && touch_state(cp, "refund") == "valid" &&
+                 cp.value("validity", std::string{}) == "valid",
+             "stale-checkpoint: a fresh checkpoint is valid");
+    }
+
+    // Edit refund's body only; charge's span is untouched in the same file.
+    write_file(billing,
+               "def charge(amount):\n    return amount + 1\n\n\n"
+               "def refund(amount):\n    return amount - 2\n");
+    sync("stale-checkpoint: update after editing refund");
+    const auto expect_edited = [&](const char* what) {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             touch_state(cp, "charge") == "valid" && touch_state(cp, "refund") == "changed" &&
+                 cp.value("validity", std::string{}) == "stale" && cp["gone"].empty(),
+             what);
+    };
+    expect_edited("stale-checkpoint: edited refund is changed, untouched charge stays valid");
+
+    const auto restart = [&](const char* what) {
+      const auto down = request_with_retry(mem_socket, cgraph::make_request("shutdown"));
+      expect(ok, down && down->value("ok", false), what);
+      mem_server.join();
+      expect(ok, mem_rc == 0, what);
+      mem_rc = -1;
+      mem_server = std::thread([&] { mem_rc = cgraph::run_daemon_server(mem_root, mem_options); });
+      // The fast-loaded graph and its re-overlaid sidecar publish together.
+      for (int attempt = 0; attempt < 500 && recall().value("total", 0) != 1; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    };
+    restart("stale-checkpoint: daemon restarted");
+    expect_edited("stale-checkpoint: after restart refund is still changed and charge still valid");
+
+    // Rename refund: its touch can no longer be re-bound, so it is gone.
+    write_file(billing,
+               "def charge(amount):\n    return amount + 1\n\n\n"
+               "def refund_all(amount):\n    return amount - 2\n");
+    sync("stale-checkpoint: update after renaming refund");
+    {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             touch_state(cp, "charge") == "valid" && touch_state(cp, "refund") == "absent" &&
+                 touch_state(cp, "refund_all") == "absent" &&
+                 cp["gone"] == nlohmann::json::array({"refund"}) && cp.value("validity", std::string{}) == "stale",
+             "stale-checkpoint: renamed refund is gone, not re-bound to refund_all");
+    }
+
+    // Delete charge as well: both touches are gone and no link remains.
+    write_file(billing, "def refund_all(amount):\n    return amount - 2\n");
+    sync("stale-checkpoint: update after deleting charge");
+    {
+      const auto cp = only_checkpoint(recall());
+      expect(ok,
+             cp.value("concerns", nlohmann::json::array()).empty() &&
+                 cp["gone"] == nlohmann::json::array({"charge", "refund"}) &&
+                 cp.value("validity", std::string{}) == "stale",
+             "stale-checkpoint: deleted charge joins refund under gone");
+    }
+
+    const auto mem_shutdown = request_with_retry(mem_socket, cgraph::make_request("shutdown"));
+    expect(ok, mem_shutdown && mem_shutdown->value("ok", false), "stale-checkpoint: shutdown accepted");
+    mem_server.join();
+    expect(ok, mem_rc == 0, "stale-checkpoint: daemon exited cleanly");
+    fs::remove_all(mem_root);
   }
 
   fs::remove_all(root);

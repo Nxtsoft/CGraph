@@ -1,0 +1,644 @@
+{
+  "arms": [
+    "baseline",
+    "cgraph"
+  ],
+  "n_tasks": 32,
+  "n_runs": 192,
+  "seeds_per_task": {
+    "baseline": {
+      "3": 32
+    },
+    "cgraph": {
+      "3": 32
+    }
+  },
+  "claude_code_versions": {
+    "2.1.296": 192
+  },
+  "models": {
+    "claude-sonnet-5-5": 192
+  },
+  "repos": [
+    "django/django",
+    "pydata/xarray",
+    "scikit-learn/scikit-learn",
+    "sphinx-doc/sphinx",
+    "sympy/sympy"
+  ],
+  "metrics": {
+    "total_cost_usd": {
+      "baseline_mean": 0.05131877604166667,
+      "cgraph_mean": 0.051622225,
+      "baseline_median": 0.04698685,
+      "cgraph_median": 0.04596075,
+      "diff_mean": 0.0003034489583333339,
+      "diff_mean_ci95": [
+        -0.001447101458333331,
+        0.0018872970312499994
+      ],
+      "diff_median": 0.0008676333333333328,
+      "diff_median_ci95": [
+        0.00011289999999999911,
+        0.00236716666666667
+      ],
+      "tasks_cgraph_lower": 10,
+      "tasks_cgraph_higher": 22,
+      "ratio_of_totals": 1.0059130201797282,
+      "ratio_lo": 0.9733711272043645,
+      "ratio_hi": 1.0380715431556229
+    },
+    "num_turns": {
+      "baseline_mean": 4.0625,
+      "cgraph_mean": 4.09375,
+      "baseline_median": 3.6666666666666665,
+      "cgraph_median": 4.0,
+      "diff_mean": 0.03125000000000004,
+      "diff_mean_ci95": [
+        -0.23958333333333337,
+        0.3020833333333334
+      ],
+      "diff_median": 0.0,
+      "diff_median_ci95": [
+        0.0,
+        0.33333333333333326
+      ],
+      "tasks_cgraph_lower": 9,
+      "tasks_cgraph_higher": 13,
+      "ratio_of_totals": 1.0076923076923077,
+      "ratio_lo": 0.9421042688585443,
+      "ratio_hi": 1.077544609459422
+    },
+    "wall_s": {
+      "baseline_mean": 12.665625,
+      "cgraph_mean": 12.971874999999999,
+      "baseline_median": 11.033333333333333,
+      "cgraph_median": 11.666666666666666,
+      "diff_mean": 0.3062499999999998,
+      "diff_mean_ci95": [
+        -0.3604427083333335,
+        0.9271093749999996
+      ],
+      "diff_median": 0.5666666666666664,
+      "diff_median_ci95": [
+        0.11666666666666625,
+        1.0999999999999979
+      ],
+      "tasks_cgraph_lower": 10,
+      "tasks_cgraph_higher": 22,
+      "ratio_of_totals": 1.0241796200345425,
+      "ratio_lo": 0.9735230327199605,
+      "ratio_hi": 1.0781372885125113
+    },
+    "resolved": {
+      "baseline_mean": 0.8854166666666666,
+      "cgraph_mean": 0.8645833333333334,
+      "baseline_median": 1.0,
+      "cgraph_median": 1.0,
+      "diff_mean": -0.020833333333333336,
+      "diff_mean_ci95": [
+        -0.052083333333333336,
+        0.0
+      ],
+      "diff_median": 0.0,
+      "diff_median_ci95": [
+        0.0,
+        0.0
+      ],
+      "tasks_cgraph_lower": 2,
+      "tasks_cgraph_higher": 0
+    },
+    "input_tokens": {
+      "baseline_mean": 8.041666666666666,
+      "cgraph_mean": 8.104166666666666,
+      "baseline_median": 7.333333333333333,
+      "cgraph_median": 8.0,
+      "diff_mean": 0.06250000000000003,
+      "diff_mean_ci95": [
+        -0.47916666666666663,
+        0.5833333333333335
+      ],
+      "diff_median": 0.0,
+      "diff_median_ci95": [
+        0.0,
+        0.6666666666666661
+      ],
+      "tasks_cgraph_lower": 9,
+      "tasks_cgraph_higher": 12,
+      "ratio_of_totals": 1.0077720207253886,
+      "ratio_lo": 0.9433950645970818,
+      "ratio_hi": 1.074792243767313
+    },
+    "output_tokens": {
+      "baseline_mean": 914.4270833333334,
+      "cgraph_mean": 915.75,
+      "baseline_median": 695.8333333333333,
+      "cgraph_median": 742.0,
+      "diff_mean": 1.322916666666659,
+      "diff_mean_ci95": [
+        -80.33359375,
+        68.41822916666663
+      ],
+      "diff_median": 8.166666666666686,
+      "diff_median_ci95": [
+        -25.83333333333337,
+        79.0
+      ],
+      "tasks_cgraph_lower": 14,
+      "tasks_cgraph_higher": 18,
+      "ratio_of_totals": 1.0014467164094094,
+      "ratio_lo": 0.9248122194660104,
+      "ratio_hi": 1.0830244900097823
+    },
+    "cache_read_input_tokens": {
+      "baseline_mean": 67670.46875,
+      "cgraph_mean": 68296.0,
+      "baseline_median": 61595.16666666667,
+      "cgraph_median": 66918.0,
+      "diff_mean": 625.53125,
+      "diff_mean_ci95": [
+        -5039.439322916666,
+        6021.067708333333
+      ],
+      "diff_median": 313.3333333333321,
+      "diff_median_ci95": [
+        154.49999999999636,
+        6288.6666666666715
+      ],
+      "tasks_cgraph_lower": 10,
+      "tasks_cgraph_higher": 22,
+      "ratio_of_totals": 1.009243784793496,
+      "ratio_lo": 0.9301077412400166,
+      "ratio_hi": 1.0929296120653076
+    },
+    "cache_creation_input_tokens": {
+      "baseline_mean": 8847.84375,
+      "cgraph_mean": 8904.729166666666,
+      "baseline_median": 8170.666666666667,
+      "cgraph_median": 8470.333333333334,
+      "diff_mean": 56.88541666666657,
+      "diff_mean_ci95": [
+        -91.90703124999995,
+        188.76406249999968
+      ],
+      "diff_median": 134.66666666666697,
+      "diff_median_ci95": [
+        -14.833333333333485,
+        213.33333333333303
+      ],
+      "tasks_cgraph_lower": 11,
+      "tasks_cgraph_higher": 21,
+      "ratio_of_totals": 1.0064292971569109,
+      "ratio_lo": 0.9900535954933187,
+      "ratio_hi": 1.0216586343562297
+    },
+    "tool_calls_total": {
+      "baseline_mean": 3.0625,
+      "cgraph_mean": 3.09375,
+      "baseline_median": 2.6666666666666665,
+      "cgraph_median": 3.0,
+      "diff_mean": 0.03125000000000008,
+      "diff_mean_ci95": [
+        -0.23958333333333331,
+        0.3020833333333335
+      ],
+      "diff_median": 0.0,
+      "diff_median_ci95": [
+        0.0,
+        0.3333333333333335
+      ],
+      "tasks_cgraph_lower": 9,
+      "tasks_cgraph_higher": 13,
+      "ratio_of_totals": 1.010204081632653,
+      "ratio_lo": 0.9240446051838458,
+      "ratio_hi": 1.1040949025166484
+    },
+    "first_request_prefix_tokens": {
+      "baseline_mean": 17575.583333333332,
+      "cgraph_mean": 17688.239583333332,
+      "baseline_median": 17355.5,
+      "cgraph_median": 17463.666666666664,
+      "diff_mean": 112.65624999999955,
+      "diff_mean_ci95": [
+        111.34374999999955,
+        113.90624999999966
+      ],
+      "diff_median": 112.83333333333394,
+      "diff_median_ci95": [
+        110.66666666666788,
+        114.33333333333212
+      ],
+      "tasks_cgraph_lower": 0,
+      "tasks_cgraph_higher": 32,
+      "ratio_of_totals": 1.0064098157007588,
+      "ratio_lo": 1.006285358794938,
+      "ratio_hi": 1.0065249826500051
+    }
+  },
+  "spend_usd": {
+    "baseline": 4.9266024999999996,
+    "cgraph": 4.9557336,
+    "all": 9.8823361
+  },
+  "solved_runs": {
+    "baseline": "85/96",
+    "cgraph": "83/96"
+  },
+  "cgraph_usage": {
+    "runs_with_any_cgraph_call": 0,
+    "cgraph_runs": 96,
+    "total_cgraph_calls": 0,
+    "skill_calls": 0,
+    "by_tool": {},
+    "mcp_connected_runs": 96
+  },
+  "paired_by_cgraph_use": {
+    "called": {
+      "n": 0,
+      "cost_diff_mean": null,
+      "turns_diff_mean": null,
+      "resolved_diff_mean": null
+    },
+    "not_called": {
+      "n": 96,
+      "cost_diff_mean": 0.00030344895833333353,
+      "turns_diff_mean": 0.03125,
+      "resolved_diff_mean": -0.020833333333333332
+    }
+  },
+  "fitted_price_per_mtok": {
+    "input_tokens": 1.9999999999977653,
+    "output_tokens": 10.000000000000002,
+    "cache_read_input_tokens": 0.1000000000000018,
+    "cache_creation_input_tokens": 4.000000000000001
+  },
+  "fitted_price_max_abs_residual_usd": 2.7755575615628914e-16,
+  "cost_breakdown_usd": {
+    "baseline": {
+      "input_tokens": 0.0015439999999982748,
+      "output_tokens": 0.8778500000000001,
+      "cache_read_input_tokens": 0.6496365000000116,
+      "cache_creation_input_tokens": 3.397572000000001
+    },
+    "cgraph": {
+      "input_tokens": 0.0015559999999982615,
+      "output_tokens": 0.8791200000000001,
+      "cache_read_input_tokens": 0.6556416000000117,
+      "cache_creation_input_tokens": 3.419416000000001
+    }
+  },
+  "per_task": [
+    {
+      "instance_id": "django__django-11749",
+      "baseline_total_cost_usd": 0.04371766666666667,
+      "baseline_num_turns": 3.3333333333333335,
+      "baseline_wall_s": 11.0,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0411462,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.833333333333334,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-12155",
+      "baseline_total_cost_usd": 0.0390327,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 9.666666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0368466,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.133333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-12262",
+      "baseline_total_cost_usd": 0.038361066666666666,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.833333333333332,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0423624,
+      "cgraph_num_turns": 3.6666666666666665,
+      "cgraph_wall_s": 10.633333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-13343",
+      "baseline_total_cost_usd": 0.04463876666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 11.166666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04513536666666667,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 11.633333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-14140",
+      "baseline_total_cost_usd": 0.038966633333333334,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 9.133333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.040021633333333334,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.9,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-14434",
+      "baseline_total_cost_usd": 0.0535268,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 13.133333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.057676,
+      "cgraph_num_turns": 6.666666666666667,
+      "cgraph_wall_s": 13.533333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-15103",
+      "baseline_total_cost_usd": 0.04906593333333333,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 14.200000000000001,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04456623333333333,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 11.7,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-16032",
+      "baseline_total_cost_usd": 0.09249903333333333,
+      "baseline_num_turns": 6.666666666666667,
+      "baseline_wall_s": 32.9,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.07744116666666667,
+      "cgraph_num_turns": 6,
+      "cgraph_wall_s": 27.066666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-16527",
+      "baseline_total_cost_usd": 0.0358806,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 8.266666666666667,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.037830633333333336,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 9.366666666666665,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "django__django-16819",
+      "baseline_total_cost_usd": 0.04893976666666666,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 11.066666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.055216133333333334,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 14.066666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-13551",
+      "baseline_total_cost_usd": 0.0477452,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 12.333333333333332,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.052583033333333334,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 13.833333333333332,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-13647",
+      "baseline_total_cost_usd": 0.0376991,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.033333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.037812,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 8.566666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-14976",
+      "baseline_total_cost_usd": 0.04215303333333333,
+      "baseline_num_turns": 3.3333333333333335,
+      "baseline_wall_s": 9.5,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.042816066666666666,
+      "cgraph_num_turns": 3.3333333333333335,
+      "cgraph_wall_s": 9.433333333333334,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-17318",
+      "baseline_total_cost_usd": 0.06603793333333333,
+      "baseline_num_turns": 6,
+      "baseline_wall_s": 16.066666666666666,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.05902523333333333,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 14.4,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-21930",
+      "baseline_total_cost_usd": 0.04208326666666667,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 10.7,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.045416366666666666,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 11.933333333333334,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sympy__sympy-22456",
+      "baseline_total_cost_usd": 0.0543871,
+      "baseline_num_turns": 4.333333333333333,
+      "baseline_wall_s": 13.866666666666667,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.05263866666666667,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 14.833333333333334,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-22914",
+      "baseline_total_cost_usd": 0.043946900000000004,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 10.4,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.043439399999999996,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 9.666666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sympy__sympy-23824",
+      "baseline_total_cost_usd": 0.0409657,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.3,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.041371766666666664,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 8.966666666666667,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10844",
+      "baseline_total_cost_usd": 0.03961373333333333,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.333333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0419809,
+      "cgraph_num_turns": 3.3333333333333335,
+      "cgraph_wall_s": 10.6,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-15100",
+      "baseline_total_cost_usd": 0.03902646666666667,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.233333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.039706733333333334,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 8.566666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25747",
+      "baseline_total_cost_usd": 0.09204803333333333,
+      "baseline_num_turns": 6.333333333333333,
+      "baseline_wall_s": 24.733333333333334,
+      "baseline_resolved": 0.3333333333333333,
+      "cgraph_total_cost_usd": 0.0784681,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 20.566666666666666,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25931",
+      "baseline_total_cost_usd": 0.04970466666666667,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 12.733333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.05123073333333334,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 14.1,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "baseline_total_cost_usd": 0.04242336666666667,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 8.433333333333334,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.0437671,
+      "cgraph_num_turns": 3,
+      "cgraph_wall_s": 9.133333333333333,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-9288",
+      "baseline_total_cost_usd": 0.060495400000000005,
+      "baseline_num_turns": 4.333333333333333,
+      "baseline_wall_s": 13.4,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.06347063333333333,
+      "cgraph_num_turns": 5,
+      "cgraph_wall_s": 14.0,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10614",
+      "baseline_total_cost_usd": 0.0621072,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 17.633333333333333,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.05956826666666667,
+      "cgraph_num_turns": 4.333333333333333,
+      "cgraph_wall_s": 16.53333333333333,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-11445",
+      "baseline_total_cost_usd": 0.043291866666666665,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 10.8,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04243216666666667,
+      "cgraph_num_turns": 3.3333333333333335,
+      "cgraph_wall_s": 10.333333333333334,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8120",
+      "baseline_total_cost_usd": 0.0462285,
+      "baseline_num_turns": 3,
+      "baseline_wall_s": 9.766666666666667,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.04650513333333334,
+      "cgraph_num_turns": 3.3333333333333335,
+      "cgraph_wall_s": 9.799999999999999,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8265",
+      "baseline_total_cost_usd": 0.05701456666666667,
+      "baseline_num_turns": 5,
+      "baseline_wall_s": 15.200000000000001,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.05993313333333333,
+      "cgraph_num_turns": 5.333333333333333,
+      "cgraph_wall_s": 16.566666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8638",
+      "baseline_total_cost_usd": 0.06880216666666666,
+      "baseline_num_turns": 4.666666666666667,
+      "baseline_wall_s": 17.9,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.07768093333333333,
+      "cgraph_num_turns": 6.666666666666667,
+      "cgraph_wall_s": 21.566666666666666,
+      "cgraph_resolved": 1.0
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9602",
+      "baseline_total_cost_usd": 0.06451409999999999,
+      "baseline_num_turns": 5.333333333333333,
+      "baseline_wall_s": 16.333333333333332,
+      "baseline_resolved": 0.0,
+      "cgraph_total_cost_usd": 0.0694492,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 18.766666666666666,
+      "cgraph_resolved": 0.0
+    },
+    {
+      "instance_id": "pydata__xarray-6599",
+      "baseline_total_cost_usd": 0.0603907,
+      "baseline_num_turns": 4,
+      "baseline_wall_s": 12.633333333333333,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.06584576666666667,
+      "cgraph_num_turns": 4.666666666666667,
+      "cgraph_wall_s": 15.266666666666666,
+      "cgraph_resolved": 0.6666666666666666
+    },
+    {
+      "instance_id": "pydata__xarray-6721",
+      "baseline_total_cost_usd": 0.05689286666666667,
+      "baseline_num_turns": 3.6666666666666665,
+      "baseline_wall_s": 10.6,
+      "baseline_resolved": 1.0,
+      "cgraph_total_cost_usd": 0.058527499999999996,
+      "cgraph_num_turns": 4,
+      "cgraph_wall_s": 10.8,
+      "cgraph_resolved": 1.0
+    }
+  ]
+}

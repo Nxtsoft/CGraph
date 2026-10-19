@@ -287,10 +287,10 @@ int test_pipeline_serves_and_does_not_over_link() {
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root / "svc" / "src" / "main" / "resources");
   std::filesystem::create_directories(root / "svc" / "src" / "main" / "kotlin");
-  std::ofstream(root / "svc" / "build.gradle.kts") << kGradle;
-  std::ofstream(root / "svc" / "src" / "main" / "resources" / "application.yml")
+  std::ofstream(root / "svc" / "build.gradle.kts", std::ios::binary) << kGradle;
+  std::ofstream(root / "svc" / "src" / "main" / "resources" / "application.yml", std::ios::binary)
       << "server:\n  port: 8080\n\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info\n";
-  std::ofstream(root / "svc" / "src" / "main" / "kotlin" / "ApiClient.kt")
+  std::ofstream(root / "svc" / "src" / "main" / "kotlin" / "ApiClient.kt", std::ios::binary)
       << "import io.ktor.client.HttpClient\n"
          "class ApiClient(private val baseUrl: String) {\n"
          "    private val client = HttpClient()\n"
@@ -327,9 +327,9 @@ int test_pipeline_serves_and_does_not_over_link() {
 
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root / "k8s");
-  std::ofstream(root / "k8s" / "deployment.yaml") << "livenessProbe:\n  httpGet:\n    path: /actuator/health\n";
-  std::ofstream(root / "README.md") << "Add spring-boot-starter-actuator and call /actuator/health.\n";
-  std::ofstream(root / "build.gradle.kts") << "dependencies {\n    implementation(\"com.example:lib:1.0\")\n}\n";
+  std::ofstream(root / "k8s" / "deployment.yaml", std::ios::binary) << "livenessProbe:\n  httpGet:\n    path: /actuator/health\n";
+  std::ofstream(root / "README.md", std::ios::binary) << "Add spring-boot-starter-actuator and call /actuator/health.\n";
+  std::ofstream(root / "build.gradle.kts", std::ios::binary) << "dependencies {\n    implementation(\"com.example:lib:1.0\")\n}\n";
   const auto docs_only = cgraph::run_one_shot(root);
   std::filesystem::remove_all(root);
   if (std::ranges::any_of(docs_only.graph.nodes, [](const cgraph::Node& n) {

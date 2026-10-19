@@ -709,6 +709,80 @@ int test_library_qualified_calls() {
 // METHOD (tier 2b) -- but not when the bare name is one every standard library
 // defines. `v.size()` must not reach the project's only method named `size`,
 // while `r.Match()` (issue #44) still does. The same-file tier is untouched.
+// A closure's call (RawCall::in_closure) binds only on evidence: its own file,
+// a named import of the declaration, or a receiver naming the class. The bare-name tiers -- a unique
+// project label with no import, a unique method for an unknown receiver -- are
+// refused for it (CGR-26), while the identical call outside a closure resolves
+// exactly as before.
+int test_closure_calls_resolve_on_evidence() {
+  const auto caller = cgraph::make_id("/p/ui.ts:Dialog");
+  const auto ui_file = cgraph::make_id("ui.ts");
+  const auto lib_file = cgraph::make_id("lib.ts");
+  const auto on_open = cgraph::make_id("/p/decoys.ts:onOpenChange");
+  const auto store = cgraph::make_id("/p/decoys.ts:Store");
+  const auto store_delete = cgraph::make_id("/p/decoys.ts:Store::delete");
+  const auto fetch_items = cgraph::make_id("/p/lib.ts:fetchItems");
+  const auto write_item = cgraph::make_id("/p/lib.ts:write");
+  const auto local = cgraph::make_id("/p/ui.ts:local");
+
+  const auto make_graph = [&] {
+    cgraph::GraphSnapshot graph;
+    graph.nodes.push_back({.id = caller, .label = "Dialog", .source_file = "/p/ui.ts", .kind = "function"});
+    graph.nodes.push_back({.id = local, .label = "local", .source_file = "/p/ui.ts", .kind = "function"});
+    graph.nodes.push_back({.id = ui_file, .label = "ui.ts", .source_file = "/p/ui.ts", .kind = "file"});
+    graph.nodes.push_back({.id = lib_file, .label = "lib.ts", .source_file = "/p/lib.ts", .kind = "file"});
+    graph.nodes.push_back({.id = on_open, .label = "onOpenChange", .source_file = "/p/decoys.ts", .kind = "function"});
+    graph.nodes.push_back({.id = store, .label = "Store", .source_file = "/p/decoys.ts", .kind = "class"});
+    graph.nodes.push_back({.id = store_delete, .label = "delete", .source_file = "/p/decoys.ts", .kind = "function"});
+    graph.nodes.push_back({.id = fetch_items, .label = "fetchItems", .source_file = "/p/lib.ts", .kind = "function"});
+    graph.nodes.push_back({.id = write_item, .label = "write", .source_file = "/p/lib.ts", .kind = "function"});
+    graph.edges.push_back({.source = store, .target = store_delete, .relation = "method"});
+    // ui.ts imports `fetchItems` from lib.ts by name, and so also imports from the module.
+    graph.edges.push_back({.source = ui_file, .target = lib_file, .relation = "imports_from"});
+    graph.edges.push_back({.source = ui_file, .target = fetch_items, .relation = "imports"});
+    return graph;
+  };
+  const auto calls_for = [&](bool in_closure) {
+    return std::vector<cgraph::RawCall>{
+        {.caller_id = caller, .callee_label = "onOpenChange", .source_file = "/p/ui.ts", .in_closure = in_closure},
+        {.caller_id = caller, .callee_label = "delete", .source_file = "/p/ui.ts", .is_member_call = true,
+         .in_closure = in_closure},
+        {.caller_id = caller, .callee_label = "fetchItems", .source_file = "/p/ui.ts", .in_closure = in_closure},
+        {.caller_id = caller, .callee_label = "local", .source_file = "/p/ui.ts", .in_closure = in_closure},
+        // `write` is lib.ts's, but ui.ts never imports it by name: a file-level
+        // `imports_from` does not say a closure's `write(...)` (a parameter) means it.
+        {.caller_id = caller, .callee_label = "write", .source_file = "/p/ui.ts", .in_closure = in_closure},
+    };
+  };
+
+  auto closure_graph = make_graph();
+  cgraph::CallResolution closure_outcomes;
+  cgraph::resolve_raw_calls(closure_graph, calls_for(true), &closure_outcomes);
+  // Evidence binds: the function imported by name and the same-file sibling.
+  if (!has_edge(closure_graph, caller, fetch_items, "CALLS") || !has_edge(closure_graph, caller, local, "CALLS")) {
+    return 1;
+  }
+  // Bare-name guesses do not.
+  if (has_edge(closure_graph, caller, on_open, "CALLS") || has_edge(closure_graph, caller, store_delete, "CALLS") ||
+      has_edge(closure_graph, caller, write_item, "CALLS")) {
+    return 1;
+  }
+  if (closure_outcomes.dropped_closure_guess != 3 || !closure_outcomes.balances()) {
+    return 1;
+  }
+
+  // The same calls outside a closure keep today's resolution, guesses included.
+  auto body_graph = make_graph();
+  cgraph::CallResolution body_outcomes;
+  cgraph::resolve_raw_calls(body_graph, calls_for(false), &body_outcomes);
+  if (!has_edge(body_graph, caller, on_open, "CALLS") || !has_edge(body_graph, caller, store_delete, "CALLS") ||
+      !has_edge(body_graph, caller, write_item, "CALLS") ||
+      body_outcomes.dropped_closure_guess != 0 || !body_outcomes.balances()) {
+    return 1;
+  }
+  return 0;
+}
+
 int test_library_member_names() {
   const auto caller = cgraph::make_id("/p/use.cpp:use");
   const auto stats = cgraph::make_id("/p/stats.hpp:Stats");
@@ -768,7 +842,7 @@ namespace {
 
 void write_ts(const std::filesystem::path& path, const char* contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream(path) << contents;
+  std::ofstream(path, std::ios::binary) << contents;
 }
 
 // TypeScript barrels: `import { competitors } from '../../db/schema'` lands on
@@ -938,13 +1012,93 @@ int check_shared_stub_alias_binds_both_names() {
 
 }  // namespace
 
+// resolve_test_subjects pairs each test file with the source file its name
+// names, using repo-relative paths (the project root here sits under a `tests`
+// directory, which must not make every file a test). A stem several source files
+// share pairs only by same directory or mirrored directory, never by guess.
+int test_resolve_test_subjects() {
+  const std::string root = "/work/tests/proj/";
+  cgraph::GraphSnapshot graph;
+  const auto file = [&](const std::string& relative) {
+    const auto id = cgraph::make_id(root + relative);
+    graph.nodes.push_back({.id = id, .label = relative, .source_file = root + relative, .kind = "file"});
+    return id;
+  };
+  const auto path_go = file("path.go");
+  const auto path_test_go = file("path_test.go");
+  const auto http_client = file("http/client.py");
+  const auto db_client = file("db/client.py");
+  const auto test_http_client = file("tests/http/test_client.py");
+  const auto test_other_client = file("tests/test_client.py");
+  const auto help_rs = file("src/output/help.rs");
+  const auto tests_help_rs = file("tests/builder/help.rs");
+  const auto button = file("ui/button.ts");
+  const auto button_spec = file("ui/button.spec.ts");
+  const auto lib_mod = file("src/a/mod.rs");
+  const auto other_mod = file("src/b/mod.rs");
+  const auto tests_mod = file("tests/mod.rs");
+  const auto lonely_test = file("orphan_test.go");
+  // A package's tests pair inside that package, even when the stem is unique to neither.
+  const auto widget_a = file("pkg_a/src/widget.rs");
+  const auto widget_b = file("pkg_b/src/widget.rs");
+  const auto widget_test = file("pkg_a/tests/widget.rs");
+  // Generic names and example files never pair across directories.
+  const auto suite_main = file("crate/tests/testsuite/main.rs");
+  const auto example_main = file("examples/demo/main.rs");
+  const auto completion_test = file("other/tests/completion.rs");
+  const auto example_completion = file("lib/examples/completion.rs");
+  // Outside a test root a test pairs only beside its subject: reverseproxy's
+  // headers_test.go is not a test of the headers module.
+  const auto headers = file("modules/headers/headers.go");
+  const auto proxy_headers_test = file("modules/reverseproxy/headers_test.go");
+  // A Rust `tests.rs` unit-test module is a test, never a test's subject.
+  const auto builder_tests = file("src/builder/tests.rs");
+  const auto suite_tests = file("tests/builder/tests.rs");
+  const auto plain = file("server.go");
+
+  cgraph::resolve_test_subjects(graph);
+
+  const auto tests_edges = std::ranges::count_if(graph.edges, [](const cgraph::Edge& e) { return e.relation == "tests"; });
+  if (!has_edge(graph, path_test_go, path_go, "tests")) return 1;            // same directory
+  if (!has_edge(graph, test_http_client, http_client, "tests")) return 1;    // mirrored tests/http -> http
+  if (has_edge(graph, test_http_client, db_client, "tests")) return 1;
+  if (!has_edge(graph, tests_help_rs, help_rs, "tests")) return 1;           // unique stem anywhere
+  if (!has_edge(graph, button_spec, button, "tests")) return 1;              // `.spec` marker
+  // tests/test_client.py mirrors the root, where no client.py lives: ambiguous, no edge.
+  if (has_edge(graph, test_other_client, http_client, "tests") || has_edge(graph, test_other_client, db_client, "tests")) return 1;
+  if (has_edge(graph, tests_mod, lib_mod, "tests") || has_edge(graph, tests_mod, other_mod, "tests")) return 1;
+  if (!has_edge(graph, widget_test, widget_a, "tests") || has_edge(graph, widget_test, widget_b, "tests")) return 1;
+  if (has_edge(graph, suite_main, example_main, "tests")) return 1;
+  if (has_edge(graph, completion_test, example_completion, "tests")) return 1;
+  if (has_edge(graph, proxy_headers_test, headers, "tests")) return 1;
+  if (has_edge(graph, suite_tests, builder_tests, "tests")) return 1;
+  (void)lonely_test;
+  (void)plain;
+  if (tests_edges != 5) {
+    std::fprintf(stderr, "expected 5 tests edges, got %td\n", tests_edges);
+    return 1;
+  }
+  // Idempotent: a second pass (incremental rebuild) adds nothing.
+  cgraph::resolve_test_subjects(graph);
+  if (std::ranges::count_if(graph.edges, [](const cgraph::Edge& e) { return e.relation == "tests"; }) != tests_edges) return 1;
+  return 0;
+}
+
 int main() {
+  if (test_resolve_test_subjects() != 0) {
+    std::fprintf(stderr, "FAIL test_resolve_test_subjects\n");
+    return 1;
+  }
   if (test_contract_facts_are_not_edges() != 0) {
     std::fprintf(stderr, "FAIL test_contract_facts_are_not_edges\n");
     return 1;
   }
   if (test_qualified_scope() != 0) {
     std::fprintf(stderr, "FAIL test_qualified_scope\n");
+    return 1;
+  }
+  if (test_closure_calls_resolve_on_evidence() != 0) {
+    std::cerr << "closure calls resolved on a bare-name guess\n";
     return 1;
   }
   if (test_library_member_names() != 0) {

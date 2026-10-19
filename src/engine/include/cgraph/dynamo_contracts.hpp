@@ -64,6 +64,7 @@
 
 #include <tree_sitter/api.h>
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -73,8 +74,10 @@ namespace cgraph {
 
 // Held while one JavaScript/TypeScript file is extracted: the file's SDK imports
 // and module constants are read once, on its first DynamoDB call, instead of
-// per call. Scopes nest; each covers one file on its thread. Without one each
-// call reads the file itself.
+// per call, and the file's dynamo facts are kept as a set (relation_keys.hpp)
+// instead of rescanned for each new call. Scopes nest; each covers one file on
+// its thread. Without one each call reads the file itself and scans the file's
+// relations.
 class DynamoContractsFileScope {
  public:
   DynamoContractsFileScope();
@@ -86,6 +89,13 @@ class DynamoContractsFileScope {
   struct Index;
   std::unique_ptr<Index> index_;
 };
+
+// Test hook: how many relations the one-fact-per-symbol-and-table check has
+// read on this thread, so a test can prove a held scope reads each once.
+struct DynamoLookupCounts {
+  std::size_t fact_reads = 0;
+};
+[[nodiscard]] DynamoLookupCounts dynamo_lookup_counts();
 
 // True for a valid DynamoDB table name: 3 to 255 of `[A-Za-z0-9_.-]`.
 [[nodiscard]] bool is_dynamo_table_name(std::string_view name);

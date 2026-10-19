@@ -28,7 +28,7 @@ namespace {
 // golden/parity tests catch an *unintended* output change; bumping this key on an
 // *intended* one is an author/reviewer responsibility, like any on-disk schema
 // version.
-constexpr const char* kIndexVersionKey = "cgraph-index-v1:logic-22";
+constexpr const char* kIndexVersionKey = "cgraph-index-v1:logic-26";
 
 [[nodiscard]] std::string normalized_key(const std::filesystem::path& path) {
   return path.lexically_normal().generic_string();
@@ -82,6 +82,26 @@ bool write_index_manifest(const IndexManifest& manifest, const std::filesystem::
     error.clear();
   }
   if (const auto failure = try_write_file_atomically(path, written.dump(), WriteDurability::Durable); !failure.empty()) {
+    std::cerr << "graphd: " << failure << '\n';
+    return false;
+  }
+  return true;
+}
+
+bool ensure_output_dir_ignored(const std::filesystem::path& out_dir) {
+  std::error_code error;
+  std::filesystem::create_directories(out_dir, error);
+  if (error) {
+    std::cerr << "graphd: cannot create " << out_dir << ": " << error.message() << '\n';
+    return false;
+  }
+  const auto ignore = out_dir / ".gitignore";
+  if (std::filesystem::exists(ignore, error)) {
+    return true;
+  }
+  if (const auto failure = try_write_file_atomically(
+          ignore, "# Written by cgraph: everything in this directory is generated.\n*\n", WriteDurability::Durable);
+      !failure.empty()) {
     std::cerr << "graphd: " << failure << '\n';
     return false;
   }

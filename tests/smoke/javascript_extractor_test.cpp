@@ -2,6 +2,7 @@
 
 #include <string_view>
 #include "cgraph/normalize.hpp"
+#include "cgraph/pipeline.hpp"
 #include <iostream>
 #include <set>
 #include <string>
@@ -326,15 +327,28 @@ describe('suite', () => { run(); });
                                             create_route->id + "->createNote",
                                             health_route->id + "->ping"}) return 1;
     // Not a route registration: `use` is not a verb, `.route('/x').get(handler)`
-    // has no path argument, and `.map` / `describe` callbacks stay boundaries.
+    // has no path argument, and `.map` / `describe` callbacks stay boundaries:
+    // no node of their own.
     for (const auto& node : routes.fragment.nodes) {
       if (node.kind != "function") continue;
       if (node.label.rfind("app.use", 0) == 0 || node.label.rfind("router", 0) == 0 ||
           node.label.find("map") != std::string::npos || node.label.find("describe") != std::string::npos) return 1;
     }
+    // A boundary's calls are still calls (CGR-26): with no enclosing function
+    // they belong to the module-level binding they are written into (`items`,
+    // which has a node) or else the file, and are marked as closure calls. A
+    // route handler's own calls are not closure calls: the handler is their scope.
+    std::set<std::string> closure_callers;
     for (const auto& call : routes.raw_calls) {
-      if (call.callee_label == "transform" || call.callee_label == "run" || call.callee_label == "next") return 1;
+      if (call.callee_label == "transform" || call.callee_label == "run" || call.callee_label == "next") {
+        if (!call.in_closure) return 1;
+        closure_callers.insert(call.caller_id + "->" + call.callee_label);
+      }
+      if ((call.callee_label == "listNotebooks" || call.callee_label == "ping") && call.in_closure) return 1;
     }
+    const auto file_id = cgraph::make_id("notebooks/index.ts");
+    if (closure_callers != std::set<std::string>{cgraph::make_id("notebooks/index.ts:items") + "->transform",
+                                                 file_id + "->run", file_id + "->next"}) return 1;
   }
 
   // HTTP contract facts (CGR-13): a route handler records the chain it is
@@ -633,6 +647,49 @@ export { a as b } from "./named";
       if (const auto name = edge.properties.find("reexport"); name != edge.properties.end() && name->second == "b") named_b = true;
     }
     if (!star_all || star_ns || !named_b) return 1;
+  }
+
+  // CGR-26: calls inside closures and test callbacks become CALLS edges, through
+  // the whole pipeline. The fixture holds every shape the 2026-10-13 turing-api
+  // head-to-head missed (Effect `try:` closures in a module-level service
+  // object, `it` callbacks) plus closures in a named function and a class field,
+  // and the names a closure is handed (a parameter, a prop, an unknown receiver)
+  // that a decoy file also declares, once from a file that imports a different
+  // name from it. The CALLS set must be exactly this: every
+  // closure call to a project symbol, and no edge to a decoy.
+  {
+    const auto result = cgraph::run_one_shot(CGRAPH_TS_CLOSURE_FIXTURE_DIR);
+    std::set<std::string> calls;
+    for (const auto& edge : result.graph.edges) {
+      if (edge.relation != "CALLS") continue;
+      const cgraph::Node* source = nullptr;
+      const cgraph::Node* target = nullptr;
+      for (const auto& node : result.graph.nodes) {
+        if (node.id == edge.source) source = &node;
+        if (node.id == edge.target) target = &node;
+      }
+      if (source == nullptr || target == nullptr) return 1;
+      calls.insert(source->kind + ":" + source->label + "->" + target->label);
+    }
+    const std::set<std::string> expected = {
+        "file:access.test.ts->assertAccess",                   // `it` arrow callback in a test file
+        "file:access.test.ts->audit",                          // `it` function-expression callback
+        "variable:ServiceLive->assertAccess",                   // Effect `try:` closure
+        "variable:ServiceLive->audit",                          // transaction callback inside it
+        "variable:ServiceLive->toError",                        // `catch:` closure, same-file callee
+        "function:load->assertAccess",                          // `.map` callback in a function
+        "function:load->audit",                                 // `.then` callback in a function
+        "class:Handler->assertAccess",                          // class-field arrow
+    };
+    if (calls != expected) {
+      for (const auto& call : calls) std::cerr << "CALLS " << call << "\n";
+      return 1;
+    }
+    // The decoys' names were called only through a parameter, a prop and an
+    // unknown receiver; each was refused as a closure guess, not fabricated --
+    // including consumer.ts's `write` parameter, although consumer.ts imports
+    // (another name) from decoys.ts.
+    if (result.stats.calls.dropped_closure_guess != 5 || !result.stats.calls.balances()) return 1;
   }
 
   return 0;

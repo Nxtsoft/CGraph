@@ -1,11 +1,15 @@
 #include "cgraph/incremental_update.hpp"
 
+#include "unreadable_file.hpp"
+
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/pipeline.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -14,7 +18,7 @@ namespace {
 
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   output << contents;
 }
 
@@ -103,7 +107,6 @@ int main() {
   }
   const auto created_root = graph->content_root;
 
-#if defined(__APPLE__) || defined(__unix__)
   // A source that becomes unreadable after a verified publish must not replace
   // either the live snapshot or its incremental index with unverified state.
   const auto verified_snapshot = graph;
@@ -114,42 +117,21 @@ int main() {
   const auto verified_alpha_source_sha256 = index.files.at(alpha_key).source_sha256;
   const auto verified_alpha_cache_sha256 = index.cache.at(alpha_key).sha256;
 
-  std::error_code permission_error;
-  std::filesystem::permissions(
-      alpha,
-      std::filesystem::perms::none,
-      std::filesystem::perm_options::replace,
-      permission_error);
-  if (permission_error || !cgraph::sha256_file_hex(alpha).empty()) {
+  cgraph_test::UnreadableFile unreadable(alpha);
+  if (!unreadable.active() || !cgraph::sha256_file_hex(alpha).empty()) {
     return 1;
   }
 
-  cgraph::IncrementalUpdateResult failed_rescan;
-  cgraph::IncrementalUpdateResult failed_incremental;
-  try {
-    failed_rescan = cgraph::full_stat_index_rescan(state, index, root);
-    cgraph::FileWatchEvent unreadable_event[] = {
-        {.path = alpha,
-         .change = cgraph::FileWatchChange::Modified,
-         .kind = cgraph::WatchedFileKind::Code},
-    };
-    failed_incremental =
-        cgraph::apply_incremental_code_updates(state, index, unreadable_event);
-  } catch (...) {
-    std::filesystem::permissions(
-        alpha,
-        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-        std::filesystem::perm_options::replace,
-        permission_error);
-    throw;
-  }
-  std::filesystem::permissions(
-      alpha,
-      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-      std::filesystem::perm_options::replace,
-      permission_error);
+  const auto failed_rescan = cgraph::full_stat_index_rescan(state, index, root);
+  cgraph::FileWatchEvent unreadable_event[] = {
+      {.path = alpha,
+       .change = cgraph::FileWatchChange::Modified,
+       .kind = cgraph::WatchedFileKind::Code},
+  };
+  const auto failed_incremental = cgraph::apply_incremental_code_updates(state, index, unreadable_event);
+  const bool restored = unreadable.release();
   graph = cgraph::read_graph_snapshot(state);
-  if (permission_error || graph != verified_snapshot ||
+  if (!restored || graph != verified_snapshot ||
       index.project_root != verified_project_root ||
       index.files.size() != verified_files_size ||
       index.cache.size() != verified_cache_size ||
@@ -158,7 +140,6 @@ int main() {
       failed_rescan.warnings.empty() || failed_incremental.warnings.empty()) {
     return 1;
   }
-#endif
 
   const auto alpha_modified_at = std::filesystem::last_write_time(alpha);
   std::filesystem::last_write_time(alpha, alpha_modified_at + std::chrono::seconds(5));
@@ -244,6 +225,14 @@ int main() {
     return 1;
   }
 
+  // A test file next to beta.py gets the same `tests` edge from the daemon's
+  // rebuild as from the one-shot pipeline (both run resolve_test_subjects).
+  write_file(root / "test_beta.py", "def test_delta():\n    assert True\n");
+  result = cgraph::full_stat_index_rescan(state, index, root);
+  const auto tests_edges = [](const cgraph::GraphSnapshot& g) {
+    return std::count_if(g.edges.begin(), g.edges.end(), [](const cgraph::Edge& e) { return e.relation == "tests"; });
+  };
+
   // The daemon's rescan must produce the same graph as the canonical one-shot
   // pipeline: identical labels AND identical node/edge counts. The count check
   // guards the pipeline ordering — the daemon must dedup before community
@@ -256,6 +245,9 @@ int main() {
   }
   if (graph->nodes.size() != full_build.graph.nodes.size() ||
       graph->edges.size() != full_build.graph.edges.size()) {
+    return 1;
+  }
+  if (tests_edges(*graph) != 1 || tests_edges(full_build.graph) != 1) {
     return 1;
   }
   // The daemon graph carries community + centrality (computed after dedup), so
@@ -299,6 +291,39 @@ int main() {
     if (!after_first || after_first->calls != 1 || after_first->calls_unresolved != 0 || !after_second ||
         after_second->calls != 2 || after_second->calls_unresolved != 1) {
       return 1;
+    }
+  }
+
+  // A file whose extraction crashed is indexed with no source hash (CGR-18), so
+  // the next update over the same unchanged content extracts it again instead
+  // of reporting a cache hit on an empty fragment.
+  {
+    const auto retry_root = std::filesystem::temp_directory_path() / "cgraph-incremental-update-retry";
+    std::filesystem::remove_all(retry_root);
+    std::filesystem::create_directories(retry_root);
+    cgraph::DaemonState retry_state;
+    cgraph::IncrementalGraphIndex retry_index;
+    retry_index.project_root = retry_root;
+    const auto gamma = retry_root / "gamma.py";
+    write_file(gamma, "class Gamma:\n    pass\n");
+    cgraph::FileWatchEvent gamma_event[] = {
+        {.path = gamma, .change = cgraph::FileWatchChange::Created, .kind = cgraph::WatchedFileKind::Code}};
+    (void)cgraph::apply_incremental_code_updates(retry_state, retry_index, gamma_event);
+
+    // What a crashed extraction leaves in the index: a warning, no nodes, no hash.
+    cgraph::ExtractionResult crashed;
+    crashed.fragment.warnings.push_back("failed to extract gamma.py: extractor crashed");
+    retry_index.files[cgraph::incremental_file_key(gamma)] = std::move(crashed);
+
+    cgraph::FileWatchEvent gamma_touched[] = {
+        {.path = gamma, .change = cgraph::FileWatchChange::Modified, .kind = cgraph::WatchedFileKind::Code}};
+    const auto retried = cgraph::apply_incremental_code_updates(retry_state, retry_index, gamma_touched);
+    const auto retried_graph = cgraph::read_graph_snapshot(retry_state);
+    const bool recovered = retried.files_reextracted == 1 && retried.files_cache_hit == 0 && retried_graph &&
+                           has_node_label(*retried_graph, "Gamma");
+    std::filesystem::remove_all(retry_root);
+    if (!recovered) {
+      return 2;
     }
   }
   return 0;

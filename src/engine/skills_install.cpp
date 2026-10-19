@@ -1,5 +1,7 @@
 #include "cgraph/skills_install.hpp"
 
+#include "cgraph/platform.hpp"
+
 #include <cstdlib>
 #include <system_error>
 
@@ -66,11 +68,10 @@ const std::filesystem::path kSourceMarker =
 
 std::vector<std::filesystem::path> default_host_skill_dirs() {
   std::vector<std::filesystem::path> dirs;
-  const char* home = std::getenv("HOME");
-  if (home == nullptr || home[0] == '\0') {
+  const auto home_dir = home_directory();
+  if (home_dir.empty()) {
     return dirs;
   }
-  const std::filesystem::path home_dir(home);
   for (const auto& host : {home_dir / ".claude", home_dir / ".agents"}) {
     std::error_code ec;
     if (std::filesystem::is_directory(host, ec)) {

@@ -137,6 +137,9 @@ target_link_libraries(cgraph_javascript_extractor_test
   PRIVATE
     cgraph::engine)
 
+target_compile_definitions(cgraph_javascript_extractor_test PRIVATE
+  CGRAPH_TS_CLOSURE_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/ts_closure_calls")
+
 cgraph_set_warnings(cgraph_javascript_extractor_test)
 cgraph_enable_sanitizers(cgraph_javascript_extractor_test)
 
@@ -177,6 +180,18 @@ cgraph_set_warnings(cgraph_dynamo_contracts_test)
 cgraph_enable_sanitizers(cgraph_dynamo_contracts_test)
 
 add_test(NAME cgraph_dynamo_contracts_test COMMAND cgraph_dynamo_contracts_test)
+
+add_executable(cgraph_messaging_contracts_test
+  messaging_contracts_test.cpp)
+
+target_link_libraries(cgraph_messaging_contracts_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_messaging_contracts_test)
+cgraph_enable_sanitizers(cgraph_messaging_contracts_test)
+
+add_test(NAME cgraph_messaging_contracts_test COMMAND cgraph_messaging_contracts_test)
 
 add_executable(cgraph_env_contracts_test
   env_contracts_test.cpp)
@@ -828,6 +843,8 @@ add_test(NAME cgraph_cli_main_test
   COMMAND cgraph_cli_main_test
     $<TARGET_FILE:cgraph>
     "${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/one_shot")
+# Exits 77 on Windows: its full-disk cases need RLIMIT_FSIZE (see the test).
+set_tests_properties(cgraph_cli_main_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(cgraph_mcp_main_test
   mcp_main_test.cpp)
@@ -842,6 +859,8 @@ cgraph_enable_sanitizers(cgraph_mcp_main_test)
 add_test(NAME cgraph_mcp_main_test
   COMMAND cgraph_mcp_main_test
     $<TARGET_FILE:cgraph-mcp>)
+# Exits 77 on Windows: its stdio harness needs fork and pipe (see the test).
+set_tests_properties(cgraph_mcp_main_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(cgraph_cli_support_test
   cli_support_test.cpp)
@@ -914,6 +933,30 @@ cgraph_enable_sanitizers(cgraph_daemon_endpoint_test)
 
 add_test(NAME cgraph_daemon_endpoint_test COMMAND cgraph_daemon_endpoint_test)
 
+add_executable(cgraph_local_socket_test
+  local_socket_test.cpp)
+
+target_link_libraries(cgraph_local_socket_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_local_socket_test)
+cgraph_enable_sanitizers(cgraph_local_socket_test)
+
+add_test(NAME cgraph_local_socket_test COMMAND cgraph_local_socket_test)
+
+add_executable(cgraph_platform_test
+  platform_test.cpp)
+
+target_link_libraries(cgraph_platform_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_platform_test)
+cgraph_enable_sanitizers(cgraph_platform_test)
+
+add_test(NAME cgraph_platform_test COMMAND cgraph_platform_test)
+
 add_executable(cgraph_daemon_security_test
   daemon_security_test.cpp)
 
@@ -937,6 +980,18 @@ cgraph_set_warnings(cgraph_daemon_supervisor_test)
 cgraph_enable_sanitizers(cgraph_daemon_supervisor_test)
 
 add_test(NAME cgraph_daemon_supervisor_test COMMAND cgraph_daemon_supervisor_test)
+
+add_executable(cgraph_systemd_unit_test
+  systemd_unit_test.cpp)
+
+target_link_libraries(cgraph_systemd_unit_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_systemd_unit_test)
+cgraph_enable_sanitizers(cgraph_systemd_unit_test)
+
+add_test(NAME cgraph_systemd_unit_test COMMAND cgraph_systemd_unit_test)
 
 add_executable(cgraph_enrich_drainer_test
   enrich_drainer_test.cpp)
@@ -1031,6 +1086,9 @@ target_link_libraries(cgraph_client_runtime_test
     cgraph::client_runtime
     cgraph::engine)
 
+target_compile_definitions(cgraph_client_runtime_test PRIVATE CGRAPH_TEST_GRAPHD="$<TARGET_FILE:graphd>")
+add_dependencies(cgraph_client_runtime_test graphd)
+
 cgraph_set_warnings(cgraph_client_runtime_test)
 cgraph_enable_sanitizers(cgraph_client_runtime_test)
 
@@ -1078,6 +1136,18 @@ target_compile_definitions(cgraph_change_context_test PRIVATE
 cgraph_set_warnings(cgraph_change_context_test)
 cgraph_enable_sanitizers(cgraph_change_context_test)
 add_test(NAME cgraph_change_context_test COMMAND cgraph_change_context_test)
+add_executable(cgraph_body_index_test
+  body_index_test.cpp)
+
+target_link_libraries(cgraph_body_index_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_body_index_test)
+cgraph_enable_sanitizers(cgraph_body_index_test)
+
+add_test(NAME cgraph_body_index_test COMMAND cgraph_body_index_test)
+
 add_executable(cgraph_fingerprint_test
   fingerprint_test.cpp)
 
@@ -1167,3 +1237,9 @@ cgraph_set_warnings(cgraph_data_contracts_test)
 cgraph_enable_sanitizers(cgraph_data_contracts_test)
 
 add_test(NAME cgraph_data_contracts_test COMMAND cgraph_data_contracts_test)
+
+add_executable(cgraph_co_change_test co_change_test.cpp)
+target_link_libraries(cgraph_co_change_test PRIVATE cgraph::engine nlohmann_json::nlohmann_json)
+cgraph_set_warnings(cgraph_co_change_test)
+cgraph_enable_sanitizers(cgraph_co_change_test)
+add_test(NAME cgraph_co_change_test COMMAND cgraph_co_change_test)

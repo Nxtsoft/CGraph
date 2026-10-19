@@ -5,6 +5,8 @@
 #include "cgraph/protocol.hpp"
 #include "cgraph/report.hpp"
 
+#include <algorithm>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -53,7 +55,7 @@ namespace {
           "references summary (route \"entity\"). Anything else is a case-insensitive name search "
           "ranked by importance (route \"search\"), with did-you-mean suggestions when nothing "
           "matches. Prefer this over grep to locate a definition; feed a returned id into "
-          "graph_explain / graph_impact / graph_context for more depth.",
+          "graph_impact / graph_context (or graph_explain, where listed) for more depth.",
           {{"query", string_param("substring of the symbol name or id to find")},
            {"kind", string_param("only nodes of this kind, e.g. function, class, file")},
            {"file", string_param("only nodes whose source file path contains this substring")},
@@ -296,7 +298,8 @@ namespace {
 }
 
 [[nodiscard]] nlohmann::json respond(const nlohmann::json& request, const McpForwarder& forwarder,
-                                     const McpChangeContext& change_context_runner) {
+                                     const McpChangeContext& change_context_runner,
+                                     const std::set<std::string>& listed_tools) {
   const auto id = request.value("id", nlohmann::json(nullptr));
   const auto method = request.value("method", std::string{});
   if (request.value("jsonrpc", std::string{}) != "2.0" || method.empty()) {
@@ -311,7 +314,15 @@ namespace {
                                 std::string{cgraph::build_info().revision}}}}});
   }
   if (method == "tools/list") {
-    return response(id, {{"tools", tools()}});
+    auto listed = tools();
+    if (!listed_tools.empty()) {
+      listed.erase(std::remove_if(listed.begin(), listed.end(),
+                                  [&](const nlohmann::json& tool) {
+                                    return !listed_tools.contains(tool.at("name").get<std::string>());
+                                  }),
+                   listed.end());
+    }
+    return response(id, {{"tools", std::move(listed)}});
   }
   if (method == "notifications/initialized") {
     return nlohmann::json{};
@@ -361,8 +372,46 @@ namespace {
 
 }  // namespace
 
+std::vector<std::string> mcp_tool_names() {
+  std::vector<std::string> names;
+  for (const auto& tool : tools()) {
+    names.push_back(tool.at("name").get<std::string>());
+  }
+  return names;
+}
+
+bool should_prewarm(const std::filesystem::path& project_root) {
+  std::error_code error;
+  return std::filesystem::exists(project_root / ".git", error) ||
+         std::filesystem::is_directory(project_root / "cgraph-out", error);
+}
+
+std::set<std::string> parse_mcp_tool_list(const std::string& value) {
+  const auto known = mcp_tool_names();
+  std::set<std::string> names;
+  std::size_t start = 0;
+  while (start <= value.size()) {
+    const auto comma = std::min(value.find(',', start), value.size());
+    auto name = value.substr(start, comma - start);
+    const auto first = name.find_first_not_of(" \t");
+    name = first == std::string::npos ? std::string{} : name.substr(first, name.find_last_not_of(" \t") - first + 1);
+    if (name == "all") {
+      return {};
+    }
+    if (!name.empty()) {
+      if (std::find(known.begin(), known.end(), name) == known.end()) {
+        throw std::invalid_argument("unknown tool '" + name + "'");
+      }
+      names.insert(std::move(name));
+    }
+    start = comma + 1;
+  }
+  return names;
+}
+
 nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwarder& forwarder,
-                                  const McpChangeContext& change_context_runner) {
+                                  const McpChangeContext& change_context_runner,
+                                  const std::set<std::string>& listed_tools) {
   // A parseable line of the wrong shape (`5`, `[1]`, a non-string "method" or
   // non-object "params") makes nlohmann throw on the first typed read. That is
   // an Invalid Request for this line only; the stdio loop keeps serving. The
@@ -370,7 +419,7 @@ nlohmann::json handle_mcp_request(const nlohmann::json& request, const McpForwar
   // that is a string, number or null) so the host can match it to its call;
   // otherwise the id is null, as JSON-RPC 2.0 requires.
   try {
-    return respond(request, forwarder, change_context_runner);
+    return respond(request, forwarder, change_context_runner, listed_tools);
   } catch (const nlohmann::json::exception& error) {
     nlohmann::json id = nullptr;
     if (request.is_object()) {

@@ -1,10 +1,13 @@
 #include "cgraph/semantic_cache.hpp"
 
+#include "cgraph/atomic_write.hpp"
 #include "cgraph/file_cache.hpp"
 
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <atomic>
 #include <chrono>
 #include <string>
@@ -15,7 +18,9 @@
 #if defined(__APPLE__) || defined(__unix__)
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -23,7 +28,7 @@ namespace {
 
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   output << contents;
 }
 
@@ -692,6 +697,9 @@ int main() {
              "reconcile: one shared fragment fingerprint preserves both records");
     }
   }
+#else
+  std::cout << "semantic_cache_test: SKIP shared-fragment read-count case on Windows: it observes repeated "
+               "reads through a FIFO, and Windows has no filesystem FIFOs\n";
 #endif
 
   // remove() deletes by source path
@@ -705,6 +713,117 @@ int main() {
     cache.remove(doc_a);
     expect(ok, cache.size() == 0, "post-remove size");
     expect(ok, !cache.find_for_source(doc_a).has_value(), "post-remove find returns empty");
+  }
+
+  // CGR-20: a failed write or an unusable file never costs the enrichment the
+  // cache holds. The cache is the most expensive one (LLM-authored), and the
+  // reader answers "unusable" with an empty cache, so the next write must not be
+  // allowed to replace the only copy.
+  {
+    const auto make_cache = [&](int records) {
+      cgraph::SemanticCache cache;
+      for (int i = 0; i < records; ++i) {
+        cgraph::SemanticCacheRecord rec;
+        rec.source_path = root / "docs" / ("doc-" + std::to_string(i) + ".md");
+        rec.content_hash = "hash-" + std::to_string(i);
+        rec.fragment_path = fragment;
+        rec.fragment_hash = frag_hash;
+        rec.state = cgraph::SemanticCacheState::Valid;
+        cache.upsert(rec);
+      }
+      return cache;
+    };
+    const auto read_all = [](const std::filesystem::path& path) {
+      std::ifstream input(path, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+
+#if defined(__APPLE__) || defined(__unix__)
+    // A write that stops partway (the disk fills) fails loudly and leaves the
+    // previous cache byte-for-byte as it was. The child's file-size limit makes
+    // write() fail with EFBIG once the file reaches it, deterministically.
+    {
+      const auto kept = root / "cache-partial-write.json";
+      cgraph::write_semantic_cache(make_cache(1), kept);
+      const auto before = read_all(kept);
+      const pid_t child = ::fork();
+      if (child == 0) {
+        std::signal(SIGXFSZ, SIG_IGN);
+        rlimit limit{};
+        ::getrlimit(RLIMIT_FSIZE, &limit);
+        limit.rlim_cur = 256;
+        if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+          ::_exit(3);
+        }
+        try {
+          (void)cgraph::write_semantic_cache(make_cache(40), kept);
+          ::_exit(1);
+        } catch (const cgraph::FileWriteError&) {
+          ::_exit(0);
+        } catch (...) {
+          ::_exit(2);
+        }
+      }
+      int status = 0;
+      ::waitpid(child, &status, 0);
+      expect(ok, WIFEXITED(status) && WEXITSTATUS(status) == 0, "partial write: the write fails loudly");
+      expect(ok, read_all(kept) == before, "partial write: previous cache bytes are untouched");
+      expect(ok, cgraph::read_semantic_cache(kept).size() == 1, "partial write: previous cache still loads");
+    }
+#endif
+
+    // One bad record makes the whole file unusable, and the next write sets it
+    // aside instead of overwriting it with an empty-then-rebuilt cache.
+    {
+      const auto path = root / "cache-bad-record.json";
+      const std::string damaged =
+          R"({"version":2,"records":[{"source_path":"docs/a.md","content_hash":"abc","fragment_path":"drop.json","fragment_hash":"def","state":"valid","dependencies":[]},{"source_path":7}]})";
+      write_file(path, damaged);
+      std::string problem;
+      expect(ok, cgraph::read_semantic_cache(path, &problem).size() == 0 && !problem.empty(),
+             "bad record: reads as an empty cache and says why");
+
+      const auto first = cgraph::write_semantic_cache(make_cache(2), path);
+      expect(ok, first.has_value() && *first == std::filesystem::path(path.string() + ".invalid"),
+             "bad record: the write reports where the old file went");
+      expect(ok, first.has_value() && read_all(*first) == damaged, "bad record: the original bytes are kept");
+      expect(ok, cgraph::read_semantic_cache(path).size() == 2, "bad record: the new cache is written in place");
+
+      // A second unusable file does not replace the first one that was set aside.
+      write_file(path, "{truncated");
+      const auto second = cgraph::write_semantic_cache(make_cache(1), path);
+      expect(ok, second.has_value() && *second == std::filesystem::path(path.string() + ".invalid.1"),
+             "bad record: a second unusable file gets its own name");
+      expect(ok, first.has_value() && read_all(*first) == damaged, "bad record: the first copy is still intact");
+    }
+
+    // The other ways a file can be unusable are set aside too.
+    {
+      const std::vector<std::pair<std::string, std::string>> unusable = {
+          {"duplicate",
+           R"({"version":2,"records":[{"source_path":"docs/a.md","content_hash":"x","fragment_path":"d.json","fragment_hash":"f","state":"valid","dependencies":[]},{"source_path":"docs/a.md","content_hash":"y","fragment_path":"d.json","fragment_hash":"f","state":"valid","dependencies":[]}]})"},
+          {"old-version", R"({"version":1,"records":[]})"},
+          {"not-json", "not json at all"},
+      };
+      for (const auto& [name, contents] : unusable) {
+        const auto path = root / ("cache-aside-" + name + ".json");
+        write_file(path, contents);
+        const auto aside = cgraph::write_semantic_cache(make_cache(1), path);
+        expect(ok, aside.has_value() && read_all(*aside) == contents,
+               ("set aside with its original bytes: " + name).c_str());
+      }
+    }
+
+    // A missing file and a usable one are written as before: nothing is moved.
+    {
+      const auto path = root / "cache-usable.json";
+      expect(ok, !cgraph::write_semantic_cache(make_cache(1), path).has_value(), "missing file: nothing set aside");
+      expect(ok, !cgraph::write_semantic_cache(make_cache(2), path).has_value(), "usable file: nothing set aside");
+      expect(ok, !std::filesystem::exists(path.string() + ".invalid"), "usable file: no .invalid file appears");
+      std::string problem;
+      (void)cgraph::read_semantic_cache(root / "does-not-exist.json", &problem);
+      expect(ok, problem.empty(), "missing file: no problem reported");
+    }
   }
 
   std::filesystem::remove_all(root);

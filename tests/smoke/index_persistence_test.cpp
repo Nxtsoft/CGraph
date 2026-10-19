@@ -4,6 +4,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 namespace {
@@ -42,7 +44,7 @@ int main() {
   // rebuild or re-sign, forcing a cold rebuild on the next query. The trailing
   // segment must therefore stay a short literal (bumped by hand on parity-surface
   // changes) and never a 64-char hex digest. Update this literal when you bump it.
-  if (key != "cgraph-index-v1:logic-22") {
+  if (key != "cgraph-index-v1:logic-26") {
     fs::remove_all(root);
     return 1;
   }
@@ -175,6 +177,29 @@ int main() {
   if (cgraph::read_index_manifest(root / "bad.json").has_value()) {
     fs::remove_all(root);
     return 1;
+  }
+
+  // The output dir ignores itself, so a daemon on a repository leaves git status
+  // clean; a .gitignore the user already edited is kept as is.
+  {
+    const auto out = root / "ignored-out";
+    if (!cgraph::ensure_output_dir_ignored(out) || !fs::is_directory(out)) {
+      return 1;
+    }
+    std::ifstream written(out / ".gitignore");
+    std::string body((std::istreambuf_iterator<char>(written)), std::istreambuf_iterator<char>());
+    if (body.find("\n*\n") == std::string::npos) {
+      return 1;
+    }
+    std::ofstream(out / ".gitignore", std::ios::trunc) << "custom\n";
+    if (!cgraph::ensure_output_dir_ignored(out)) {
+      return 1;
+    }
+    std::ifstream kept(out / ".gitignore");
+    std::string kept_body((std::istreambuf_iterator<char>(kept)), std::istreambuf_iterator<char>());
+    if (kept_body != "custom\n") {
+      return 1;
+    }
   }
 
   fs::remove_all(root);

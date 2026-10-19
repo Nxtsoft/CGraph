@@ -1,0 +1,15 @@
+{
+  "name": "cgraph",
+  "owner": { "name": "Nxtsoft", "url": "https://github.com/Nxtsoft" },
+  "metadata": {
+    "description": "CGraph: a native code graph and change-context engine for coding agents."
+  },
+  "plugins": [
+    {
+      "name": "cgraph",
+      "source": "./integrations",
+      "description": "MCP graph tools (query, context, impact and status by default; explain, path, report and more with CGRAPH_MCP_TOOLS=all), the cgraph and cgraph-enrich skills, and a pre-edit hook that names the files most likely to change with an edit and the services on the far side of the endpoints a file serves or calls.",
+      "category": "development"
+    }
+  ]
+}

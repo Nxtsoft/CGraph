@@ -2,6 +2,7 @@
 
 #include "cgraph/javascript_syntax.hpp"
 #include "cgraph/normalize.hpp"
+#include "cgraph/relation_keys.hpp"
 #include "cgraph/spring_actuator.hpp"
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <unordered_set>
 
 namespace cgraph {
@@ -43,6 +45,14 @@ constexpr int kMaxBindingHops = 4;
   return ts_node_is_null(node) ? std::string_view{} : std::string_view(ts_node_type(node));
 }
 
+thread_local EnvLookupCounts lookup_counts;
+
+// A `uses_contract env:` fact's (reading symbol, context).
+using EnvFact = std::pair<std::string, std::string>;
+
+// The env facts of the file an EnvContractsFileScope covers.
+thread_local RelationKeys<EnvFact>* current_env_facts = nullptr;
+
 void emit(std::vector<RawRelation>& out, const ExtractionContext& context, std::string source_id,
           std::string_view name) {
   if (!is_env_variable_name(name)) {
@@ -51,10 +61,13 @@ void emit(std::vector<RawRelation>& out, const ExtractionContext& context, std::
   auto fact = "env:" + std::string(name);
   // One fact per reading symbol and name: a function reading BACKEND_URL ten
   // times consumes it once.
-  const bool seen = std::ranges::any_of(out, [&](const RawRelation& relation) {
-    return relation.relation == kUsesContract && relation.source_id == source_id && relation.context == fact;
-  });
-  if (seen) {
+  const auto env_fact = [](const RawRelation& relation) -> std::optional<EnvFact> {
+    if (relation.relation != kUsesContract || !relation.context.starts_with("env:")) {
+      return std::nullopt;
+    }
+    return EnvFact{relation.source_id, relation.context};
+  };
+  if (has_relation_key(current_env_facts, out, EnvFact{source_id, fact}, env_fact, lookup_counts.fact_reads)) {
     return;
   }
   out.push_back(RawRelation{
@@ -264,7 +277,6 @@ struct EnvFileIndex {
 };
 
 thread_local EnvFileIndex* current_env_index = nullptr;
-thread_local EnvLookupCounts lookup_counts;
 
 // The statements directly in a block-like scope: a program or statement
 // block's children, or every case's statements of a switch (one scope).
@@ -544,14 +556,21 @@ void value_annotation_reads(const TSNode& node, const ExtractionContext& context
 struct EnvContractsFileScope::Index {
   EnvFileIndex env;
   EnvFileIndex* previous = nullptr;
+  RelationKeys<EnvFact> facts;
+  RelationKeys<EnvFact>* previous_facts = nullptr;
 };
 
 EnvContractsFileScope::EnvContractsFileScope() : index_(std::make_unique<Index>()) {
   index_->previous = current_env_index;
   current_env_index = &index_->env;
+  index_->previous_facts = current_env_facts;
+  current_env_facts = &index_->facts;
 }
 
-EnvContractsFileScope::~EnvContractsFileScope() { current_env_index = index_->previous; }
+EnvContractsFileScope::~EnvContractsFileScope() {
+  current_env_index = index_->previous;
+  current_env_facts = index_->previous_facts;
+}
 
 EnvLookupCounts env_lookup_counts() { return lookup_counts; }
 

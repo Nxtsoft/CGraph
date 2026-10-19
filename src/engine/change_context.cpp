@@ -771,7 +771,13 @@ Json change_context(const Json& parameters, const CrossServiceAsk* cross_service
   if (count_tokens() >= budget) reject("budget cannot hold mandatory change and snapshot evidence");
   if (!combined_seeds.empty()) {
     SnapshotSourceReader reader(combined.source_hashes, true);
-    auto context = pack_seed_context(combined, combined_seeds, budget - count_tokens(), max_depth, reader);
+    // Packed and charged with each file relative to its own snapshot's root, so
+    // where the two checkouts sit does not change what fits.
+    auto context = pack_seed_context(combined, combined_seeds, budget - count_tokens(), max_depth, reader,
+                                     [&](const Node& node) {
+                                       const auto& origin = origins.at(node.id);
+                                       return fs::path(origin.node->source_file).lexically_relative(origin.root).generic_string();
+                                     });
     auto entries = Json::array();
     if (!context.at("focus").is_null()) entries.push_back(context.at("focus"));
     for (const auto& entry : context.at("included")) entries.push_back(entry);

@@ -80,10 +80,17 @@ struct CallResolution {
   // library defines (`.size()`, `.find()`): the method-only project-wide tier
   // refuses it, because a unique project method of that name is not evidence.
   std::size_t dropped_library_member = 0;
+  // A call inside a closure (RawCall::in_closure) whose only candidate came from
+  // a bare name match -- a project-unique label the caller's file does not
+  // import by name (a file-level `imports_from` is not enough), or a unique
+  // method for an unknown receiver. Refused: the name is most often a parameter,
+  // a prop or a local setter the closure was handed.
+  std::size_t dropped_closure_guess = 0;
 
   [[nodiscard]] bool balances() const {
     return resolved_same_file + resolved_project_unique + resolved_member_method + dropped_unknown +
-               dropped_ambiguous + dropped_self + dropped_scope_mismatch + dropped_library_member ==
+               dropped_ambiguous + dropped_self + dropped_scope_mismatch + dropped_library_member +
+               dropped_closure_guess ==
            total;  // resolved_overload_first and resolved_qualifier_unchecked are
                    // subsets of same_file + project_unique + member_method
   }
@@ -147,10 +154,10 @@ struct BuildStats {
 };
 
 // The daemon request types, in dispatch order. Count is the array sentinel.
-// Remember/Recall (session memory) and Report (structural reports) are appended
-// before Count so the durable ledger's kSubstantiveOps (Query..Context) and its
-// schema stay unchanged.
-enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Report, Count };
+// Remember/Recall (session memory), Report (structural reports) and CoChange
+// (the pre-edit hook's file list) are appended before Count so the durable
+// ledger's kSubstantiveOps (Query..Context) and its schema stay unchanged.
+enum class DaemonOp { Query, Path, Explain, Impact, Context, Update, Status, Shutdown, Remember, Recall, Report, CoChange, Count };
 
 inline constexpr std::size_t kDaemonOpCount = static_cast<std::size_t>(DaemonOp::Count);
 
@@ -238,6 +245,10 @@ struct DaemonOpStats {
   // "not ready", not a retrieval miss -- otherwise the zero-hit rate lies during
   // the rebuild that every logic-version bump triggers.
   std::size_t not_ready = 0;
+  // Requests whose client hung up before they were computed (a hook that gave
+  // up at its deadline while the daemon was busy): skipped, not answered, and
+  // counted nowhere else. Live status only, not in the durable ledger.
+  std::size_t abandoned = 0;
   // Query route adoption (route-query-by-intent): how query-op responses resolved.
   std::size_t query_route_entity = 0;
   std::size_t query_route_structural = 0;
