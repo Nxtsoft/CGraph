@@ -846,6 +846,34 @@ add_test(NAME cgraph_cli_main_test
 # Exits 77 on Windows: its full-disk cases need RLIMIT_FSIZE (see the test).
 set_tests_properties(cgraph_cli_main_test PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(cgraph_mcp_main_test
+  mcp_main_test.cpp)
+
+target_link_libraries(cgraph_mcp_main_test
+  PRIVATE
+    nlohmann_json::nlohmann_json)
+
+cgraph_set_warnings(cgraph_mcp_main_test)
+cgraph_enable_sanitizers(cgraph_mcp_main_test)
+
+add_test(NAME cgraph_mcp_main_test
+  COMMAND cgraph_mcp_main_test
+    $<TARGET_FILE:cgraph-mcp>)
+# Exits 77 on Windows: its stdio harness needs fork and pipe (see the test).
+set_tests_properties(cgraph_mcp_main_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(cgraph_cli_support_test
+  cli_support_test.cpp)
+
+target_link_libraries(cgraph_cli_support_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_cli_support_test)
+cgraph_enable_sanitizers(cgraph_cli_support_test)
+
+add_test(NAME cgraph_cli_support_test COMMAND cgraph_cli_support_test)
+
 add_executable(cgraph_atomic_write_test
   atomic_write_test.cpp)
 

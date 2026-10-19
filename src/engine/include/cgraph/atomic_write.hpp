@@ -48,4 +48,11 @@ enum class WriteDurability {
 void write_file_atomically(const std::filesystem::path& path, std::string_view contents,
                            WriteDurability durability = WriteDurability::Atomic);
 
+// Creates `directory` and any missing parents so output files can be written
+// into it. Throws FileWriteError naming `directory` and the OS reason (e.g.
+// "Permission denied") on failure, so an unwritable output location fails
+// like any other output write instead of escaping as std::filesystem_error.
+// An empty `directory` is the current directory and needs no creating.
+void create_output_directories(const std::filesystem::path& directory);
+
 }  // namespace cgraph

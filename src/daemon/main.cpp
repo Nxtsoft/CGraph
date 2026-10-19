@@ -1,3 +1,4 @@
+#include "cgraph/cli_support.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
 #include "cgraph/daemon_ops.hpp"
 #include "cgraph/daemon_server.hpp"
@@ -6,6 +7,7 @@
 #include "cgraph/seam.hpp"
 
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <string>
 
@@ -16,9 +18,7 @@ void print_usage() {
                "             [--benchmark-query --graph PATH --query TEXT]\n";
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
   const auto info = cgraph::build_info();
   std::filesystem::path graph_path;
   std::filesystem::path root;
@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
       continue;
     }
     if (arg == "--idle-timeout" && index + 1 < argc) {
-      idle_timeout = std::chrono::seconds(std::stoll(argv[++index]));
+      idle_timeout = std::chrono::seconds(cgraph::integer_flag<long long>(arg, argv[++index]));
       continue;
     }
     if (arg == "--no-watch") {
@@ -99,4 +99,23 @@ int main(int argc, char** argv) {
     return cgraph::run_static_seam_server(root, options);
   }
   return cgraph::run_daemon_server(root, options);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // A malformed flag value is a usage error (exit 2). Setup failures outside
+  // the serve loop (e.g. a filesystem_error creating the socket directory) are
+  // logged with their type and exit 1; an escaped exception would abort with a
+  // core dump. Failures inside the serve loop and its worker threads are
+  // handled by run_daemon_server itself, which shuts down cleanly and returns 1.
+  try {
+    return run(argc, argv);
+  } catch (const cgraph::UsageError& error) {
+    std::cerr << "graphd: " << error.what() << '\n';
+    return 2;
+  } catch (const std::exception& error) {
+    std::cerr << "graphd: " << cgraph::describe_exception(error) << '\n';
+    return 1;
+  }
 }

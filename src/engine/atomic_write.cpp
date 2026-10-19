@@ -253,4 +253,17 @@ void write_file_atomically(const std::filesystem::path& path, std::string_view c
   }
 }
 
+void create_output_directories(const std::filesystem::path& directory) {
+  if (directory.empty()) {
+    return;
+  }
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error) {
+    // error.message(), not failure()'s errno lookup: on Windows the code is a
+    // Win32 error in system_category, which generic_category would misname.
+    throw FileWriteError(failure(directory, "cannot create directory (" + error.message() + ")", 0));
+  }
+}
+
 }  // namespace cgraph

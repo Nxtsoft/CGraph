@@ -433,7 +433,7 @@ namespace {
 std::optional<std::filesystem::path> write_semantic_cache(
     const SemanticCache& cache,
     const std::filesystem::path& path) {
-  std::filesystem::create_directories(path.parent_path());
+  create_output_directories(path.parent_path());
   auto records = nlohmann::json::array();
   for (const auto& record : cache.records()) {
     records.push_back(record_to_json(record));

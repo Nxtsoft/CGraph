@@ -1,8 +1,10 @@
+#include "cgraph/cli_support.hpp"
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/mcp_server.hpp"
 #include "cgraph/platform.hpp"
 
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <set>
@@ -10,7 +12,9 @@
 #include <string>
 #include <thread>
 
-int main(int argc, char** argv) {
+namespace {
+
+int run(int argc, char** argv) {
   // JSON-RPC over stdio is newline-delimited: no "\r\n" translation on Windows.
   cgraph::use_binary_stdio();
   cgraph::ClientRequest base;
@@ -79,4 +83,18 @@ int main(int argc, char** argv) {
     }
   }
   return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // Per-request failures are answered as JSON-RPC errors (handle_mcp_request);
+  // anything else (e.g. a filesystem_error resolving the working directory at
+  // startup) is reported and exits non-zero instead of aborting.
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& error) {
+    std::cerr << "cgraph-mcp: " << cgraph::describe_exception(error) << '\n';
+    return 1;
+  }
 }
