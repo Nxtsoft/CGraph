@@ -14,6 +14,10 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(__APPLE__) || defined(__unix__)
+#include <unistd.h>
+#endif
+
 namespace {
 
 void write_file(const std::filesystem::path& path, std::string contents) {
@@ -106,6 +110,34 @@ int main() {
     return 1;
   }
   const auto created_root = graph->content_root;
+
+#if defined(__APPLE__) || defined(__unix__)
+  // A watcher event for a path whose existence cannot be checked must not
+  // throw out of the serve loop: Windows reports a file mid-save as "Access is
+  // denied", and an unsearchable parent fails the same check with EACCES here.
+  // The file counts as absent for this pass. Root bypasses directory permissions.
+  if (::geteuid() != 0) {
+    const auto locked_dir = root / "locked";
+    write_file(locked_dir / "gamma.py", "class Gamma:\n    pass\n");
+    std::filesystem::permissions(locked_dir, std::filesystem::perms::none, std::filesystem::perm_options::replace);
+    cgraph::FileWatchEvent locked_event[] = {
+        {.path = locked_dir / "gamma.py", .change = cgraph::FileWatchChange::Modified,
+         .kind = cgraph::WatchedFileKind::Code},
+    };
+    bool threw = false;
+    try {
+      (void)cgraph::apply_incremental_code_updates(state, index, locked_event);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    std::filesystem::permissions(locked_dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    std::filesystem::remove_all(locked_dir);
+    if (threw || cgraph::read_graph_snapshot(state) != graph) {
+      std::cerr << "FAIL: an unreadable watcher path threw or changed the graph\n";
+      return 1;
+    }
+  }
+#endif
 
   // A source that becomes unreadable after a verified publish must not replace
   // either the live snapshot or its incremental index with unverified state.

@@ -327,13 +327,17 @@ IncrementalUpdateResult apply_incremental_code_updates(
     }
 
     const auto language = detect_language(event.path);
-    if (language == DetectedLanguage::Unknown || !std::filesystem::exists(event.path)) {
+    // Non-throwing: a file mid-save reads as "Access is denied" on Windows. It
+    // counts as absent for this pass; the watcher reports it again once written.
+    std::error_code exists_error;
+    const bool present = std::filesystem::exists(event.path, exists_error);
+    if (language == DetectedLanguage::Unknown || !present) {
       if (language == DetectedLanguage::Unknown && index.files.contains(key)) {
         applied = true;
         changed_sources.push_back(key);
         continue;
       }
-      if (!std::filesystem::exists(event.path) && index.files.contains(key)) {
+      if (!present && index.files.contains(key)) {
         applied = true;
         changed_sources.push_back(key);
         continue;

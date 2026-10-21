@@ -85,9 +85,10 @@ namespace {
 }
 
 [[nodiscard]] bool is_valid_cached_record(const SemanticCacheRecord& record, std::string_view current_hash) {
+  std::error_code error;  // unreadable counts as missing: the record is re-planned, never thrown past
   return record.state == SemanticCacheState::Valid &&
          record.content_hash == current_hash &&
-         std::filesystem::exists(record.fragment_path) &&
+         std::filesystem::exists(record.fragment_path, error) &&
          !record.fragment_hash.empty() &&
          sha256_file_hex(record.fragment_path) == record.fragment_hash;
 }
