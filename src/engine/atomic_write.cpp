@@ -20,7 +20,11 @@
 #endif
 #include <windows.h>
 #include <io.h>
+#include <restartmanager.h>
+#include <iostream>
+#include <string>
 #include <thread>
+#pragma comment(lib, "Rstrtmgr.lib")
 #else
 #include <unistd.h>
 #endif
@@ -48,7 +52,40 @@ using FileStatus = struct ::_stat64;
 // replace is retried until it lets go, within a bounded window.
 constexpr auto kReplaceRetryWindow = std::chrono::seconds(10);
 
+// DIAG: name the processes Restart Manager says hold `path` open.
+void diag_print_holders(const std::filesystem::path& path, DWORD code) {
+  DWORD session = 0;
+  WCHAR key[CCH_RM_SESSION_KEY + 1] = {};
+  std::cerr << "DIAG replace denied (code " << code << ") on " << path.string() << "; holders:";
+  if (::RmStartSession(&session, 0, key) != ERROR_SUCCESS) {
+    std::cerr << " <RmStartSession failed>\n";
+    return;
+  }
+  const std::wstring wide = path.wstring();
+  LPCWSTR files[] = {wide.c_str()};
+  if (::RmRegisterResources(session, 1, files, 0, nullptr, 0, nullptr) == ERROR_SUCCESS) {
+    UINT needed = 0;
+    UINT count = 16;
+    RM_PROCESS_INFO info[16] = {};
+    DWORD reasons = 0;
+    const DWORD rc = ::RmGetList(session, &needed, &count, info, &reasons);
+    if (rc != ERROR_SUCCESS && rc != ERROR_MORE_DATA) {
+      std::cerr << " <RmGetList " << rc << ">";
+    }
+    for (UINT i = 0; i < count && i < 16; ++i) {
+      const std::wstring name = info[i].strAppName;
+      std::cerr << " [pid " << info[i].Process.dwProcessId << " " << std::string(name.begin(), name.end())
+                << (info[i].Process.dwProcessId == ::GetCurrentProcessId() ? " (self)" : "") << "]";
+    }
+    std::cerr << " needed=" << needed;
+  }
+  ::RmEndSession(session);
+  std::cerr << '\n';
+}
+
 [[nodiscard]] std::error_code replace_file(const std::filesystem::path& from, const std::filesystem::path& to) {
+  bool diag_printed = false;
+  const auto diag_start = std::chrono::steady_clock::now();
   const auto deadline = std::chrono::steady_clock::now() + kReplaceRetryWindow;
   auto pause = std::chrono::milliseconds(1);
   for (;;) {
@@ -62,7 +99,12 @@ constexpr auto kReplaceRetryWindow = std::chrono::seconds(10);
     const bool held_open = code == ERROR_SHARING_VIOLATION ||
                            (code == ERROR_ACCESS_DENIED && target != INVALID_FILE_ATTRIBUTES &&
                             (target & FILE_ATTRIBUTE_DIRECTORY) == 0);
+    if (held_open && !diag_printed && std::chrono::steady_clock::now() - diag_start > std::chrono::milliseconds(500)) {
+      diag_printed = true;
+      diag_print_holders(to, code);
+    }
     if (!held_open || std::chrono::steady_clock::now() >= deadline) {
+      diag_print_holders(to, code);
       return {static_cast<int>(code), std::system_category()};
     }
     std::this_thread::sleep_for(pause);

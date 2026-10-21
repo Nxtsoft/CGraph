@@ -271,13 +271,16 @@ FileCacheClassification classify_cached_file(
     const std::filesystem::path& path,
     std::optional<FileCacheEntry> previous,
     CacheValidation mode) {
-  if (!std::filesystem::exists(path)) {
+  // Non-throwing like the stat calls below: Windows reports a file that an
+  // editor is replacing as "Access is denied", and the caller (the daemon's
+  // enrichment walk) must see one more transient miss, not an exception.
+  std::error_code error;
+  if (!std::filesystem::exists(path, error)) {
     return FileCacheClassification{.state = CacheState::Deleted};
   }
 
   FileCacheEntry current;
   current.path = path;
-  std::error_code error;
   current.size = std::filesystem::file_size(path, error);
   if (error) {
     return FileCacheClassification{.state = CacheState::Deleted};

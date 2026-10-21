@@ -77,7 +77,7 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} -R cgraph_daemon_server_test --repeat until-fail:25 --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} -R cgraph_daemon_server_test --repeat until-fail:40 --timeout 180 --output-on-failure
 
       # The windows-x64 release asset, packaged exactly as release-binaries.yml
       # packages it, so a PR proves the asset builds without cutting a release.
