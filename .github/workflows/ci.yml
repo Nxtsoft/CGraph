@@ -14,15 +14,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        preset: [default, release, sanitizers]
+        os: [windows-latest]
+        preset: [windows-release]
         # Windows x64: MSVC + Ninja with the static-md vcpkg triplet. No
         # sanitizers row: the preset's ASan/UBSan pair is GCC/Clang-only.
         include:
           - os: windows-latest
             preset: windows-default
-          - os: windows-latest
-            preset: windows-release
 
     steps:
       # Fixtures and goldens are compared byte for byte; Git for Windows
@@ -79,7 +77,7 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: ctest --preset ${{ matrix.preset }} -R cgraph_daemon_server_test --repeat until-fail:25 --output-on-failure
 
       # The windows-x64 release asset, packaged exactly as release-binaries.yml
       # packages it, so a PR proves the asset builds without cutting a release.

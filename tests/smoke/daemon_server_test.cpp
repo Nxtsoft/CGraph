@@ -420,6 +420,9 @@ int main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
   }
+  std::cerr << "DIAG " << std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch()).count()
+            << " test persisted-wait done: " << persisted << '\n';
   expect(ok, persisted, "incremental state re-persisted to graph.json");
 
   // Wire hardening 1 (DoS): a 4-byte header declaring a ~4 GB body must be

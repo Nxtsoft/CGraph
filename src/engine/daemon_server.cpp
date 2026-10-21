@@ -941,9 +941,19 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       bool persisted_incremental = false;
       {
         const std::unique_lock<std::mutex> lock(graph_mutex, std::try_to_lock);
+        const bool diag_due = lifecycle.graph_dirty &&
+                              DaemonClock::now() - lifecycle.dirty_since >= lifecycle_config.persist_interval;
+        const auto diag_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 DaemonClock::now().time_since_epoch()).count();
+        if (diag_due && !lock.owns_lock()) {
+          std::cerr << "DIAG " << diag_ms << " persist skipped: graph_mutex busy\n";
+        }
         if (lock.owns_lock()) {
           persisted_incremental =
               persist_if_due(deterministic_graph, lifecycle, lifecycle_config, DaemonClock::now());
+          if (diag_due) {
+            std::cerr << "DIAG " << diag_ms << " persist attempt -> " << persisted_incremental << '\n';
+          }
           if (persisted_incremental) {
             persist_manifest();
           }
