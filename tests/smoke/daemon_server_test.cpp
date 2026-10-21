@@ -23,6 +23,14 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #endif
 
 namespace {
@@ -45,6 +53,33 @@ using cgraph_test::UnreadableFile;
 void write_file(const std::filesystem::path& path, std::string contents) {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream(path, std::ios::binary) << contents;
+}
+
+// Reads a file the daemon may replace at any moment ("" if it cannot be
+// opened). On Windows std::ifstream opens without FILE_SHARE_DELETE, which
+// makes the daemon's MoveFileExW replace fail with access denied; a test that
+// polls graph.json every few milliseconds can starve the replace for longer
+// than its retry window. Sharing delete lets the replace through while the
+// read keeps the old file's bytes.
+std::string read_shared(const std::filesystem::path& path) {
+#ifdef _WIN32
+  const HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return {};
+  }
+  std::string contents;
+  std::array<char, 64 * 1024> buffer{};
+  DWORD read = 0;
+  while (::ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) && read > 0) {
+    contents.append(buffer.data(), read);
+  }
+  ::CloseHandle(file);
+  return contents;
+#else
+  std::ifstream input(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+#endif
 }
 
 // Records a failed expectation with a name, so a CI flake says WHICH step
@@ -413,9 +448,7 @@ int main() {
   // once the persist interval elapses (no update op, no shutdown).
   bool persisted = false;
   for (int attempt = 0; attempt < 600 && !persisted; ++attempt) {
-    std::ifstream input(root / "cgraph-out" / "graph.json");
-    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    persisted = contents.find("gamma") != std::string::npos;
+    persisted = read_shared(root / "cgraph-out" / "graph.json").find("gamma") != std::string::npos;
     if (!persisted) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -945,8 +978,7 @@ int main() {
       expect(ok, rc == 0, exited);
     };
     const auto persisted_graph_has_overlay = [&]() {
-      std::ifstream input(graph_path, std::ios::binary);
-      const auto graph = nlohmann::json::parse(input, nullptr, false);
+      const auto graph = nlohmann::json::parse(read_shared(graph_path), nullptr, false);
       if (!graph.is_object()) {
         return true;
       }
@@ -1065,8 +1097,7 @@ int main() {
            "overlay-events: live document deletion removed the invalid overlay");
     bool deleted_stat_evicted = false;
     for (int attempt = 0; attempt < 500 && !deleted_stat_evicted; ++attempt) {
-      std::ifstream input(stat_index_path, std::ios::binary);
-      const auto stat_json = nlohmann::json::parse(input, nullptr, false);
+      const auto stat_json = nlohmann::json::parse(read_shared(stat_index_path), nullptr, false);
       if (stat_json.is_object()) {
         deleted_stat_evicted = true;
         for (const auto& entry : stat_json.value("entries", nlohmann::json::array())) {
@@ -1177,8 +1208,7 @@ int main() {
     cov_server.join();
     expect(ok, cov_rc == 0, "coverage: daemon exited cleanly");
 
-    std::ifstream persisted(cov_root / "cgraph-out" / "graph.json", std::ios::binary);
-    const auto persisted_graph = nlohmann::json::parse(persisted, nullptr, false);
+    const auto persisted_graph = nlohmann::json::parse(read_shared(cov_root / "cgraph-out" / "graph.json"), nullptr, false);
     bool overlay_in_persisted = !persisted_graph.is_object();
     bool code_in_persisted = false;
     for (const auto& node : persisted_graph.value("nodes", nlohmann::json::array())) {
@@ -1193,7 +1223,6 @@ int main() {
     expect(ok, !overlay_in_persisted && code_in_persisted,
            "coverage: graph.json stayed deterministic-only across the refused update");
 
-    persisted.close();  // Windows cannot delete a file that is still open
     fs::remove_all(cov_root);
   }
 
