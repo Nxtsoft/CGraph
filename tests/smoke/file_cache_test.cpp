@@ -193,8 +193,9 @@ int main() {
   }
 
 #if defined(__APPLE__) || defined(__unix__)
-  // A path whose existence cannot be checked classifies as Deleted instead of
-  // throwing out of the daemon's enrichment walk. Windows reports a file an
+  // A path whose existence cannot be checked classifies as Unreadable (so a
+  // verified entry is kept, not dropped as Deleted) instead of throwing out of
+  // the daemon's enrichment walk. Windows reports a file an
   // editor is replacing as "Access is denied"; here an unsearchable parent
   // makes the same check fail with EACCES. Root bypasses directory permissions.
   if (::geteuid() != 0) {
@@ -209,7 +210,7 @@ int main() {
       threw = true;
     }
     std::filesystem::permissions(locked_dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
-    if (threw || locked.state != cgraph::CacheState::Deleted || locked.current.has_value()) {
+    if (threw || locked.state != cgraph::CacheState::Unreadable || locked.current.has_value()) {
       return 1;
     }
   }

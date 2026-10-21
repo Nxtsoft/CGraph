@@ -271,12 +271,13 @@ FileCacheClassification classify_cached_file(
     const std::filesystem::path& path,
     std::optional<FileCacheEntry> previous,
     CacheValidation mode) {
-  // Non-throwing like the stat calls below: Windows reports a file that an
-  // editor is replacing as "Access is denied", and the caller (the daemon's
-  // enrichment walk) must see one more transient miss, not an exception.
+  // Non-throwing: Windows reports a file that an editor is replacing as
+  // "Access is denied". A check that fails is Unreadable, not Deleted, so a
+  // caller holding a verified entry keeps it (a rescan must not drop the
+  // file's nodes) and the daemon's enrichment walk sees no exception.
   std::error_code error;
   if (!std::filesystem::exists(path, error)) {
-    return FileCacheClassification{.state = CacheState::Deleted};
+    return FileCacheClassification{.state = error ? CacheState::Unreadable : CacheState::Deleted};
   }
 
   FileCacheEntry current;

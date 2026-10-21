@@ -112,17 +112,23 @@ int main() {
   const auto created_root = graph->content_root;
 
 #if defined(__APPLE__) || defined(__unix__)
-  // A watcher event for a path whose existence cannot be checked must not
-  // throw out of the serve loop: Windows reports a file mid-save as "Access is
-  // denied", and an unsearchable parent fails the same check with EACCES here.
-  // The file counts as absent for this pass. Root bypasses directory permissions.
+  // A watcher event for an indexed file whose existence cannot be checked
+  // must not throw out of the serve loop, and must not drop the file's nodes:
+  // Windows reports a file mid-save as "Access is denied", and an unsearchable
+  // parent fails the same check with EACCES here. Root bypasses directory
+  // permissions. The file is removed again so the index matches created_root.
   if (::geteuid() != 0) {
     const auto locked_dir = root / "locked";
-    write_file(locked_dir / "gamma.py", "class Gamma:\n    pass\n");
+    const auto delta = locked_dir / "delta.py";
+    write_file(delta, "class Delta:\n    pass\n");
+    cgraph::FileWatchEvent delta_created[] = {
+        {.path = delta, .change = cgraph::FileWatchChange::Created, .kind = cgraph::WatchedFileKind::Code},
+    };
+    (void)cgraph::apply_incremental_code_updates(state, index, delta_created);
+    const bool indexed = has_node_label(*cgraph::read_graph_snapshot(state), "Delta");
     std::filesystem::permissions(locked_dir, std::filesystem::perms::none, std::filesystem::perm_options::replace);
     cgraph::FileWatchEvent locked_event[] = {
-        {.path = locked_dir / "gamma.py", .change = cgraph::FileWatchChange::Modified,
-         .kind = cgraph::WatchedFileKind::Code},
+        {.path = delta, .change = cgraph::FileWatchChange::Modified, .kind = cgraph::WatchedFileKind::Code},
     };
     bool threw = false;
     try {
@@ -131,9 +137,17 @@ int main() {
       threw = true;
     }
     std::filesystem::permissions(locked_dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    const bool kept = has_node_label(*cgraph::read_graph_snapshot(state), "Delta");
     std::filesystem::remove_all(locked_dir);
-    if (threw || cgraph::read_graph_snapshot(state) != graph) {
-      std::cerr << "FAIL: an unreadable watcher path threw or changed the graph\n";
+    cgraph::FileWatchEvent delta_deleted[] = {
+        {.path = delta, .change = cgraph::FileWatchChange::Deleted, .kind = cgraph::WatchedFileKind::Code},
+    };
+    (void)cgraph::apply_incremental_code_updates(state, index, delta_deleted);
+    graph = cgraph::read_graph_snapshot(state);
+    if (!indexed || threw || !kept || has_node_label(*graph, "Delta") ||
+        graph->content_root.sha256 != created_root.sha256) {
+      std::cerr << "FAIL: an unreadable indexed file threw or lost its nodes (indexed=" << indexed
+                << " threw=" << threw << " kept=" << kept << ")\n";
       return 1;
     }
   }
