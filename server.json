@@ -7,12 +7,12 @@
     "url": "https://github.com/Nxtsoft/CGraph",
     "source": "github"
   },
-  "version": "0.9.6",
+  "version": "0.9.7",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "cgraph-mcp",
-      "version": "0.9.6",
+      "version": "0.9.7",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
