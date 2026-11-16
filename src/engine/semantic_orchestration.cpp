@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/semantic_orchestration.hpp"
 
 #include "cgraph/atomic_write.hpp"
@@ -198,7 +199,7 @@ EnrichmentPlanResult plan_enrichment(const std::filesystem::path& root, const st
   }
 
   result.manifest_path = drop_dir / kManifestName;
-  write_file_atomically(result.manifest_path, manifest.dump(2) + '\n');
+  write_file_atomically(result.manifest_path, cgraph::dump_json(manifest, 2) + '\n');
   return result;
 }
 

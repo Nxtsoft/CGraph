@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/cli_support.hpp"
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/mcp_server.hpp"
@@ -72,14 +73,14 @@ int run(int argc, char** argv) {
   while (std::getline(std::cin, line)) {
     const auto request = nlohmann::json::parse(line, nullptr, false);
     if (request.is_discarded()) {
-      std::cout << nlohmann::json{{"jsonrpc", "2.0"}, {"id", nullptr}, {"error", {{"code", -32700}, {"message", "parse error"}}}}.dump() << '\n';
+      std::cout << cgraph::dump_json(nlohmann::json{{"jsonrpc", "2.0"}, {"id", nullptr}, {"error", {{"code", -32700}, {"message", "parse error"}}}}) << '\n';
       continue;
     }
     const auto response = cgraph::handle_mcp_request(request, dispatch, [&](const nlohmann::json& arguments) {
       return cgraph::change_context_across_workspace(arguments, base);
     }, listed_tools);
     if (!response.empty()) {
-      std::cout << response.dump() << '\n';
+      std::cout << cgraph::dump_json(response) << '\n';
     }
   }
   return 0;

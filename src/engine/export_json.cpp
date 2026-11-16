@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/export_json.hpp"
 
 #include "cgraph/analysis.hpp"
@@ -57,7 +58,7 @@ namespace {
   }
   if (const auto iter = value.find("properties"); iter != value.end() && iter->is_object()) {
     for (const auto& [key, property] : iter->items()) {
-      node.properties.emplace(key, property.is_string() ? property.get<std::string>() : property.dump());
+      node.properties.emplace(key, property.is_string() ? property.get<std::string>() : cgraph::dump_json(property));
     }
   }
   return node;
@@ -79,7 +80,7 @@ namespace {
   }
   if (const auto iter = value.find("properties"); iter != value.end() && iter->is_object()) {
     for (const auto& [key, property] : iter->items()) {
-      edge.properties.emplace(key, property.is_string() ? property.get<std::string>() : property.dump());
+      edge.properties.emplace(key, property.is_string() ? property.get<std::string>() : cgraph::dump_json(property));
     }
   }
   return edge;
@@ -138,7 +139,7 @@ namespace {
 // caller's buffer. Appending in place avoids materializing a second full copy
 // of the multi-megabyte serialized graph.
 void append_json_for_script(std::string& output, const nlohmann::json& value) {
-  const auto json = value.dump();
+  const auto json = cgraph::dump_json(value);
   output.reserve(output.size() + json.size());
   for (std::size_t index = 0; index < json.size(); ++index) {
     if (json[index] == '<' && index + 1 < json.size() && json[index + 1] == '/') {

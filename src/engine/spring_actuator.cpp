@@ -1,6 +1,7 @@
 #include "cgraph/spring_actuator.hpp"
 
 #include "cgraph/contracts.hpp"
+#include "cgraph/json_text.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <nlohmann/json.hpp>
@@ -1085,13 +1086,12 @@ void append_spring_actuator_facts(const ExtractionContext& context, ExtractionRe
       .source_id = node_id,
       .target_label = {},
       .relation = std::string(kAppRelation),
-      .context = nlohmann::json{{"module", directory_of(context.relative_path)},
+      .context = dump_json(nlohmann::json{{"module", directory_of(context.relative_path)},
                                 {"servlet", facts.servlet},
                                 {"webflux", facts.reactive},
                                 {"prometheus", facts.prometheus},
                                 {"cache", facts.cache},
-                                {"boot_major", facts.boot_major}}
-                     .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),  // a path may not be UTF-8
+                                {"boot_major", facts.boot_major}}),  // a path may not be UTF-8
       .source_file = context.source_file,
   });
 }
@@ -1171,14 +1171,13 @@ ExtractionResult extract_spring_application_config(const ExtractionContext& cont
         .source_id = file_id,
         .target_label = {},
         .relation = std::string(kConfigRelation),
-        .context = nlohmann::json{{"module", module},
+        .context = dump_json(nlohmann::json{{"module", module},
                                   {"profile", profile},
                                   {"rank", {profile.empty() ? 0 : 1, properties ? 1 : 0, index}},
                                   {"exposure_node", exposure_node},
                                   {"groups", groups},
                                   {"unreadable", unreadable},
-                                  {"props", props}}
-                       .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),  // config bytes may not be UTF-8
+                                  {"props", props}}),  // config bytes may not be UTF-8
         .source_file = context.source_file,
     });
   }
