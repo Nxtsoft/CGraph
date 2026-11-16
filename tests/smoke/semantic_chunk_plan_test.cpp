@@ -245,6 +245,26 @@ int main() {
     expect(ok, cold_again.files_hashed == 3 && cold_again.files_stat_reused == 0,
            "stat: absent index file treated as cold");
 
+    // The index is a cache file on disk; a hand-edited or damaged one must cost
+    // a re-hash, never the daemon's startup. Entries of the wrong shape are
+    // dropped one by one and the well-formed entry beside them is kept.
+    const auto damaged_path = stat_root / "damaged-index.json";
+    std::ofstream(damaged_path, std::ios::binary)
+        << R"({"entries":[5, "x", null, [], {"path":7,"size":1,"modified_at":1,"sha256":"aa"},)"
+        << R"({"path":"a.md","size":"big","modified_at":1,"sha256":"aa"},)"
+        << R"({"path":"b.md","size":1,"modified_at":"then","sha256":"aa"},)"
+        << R"({"path":"c.md","size":1,"modified_at":1,"sha256":{}},)"
+        << R"({"path":"d.md","size":-1,"modified_at":1,"sha256":"aa"},)"
+        << R"({"path":"kept.md","size":3,"modified_at":42,"sha256":"bb"}]})";
+    const auto damaged = cgraph::read_semantic_stat_index(damaged_path);
+    expect(ok, damaged.size() == 1 && damaged.contains("kept.md") && damaged.at("kept.md").sha256 == "bb" &&
+                   damaged.at("kept.md").size == 3,
+           "stat: wrong-shaped entries are dropped and the valid one is kept");
+    for (const char* whole : {"[]", "5", R"({"entries":{}})", R"({"entries":"x"})", "{not json"}) {
+      std::ofstream(damaged_path, std::ios::binary | std::ios::trunc) << whole;
+      expect(ok, cgraph::read_semantic_stat_index(damaged_path).empty(), "stat: wrong-shaped file treated as cold");
+    }
+
     std::filesystem::remove_all(stat_root);
   }
 
