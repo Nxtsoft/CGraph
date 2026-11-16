@@ -84,16 +84,35 @@ std::unordered_map<std::size_t, std::vector<SemanticSourceInput>> load_chunk_sou
     return sources_by_chunk;
   }
   const auto manifest = nlohmann::json::parse(manifest_file, nullptr, false);
-  if (manifest.is_discarded()) {
+  // plan.json sits in the drop directory, which other tools write to. Anything
+  // that is not the shape the planner writes is skipped; a wrong-typed value
+  // used to throw here and fail the daemon's initial build on every start.
+  const auto array_in = [](const nlohmann::json& object, const char* key) -> const nlohmann::json* {
+    const auto found = object.find(key);
+    return object.is_object() && found != object.end() && found->is_array() ? &*found : nullptr;
+  };
+  const auto string_in = [](const nlohmann::json& object, const char* key) {
+    const auto found = object.find(key);
+    return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
+  };
+  const auto* chunks = array_in(manifest, "chunks");
+  if (chunks == nullptr) {
     return sources_by_chunk;
   }
-  for (const auto& chunk : manifest.value("chunks", nlohmann::json::array())) {
-    const auto index = chunk.value("index", std::size_t{0});
-    for (const auto& input : chunk.value("inputs", nlohmann::json::array())) {
-      if (const auto path = input.value("path", std::string{}); !path.empty()) {
-        sources_by_chunk[index].push_back(SemanticSourceInput{
+  for (const auto& chunk : *chunks) {
+    const auto* inputs = array_in(chunk, "inputs");
+    const auto index = chunk.find("index");
+    if (inputs == nullptr || index == chunk.end() || !index->is_number_unsigned()) {
+      continue;
+    }
+    for (const auto& input : *inputs) {
+      if (!input.is_object()) {
+        continue;
+      }
+      if (const auto path = string_in(input, "path"); !path.empty()) {
+        sources_by_chunk[index->get<std::size_t>()].push_back(SemanticSourceInput{
             .path = path,
-            .content_sha256 = input.value("content_hash", std::string{}),
+            .content_sha256 = string_in(input, "content_hash"),
         });
       }
     }

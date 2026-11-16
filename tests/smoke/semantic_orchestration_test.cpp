@@ -202,6 +202,33 @@ int main() {
     fs::remove_all(groot);
   }
 
+  // plan.json lives in the drop directory, which other tools write to. A
+  // manifest of the wrong shape must read as "no sources", piece by piece; a
+  // wrong-typed value used to throw and fail the daemon's initial build.
+  {
+    const auto mroot = root / "manifest-shapes";
+    fs::create_directories(mroot);
+    const auto write_manifest = [&](const char* text) {
+      std::ofstream(mroot / "plan.json", std::ios::binary | std::ios::trunc) << text;
+    };
+    for (const char* whole : {"[]", "5", "null", R"({"chunks":{}})", R"({"chunks":"x"})", "{not json"}) {
+      write_manifest(whole);
+      if (!cgraph::load_chunk_sources(mroot).empty()) {
+        return 5;
+      }
+    }
+    write_manifest(
+        R"({"chunks":[7, "x", {"index":"x","inputs":[{"path":"a.md"}]}, {"index":-1,"inputs":[{"path":"a.md"}]},)"
+        R"({"index":1,"inputs":{}}, {"index":2},)"
+        R"({"index":3,"inputs":[9, {"path":5}, {"path":"kept.md","content_hash":7}, {"path":"also.md","content_hash":"cc"}]}]})");
+    const auto sources = cgraph::load_chunk_sources(mroot);
+    if (sources.size() != 1 || !sources.contains(3) || sources.at(3).size() != 2 ||
+        sources.at(3)[0].path != "kept.md" || !sources.at(3)[0].content_sha256.empty() ||
+        sources.at(3)[1].path != "also.md" || sources.at(3)[1].content_sha256 != "cc") {
+      return 6;
+    }
+  }
+
   fs::remove_all(root);
   return 0;
 }

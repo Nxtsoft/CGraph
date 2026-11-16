@@ -2559,7 +2559,14 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
   if (!protocol_version_matches(request)) {
     return error_response("protocol version mismatch");
   }
-  const auto op = request.value("op", std::string{});
+  // The frame is whatever a local client sent. A wrong-typed field must come
+  // back as an error frame; `request.value("op", std::string{})` threw on
+  // {"op": 5} before any handler ran and ended the serve loop for every caller.
+  const auto op_field = request.find("op");
+  if (op_field == request.end() || !op_field->is_string()) {
+    return error_response("op must be a string");
+  }
+  const auto op = op_field->get<std::string>();
   auto params = request.value("params", nlohmann::json::object());
   if (!params.is_object()) {
     params = nlohmann::json::object();  // tolerate a null/absent params; ops read it with .value()
@@ -2681,8 +2688,11 @@ nlohmann::json handle_daemon_request(DaemonState& state, const nlohmann::json& r
   }
   // A context call served with gather="adaptive" is counted distinctly so the
   // durable ledger can report adaptive adoption (pre-flip telemetry).
+  // Compared, not converted: a mistyped gather was already answered with an
+  // error frame above and must not throw here, outside the handler's catch.
+  const auto gather = params.find("gather");
   const bool adaptive_context_call =
-      *known_op == DaemonOp::Context && params.value("gather", std::string{}) == "adaptive";
+      *known_op == DaemonOp::Context && gather != params.end() && *gather == "adaptive";
   // A read served against the still-building empty snapshot is "not ready", not a
   // miss: record it separately and keep it out of op/zero-hit/latency accounting.
   const bool not_ready = graph->build_state == BuildState::Empty;

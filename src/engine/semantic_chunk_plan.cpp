@@ -211,12 +211,27 @@ SemanticStatIndex read_semantic_stat_index(const std::filesystem::path& path) {
   if (!root.is_object() || !root.contains("entries") || !root["entries"].is_array()) {
     return index;  // malformed -> cold, no error
   }
+  // This file is a cache anyone can edit or truncate. An entry that is not the
+  // shape write_semantic_stat_index produces is dropped, so that file is hashed
+  // again; a wrong-typed field used to throw here and stop the daemon at startup.
   for (const auto& item : root["entries"]) {
+    if (!item.is_object()) {
+      continue;
+    }
+    const auto path = item.find("path");
+    const auto size = item.find("size");
+    const auto modified_at = item.find("modified_at");
+    const auto sha256 = item.find("sha256");
+    if (path == item.end() || !path->is_string() || size == item.end() || !size->is_number_unsigned() ||
+        modified_at == item.end() || !modified_at->is_number_integer() || sha256 == item.end() ||
+        !sha256->is_string()) {
+      continue;
+    }
     FileCacheEntry entry;
-    entry.path = std::filesystem::path(item.value("path", std::string{}));
-    entry.size = item.value("size", std::uintmax_t{0});
-    entry.modified_at = mtime_from_count(item.value("modified_at", std::int64_t{0}));
-    entry.sha256 = item.value("sha256", std::string{});
+    entry.path = std::filesystem::path(path->get<std::string>());
+    entry.size = size->get<std::uintmax_t>();
+    entry.modified_at = mtime_from_count(modified_at->get<std::int64_t>());
+    entry.sha256 = sha256->get<std::string>();
     if (!entry.path.empty() && !entry.sha256.empty()) {
       index.emplace(entry.path.generic_string(), std::move(entry));
     }
