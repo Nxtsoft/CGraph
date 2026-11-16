@@ -115,7 +115,7 @@ std::optional<IndexManifest> read_index_manifest(const std::filesystem::path& pa
     return std::nullopt;
   }
   try {
-    const auto document = nlohmann::json::parse(input);
+    const auto document = cgraph::parse_json(input);
     IndexManifest manifest;
     manifest.version_key = document.at("version_key").get<std::string>();
     const auto& content_root = document.at("content_root");

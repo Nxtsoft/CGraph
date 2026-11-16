@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/tsconfig_aliases.hpp"
 
 #include <nlohmann/json.hpp>
@@ -55,7 +56,7 @@ std::vector<PathAlias> load_path_aliases(const fs::path& root) {
 
   // tsconfig is JSON-with-comments; tolerate that, and never throw on a
   // malformed config — a missing alias map simply means no alias resolution.
-  const auto json = nlohmann::json::parse(contents, nullptr, /*allow_exceptions=*/false, /*ignore_comments=*/true);
+  const auto json = cgraph::try_parse_json(contents, cgraph::JsonComments::Ignored);
   if (json.is_discarded() || !json.is_object()) {
     return {};
   }

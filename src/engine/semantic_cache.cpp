@@ -462,7 +462,7 @@ SemanticCache read_semantic_cache(const std::filesystem::path& path, std::string
     return std::filesystem::exists(path, error) ? unusable("it cannot be opened") : cache;
   }
 
-  const auto root = nlohmann::json::parse(input, nullptr, false);
+  const auto root = cgraph::try_parse_json(input);
   if (!root.is_object()) {
     return unusable("it is not valid JSON");
   }

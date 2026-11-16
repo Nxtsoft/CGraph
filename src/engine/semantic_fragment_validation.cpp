@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/semantic_fragment_validation.hpp"
 
 #include "cgraph/file_cache.hpp"
@@ -31,7 +32,7 @@ SemanticFragmentValidationResult validate_semantic_fragment_file(const std::file
   }
   result.source_sha256 = sha256_hex(contents);
 
-  const auto value = nlohmann::json::parse(contents, nullptr, false);
+  const auto value = cgraph::try_parse_json(contents);
   if (value.is_discarded()) {
     result.errors.push_back("semantic fragment is malformed JSON: " + path.generic_string());
     return result;

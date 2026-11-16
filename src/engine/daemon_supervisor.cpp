@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/daemon_supervisor.hpp"
 
 #include "cgraph/daemon_endpoint.hpp"
@@ -124,7 +125,7 @@ bool mcp_json_registers_cgraph(const std::filesystem::path& mcp_json) {
     return false;
   }
   try {
-    const auto json = nlohmann::json::parse(input);
+    const auto json = cgraph::parse_json(input);
     const auto servers = json.find("mcpServers");
     if (servers == json.end() || !servers->is_object()) {
       return false;

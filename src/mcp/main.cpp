@@ -71,7 +71,7 @@ int run(int argc, char** argv) {
 
   std::string line;
   while (std::getline(std::cin, line)) {
-    const auto request = nlohmann::json::parse(line, nullptr, false);
+    const auto request = cgraph::try_parse_json(line);
     if (request.is_discarded()) {
       std::cout << cgraph::dump_json(nlohmann::json{{"jsonrpc", "2.0"}, {"id", nullptr}, {"error", {{"code", -32700}, {"message", "parse error"}}}}) << '\n';
       continue;

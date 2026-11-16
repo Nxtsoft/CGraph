@@ -50,7 +50,7 @@ int run(int argc, char** argv) {
       continue;
     }
     try {
-      request.params = nlohmann::json::parse(arg);
+      request.params = cgraph::parse_json(arg);
     } catch (const nlohmann::json::parse_error& error) {
       std::cerr << "invalid JSON params: " << error.what() << '\n';
       return 2;
@@ -65,7 +65,7 @@ int run(int argc, char** argv) {
     const auto budget = wait_env != nullptr ? std::chrono::milliseconds(std::atol(wait_env)) : cgraph::kHookDefaultBudget;
     try {
       std::string text{std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>()};
-      const auto input = nlohmann::json::parse(text, nullptr, false);
+      const auto input = cgraph::try_parse_json(text);
       if (const auto output = cgraph::pre_edit_hook_output(input, request, budget)) {
         std::cout << output->dump() << '\n';
       }

@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <limits>
+#include <string_view>
 #include <utility>
 
 namespace cgraph {
@@ -41,7 +42,7 @@ std::optional<nlohmann::json> decode_frame(const std::vector<std::uint8_t>& fram
   }
 
   try {
-    return nlohmann::json::parse(frame.begin() + 4, frame.end());
+    return cgraph::parse_json(std::string_view(reinterpret_cast<const char*>(frame.data()) + 4, frame.size() - 4));
   } catch (const nlohmann::json::exception&) {
     return std::nullopt;
   }

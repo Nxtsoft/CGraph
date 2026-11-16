@@ -78,7 +78,7 @@ void persist_fingerprints(const GraphSnapshot& snapshot, const std::filesystem::
     return out;
   }
   try {
-    const auto document = nlohmann::json::parse(input);
+    const auto document = cgraph::parse_json(input);
     if (document.value("version", 0) != 1 || !document.contains("functions") || !document["functions"].is_object()) {
       return out;
     }
@@ -144,7 +144,7 @@ bool load_graph_snapshot(DaemonState& state, const std::filesystem::path& graph_
   }
 
   try {
-    const auto json = nlohmann::json::parse(input);
+    const auto json = cgraph::parse_json(input);
     auto graph = parse_node_link_graph(json);
     graph.fingerprints = load_fingerprints(graph_path);
     publish_graph_snapshot(state, std::move(graph));

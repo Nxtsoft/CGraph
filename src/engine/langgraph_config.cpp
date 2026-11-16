@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/langgraph_config.hpp"
 
 #include "cgraph/normalize.hpp"
@@ -218,7 +219,7 @@ ExtractionResult extract_langgraph_config(const ExtractionContext& context) {
 
   nlohmann::json config;
   try {
-    config = nlohmann::json::parse(source);
+    config = cgraph::parse_json(source);
   } catch (const nlohmann::json::exception& error) {
     fragment.warnings.push_back(std::string{"failed to parse langgraph.json: "} + error.what());
     return result;
