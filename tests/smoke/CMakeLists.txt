@@ -22,18 +22,6 @@ cgraph_enable_sanitizers(cgraph_id_normalization_test)
 
 add_test(NAME cgraph_id_normalization_test COMMAND cgraph_id_normalization_test)
 
-add_executable(cgraph_json_text_test
-  json_text_test.cpp)
-
-target_link_libraries(cgraph_json_text_test
-  PRIVATE
-    cgraph::engine)
-
-cgraph_set_warnings(cgraph_json_text_test)
-cgraph_enable_sanitizers(cgraph_json_text_test)
-
-add_test(NAME cgraph_json_text_test COMMAND cgraph_json_text_test)
-
 add_executable(cgraph_fragment_json_test
   fragment_json_test.cpp)
 
@@ -1028,6 +1016,18 @@ cgraph_set_warnings(cgraph_skills_install_test)
 cgraph_enable_sanitizers(cgraph_skills_install_test)
 
 add_test(NAME cgraph_skills_install_test COMMAND cgraph_skills_install_test)
+
+add_executable(cgraph_json_text_test
+  json_text_test.cpp)
+
+target_link_libraries(cgraph_json_text_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_json_text_test)
+cgraph_enable_sanitizers(cgraph_json_text_test)
+
+add_test(NAME cgraph_json_text_test COMMAND cgraph_json_text_test)
 
 add_executable(cgraph_protocol_test
   protocol_test.cpp)
