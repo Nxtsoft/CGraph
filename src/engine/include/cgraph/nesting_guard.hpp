@@ -7,10 +7,15 @@ namespace cgraph {
 // nests a handful of levels; generated code nests tens of thousands, and a
 // reader that takes one stack frame per level overflows the extraction
 // thread's stack, which no try/catch can stop.
-inline constexpr int kMaxExpressionNesting = 256;
+//
+// Kept small on purpose: several of these readers run from inside walk_node,
+// which may itself be 200 frames down on a 512 KB thread stack, and their
+// frames are over a kilobyte each in a debug build.
+inline constexpr int kMaxExpressionNesting = 64;
 
 // Counts the live frames of one recursive function. Give each function its own
-// `thread_local int` and construct a guard at the top:
+// counter (a `thread_local int`, or for a recursive lambda an `int` beside it)
+// and construct a guard at the top:
 //
 //   thread_local int nesting = 0;
 //   const NestingGuard guard(nesting);

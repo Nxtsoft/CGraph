@@ -137,6 +137,13 @@ int main() {
        "function g() { return fetch(\"/api/\" + " + chain("a", " + ", depth) + "); }\n"},
       {"http.go", cgraph::DetectedLanguage::Go,
        "package m\nfunc g() int { x := http.Get(\"/api/\" + " + chain("a", " + ", depth) + "); return x }\n"},
+      // The payload-decode follower, which runs on a chain bound to a `val`
+      {"val.kt", cgraph::DetectedLanguage::Kotlin, "fun g(): Any {\n  val x = a" + chain(".b()", "", depth) + "\n  return x\n}\n"},
+      // The JS claim reader walks a whole file once it imports from its own project
+      {"imported.ts", cgraph::DetectedLanguage::TypeScript,
+       "import { helper } from './helper';\nfunction g() { return " + nested("f(", ")", depth) + "; }\n"},
+      {"coalesce.js", cgraph::DetectedLanguage::JavaScript,
+       "import { helper } from './helper';\nfunction g() { const v = " + chain("a", " ?? ", depth) + "; return v; }\n"},
       // Rust `use` trees and macro bodies
       {"use.rs", cgraph::DetectedLanguage::Rust, "use a::" + nested("{b::", "}", depth).replace(depth * 4, 1, "c") + ";\nfn g() -> i32 { 1 }\n"},
       {"macro.rs", cgraph::DetectedLanguage::Rust, "fn g() -> i32 { m!(" + nested("(", ")", depth) + ") }\n"},

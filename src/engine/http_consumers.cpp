@@ -894,7 +894,9 @@ void collect_url_template(const TSNode& node, const ExtractionContext& context, 
   thread_local int nesting = 0;
   const NestingGuard guard(nesting);
   if (guard.too_deep()) {
-    url.unknown(true);  // a concatenation this long is not a URL anyone wrote
+    // A concatenation this long is not a URL anyone wrote. The part given up
+    // on is its start, so what is left must not pass for a whole route.
+    url.resolvable = false;
     return;
   }
   const TSNode expression = unwrap_expression(node);

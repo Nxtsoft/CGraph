@@ -1034,7 +1034,9 @@ void kotlin_collect_url(const TSNode& node, std::string_view source, const std::
   thread_local int nesting = 0;
   const NestingGuard guard(nesting);
   if (guard.too_deep()) {
-    url.value();  // a concatenation this long is not a URL anyone wrote
+    // A concatenation this long is not a URL anyone wrote. The part given up
+    // on is its start, so what is left must not pass for a whole route.
+    url.resolvable = false;
     return;
   }
   const std::string_view type = ts_node_type(node);
@@ -1345,7 +1347,9 @@ void go_collect_url(const TSNode& node, std::string_view source, const std::vect
   thread_local int nesting = 0;
   const NestingGuard guard(nesting);
   if (guard.too_deep()) {
-    url.value();  // a concatenation this long is not a URL anyone wrote
+    // A concatenation this long is not a URL anyone wrote. The part given up
+    // on is its start, so what is left must not pass for a whole route.
+    url.resolvable = false;
     return;
   }
   const std::string_view type = ts_node_type(node);

@@ -1,5 +1,6 @@
 #include "cgraph/claim_contracts.hpp"
 
+#include "cgraph/nesting_guard.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -405,7 +406,15 @@ void kotlin_claims(TSNode root, Emitter& emitter) {
     // `Base64...decode(segment)`, `Json.parseToJsonElement(decoded..)`, then
     // `.jsonObject["x"]` on that parsed payload.
     std::unordered_map<std::string, Payload> variables;
+    int level_nesting = 0;
     const std::function<Payload(TSNode)> level = [&](TSNode expression) -> Payload {
+      // A payload decode is a handful of calls. A chain far longer than that
+      // (`a.b().b()...`, generated) is not one, and following it one frame per
+      // call overflowed the stack.
+      const NestingGuard guard(level_nesting);
+      if (guard.too_deep()) {
+        return Payload::None;
+      }
       const auto expression_type = type_of(expression);
       if (expression_type == "parenthesized_expression" || expression_type == "elvis_expression") {
         return level(named_child(expression, 0));
@@ -1293,7 +1302,13 @@ void js_claims(TSNode root, Emitter& emitter) {
     }
     return nullptr;
   };
+  int callees_nesting = 0;
   const std::function<void(TSNode, std::set<std::string>&)> callees = [&](TSNode value, std::set<std::string>& out) {
+    // `a ?? b ?? c ...` nests once per operator; past any real fallback chain, stop.
+    const NestingGuard guard(callees_nesting);
+    if (guard.too_deep()) {
+      return;
+    }
     value = js_unwrap(value);
     const auto type = type_of(value);
     if (type == "call_expression" && type_of(field_of(value, "function")) == "identifier") {
@@ -1316,7 +1331,25 @@ void js_claims(TSNode root, Emitter& emitter) {
       }
     }
   };
-  const std::function<void(TSNode)> reads = [&](TSNode node) {
+  // Walks the whole file, entering a scope at each function and block binding
+  // and leaving it after that node's children. The nodes still to visit are
+  // kept on the heap with a marker for each scope to leave: this runs on every
+  // file that imports from its own project, and one stack frame per level of
+  // nesting overflowed the stack on generated code.
+  struct Step {
+    TSNode node;
+    std::size_t leave = 0;   // when `leaving`: how many scopes to pop
+    bool leaving = false;
+  };
+  std::vector<Step> pending{Step{.node = root}};
+  while (!pending.empty()) {
+    const auto step = pending.back();
+    pending.pop_back();
+    if (step.leaving) {
+      scopes.resize(scopes.size() - step.leave);
+      continue;
+    }
+    const auto node = step.node;
     const auto type = type_of(node);
     const bool function_like = js_function_like(type);
     // `for (const payload of rows)` and `catch (payload)` bind in their own block.
@@ -1371,17 +1404,13 @@ void js_claims(TSNode root, Emitter& emitter) {
         }
       }
     }
-    for (std::uint32_t index = 0; index < named_count(node); ++index) {
-      reads(ts_node_named_child(node, index));
+    if (function_like || block_binding) {
+      pending.push_back(Step{.node = node, .leave = (function_like ? 1U : 0U) + (block_binding ? 1U : 0U), .leaving = true});
     }
-    if (function_like) {
-      scopes.pop_back();
+    for (auto index = named_count(node); index > 0; --index) {
+      pending.push_back(Step{.node = ts_node_named_child(node, index - 1)});  // reversed, so the first child is next
     }
-    if (block_binding) {
-      scopes.pop_back();
-    }
-  };
-  reads(root);
+  }
 }
 
 // --- Python ------------------------------------------------------------------
