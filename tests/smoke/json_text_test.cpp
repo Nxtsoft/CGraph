@@ -82,11 +82,25 @@ int main() {
   const std::string brackets(1000, '[');
   expect(cgraph::parse_json("[\"" + brackets + "\"]")[0] == brackets, "brackets inside a string are not depth");
   expect(cgraph::parse_json("[\"a\\\"" + brackets + "\"]").is_array(), "an escaped quote keeps the string open");
-  expect(cgraph::parse_json("[\"a\\\\\"," + nested_arrays(kMaxJsonDepth - 1) + "]").size() == 2,
+  // If the scanner took `\\"` for an escaped quote the string would stay open
+  // and hide what follows, so the level past the limit must still be seen.
+  expect(cgraph::parse_json("[\"a\\\\\"," + nested_arrays(kMaxJsonDepth - 1) + "]").size() == 2 &&
+             throws_parse_error("[\"a\\\\\"," + nested_arrays(kMaxJsonDepth) + "]"),
          "an escaped backslash before the closing quote ends the string");
   expect(cgraph::try_parse_json("// " + brackets + "\n[1]", cgraph::JsonComments::Ignored) == nlohmann::json{1} &&
              cgraph::try_parse_json("/* " + brackets + " */[1]", cgraph::JsonComments::Ignored) == nlohmann::json{1},
          "brackets inside a comment are not depth when comments are allowed");
+
+  // A comment ends where the library ends it, and no later: brackets after a
+  // line comment closed by \r or NUL, or after two block comments in a row,
+  // are real and must count.
+  const auto over = nested_arrays(kMaxJsonDepth + 1);
+  for (const auto& hidden : {std::string("// c\r") + over, std::string("// c\0", 5) + over, "/* a *//* b */" + over,
+                             "/**//**/" + over, "[ // c\r" + nested_arrays(kMaxJsonDepth) + "]"}) {
+    expect(cgraph::try_parse_json(hidden, cgraph::JsonComments::Ignored).is_discarded(), "brackets after a comment count");
+  }
+  expect(cgraph::try_parse_json("/* a *//* b */[1] // end", cgraph::JsonComments::Ignored) == nlohmann::json{1},
+         "adjacent comments and a trailing one still parse");
 
   // Comments are an error unless asked for (tsconfig.json has them).
   const std::string commented = "{\n  // note\n  \"a\": 1 /* inline */\n}";

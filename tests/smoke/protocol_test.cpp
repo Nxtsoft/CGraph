@@ -1,5 +1,7 @@
 #include "cgraph/protocol.hpp"
 
+#include "cgraph/json_text.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -66,6 +68,14 @@ int main() {
       static_cast<std::uint8_t>((deep_body.size() >> 16U) & 0xffU), static_cast<std::uint8_t>((deep_body.size() >> 24U) & 0xffU)};
   deep_frame.insert(deep_frame.end(), deep_body.begin(), deep_body.end());
   if (cgraph::decode_frame(deep_frame).has_value()) {
+    return 1;
+  }
+  // Params may use the whole nesting limit: the frame around them is one more
+  // level and must still decode, or the client would take the dropped
+  // connection for a daemon that is not there.
+  const auto full = cgraph::parse_json(std::string(cgraph::kMaxJsonDepth, '[') + std::string(cgraph::kMaxJsonDepth, ']'));
+  const auto full_frame = cgraph::decode_frame(cgraph::encode_frame(cgraph::make_request("status", full)));
+  if (!full_frame.has_value() || (*full_frame)["params"] != full) {
     return 1;
   }
 

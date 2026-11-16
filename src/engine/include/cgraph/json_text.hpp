@@ -36,13 +36,13 @@ enum class JsonComments { Rejected, Ignored };
 
 namespace json_detail {
 
-// True when arrays and objects in `text` nest deeper than kMaxJsonDepth. One
+// True when arrays and objects in `text` nest deeper than `limit`. One
 // pass over the bytes, before any value is built: nlohmann's parser does not
 // recurse, so it will happily build a value 200,000 levels deep from a few
 // hundred kilobytes, and copying, comparing or dumping that value then
 // recurses once per level and overflows the stack. Brackets inside strings
 // (and inside comments, when those are allowed) do not count.
-[[nodiscard]] inline bool nests_too_deep(std::string_view text, JsonComments comments) {
+[[nodiscard]] inline bool nests_too_deep(std::string_view text, JsonComments comments, std::size_t limit) {
   std::size_t depth = 0;
   for (std::size_t i = 0; i < text.size(); ++i) {
     switch (text[i]) {
@@ -52,18 +52,22 @@ namespace json_detail {
         }
         break;
       case '/':
+        // Comments end exactly where the library's lexer ends them: a line
+        // comment at \n, \r or NUL, a block comment after its closing `*/`.
+        // Ending one anywhere else would let brackets hide behind it.
         if (comments == JsonComments::Ignored && i + 1 < text.size()) {
           if (text[i + 1] == '/') {
-            i = text.find('\n', i);
+            i = text.find_first_of(std::string_view("\n\r\0", 3), i);
           } else if (text[i + 1] == '*') {
             i = text.find("*/", i + 2);
+            if (i != std::string_view::npos) ++i;  // onto the closing `/`
           }
           if (i == std::string_view::npos) return false;  // comment runs to the end
         }
         break;
       case '[':
       case '{':
-        if (++depth > kMaxJsonDepth) return true;
+        if (++depth > limit) return true;
         break;
       case ']':
       case '}':
@@ -76,11 +80,12 @@ namespace json_detail {
   return false;
 }
 
-[[nodiscard]] inline nlohmann::json parse(std::string_view text, bool allow_exceptions, JsonComments comments) {
-  if (nests_too_deep(text, comments)) {
+[[nodiscard]] inline nlohmann::json parse(std::string_view text, bool allow_exceptions, JsonComments comments,
+                                          std::size_t limit = kMaxJsonDepth) {
+  if (nests_too_deep(text, comments, limit)) {
     if (allow_exceptions) {
       throw nlohmann::json::parse_error::create(
-          101, std::size_t{0}, "JSON nests deeper than " + std::to_string(kMaxJsonDepth) + " levels", nullptr);
+          101, std::size_t{0}, "JSON nests deeper than " + std::to_string(limit) + " levels", nullptr);
     }
     return nlohmann::json(nlohmann::json::value_t::discarded);
   }
@@ -114,9 +119,17 @@ namespace json_detail {
   return json_detail::parse(json_detail::slurp(input), /*allow_exceptions=*/false, comments);
 }
 
+// A request frame: `params` may use the whole limit, and the frame is the one
+// object around it. Without the extra level, params the client accepted at
+// exactly the limit made a frame the daemon dropped unanswered, which the
+// client reads as "no daemon".
+[[nodiscard]] inline nlohmann::json parse_json_frame(std::string_view text) {
+  return json_detail::parse(text, /*allow_exceptions=*/true, JsonComments::Rejected, kMaxJsonDepth + 1);
+}
+
 [[nodiscard]] inline nlohmann::json read_json(std::istream& input) {
   const auto text = json_detail::slurp(input);
-  if (json_detail::nests_too_deep(text, JsonComments::Rejected)) {
+  if (json_detail::nests_too_deep(text, JsonComments::Rejected, kMaxJsonDepth)) {
     throw nlohmann::json::parse_error::create(
         101, std::size_t{0}, "JSON nests deeper than " + std::to_string(kMaxJsonDepth) + " levels", nullptr);
   }

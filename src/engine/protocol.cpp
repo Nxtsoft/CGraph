@@ -42,7 +42,7 @@ std::optional<nlohmann::json> decode_frame(const std::vector<std::uint8_t>& fram
   }
 
   try {
-    return cgraph::parse_json(std::string_view(reinterpret_cast<const char*>(frame.data()) + 4, frame.size() - 4));
+    return cgraph::parse_json_frame(std::string_view(reinterpret_cast<const char*>(frame.data()) + 4, frame.size() - 4));
   } catch (const nlohmann::json::exception&) {
     return std::nullopt;
   }
