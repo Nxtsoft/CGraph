@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/seam.hpp"
 
 #include "cgraph/contracts.hpp"
@@ -160,7 +161,7 @@ class SeamGraph {
     if (!out.empty()) {
       out += ",";
     }
-    out += item.is_string() ? item.get<std::string>() : item.dump();
+    out += item.is_string() ? item.get<std::string>() : cgraph::dump_json(item);
     out += suffix;
   }
   return out;

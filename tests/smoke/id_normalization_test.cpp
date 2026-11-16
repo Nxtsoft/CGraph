@@ -32,6 +32,29 @@ int main() {
     }
   }
 
+  // Input that is not valid UTF-8 (a Latin-1 file name, a stray byte in an
+  // identifier) still gets an id, and different bad bytes get different ids.
+  // An empty id for all of them made unique_node_id spin forever on its second
+  // collision, since every candidate it tried was the same empty string.
+  constexpr Case kInvalidCases[] = {
+      {"\xFF\xFE.py", "xff_xfe_py"},
+      {"caf\xE9.py", "caf_xe9_py"},
+      {"M:\xDA", "m_xda"},
+      {"M:\xDB", "m_xdb"},
+      {"ok\xC3", "ok_xc3"},                 // sequence cut off at the end
+      {"\xED\xA0\x80", "xed_xa0_x80"},      // UTF-16 surrogate, not allowed in UTF-8
+      {"\xC0\xAF", "xc0_xaf"},              // overlong encoding of '/'
+      {"caf\xC3\xA9\xFF", "café_xff"},      // valid text around a bad byte is kept as is
+  };
+  for (const auto& test_case : kInvalidCases) {
+    if (cgraph::make_id(test_case.input) != test_case.expected) {
+      return 4;
+    }
+  }
+  if (cgraph::make_id("M:\xDA:3:5:2") == cgraph::make_id("M:\xDA:3:5:3")) {
+    return 5;
+  }
+
   // relative_import_stub: the namespace carries what make_id would erase.
   struct StubCase {
     std::string_view joined;

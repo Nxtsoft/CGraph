@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/operation_stats.hpp"
 
 #include <algorithm>
@@ -457,7 +458,7 @@ bool append_op_stats_ledger(const std::filesystem::path& path, const nlohmann::j
     if (!out) {
       return false;
     }
-    out << line.dump() << '\n';
+    out << cgraph::dump_json(line) << '\n';
     return static_cast<bool>(out);
   } catch (...) {
     return false;  // best-effort: never propagate

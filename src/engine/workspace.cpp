@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/workspace.hpp"
 
 #include "cgraph/contracts.hpp"
@@ -815,7 +816,7 @@ Workspace load_workspace(const std::filesystem::path& root) {
       continue;
     }
     if ((entry.contains("name") && !entry["name"].is_string()) || (entry.contains("root") && !entry["root"].is_string())) {
-      workspace.errors.push_back("a `repos` entry's `name` and `root` must be strings: " + entry.dump());
+      workspace.errors.push_back("a `repos` entry's `name` and `root` must be strings: " + cgraph::dump_json(entry));
       continue;
     }
     WorkspaceRepo repo;

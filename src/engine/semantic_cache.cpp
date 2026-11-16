@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/semantic_cache.hpp"
 
 #include "cgraph/atomic_write.hpp"
@@ -440,7 +441,7 @@ std::optional<std::filesystem::path> write_semantic_cache(
   }
 
   auto set_aside = set_aside_unusable_cache(path);
-  write_file_atomically(path, nlohmann::json{{"version", 2}, {"records", std::move(records)}}.dump(2));
+  write_file_atomically(path, cgraph::dump_json(nlohmann::json{{"version", 2}, {"records", std::move(records)}}, 2));
   return set_aside;
 }
 

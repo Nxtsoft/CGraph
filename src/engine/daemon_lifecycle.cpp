@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
 
 #include "cgraph/atomic_write.hpp"
@@ -67,7 +68,7 @@ void persist_fingerprints(const GraphSnapshot& snapshot, const std::filesystem::
     functions[id] = {{"tokens", fingerprint.tokens}, {"shingles", fingerprint.shingles}};
   }
   const nlohmann::json document{{"version", 1}, {"functions", std::move(functions)}};
-  (void)try_write_file_atomically(fingerprints_path(graph_path), document.dump());
+  (void)try_write_file_atomically(fingerprints_path(graph_path), cgraph::dump_json(document));
 }
 
 [[nodiscard]] std::unordered_map<std::string, FunctionFingerprint> load_fingerprints(const std::filesystem::path& graph_path) {
@@ -113,7 +114,7 @@ bool persist_graph_snapshot(
   // graph.json to "make room" for a retry: if the retry also failed the daemon
   // would be left with no graph at all. The helper leaves the prior file
   // untouched, removes the orphan temp, and we surface the failure.
-  if (const auto failure = try_write_file_atomically(graph_path, to_node_link_json(snapshot).dump(2) + '\n',
+  if (const auto failure = try_write_file_atomically(graph_path, cgraph::dump_json(to_node_link_json(snapshot), 2) + '\n',
                                                        WriteDurability::Durable);
       !failure.empty()) {
     std::cerr << "graphd: " << failure << '\n';

@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -20,6 +21,16 @@ bool contains_warning(const cgraph::ExtractionResult& result, std::string_view n
     }
   }
   return false;
+}
+
+bool distinct_non_empty_ids(const cgraph::ExtractionResult& result) {
+  std::set<std::string> ids;
+  for (const auto& node : result.fragment.nodes) {
+    if (node.id.empty() || !ids.insert(node.id).second) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -80,6 +91,35 @@ int main() {
     std::filesystem::remove_all(root);
     return 1;
   }
+
+  // Names that are not valid UTF-8 must still get distinct, non-empty node ids.
+  // They used to normalize to the empty id, and the second colliding member sent
+  // unique_node_id into an endless loop: this 44-byte file hung indexing for good.
+  const auto bad_field_path = root / "bad_field.proto";
+  write_file(bad_field_path, "message M {\n string \xDA = 1;\n string \xDA = 1;\n}\n");
+  const auto bad_field_result = cgraph::extract_detected_file(cgraph::DetectedFile{
+      .path = bad_field_path,
+      .language = cgraph::DetectedLanguage::Protobuf,
+  }, root);
+  if (bad_field_result.fragment.nodes.empty() || !distinct_non_empty_ids(bad_field_result)) {
+    std::filesystem::remove_all(root);
+    return 1;
+  }
+
+#ifdef __linux__
+  // The same for a file whose own name is not UTF-8. Linux file names are raw
+  // bytes; macOS and Windows refuse to create this one.
+  const auto bad_name_path = root / "\xFF\xFE.py";
+  write_file(bad_name_path, "def first():\n    return 1\n\ndef second():\n    return 2\n");
+  const auto bad_name_result = cgraph::extract_detected_file(cgraph::DetectedFile{
+      .path = bad_name_path,
+      .language = cgraph::DetectedLanguage::Python,
+  }, root);
+  if (bad_name_result.fragment.nodes.size() < 3 || !distinct_non_empty_ids(bad_name_result)) {
+    std::filesystem::remove_all(root);
+    return 1;
+  }
+#endif
 
   constexpr std::size_t oversized_bytes = (8 * 1024 * 1024) + 1;
   const auto oversized_path = root / "oversized.py";
