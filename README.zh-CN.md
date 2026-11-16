@@ -168,7 +168,7 @@ cgraph --root . --out cgraph-out
 - C++20 编译器（较新的 Clang 或 GCC；Xcode 命令行工具自带的 Apple Clang 亦可）
 - Fortran 编译器（如 `gfortran`）—— igraph 的 vcpkg 构建会引入 `lapack-reference`，需要它（`sudo apt-get install -y gfortran` / `brew install gcc`）
 - Git
-- vcpkg（本地副本即可——见第 2 步）。`curl`、`igraph`、`nlohmann-json`、`utf8proc` 在 `vcpkg.json` 中声明，首次配置时构建。`tree-sitter` 内置于 `vendor/tree-sitter`。
+- vcpkg（本地副本即可——见第 2 步）。`curl`、`igraph`、`nlohmann-json`、`re2`、`utf8proc` 在 `vcpkg.json` 中声明，首次配置时构建。`tree-sitter` 内置于 `vendor/tree-sitter`。
 
 ### 1. 克隆（含子模块）
 

@@ -2,6 +2,7 @@
 
 #include "cgraph/contracts.hpp"
 #include "cgraph/json_text.hpp"
+#include "cgraph/pattern.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <nlohmann/json.hpp>
@@ -13,7 +14,6 @@
 #include <cstdint>
 #include <map>
 #include <optional>
-#include <regex>
 #include <set>
 #include <span>
 #include <string>
@@ -572,33 +572,33 @@ void note_dependency(BuildFacts& facts, std::string_view group, std::string_view
     std::string second;  // artifact, or "false" for `apply false`
   };
   std::vector<Match> matches;
-  static const std::regex coordinate{
+  static const Pattern coordinate{
       R"re(\b(implementation|api|runtimeOnly|compile|runtime)\s*\(?\s*["']([\w.\-]+):([\w.\-]+)(?::[^"'\n]{0,128})?["'])re"};
-  static const std::regex named{
+  static const Pattern named{
       R"re(\b(implementation|api|runtimeOnly|compile|runtime)\s*\(?\s*group\s*[:=]\s*["']([\w.\-]+)["']\s*,\s*name\s*[:=]\s*["']([\w.\-]+)["'])re"};
   for (const auto* pattern : {&coordinate, &named}) {
-    for (auto it = std::sregex_iterator(text.begin(), text.end(), *pattern); it != std::sregex_iterator(); ++it) {
-      matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Dependency, (*it)[2].str(), (*it)[3].str()});
-    }
+    pattern->for_each_match(text, [&](Pattern::Groups groups) {
+      matches.push_back(Match{offset_in(text, groups[0]), Kind::Dependency, std::string(groups[2]), std::string(groups[3])});
+    });
   }
   // The plugin id, then the rest of its statement (to the end of the line or a
   // `;`): `version "3.4.0"`, `version bootVersion`, `version(libs...)`,
   // `.version("x")`, and `apply false` / `apply(false)` / `.apply(false)` in
   // any of those spellings. Only a literal version is read.
-  static const std::regex plugin{R"re(\bid\s*\(?\s*["']org\.springframework\.boot["']\s*\)?([^;\n]{0,256}))re"};
-  static const std::regex literal_version{R"re(\bversion\s*\(?\s*["']([^"'\n]{1,32})["'])re"};
-  static const std::regex apply_false{R"re(\bapply\s*\(?\s*false\b)re"};
-  for (auto it = std::sregex_iterator(text.begin(), text.end(), plugin); it != std::sregex_iterator(); ++it) {
-    const auto rest = (*it)[1].str();
-    std::smatch version;
-    const bool literal = std::regex_search(rest, version, literal_version);
-    matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Plugin, literal ? version[1].str() : "",
-                            std::regex_search(rest, apply_false) ? "false" : ""});
-  }
-  static const std::regex applied{R"re(\bapply\s*\(?\s*plugin\s*[:=]\s*["']org\.springframework\.boot["'])re"};
-  for (auto it = std::sregex_iterator(text.begin(), text.end(), applied); it != std::sregex_iterator(); ++it) {
-    matches.push_back(Match{static_cast<std::size_t>(it->position(0)), Kind::Applied, {}, {}});
-  }
+  static const Pattern plugin{R"re(\bid\s*\(?\s*["']org\.springframework\.boot["']\s*\)?([^;\n]{0,256}))re"};
+  static const Pattern literal_version{R"re(\bversion\s*\(?\s*["']([^"'\n]{1,32})["'])re"};
+  static const Pattern apply_false{R"re(\bapply\s*\(?\s*false\b)re"};
+  plugin.for_each_match(text, [&](Pattern::Groups groups) {
+    const auto rest = groups[1];
+    std::string_view version[2];
+    const bool literal = literal_version.search(rest, version);
+    matches.push_back(Match{offset_in(text, groups[0]), Kind::Plugin, literal ? std::string(version[1]) : "",
+                            apply_false.search(rest) ? "false" : ""});
+  });
+  static const Pattern applied{R"re(\bapply\s*\(?\s*plugin\s*[:=]\s*["']org\.springframework\.boot["'])re"};
+  applied.for_each_match(text, [&](Pattern::Groups groups) {
+    matches.push_back(Match{offset_in(text, groups[0]), Kind::Applied, {}, {}});
+  });
   std::ranges::sort(matches, {}, &Match::offset);
   std::vector<std::size_t> offsets;
   offsets.reserve(matches.size());

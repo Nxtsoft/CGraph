@@ -116,6 +116,19 @@ int test_build_file_declares_the_actuator() {
     text.replace(text.find(from), from.size(), to);
     return text;
   };
+  // Whitespace between the words of a declaration can be any length. Well
+  // under this much used to overflow the stack inside std::regex; the build
+  // must read exactly as the compact one does.
+  const std::string gap(1 << 17, ' ');
+  const auto spaced = build_facts(
+      "svc/build.gradle.kts",
+      replace(replace(std::string(kGradle), "implementation(\"org.springframework.boot:spring-boot-starter-actuator\")",
+                      "implementation" + gap + "(" + gap + "\"org.springframework.boot:spring-boot-starter-actuator\")"),
+              "id(\"org.springframework.boot\")", "id" + gap + "(" + gap + "\"org.springframework.boot\")"));
+  if (spaced.raw_relations.size() != 1 || spaced.raw_relations.front().relation != "actuator_app" ||
+      spaced.raw_relations.front().context != result.raw_relations.front().context) {
+    return fail("long whitespace inside the declarations changed what the build file says");
+  }
   const std::string gradle(kGradle);
   const std::vector<std::pair<std::string, std::string>> none = {
       {"no web starter (JMX only)", replace(gradle, "spring-boot-starter-web\"", "spring-boot-starter-json\"")},
