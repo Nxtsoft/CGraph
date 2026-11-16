@@ -28,7 +28,7 @@ ctest --preset default -R cgraph_detect_test   # run a single test by name (rege
 
 Other presets: `sanitizers` (ASan/UBSan, `build/sanitizers`) and `fuzzers` (libFuzzer +
 ASan/UBSan, `build/fuzzers`, requires `CGRAPH_BUILD_FUZZERS=ON`). System deps via vcpkg:
-`igraph`, `curl`, `nlohmann-json`, `utf8proc`; tree-sitter is vendored under `vendor/tree-sitter`.
+`igraph`, `curl`, `nlohmann-json`, `re2`, `utf8proc`; tree-sitter is vendored under `vendor/tree-sitter`.
 
 Built binaries land in `build/default/src/<target>/`:
 

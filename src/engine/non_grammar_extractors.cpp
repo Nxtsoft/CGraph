@@ -6,12 +6,12 @@
 #include "cgraph/langgraph_config.hpp"
 #include "cgraph/spring_actuator.hpp"
 #include "cgraph/normalize.hpp"
+#include "cgraph/pattern.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
-#include <regex>
 #include <string>
 #include <string_view>
 
@@ -85,79 +85,76 @@ void add_node(
   });
 }
 
-void add_regex_matches(
+// One node per match, labelled with the pattern's first capture.
+void add_pattern_matches(
     Fragment& fragment,
     const ExtractionContext& context,
-    const std::regex& pattern,
-    std::string kind) {
-  const auto begin = std::cregex_iterator(context.source.data(), context.source.data() + context.source.size(), pattern);
-  const auto end = std::cregex_iterator();
-  for (auto iter = begin; iter != end; ++iter) {
-    const auto match = *iter;
-    if (match.size() > 1) {
-      add_node(fragment, context, match[1].str(), kind, static_cast<std::size_t>(match.position(1)));
-    }
-  }
+    const Pattern& pattern,
+    const std::string& kind) {
+  const std::string_view source = context.source;
+  pattern.for_each_match(source, [&](Pattern::Groups groups) {
+    add_node(fragment, context, std::string(groups[1]), kind, offset_in(source, groups[1]));
+  });
 }
 
 }  // namespace
 
 ExtractionResult extract_msbuild(const ExtractionContext& context) {
   ExtractionResult result;
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(<\s*(Project|Target|ItemGroup|PropertyGroup)\b[^>]*>)", std::regex::icase},
+      Pattern{R"(<\s*(Project|Target|ItemGroup|PropertyGroup)\b[^>]*>)", Pattern::Case::Insensitive},
       "msbuild_element");
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(<\s*Target\b[^>]*\bName\s*=\s*["']([^"']+)["'])", std::regex::icase},
+      Pattern{R"(<\s*Target\b[^>]*\bName\s*=\s*["']([^"']+)["'])", Pattern::Case::Insensitive},
       "target");
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(<\s*PackageReference\b[^>]*\bInclude\s*=\s*["']([^"']+)["'])", std::regex::icase},
+      Pattern{R"(<\s*PackageReference\b[^>]*\bInclude\s*=\s*["']([^"']+)["'])", Pattern::Case::Insensitive},
       "package_reference");
   return result;
 }
 
 ExtractionResult extract_delphi_form(const ExtractionContext& context) {
   ExtractionResult result;
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"((?:object|inherited)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:)", std::regex::icase},
+      Pattern{R"((?:object|inherited)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:)", Pattern::Case::Insensitive},
       "form_object");
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(\bprocedure\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\()", std::regex::icase},
+      Pattern{R"(\bprocedure\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\()", Pattern::Case::Insensitive},
       "procedure");
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(\bfunction\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\()", std::regex::icase},
+      Pattern{R"(\bfunction\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\()", Pattern::Case::Insensitive},
       "function");
   return result;
 }
 
 ExtractionResult extract_apex(const ExtractionContext& context) {
   ExtractionResult result;
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(\b(?:public|private|global|protected)?\s*(?:with\s+sharing|without\s+sharing|virtual|abstract)?\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b)"},
+      Pattern{R"(\b(?:public|private|global|protected)?\s*(?:with\s+sharing|without\s+sharing|virtual|abstract)?\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b)"},
       "class");
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(\btrigger\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\b)"},
+      Pattern{R"(\btrigger\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\b)"},
       "trigger");
-  add_regex_matches(
+  add_pattern_matches(
       result.fragment,
       context,
-      std::regex{R"(\b(?:public|private|global|protected|static|virtual|override|\s)+\s+[A-Za-z_][A-Za-z0-9_<>,\[\]]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()"},
+      Pattern{R"(\b(?:public|private|global|protected|static|virtual|override|\s)+\s+[A-Za-z_][A-Za-z0-9_<>,\[\]]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()"},
       "method");
   return result;
 }
@@ -213,24 +210,21 @@ ExtractionResult extract_sql(const ExtractionContext& context) {
   // builder; the first CREATE defines the node (source_file/line), later ALTERs add
   // only edges.
   const auto add_entity =
-      [&](const std::regex& pattern, std::string kind, const std::string& id_prefix) {
-        const auto end = std::cregex_iterator();
-        for (auto it = std::cregex_iterator(source.data(), source.data() + source.size(), pattern);
-             it != end; ++it) {
-          const auto& match = *it;
-          std::string name = normalize_sql_ident(match[1].str());
+      [&](const Pattern& pattern, const std::string& kind, const std::string& id_prefix) {
+        pattern.for_each_match(source, [&](Pattern::Groups groups) {
+          std::string name = normalize_sql_ident(std::string(groups[1]));
           if (name.empty()) {
-            continue;
+            return;
           }
           fragment.nodes.push_back(Node{
               .id = make_id(id_prefix + name),
               .label = std::move(name),
               .source_file = source_file,
-              .source_location = line_location(source, static_cast<std::size_t>(match.position(1))),
+              .source_location = line_location(source, offset_in(source, groups[1])),
               .kind = kind,
               .confidence = Confidence::Extracted,
           });
-        }
+        });
       };
   // Identifiers may be quoted or unquoted, and optionally `schema.`-qualified. The
   // qualifier is skipped so `"public"."Users"` / `public.users` key on the table; the
@@ -241,34 +235,29 @@ ExtractionResult extract_sql(const ExtractionContext& context) {
   const std::string ident_nc = kSqlIdentNc;
   const std::string qual = kSqlQualifier;
   add_entity(
-      std::regex{R"(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)" + qual + ident, std::regex::icase},
+      Pattern{R"(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)" + qual + ident, Pattern::Case::Insensitive},
       "sql_table", "sql_table:");
-  add_entity(std::regex{R"(CREATE\s+TYPE\s+)" + qual + ident + R"(\s+AS\s+ENUM)", std::regex::icase},
+  add_entity(Pattern{R"(CREATE\s+TYPE\s+)" + qual + ident + R"(\s+AS\s+ENUM)", Pattern::Case::Insensitive},
              "sql_enum", "sql_enum:");
   // `ALTER TABLE old RENAME TO new` mints a new table identity the later schema (and
   // its foreign keys) references; key on the NEW name so those refs resolve instead of
   // dangling. The old name keeps its own CREATE-defined node.
-  add_entity(std::regex{R"(ALTER\s+TABLE\s+)" + qual + ident_nc + R"(\s+RENAME\s+TO\s+)" + qual +
-                            ident,
-                        std::regex::icase},
+  add_entity(Pattern{R"(ALTER\s+TABLE\s+)" + qual + ident_nc + R"(\s+RENAME\s+TO\s+)" + qual + ident,
+                     Pattern::Case::Insensitive},
              "sql_table", "sql_table:");
 
   // Foreign keys -> table->table `references` edges (reusing the existing relation so
   // impact / typed explain / query routing operate over the schema). Matches the
   // Prisma form `ALTER TABLE X ADD [CONSTRAINT c] FOREIGN KEY (...) REFERENCES Y` for
   // quoted and unquoted, optionally schema-qualified, X and Y.
-  const std::regex fk{R"(ALTER\s+TABLE\s+)" + qual + ident + R"(\s+ADD\s+(?:CONSTRAINT\s+)" +
-                          ident_nc + R"(\s+)?FOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+)" + qual +
-                          ident,
-                      std::regex::icase};
-  const auto end = std::cregex_iterator();
-  for (auto it = std::cregex_iterator(source.data(), source.data() + source.size(), fk); it != end;
-       ++it) {
-    const auto& match = *it;
-    const std::string owner = normalize_sql_ident(match[1].str());
-    const std::string target = normalize_sql_ident(match[2].str());
+  const Pattern fk{R"(ALTER\s+TABLE\s+)" + qual + ident + R"(\s+ADD\s+(?:CONSTRAINT\s+)" + ident_nc +
+                       R"(\s+)?FOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+)" + qual + ident,
+                   Pattern::Case::Insensitive};
+  fk.for_each_match(source, [&](Pattern::Groups groups) {
+    const std::string owner = normalize_sql_ident(std::string(groups[1]));
+    const std::string target = normalize_sql_ident(std::string(groups[2]));
     if (owner.empty() || target.empty()) {
-      continue;
+      return;
     }
     fragment.edges.push_back(Edge{
         .source = make_id("sql_table:" + owner),
@@ -276,7 +265,7 @@ ExtractionResult extract_sql(const ExtractionContext& context) {
         .relation = "references",
         .confidence = Confidence::Extracted,
     });
-  }
+  });
   // Every table this file creates is a contract the repo provides (data_contracts.hpp).
   result.raw_relations = sql_table_contract_facts(fragment, context);
   return result;

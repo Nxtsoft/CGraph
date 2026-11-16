@@ -22,6 +22,18 @@ cgraph_enable_sanitizers(cgraph_id_normalization_test)
 
 add_test(NAME cgraph_id_normalization_test COMMAND cgraph_id_normalization_test)
 
+add_executable(cgraph_pattern_test
+  pattern_test.cpp)
+
+target_link_libraries(cgraph_pattern_test
+  PRIVATE
+    cgraph::engine)
+
+cgraph_set_warnings(cgraph_pattern_test)
+cgraph_enable_sanitizers(cgraph_pattern_test)
+
+add_test(NAME cgraph_pattern_test COMMAND cgraph_pattern_test)
+
 add_executable(cgraph_fragment_json_test
   fragment_json_test.cpp)
 
