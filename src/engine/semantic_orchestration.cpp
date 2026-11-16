@@ -39,7 +39,7 @@ constexpr const char* kGraphName = "graph.json";
   if (!input) {
     return {};
   }
-  const auto graph_json = nlohmann::json::parse(input, nullptr, false);
+  const auto graph_json = cgraph::try_parse_json(input);
   if (graph_json.is_discarded()) {
     return {};
   }
@@ -84,7 +84,7 @@ std::unordered_map<std::size_t, std::vector<SemanticSourceInput>> load_chunk_sou
   if (!manifest_file) {
     return sources_by_chunk;
   }
-  const auto manifest = nlohmann::json::parse(manifest_file, nullptr, false);
+  const auto manifest = cgraph::try_parse_json(manifest_file);
   // plan.json sits in the drop directory, which other tools write to. Anything
   // that is not the shape the planner writes is skipped; a wrong-typed value
   // used to throw here and fail the daemon's initial build on every start.

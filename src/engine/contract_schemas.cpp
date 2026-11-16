@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/contract_schemas.hpp"
 
 #include "cgraph/contracts.hpp"
@@ -225,7 +226,7 @@ ExtractionResult extract_openapi_document(const ExtractionContext& context) {
   ExtractionResult result;
   nlohmann::json doc;
   try {
-    doc = nlohmann::json::parse(context.source);
+    doc = cgraph::parse_json(context.source);
   } catch (const nlohmann::json::exception& error) {
     result.fragment.warnings.push_back(std::string{"failed to parse OpenAPI JSON: "} + error.what());
     return result;

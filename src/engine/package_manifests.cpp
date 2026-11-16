@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/package_manifests.hpp"
 
 #include "cgraph/path_ignore.hpp"
@@ -153,7 +154,7 @@ void collect_directories(const fs::path& root, const fs::path& current, int dept
     std::ifstream input(package_json);
     try {
       nlohmann::json manifest;
-      input >> manifest;
+      manifest = cgraph::read_json(input);
       name = manifest.is_object() ? manifest.value("name", std::string{}) : std::string{};
     } catch (const nlohmann::json::exception&) {
       name.clear();
@@ -214,7 +215,7 @@ void collect_directories(const fs::path& root, const fs::path& current, int dept
   nlohmann::json document;
   try {
     std::ifstream input(path);
-    input >> document;
+    document = cgraph::read_json(input);
   } catch (const nlohmann::json::exception&) {
     return false;
   }

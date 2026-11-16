@@ -208,7 +208,7 @@ SemanticStatIndex read_semantic_stat_index(const std::filesystem::path& path) {
   if (!input) {
     return index;  // absent -> cold, no error
   }
-  const auto root = nlohmann::json::parse(input, nullptr, false);
+  const auto root = cgraph::try_parse_json(input);
   if (!root.is_object() || !root.contains("entries") || !root["entries"].is_array()) {
     return index;  // malformed -> cold, no error
   }

@@ -747,7 +747,7 @@ std::optional<EnclosingWorkspace> find_enclosing_workspace(const std::filesystem
           // entry, a member not cloned here) is returned with its errors: the
           // caller says so, rather than quietly answering as if alone.
           std::ifstream input(dir / std::filesystem::path(std::string(kWorkspaceFile)));
-          const auto manifest = nlohmann::json::parse(input, nullptr, false);
+          const auto manifest = cgraph::try_parse_json(input);
           if (manifest.is_object() && manifest.contains("repos") && manifest["repos"].is_array()) {
             for (const auto& entry : manifest["repos"]) {
               if (!entry.is_object() || !entry.contains("root") || !entry["root"].is_string() ||
@@ -790,7 +790,7 @@ Workspace load_workspace(const std::filesystem::path& root) {
   }
   nlohmann::json manifest;
   try {
-    input >> manifest;
+    manifest = cgraph::read_json(input);
   } catch (const nlohmann::json::exception& exception) {
     workspace.errors.push_back("workspace manifest is malformed JSON: " + std::string(exception.what()));
     return workspace;

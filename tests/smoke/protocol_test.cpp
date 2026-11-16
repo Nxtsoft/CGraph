@@ -1,6 +1,9 @@
 #include "cgraph/protocol.hpp"
 
+#include "cgraph/json_text.hpp"
+
 #include <cstdint>
+#include <string>
 #include <vector>
 
 int main() {
@@ -52,6 +55,27 @@ int main() {
   const auto odd_decoded = cgraph::decode_frame(odd);
   if (!odd_decoded.has_value() || (*odd_decoded)["label"] != "caf\xEF\xBF\xBD" ||
       (*odd_decoded)["path"] != "\xEF\xBF\xBD\xEF\xBF\xBD.py") {
+    return 1;
+  }
+
+  // A frame is what a local client sent. One that nests 200,000 deep is a few
+  // hundred kilobytes, well under the frame cap; it used to decode, and the
+  // daemon then overflowed its stack copying `params`. It must not decode.
+  const std::string deep_body = "{\"protocol_version\":1,\"op\":\"status\",\"params\":{\"a\":" + std::string(200000, '[') +
+                                std::string(200000, ']') + "}}";
+  std::vector<std::uint8_t> deep_frame{
+      static_cast<std::uint8_t>(deep_body.size() & 0xffU), static_cast<std::uint8_t>((deep_body.size() >> 8U) & 0xffU),
+      static_cast<std::uint8_t>((deep_body.size() >> 16U) & 0xffU), static_cast<std::uint8_t>((deep_body.size() >> 24U) & 0xffU)};
+  deep_frame.insert(deep_frame.end(), deep_body.begin(), deep_body.end());
+  if (cgraph::decode_frame(deep_frame).has_value()) {
+    return 1;
+  }
+  // Params may use the whole nesting limit: the frame around them is one more
+  // level and must still decode, or the client would take the dropped
+  // connection for a daemon that is not there.
+  const auto full = cgraph::parse_json(std::string(cgraph::kMaxJsonDepth, '[') + std::string(cgraph::kMaxJsonDepth, ']'));
+  const auto full_frame = cgraph::decode_frame(cgraph::encode_frame(cgraph::make_request("status", full)));
+  if (!full_frame.has_value() || (*full_frame)["params"] != full) {
     return 1;
   }
 

@@ -1191,7 +1191,7 @@ std::vector<RawRelation> spring_actuator_routes(std::span<const RawRelation> raw
     if (relation.relation != kAppRelation && relation.relation != kConfigRelation) {
       continue;
     }
-    const auto fact = nlohmann::json::parse(relation.context, nullptr, false);
+    const auto fact = cgraph::try_parse_json(relation.context);
     if (!fact.is_object() || !fact.contains("module") || !fact["module"].is_string()) {
       continue;
     }

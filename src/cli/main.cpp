@@ -239,7 +239,7 @@ int run_stats(const Args& args) {
       if (line.empty()) {
         continue;
       }
-      auto parsed = nlohmann::json::parse(line, nullptr, /*allow_exceptions=*/false);
+      auto parsed = cgraph::try_parse_json(line);
       if (!parsed.is_discarded()) {
         lines.push_back(std::move(parsed));
       }
@@ -428,7 +428,7 @@ int run_seam_gen(int argc, char** argv) {
   }
   nlohmann::json spec;
   try {
-    spec_input >> spec;
+    spec = cgraph::read_json(spec_input);
   } catch (const nlohmann::json::exception& ex) {
     std::cerr << "seam gen: spec is malformed JSON: " << ex.what() << '\n';
     return 1;
@@ -727,7 +727,7 @@ int run_seam_fuse(int argc, char** argv) {
   }
   nlohmann::json seam_json;
   try {
-    seam_input >> seam_json;
+    seam_json = cgraph::read_json(seam_input);
   } catch (const nlohmann::json::exception& ex) {
     std::cerr << "seam fuse: seam is malformed JSON: " << ex.what() << '\n';
     return 1;
@@ -750,7 +750,7 @@ int run_seam_fuse(int argc, char** argv) {
     }
     nlohmann::json graph_json;
     try {
-      graph_input >> graph_json;
+      graph_json = cgraph::read_json(graph_input);
     } catch (const nlohmann::json::exception& ex) {
       std::cerr << "seam fuse: graph '" << name << "' is malformed JSON: " << ex.what() << '\n';
       return 1;
@@ -808,7 +808,7 @@ int run_seam_query(int argc, char** argv) {
   nlohmann::json params = nlohmann::json::object();
   if (positionals.size() > 1) {
     try {
-      params = nlohmann::json::parse(positionals[1]);
+      params = cgraph::parse_json(positionals[1]);
     } catch (const nlohmann::json::exception& ex) {
       std::cerr << "seam query: invalid params JSON: " << ex.what() << '\n';
       return 2;
@@ -867,7 +867,7 @@ std::filesystem::path supervisor_config_path() {
   if (const auto path = supervisor_config_path(); !path.empty()) {
     std::ifstream in(path);
     if (in) {
-      auto parsed = nlohmann::json::parse(in, nullptr, /*allow_exceptions=*/false);
+      auto parsed = cgraph::try_parse_json(in);
       if (!parsed.is_discarded() && parsed.is_object()) {
         for (const auto& r : parsed.value("search_roots", nlohmann::json::array())) {
           if (r.is_string()) {

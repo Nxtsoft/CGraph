@@ -59,7 +59,7 @@ class SeamGraph {
     }
     nlohmann::json data;
     try {
-      input >> data;
+      data = cgraph::read_json(input);
     } catch (const nlohmann::json::exception& ex) {
       error = "graph is malformed JSON: " + path.generic_string() + " (" + ex.what() + ")";
       return std::nullopt;

@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/non_grammar_extractors.hpp"
 
 #include "cgraph/contract_schemas.hpp"
@@ -162,7 +163,7 @@ ExtractionResult extract_apex(const ExtractionContext& context) {
 ExtractionResult extract_mcp_config(const ExtractionContext& context) {
   ExtractionResult result;
   try {
-    const auto json = nlohmann::json::parse(context.source);
+    const auto json = cgraph::parse_json(context.source);
     const auto servers = json.find("mcpServers");
     if (servers != json.end() && servers->is_object()) {
       for (const auto& [name, server] : servers->items()) {
