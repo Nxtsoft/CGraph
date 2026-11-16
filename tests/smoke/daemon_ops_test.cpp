@@ -68,6 +68,21 @@ int main() {
   if (!cgraph::handle_daemon_request(state, cgraph::make_request("status")).value("ok", false)) {
     return 1;  // and the daemon still answers the next caller
   }
+  // Any JSON number may arrive where a whole number is meant. Floats far
+  // outside the integer types were converted with a bare cast (undefined
+  // behaviour, reported by UBSan); each of these must simply be answered.
+  for (const auto& odd : {
+           cgraph::make_request("impact", {{"id", "alpha"}, {"max_depth", 1e300}, {"limit", 1e300}}),
+           cgraph::make_request("impact", {{"id", "alpha"}, {"max_depth", -1e300}, {"limit", -1e300}}),
+           cgraph::make_request("context", {{"id", "alpha"}, {"budget", 1e300}, {"max_depth", 1e300}}),
+           cgraph::make_request("context", {{"id", "alpha"}, {"budget", -1e300}}),
+           cgraph::make_request("query", {{"q", "Alpha"}, {"limit", 1e300}}),
+           cgraph::make_request("explain", {{"id", "alpha"}, {"limit", 2.5}}),
+       }) {
+    if (!cgraph::handle_daemon_request(state, odd).contains("ok")) {
+      return 1;
+    }
+  }
 
   cgraph::GraphSnapshot graph;
   graph.build_state = cgraph::BuildState::DeterministicReady;

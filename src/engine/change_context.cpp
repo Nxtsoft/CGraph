@@ -558,8 +558,8 @@ Json change_context(const Json& parameters, const CrossServiceAsk* cross_service
   const auto base_root = fs::canonical(parameters.at("base_root").get<std::string>());
   const auto target_root = fs::canonical(parameters.at("target_root").get<std::string>());
   if (!fs::is_directory(base_root) || !fs::is_directory(target_root)) reject("roots must be directories");
-  const auto budget_signed = parameters.value("budget", 6000LL);
-  const auto max_depth = parameters.value("max_depth", 3);
+  const auto budget_signed = cgraph::integer_param(parameters, "budget", 6000LL);
+  const auto max_depth = cgraph::integer_param(parameters, "max_depth", 3);
   // symbols_only answers "which symbols did this diff change" and nothing else:
   // no impacts, no context, and no budget shedding, so every symbol change is
   // returned however large the diff.

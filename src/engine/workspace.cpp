@@ -292,7 +292,7 @@ void attach_repo_health(nlohmann::json& result, const std::vector<RepoAnswer>& a
     }
     return lhs.value("label", std::string{}) < rhs.value("label", std::string{});
   });
-  const auto limit = params.value("limit", std::size_t{0});
+  const auto limit = cgraph::integer_param(params, "limit", std::size_t{0});
   const bool truncated = limit > 0 && hits.size() > limit;
   if (truncated) {
     hits.resize(limit);
@@ -386,8 +386,8 @@ void absorb(std::vector<Witness>& witnesses, std::unordered_map<std::string, std
 
 [[nodiscard]] nlohmann::json federate_impact(const Workspace& workspace, const nlohmann::json& params, const RepoAsk& ask) {
   const auto seed = params.value("id", std::string{});
-  const auto max_depth = std::max(0, params.value("max_depth", kDefaultImpactDepth));
-  const auto limit = params.value("limit", kDefaultImpactLimit);
+  const auto max_depth = std::max(0, cgraph::integer_param(params, "max_depth", kDefaultImpactDepth));
+  const auto limit = cgraph::integer_param(params, "limit", kDefaultImpactLimit);
   const auto answers = ask_all(workspace, "impact", params, ask);
 
   std::vector<Witness> witnesses;
@@ -615,7 +615,7 @@ struct Crossing {
   // `path` is undirected -- an endpoint points at its handler and is pointed at
   // by its callers, and a route between them exists either way -- so the
   // contracts a source can cross at are the ones it reaches in either direction.
-  const auto max_depth = std::max(1, params.value("max_depth", kDefaultImpactDepth));
+  const auto max_depth = std::max(1, cgraph::integer_param(params, "max_depth", kDefaultImpactDepth));
   for (const auto& from : workspace.repos) {
     const auto contracts = reachable_contracts(workspace, from, source, "both", max_depth, ask);
     if (contracts.empty()) {
