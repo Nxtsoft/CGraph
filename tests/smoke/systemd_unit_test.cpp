@@ -30,6 +30,22 @@ std::string read_file(const fs::path& path) {
   return buffer.str();
 }
 
+// What systemd-analyze said about the units under test. It also loads the
+// host's own unit files and reports their problems, each line starting with
+// that file's path (`/usr/lib/systemd/system/x.service:26: ...`); those say
+// nothing about our units and vary with the host image, so they are left out.
+std::string complaints_about(const std::string& output, const fs::path& unit_dir) {
+  std::string kept;
+  std::istringstream lines(output);
+  for (std::string line; std::getline(lines, line);) {
+    const bool names_a_file = !line.empty() && line.front() == '/';
+    if (!names_a_file || line.starts_with(unit_dir.string())) {
+      kept += line + '\n';
+    }
+  }
+  return kept;
+}
+
 }  // namespace
 
 // Renders the units the supervisor installs on Linux and round-trips them
@@ -97,10 +113,11 @@ int main() {
       const std::string cmd = "systemd-analyze verify --man=no '" + unit.string() + "' >'" + log.string() + "' 2>&1";
       const int status = std::system(cmd.c_str());
       const auto output = read_file(log);
-      if (status != 0 || !output.empty()) {
-        std::cerr << "systemd-analyze verify " << unit << ":\n" << output;
+      const auto complaints = complaints_about(output, unit_dir);
+      if (status != 0 || !complaints.empty()) {
+        std::cerr << "systemd-analyze verify " << unit << " (exit status " << status << "):\n" << output;
       }
-      expect(ok, status == 0 && output.empty(), "systemd parses the unit without complaint");
+      expect(ok, status == 0 && complaints.empty(), "systemd parses the unit without complaint");
     }
   }
 

@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/semantic_chunk_plan.hpp"
 
 #include "cgraph/atomic_write.hpp"
@@ -198,7 +199,7 @@ void write_semantic_stat_index(const SemanticStatIndex& index, const std::filesy
         {"sha256", entry.sha256},
     });
   }
-  write_file_atomically(path, nlohmann::json{{"version", 1}, {"entries", std::move(entries)}}.dump(2));
+  write_file_atomically(path, cgraph::dump_json(nlohmann::json{{"version", 1}, {"entries", std::move(entries)}}, 2));
 }
 
 SemanticStatIndex read_semantic_stat_index(const std::filesystem::path& path) {

@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/fragment_json.hpp"
 
 #include <limits>
@@ -69,7 +70,7 @@ void parse_confidence_fields(const nlohmann::json& value, Confidence& confidence
     if (property.is_string()) {
       properties.emplace(key, property.get<std::string>());
     } else {
-      properties.emplace(key, property.dump());
+      properties.emplace(key, cgraph::dump_json(property));
     }
   }
   return properties;

@@ -4,6 +4,8 @@
 
 #include <cstdlib>
 #include <memory>
+#include <new>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -18,19 +20,55 @@ struct Utf8ProcDeleter {
 
 using Utf8ProcBuffer = std::unique_ptr<utf8proc_uint8_t, Utf8ProcDeleter>;
 
-[[nodiscard]] std::string map_utf8(std::string_view input, utf8proc_option_t options) {
+// nullopt only when the input is not valid UTF-8 (the one way utf8proc_map can
+// fail with these options, short of running out of memory).
+[[nodiscard]] std::optional<std::string> map_utf8(std::string_view input, utf8proc_option_t options) {
   utf8proc_uint8_t* mapped = nullptr;
   const auto result = utf8proc_map(
       reinterpret_cast<const utf8proc_uint8_t*>(input.data()),
       static_cast<utf8proc_ssize_t>(input.size()),
       &mapped,
       options);
+  if (result == UTF8PROC_ERROR_NOMEM) {
+    throw std::bad_alloc();
+  }
   if (result < 0 || mapped == nullptr) {
-    return {};
+    return std::nullopt;
   }
 
   Utf8ProcBuffer buffer(mapped);
   return std::string(reinterpret_cast<const char*>(buffer.get()), static_cast<std::size_t>(result));
+}
+
+// Rewrites every byte that is not part of a valid UTF-8 sequence as `_xNN_`
+// (its value in hex), leaving valid text untouched. File names and source
+// identifiers are raw bytes, not guaranteed UTF-8; keeping each bad byte's value
+// keeps two different names apart, where dropping them made every such id the
+// empty string.
+[[nodiscard]] std::string escape_invalid_utf8(std::string_view input) {
+  constexpr std::string_view hex = "0123456789abcdef";
+  std::string output;
+  output.reserve(input.size() + 8);
+  std::size_t offset = 0;
+  while (offset < input.size()) {
+    utf8proc_int32_t codepoint = 0;
+    const auto consumed = utf8proc_iterate(
+        reinterpret_cast<const utf8proc_uint8_t*>(input.data() + offset),
+        static_cast<utf8proc_ssize_t>(input.size() - offset),
+        &codepoint);
+    if (consumed <= 0) {
+      const auto byte = static_cast<unsigned char>(input[offset]);
+      output += "_x";
+      output.push_back(hex[byte >> 4]);
+      output.push_back(hex[byte & 0x0F]);
+      output.push_back('_');
+      ++offset;
+      continue;
+    }
+    output.append(input.substr(offset, static_cast<std::size_t>(consumed)));
+    offset += static_cast<std::size_t>(consumed);
+  }
+  return output;
 }
 
 [[nodiscard]] bool is_word_codepoint(utf8proc_int32_t codepoint) {
@@ -119,9 +157,13 @@ std::string make_id(std::string_view input) {
   constexpr auto casefold_options = static_cast<utf8proc_option_t>(
       UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD);
 
-  const auto normalized = map_utf8(input, nfkc_options);
-  const auto cleaned = replace_non_word_runs(normalized);
-  return map_utf8(cleaned, casefold_options);
+  auto normalized = map_utf8(input, nfkc_options);
+  if (!normalized) {
+    normalized = map_utf8(escape_invalid_utf8(input), nfkc_options);
+  }
+  // Both values are valid UTF-8 by construction here: the escaped input, and
+  // replace_non_word_runs's output, which is built one decoded codepoint at a time.
+  return map_utf8(replace_non_word_runs(normalized.value()), casefold_options).value();
 }
 
 std::string relative_import_stub(std::string_view kind, const std::filesystem::path& joined) {

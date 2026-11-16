@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/protocol.hpp"
 
 #include <cstring>
@@ -7,7 +8,7 @@
 namespace cgraph {
 
 std::vector<std::uint8_t> encode_frame(const nlohmann::json& payload) {
-  const auto body = payload.dump();
+  const auto body = cgraph::dump_json(payload);
   // Reject at the source so send and receive share one ceiling: a body larger
   // than the shared cap is never framed (the peer would reject it on read).
   if (body.size() > kMaxFrameBodyBytes) {

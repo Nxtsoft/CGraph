@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/mcp_server.hpp"
 
 #include "cgraph/engine.hpp"
@@ -22,7 +23,7 @@ namespace {
 }
 
 [[nodiscard]] nlohmann::json text_content(const nlohmann::json& value) {
-  return nlohmann::json{{"content", {{{"type", "text"}, {"text", value.dump()}}}}};
+  return nlohmann::json{{"content", {{{"type", "text"}, {"text", cgraph::dump_json(value)}}}}};
 }
 
 [[nodiscard]] nlohmann::json tool_schema(std::string name, std::string description, nlohmann::json properties,
@@ -340,7 +341,7 @@ namespace {
                                                              : change_context(arguments)));
     } catch (const std::exception& error) {
       return response(id, {{"isError", true},
-          {"content", {{{"type", "text"}, {"text", nlohmann::json{{"error", error.what()}}.dump()}}}}});
+          {"content", {{{"type", "text"}, {"text", cgraph::dump_json(nlohmann::json{{"error", error.what()}})}}}}});
     }
   }
   const auto daemon_request = daemon_request_for_tool(name, arguments);

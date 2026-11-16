@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/contract_declarations.hpp"
 
 #include "cgraph/contracts.hpp"
@@ -79,7 +80,7 @@ template <typename Scope>
     const auto repos = entry.find("repos");
     if (name == entry.end() || !name->is_string() || repos == entry.end() || !repos->is_array() ||
         !std::ranges::all_of(*repos, [](const nlohmann::json& repo) { return repo.is_string(); })) {
-      errors.push_back("each `" + key + "` entry needs a string `name` and a `repos` array of strings: " + entry.dump());
+      errors.push_back("each `" + key + "` entry needs a string `name` and a `repos` array of strings: " + cgraph::dump_json(entry));
       continue;
     }
     Scope scope{.name = name->get<std::string>(), .repos = {}};
@@ -201,7 +202,7 @@ std::vector<EnvProvider> parse_env_providers(const nlohmann::json& entries, std:
     const auto name = entry.find("name");
     const auto service = entry.find("service");
     if (name == entry.end() || !name->is_string() || service == entry.end() || !service->is_string()) {
-      errors.push_back("an `env` entry needs a string `name` and a string `service`: " + entry.dump());
+      errors.push_back("an `env` entry needs a string `name` and a string `service`: " + cgraph::dump_json(entry));
       continue;
     }
     EnvProvider provider{.name = name->get<std::string>(), .service = service->get<std::string>()};

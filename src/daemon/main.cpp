@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/cli_support.hpp"
 #include "cgraph/daemon_lifecycle.hpp"
 #include "cgraph/daemon_ops.hpp"
@@ -80,7 +81,7 @@ int run(int argc, char** argv) {
       std::cerr << response.value("error", std::string{"daemon query failed"}) << '\n';
       return 1;
     }
-    std::cout << response.dump(2) << '\n';
+    std::cout << cgraph::dump_json(response, 2) << '\n';
     return 0;
   }
 
