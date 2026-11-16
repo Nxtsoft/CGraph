@@ -256,7 +256,11 @@ int main() {
     expect(ok, ::mkfifo(pipe_source.c_str(), 0600) == 0, "memory-pipe: created the named pipe");
     write_file(memory_dir / "note.json",
                R"({"nodes":[{"id":"memory:pipe-note","label":"Pipe Note","type":"document","source_file":")" +
-                   pipe_source.generic_string() + R"("}],"edges":[],"hyperedges":[]})");
+                   pipe_source.generic_string() +
+                   R"(","source_location":{"start_line":1,"end_line":1}}],"edges":[],"hyperedges":[]})");
+    // A sidecar that is itself a named pipe.
+    const auto pipe_sidecar = memory_dir / "pipe.json";
+    expect(ok, ::mkfifo(pipe_sidecar.c_str(), 0600) == 0, "memory-pipe: created a named-pipe sidecar");
 
     cgraph::DaemonServerOptions pipe_options;
     pipe_options.idle_timeout = std::chrono::seconds(60);
@@ -272,13 +276,32 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
     }
-    expect(ok, built, "memory-pipe: the build finished with a named pipe as a memory node's source");
-    if (!built) {
-      // Release a daemon that is stuck reading the pipe, so this test can end.
-      if (const int writer = ::open(pipe_source.c_str(), O_WRONLY | O_NONBLOCK); writer >= 0) {
-        ::close(writer);
+    expect(ok, built, "memory-pipe: the build finished with named pipes as a sidecar and as a memory node's source");
+    // The note is in the graph, so a request can reach its source. Explaining
+    // it reads a snippet from that source on the thread that answers every
+    // request; it must answer instead of waiting on the pipe.
+    std::optional<nlohmann::json> explained;
+    std::thread explainer([&] {
+      explained = request_with_retry(pipe_socket, cgraph::make_request("explain", {{"id", "memory:pipe-note"}}));
+    });
+    // Release anything stuck on either pipe, for as long as a broken build
+    // might still be getting to it, so a regression fails here instead of
+    // hanging. Opening a pipe for writing without blocking only succeeds once
+    // a reader is waiting on it.
+    for (int attempt = 0; attempt < 250; ++attempt) {
+      for (const auto& pipe : {pipe_source, pipe_sidecar}) {
+        if (const int writer = ::open(pipe.c_str(), O_WRONLY | O_NONBLOCK); writer >= 0) {
+          ::close(writer);
+          expect(ok, false, "memory-pipe: nothing waits on a named pipe");
+        }
       }
+      if (explained.has_value()) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    explainer.join();
+    expect(ok, explained && explained->value("ok", false), "memory-pipe: explain on the note answered");
     const auto pipe_shutdown = request_with_retry(pipe_socket, cgraph::make_request("shutdown"));
     expect(ok, pipe_shutdown && pipe_shutdown->value("ok", false), "memory-pipe: shutdown accepted");
     pipe_server.join();

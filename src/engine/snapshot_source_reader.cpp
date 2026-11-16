@@ -120,6 +120,15 @@ SnapshotSourceReader::CachedSource& SnapshotSourceReader::read_source(
   auto& source = entry->second;
   ++files_read_;
 
+  // A node's source_file can come from a memory sidecar, which names any path.
+  // Opening a named pipe or a device blocks or never ends, and this runs on
+  // the thread that answers every request, so only a regular file is read.
+  std::error_code type_error;
+  if (!std::filesystem::is_regular_file(normalized_path, type_error) || type_error) {
+    source.failure = "the source file cannot be read";
+    return source;
+  }
+
   std::error_code size_error;
   const auto file_size = std::filesystem::file_size(normalized_path, size_error);
   if (!size_error && file_size > kMaxSourceFileBytes) {
