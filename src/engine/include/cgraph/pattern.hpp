@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -39,7 +40,10 @@ class Pattern {
   using Groups = std::span<const std::string_view>;
 
   // Calls `visit` for every match in `text`, left to right, each search
-  // starting where the previous match ended.
+  // starting where the previous match ended. After a match that consumed
+  // nothing the search resumes one byte further on; std::regex_iterator would
+  // first retry at the same position for a non-empty match, so a pattern that
+  // can match the empty string finds fewer matches here than it did there.
   void for_each_match(std::string_view text, const std::function<void(Groups)>& visit) const;
 
   // The first match in `text`, or false. `groups` receives as many groups as it
@@ -50,8 +54,10 @@ class Pattern {
   std::unique_ptr<re2::RE2> re_;
 };
 
-// Offset of a group within the text it was matched in.
+// Offset of a group within the text it was matched in. The group must have
+// taken part in the match: an optional capture that did not has no offset.
 [[nodiscard]] inline std::size_t offset_in(std::string_view text, std::string_view group) {
+  assert(group.data() != nullptr);
   return static_cast<std::size_t>(group.data() - text.data());
 }
 
