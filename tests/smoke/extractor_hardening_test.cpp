@@ -1,10 +1,12 @@
 #include "cgraph/file_extraction.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -90,6 +92,64 @@ int main() {
   if (deep_result.fragment.nodes.empty() || !contains_warning(deep_result, "ast-depth-cap")) {
     std::filesystem::remove_all(root);
     return 1;
+  }
+
+  // walk_node is not the only thing that recurses: the readers it calls on a
+  // node (URL templates, `use` trees, macro bodies) and the passes after it
+  // (claims, data contracts, fingerprints) each go down that node's subtree.
+  // Every shape here overflowed the stack in a different one of them, or, once
+  // that was fixed, ran for minutes re-reading the same chain. Generated code
+  // really does nest like this; the function around it must still be found.
+  const auto nested = [](std::string_view open, std::string_view close, int depth) {
+    std::string text;
+    for (int index = 0; index < depth; ++index) text += open;
+    text += "1";
+    for (int index = 0; index < depth; ++index) text += close;
+    return text;
+  };
+  const auto chain = [](std::string_view term, std::string_view joiner, int terms) {
+    std::string text(term);
+    for (int index = 1; index < terms; ++index) {
+      text += joiner;
+      text += term;
+    }
+    return text;
+  };
+  struct Deep {
+    const char* name;
+    cgraph::DetectedLanguage language;
+    std::string source;
+  };
+  const int depth = 12000;
+  const std::vector<Deep> deep_files = {
+      // claim scan, one frame per nested call
+      {"calls.js", cgraph::DetectedLanguage::JavaScript, "function g() { return " + nested("f(", ")", depth) + "; }\n"},
+      // fingerprint tokenizer
+      {"calls.go", cgraph::DetectedLanguage::Go, "package m\nfunc g() int { x := " + nested("f(", ")", depth) + "; return x }\n"},
+      // concatenation reader, and its re-reading of every tail of a chain with no literal
+      {"sum.py", cgraph::DetectedLanguage::Python, "def g():\n    return " + chain("1", "+", depth) + "\n"},
+      {"sum.kt", cgraph::DetectedLanguage::Kotlin, "fun g(): Any { return " + chain("1", "+", depth) + " }\n"},
+      // builder-chain check, once per call on the chain
+      {"Members.java", cgraph::DetectedLanguage::Java, "class A { Object g() { return a" + chain(".b()", "", depth) + "; } }\n"},
+      {"members.kt", cgraph::DetectedLanguage::Kotlin, "fun g(): Any { return a" + chain(".b()", "", depth) + " }\n"},
+      // URL readers
+      {"fetch.ts", cgraph::DetectedLanguage::TypeScript,
+       "function g() { return fetch(\"/api/\" + " + chain("a", " + ", depth) + "); }\n"},
+      {"http.go", cgraph::DetectedLanguage::Go,
+       "package m\nfunc g() int { x := http.Get(\"/api/\" + " + chain("a", " + ", depth) + "); return x }\n"},
+      // Rust `use` trees and macro bodies
+      {"use.rs", cgraph::DetectedLanguage::Rust, "use a::" + nested("{b::", "}", depth).replace(depth * 4, 1, "c") + ";\nfn g() -> i32 { 1 }\n"},
+      {"macro.rs", cgraph::DetectedLanguage::Rust, "fn g() -> i32 { m!(" + nested("(", ")", depth) + ") }\n"},
+  };
+  for (const auto& file : deep_files) {
+    const auto path = root / "deep" / file.name;
+    write_file(path, file.source);
+    const auto result = cgraph::extract_detected_file(cgraph::DetectedFile{.path = path, .language = file.language}, root);
+    const bool has_function = std::ranges::any_of(result.fragment.nodes, [](const auto& node) { return node.label.starts_with("g"); });
+    if (!has_function || contains_warning(result, "failed to extract")) {
+      std::filesystem::remove_all(root);
+      return 1;
+    }
   }
 
   // Names that are not valid UTF-8 must still get distinct, non-empty node ids.

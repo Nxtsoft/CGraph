@@ -7,6 +7,7 @@
 #include "cgraph/javascript_extractor.hpp"
 #include "cgraph/messaging_contracts.hpp"
 #include "cgraph/non_grammar_extractors.hpp"
+#include "cgraph/nesting_guard.hpp"
 #include "cgraph/normalize.hpp"
 #include "cgraph/python_extractor.hpp"
 #include "cgraph/spring_actuator.hpp"
@@ -1030,6 +1031,12 @@ void emit_wrapper_call(const ExtractionContext& context, const std::string& func
 
 void kotlin_collect_url(const TSNode& node, std::string_view source, const std::vector<std::string>& parameters,
                         ClientUrl& url) {
+  thread_local int nesting = 0;
+  const NestingGuard guard(nesting);
+  if (guard.too_deep()) {
+    url.value();  // a concatenation this long is not a URL anyone wrote
+    return;
+  }
   const std::string_view type = ts_node_type(node);
   const auto named = [&](const TSNode& identifier) {
     if (std::ranges::find(parameters, go_node_text(identifier, source)) != parameters.end()) {
@@ -1335,6 +1342,12 @@ void go_relation_handler(const TSNode& node, const ExtractionContext& context, c
 
 void go_collect_url(const TSNode& node, std::string_view source, const std::vector<std::string>& parameters,
                     ClientUrl& url) {
+  thread_local int nesting = 0;
+  const NestingGuard guard(nesting);
+  if (guard.too_deep()) {
+    url.value();  // a concatenation this long is not a URL anyone wrote
+    return;
+  }
   const std::string_view type = ts_node_type(node);
   if (const auto text = go_string_value(node, source)) {
     url.literal(*text);
@@ -1777,6 +1790,11 @@ void rust_walk_use_tree(
     Fragment& fragment,
     const std::vector<std::string>& prefix,
     bool is_reexport) {
+  thread_local int nesting = 0;
+  const NestingGuard guard(nesting);
+  if (guard.too_deep()) {
+    return;  // `use a::{b::{c::{...` past any real import
+  }
   const std::string_view type = ts_node_type(node);
   if (type == "identifier" || type == "scoped_identifier" || type == "crate" ||
       type == "self" || type == "super") {
@@ -1961,6 +1979,11 @@ void rust_relation_handler(const TSNode& node, const ExtractionContext& context,
 // trees (including nested macro bodies) are scanned recursively.
 void rust_scan_macro_tokens(const TSNode& token_tree, const ExtractionContext& context,
                             const std::string& caller_id, std::vector<RawCall>& raw_calls) {
+  thread_local int nesting = 0;
+  const NestingGuard guard(nesting);
+  if (guard.too_deep()) {
+    return;  // token trees nested past any real macro call
+  }
   const auto child_count = ts_node_child_count(token_tree);
   for (std::uint32_t index = 0; index < child_count; ++index) {
     const auto child = ts_node_child(token_tree, index);

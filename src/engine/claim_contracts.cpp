@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace cgraph {
 namespace {
@@ -73,12 +74,22 @@ constexpr std::string_view kRead = "claim_read";
 [[nodiscard]] std::uint32_t line_of(TSNode node) { return ts_node_start_point(node).row + 1; }
 
 // Pre-order walk; `visit` returns false to skip the node's children.
+//
+// The nodes still to visit are kept on the heap, not the call stack: a tree is
+// as deep as the source nests (a generated `f(f(f(...)))` or a long chain of
+// calls is tens of thousands of levels), and one stack frame per level
+// overflowed the extraction thread's stack.
 void walk(TSNode node, const std::function<bool(TSNode)>& visit) {
-  if (ts_node_is_null(node) || !visit(node)) {
-    return;
-  }
-  for (std::uint32_t index = 0; index < named_count(node); ++index) {
-    walk(ts_node_named_child(node, index), visit);
+  std::vector<TSNode> pending{node};
+  while (!pending.empty()) {
+    const auto current = pending.back();
+    pending.pop_back();
+    if (ts_node_is_null(current) || !visit(current)) {
+      continue;
+    }
+    for (auto index = named_count(current); index > 0; --index) {
+      pending.push_back(ts_node_named_child(current, index - 1));  // reversed, so the first child is visited next
+    }
   }
 }
 
@@ -277,13 +288,44 @@ struct KotlinCall {
   return result;
 }
 
+// Whether each call chain examined so far is rooted at a JWT builder, by node.
+// Every call on a chain `a.b().c().d()` asks the same question of the same
+// root; without this each one walked the whole chain again, so a long chain
+// cost the square of its length.
+using ChainRoots = std::unordered_map<const void*, bool>;
+
+// Runs `step` down a chain from `node`. `step` answers with the next node to
+// look at, or with the verdict for the whole chain; the verdict is recorded
+// for every node passed on the way.
+template <typename Step>
+[[nodiscard]] bool chain_verdict(TSNode node, ChainRoots& roots, Step&& step) {
+  std::vector<const void*> passed;
+  bool verdict = false;
+  while (!ts_node_is_null(node)) {
+    if (const auto known = roots.find(node.id); known != roots.end()) {
+      verdict = known->second;
+      break;
+    }
+    passed.push_back(node.id);
+    const std::optional<bool> answer = step(node);
+    if (answer.has_value()) {
+      verdict = *answer;
+      break;
+    }
+  }
+  for (const auto* id : passed) {
+    roots.emplace(id, verdict);
+  }
+  return verdict;
+}
+
 // True when `node` is, or is a call chain rooted at, `Jwts.builder()` or
 // `JWTClaimsSet.Builder()`.
-[[nodiscard]] bool kotlin_builder_chain(TSNode node, std::string_view source) {
-  while (!ts_node_is_null(node)) {
-    const auto type = type_of(node);
+[[nodiscard]] bool kotlin_builder_chain(TSNode node, std::string_view source, ChainRoots& roots) {
+  return chain_verdict(node, roots, [&](TSNode& current) -> std::optional<bool> {
+    const auto type = type_of(current);
     if (type == "call_expression") {
-      const auto call = kotlin_call(node, source);
+      const auto call = kotlin_call(current, source);
       if (!call.ok || ts_node_is_null(call.receiver)) {
         return false;
       }
@@ -291,14 +333,15 @@ struct KotlinCall {
         const auto root = text_of(call.receiver, source);
         return (root == "Jwts" && call.method == "builder") || (root == "JWTClaimsSet" && call.method == "Builder");
       }
-      node = call.receiver;
-    } else if (type == "navigation_expression") {
-      node = named_child(node, 0);
-    } else {
-      return false;
+      current = call.receiver;
+      return std::nullopt;
     }
-  }
-  return false;
+    if (type == "navigation_expression") {
+      current = named_child(current, 0);
+      return std::nullopt;
+    }
+    return false;
+  });
 }
 
 [[nodiscard]] TSNode kotlin_argument(TSNode suffix, std::uint32_t index) {
@@ -335,11 +378,12 @@ void kotlin_bare_claims(TSNode lambda, Emitter& emitter) {
 
 void kotlin_claims(TSNode root, Emitter& emitter) {
   const auto source = emitter.source();
+  ChainRoots roots;
   walk(root, [&](TSNode node) {
     const auto type = type_of(node);
     if (type == "call_expression") {
       const auto call = kotlin_call(node, source);
-      if (call.ok && !ts_node_is_null(call.receiver) && kotlin_builder_chain(call.receiver, source)) {
+      if (call.ok && !ts_node_is_null(call.receiver) && kotlin_builder_chain(call.receiver, source, roots)) {
         const auto scope = emitter.scope_at(line_of(node));
         if (call.method == "claim") {
           if (const auto name = string_value(kotlin_argument(call.suffix, 0), source)) {
@@ -443,28 +487,29 @@ void kotlin_claims(TSNode root, Emitter& emitter) {
 
 // --- Java --------------------------------------------------------------------
 
-[[nodiscard]] bool java_builder_chain(TSNode node, std::string_view source) {
-  while (!ts_node_is_null(node)) {
-    const auto type = type_of(node);
+[[nodiscard]] bool java_builder_chain(TSNode node, std::string_view source, ChainRoots& roots) {
+  return chain_verdict(node, roots, [&](TSNode& current) -> std::optional<bool> {
+    const auto type = type_of(current);
     if (type == "method_invocation") {
-      const auto object = field_of(node, "object");
+      const auto object = field_of(current, "object");
       if (type_of(object) == "identifier") {
-        return text_of(object, source) == "Jwts" && text_of(field_of(node, "name"), source) == "builder";
+        return text_of(object, source) == "Jwts" && text_of(field_of(current, "name"), source) == "builder";
       }
-      node = object;
-    } else if (type == "object_creation_expression") {
-      return text_of(field_of(node, "type"), source) == "JWTClaimsSet.Builder";
-    } else {
-      return false;
+      current = object;
+      return std::nullopt;
     }
-  }
-  return false;
+    if (type == "object_creation_expression") {
+      return text_of(field_of(current, "type"), source) == "JWTClaimsSet.Builder";
+    }
+    return false;
+  });
 }
 
 void java_claims(TSNode root, Emitter& emitter) {
   const auto source = emitter.source();
+  ChainRoots roots;
   walk(root, [&](TSNode node) {
-    if (type_of(node) != "method_invocation" || !java_builder_chain(field_of(node, "object"), source)) {
+    if (type_of(node) != "method_invocation" || !java_builder_chain(field_of(node, "object"), source, roots)) {
       return true;
     }
     const auto method = text_of(field_of(node, "name"), source);

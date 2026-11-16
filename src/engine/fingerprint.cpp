@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string_view>
+#include <vector>
 
 namespace cgraph {
 namespace {
@@ -32,32 +33,41 @@ namespace {
   return type.find("comment") != std::string_view::npos;
 }
 
-void collect_tokens(TSNode node, std::string_view source, std::vector<std::string>& out) {
-  const std::string_view type = ts_node_type(node);
-  if (is_comment_type(type)) {
-    return;
-  }
-  if (ts_node_is_named(node)) {
-    if (is_literal_type(type)) {
-      out.emplace_back("LIT");
-      return;
+// The tokens of `root`'s subtree, left to right. The nodes still to read are
+// kept on the heap, not the call stack: a function body is as deep as its
+// source nests, and one stack frame per level overflowed the extraction
+// thread's stack on a generated `f(f(f(...)))`.
+void collect_tokens(TSNode root, std::string_view source, std::vector<std::string>& out) {
+  std::vector<TSNode> pending{root};
+  while (!pending.empty()) {
+    const auto node = pending.back();
+    pending.pop_back();
+    const std::string_view type = ts_node_type(node);
+    if (is_comment_type(type)) {
+      continue;
     }
-    if (is_identifier_type(type)) {
-      out.emplace_back("ID");
-      return;
+    if (ts_node_is_named(node)) {
+      if (is_literal_type(type)) {
+        out.emplace_back("LIT");
+        continue;
+      }
+      if (is_identifier_type(type)) {
+        out.emplace_back("ID");
+        continue;
+      }
     }
-  }
-  const auto child_count = ts_node_child_count(node);
-  if (child_count == 0) {
-    const auto start = ts_node_start_byte(node);
-    const auto end = ts_node_end_byte(node);
-    if (end > start && end <= source.size()) {
-      out.emplace_back(source.substr(start, end - start));
+    const auto child_count = ts_node_child_count(node);
+    if (child_count == 0) {
+      const auto start = ts_node_start_byte(node);
+      const auto end = ts_node_end_byte(node);
+      if (end > start && end <= source.size()) {
+        out.emplace_back(source.substr(start, end - start));
+      }
+      continue;
     }
-    return;
-  }
-  for (std::uint32_t index = 0; index < child_count; ++index) {
-    collect_tokens(ts_node_child(node, index), source, out);
+    for (auto index = child_count; index > 0; --index) {
+      pending.push_back(ts_node_child(node, index - 1));  // reversed, so the first child is read next
+    }
   }
 }
 
