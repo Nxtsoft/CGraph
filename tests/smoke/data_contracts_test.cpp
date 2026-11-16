@@ -308,9 +308,11 @@ int test_mirrored_drizzle_schema() {
   return 0;
 }
 
-// Annotation arguments are source text of any length. Each of these used to
-// overflow the stack inside std::regex (one frame per character) and kill the
-// indexer on a single file; the answers must be what the short forms give.
+// Annotation arguments are source text of any length. A long string, or long
+// whitespace inside `type = "X"`, before a leading "X", or inside
+// `nativeQuery = true`, used to overflow the stack inside std::regex (one
+// frame per character) and kill the indexer on a single file; the answers
+// must be what the short forms give.
 int test_long_annotation_arguments() {
   const std::string padding(200000, ' ');
   const std::string long_label(200000, 'L');
@@ -321,14 +323,21 @@ int test_long_annotation_arguments() {
                           "  @Relationship(type =" + padding + "\"OWNS\") private Set<Big> owned;\n"
                           "}\n"},
       {"entity/Padded.java", "package x;\n"
-                             "@Node(" + padding + "\"Padded\")\n"
+                             "@Node(\"Padded\")\n"
                              "public class Padded {\n"
                              "  @Relationship(" + padding + "\"HOLDS\") private Set<Padded> held;\n"
                              "}\n"},
+      // A native query is SQL, so its table is read; the same string under a
+      // plain @Query would be JPQL and name no table.
+      {"src/PaddedJpa.kt", "package x\n"
+                           "interface PaddedJpa {\n"
+                           "    @Query(value = \"SELECT * FROM padded_users\", nativeQuery =" + padding + "true)\n"
+                           "    fun native(): List<Padded>\n"
+                           "}\n"},
   });
   const auto ids = joined(contract_ids(graph));
   if (ids != "label:local:" + long_label + ",label:local:" + long_label + ".OWNS,"
-             "label:local:Padded,label:local:Padded.HOLDS") {
+             "label:local:Padded,label:local:Padded.HOLDS,table:local:padded_users") {
     return fail("long annotation arguments: " + std::to_string(ids.size()) + " bytes of ids, starting [" +
                 ids.substr(0, 60) + "]");
   }
