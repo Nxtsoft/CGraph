@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -192,6 +193,59 @@ int test_no_workspace_and_nesting(const fs::path& root) {
   return 0;
 }
 
+// What each glob form selects, on one tree, and that the length of a pattern
+// is not a hazard: it comes from a manifest in the repo, and the matcher used
+// to take one stack frame per segment and retry every split at each `**`, so
+// 100,000 segments overflowed the stack and a few thousand `**` never finished.
+int test_glob_forms(const fs::path& root) {
+  const auto repo = root / "globs";
+  for (const auto* dir : {"a", "a/b", "a/b/c", "a/x/c", "d", "d/c"}) {
+    write_file(repo / dir / "package.json", std::string(R"({"name": ")") + dir + R"("})");
+  }
+  const auto selects = [&](const std::string& pattern) {
+    write_file(repo / "package.json", R"({"name": "root", "workspaces": [")" + pattern + R"("]})");
+    return names_of(cgraph::discover_workspace_packages(repo));
+  };
+  using Names = std::vector<std::string>;
+  const std::vector<std::pair<std::string, Names>> cases = {
+      {"a", {"a"}},
+      {"*", {"a", "d"}},
+      {"a/*", {"a/b"}},
+      {"a/*/c", {"a/b/c", "a/x/c"}},
+      {"*/c", {"d/c"}},
+      {"**/c", {"a/b/c", "a/x/c", "d/c"}},
+      {"a/**", {"a", "a/b", "a/b/c", "a/x/c"}},   // `**` also matches no segment at all
+      {"a/**/c", {"a/b/c", "a/x/c"}},
+      {"**/b/**", {"a/b", "a/b/c"}},
+      {"a/**/**/c", {"a/b/c", "a/x/c"}},           // adjacent `**` are one
+      {"**/**/**/c/**", {"a/b/c", "a/x/c", "d/c"}},
+      {"a/b/c/*", {}},                             // nothing below the leaf
+      {"*/*/*/*", {}},
+      {"b", {}},
+  };
+  for (const auto& [pattern, expected] : cases) {
+    if (selects(pattern) != expected) {
+      return fail("glob `" + pattern + "` selected the wrong packages");
+    }
+  }
+
+  std::string many;
+  for (int index = 0; index < 100000; ++index) {
+    many += "**/";
+  }
+  if (selects(many + "c") != Names{"a/b/c", "a/x/c", "d/c"}) {
+    return fail("100,000 `**` segments select what one does");
+  }
+  std::string stars;
+  for (int index = 0; index < 100000; ++index) {
+    stars += "*/";
+  }
+  if (!selects(stars + "c").empty()) {
+    return fail("100,000 `*` segments match nothing in a shallow tree");
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -202,6 +256,7 @@ int main() {
   failures += test_pnpm_and_object_form(root);
   failures += test_cargo_and_go(root);
   failures += test_no_workspace_and_nesting(root);
+  failures += test_glob_forms(root);
   fs::remove_all(root);
   return failures == 0 ? 0 : 1;
 }

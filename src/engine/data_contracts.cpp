@@ -556,26 +556,36 @@ enum class Family { None, Python, JavaScript, Kotlin, Java };
 }
 
 // A concatenation's text: literal operands in order, anything else a placeholder.
-void concatenation_text(Family family, const TSNode& node, std::string_view source, std::string& out,
-                        bool& has_literal) {
-  const std::string_view type = ts_node_type(node);
-  if (is_string_node(family, type)) {
-    out += literal_text(node, source);
-    has_literal = true;
-    return;
-  }
-  if (type == "parenthesized_expression" && ts_node_named_child_count(node) == 1) {
-    concatenation_text(family, ts_node_named_child(node, 0), source, out, has_literal);
-    return;
-  }
-  if (is_concatenation(family, node, source)) {
-    const auto count = ts_node_named_child_count(node);
-    for (std::uint32_t i = 0; i < count; ++i) {
-      concatenation_text(family, ts_node_named_child(node, i), source, out, has_literal);
+//
+// `a + b + c + ...` parses as a chain nested once per `+`, so a query built
+// from thousands of pieces is a tree thousands of levels deep. The operands
+// still to read are kept on the heap, not the call stack, which overflowed on
+// such a chain.
+//
+// `others` receives the operands that are not literals, in order: when the
+// chain turns out to hold no literal at all, they are what is left to look
+// inside, and the chain's own tails need not be read again.
+void concatenation_text(Family family, const TSNode& root, std::string_view source, std::string& out,
+                        bool& has_literal, std::vector<TSNode>& others) {
+  std::vector<TSNode> pending{root};
+  while (!pending.empty()) {
+    const auto node = pending.back();
+    pending.pop_back();
+    const std::string_view type = ts_node_type(node);
+    if (is_string_node(family, type)) {
+      out += literal_text(node, source);
+      has_literal = true;
+    } else if (type == "parenthesized_expression" && ts_node_named_child_count(node) == 1) {
+      pending.push_back(ts_node_named_child(node, 0));
+    } else if (is_concatenation(family, node, source)) {
+      for (auto i = ts_node_named_child_count(node); i > 0; --i) {
+        pending.push_back(ts_node_named_child(node, i - 1));  // reversed, so the left operand is read next
+      }
+    } else {
+      out += kBoundaryText;
+      others.push_back(node);
     }
-    return;
   }
-  out += kBoundaryText;
 }
 
 struct Scope {
@@ -1231,13 +1241,22 @@ void extract_code_data_contracts(const TSNode& root, std::string_view language, 
     if (literal || is_concatenation(family, node, context.source)) {
       std::string text;
       bool has_literal = false;
-      concatenation_text(family, node, context.source, text, has_literal);
+      std::vector<TSNode> others;
+      concatenation_text(family, node, context.source, text, has_literal, others);
       if (has_literal) {
         const bool jpql = (family == Family::Kotlin || family == Family::Java) && opens_with_sql_verb(text) &&
                           in_jpql_annotation(node, context.source);
         read_text(text, !jpql, node, scopes, emit);
         continue;  // its literals are read; a nested query inside an interpolation is not
       }
+      // A chain with no literal in it (`1 + 1 + ...`, `a + b + ...`): go on
+      // into its operands, not into the chain itself. Each tail of the chain is
+      // a chain too, and reading every one of them again cost the square of
+      // the chain's length for an answer already known.
+      for (auto i = others.size(); i > 0; --i) {
+        stack.push_back(others[i - 1]);
+      }
+      continue;
     }
     const auto count = ts_node_child_count(node);
     for (std::uint32_t i = count; i > 0; --i) {

@@ -64,25 +64,31 @@ constexpr std::size_t kMaxPackages = 512;
 
 // Glob match over path segments: a literal matches itself, `*` matches one
 // segment, `**` matches any number (including none).
+//
+// One pass over the pattern, carrying the set of path positions the pattern so
+// far can have consumed up to. The pattern comes from a package.json
+// `workspaces` entry, so its length is not ours to choose: the recursive form
+// took one stack frame per segment and retried every split at each `**`, so a
+// long pattern overflowed the stack and a few thousand `**` never finished.
 [[nodiscard]] bool segments_match(std::span<const std::string> pattern, std::span<const std::string> path) {
-  if (pattern.empty()) {
-    return path.empty();
-  }
-  if (pattern.front() == "**") {
-    for (std::size_t skip = 0; skip <= path.size(); ++skip) {
-      if (segments_match(pattern.subspan(1), path.subspan(skip))) {
-        return true;
+  std::vector<bool> reached(path.size() + 1, false);  // reached[n]: the first n path segments are consumed
+  reached[0] = true;
+  for (const auto& segment : pattern) {
+    if (segment == "**") {
+      // Anything at or past the earliest reachable position is reachable.
+      bool seen = false;
+      for (std::size_t position = 0; position <= path.size(); ++position) {
+        seen = seen || reached[position];
+        reached[position] = seen;
       }
+      continue;
     }
-    return false;
+    for (std::size_t position = path.size(); position > 0; --position) {
+      reached[position] = reached[position - 1] && (segment == "*" || segment == path[position - 1]);
+    }
+    reached[0] = false;
   }
-  if (path.empty()) {
-    return false;
-  }
-  if (pattern.front() != "*" && pattern.front() != path.front()) {
-    return false;
-  }
-  return segments_match(pattern.subspan(1), path.subspan(1));
+  return reached[path.size()];
 }
 
 struct Pattern {

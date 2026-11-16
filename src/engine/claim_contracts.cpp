@@ -1,5 +1,6 @@
 #include "cgraph/claim_contracts.hpp"
 
+#include "cgraph/nesting_guard.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace cgraph {
 namespace {
@@ -73,12 +75,22 @@ constexpr std::string_view kRead = "claim_read";
 [[nodiscard]] std::uint32_t line_of(TSNode node) { return ts_node_start_point(node).row + 1; }
 
 // Pre-order walk; `visit` returns false to skip the node's children.
+//
+// The nodes still to visit are kept on the heap, not the call stack: a tree is
+// as deep as the source nests (a generated `f(f(f(...)))` or a long chain of
+// calls is tens of thousands of levels), and one stack frame per level
+// overflowed the extraction thread's stack.
 void walk(TSNode node, const std::function<bool(TSNode)>& visit) {
-  if (ts_node_is_null(node) || !visit(node)) {
-    return;
-  }
-  for (std::uint32_t index = 0; index < named_count(node); ++index) {
-    walk(ts_node_named_child(node, index), visit);
+  std::vector<TSNode> pending{node};
+  while (!pending.empty()) {
+    const auto current = pending.back();
+    pending.pop_back();
+    if (ts_node_is_null(current) || !visit(current)) {
+      continue;
+    }
+    for (auto index = named_count(current); index > 0; --index) {
+      pending.push_back(ts_node_named_child(current, index - 1));  // reversed, so the first child is visited next
+    }
   }
 }
 
@@ -277,13 +289,44 @@ struct KotlinCall {
   return result;
 }
 
+// Whether each call chain examined so far is rooted at a JWT builder, by node.
+// Every call on a chain `a.b().c().d()` asks the same question of the same
+// root; without this each one walked the whole chain again, so a long chain
+// cost the square of its length.
+using ChainRoots = std::unordered_map<const void*, bool>;
+
+// Runs `step` down a chain from `node`. `step` answers with the next node to
+// look at, or with the verdict for the whole chain; the verdict is recorded
+// for every node passed on the way.
+template <typename Step>
+[[nodiscard]] bool chain_verdict(TSNode node, ChainRoots& roots, Step&& step) {
+  std::vector<const void*> passed;
+  bool verdict = false;
+  while (!ts_node_is_null(node)) {
+    if (const auto known = roots.find(node.id); known != roots.end()) {
+      verdict = known->second;
+      break;
+    }
+    passed.push_back(node.id);
+    const std::optional<bool> answer = step(node);
+    if (answer.has_value()) {
+      verdict = *answer;
+      break;
+    }
+  }
+  for (const auto* id : passed) {
+    roots.emplace(id, verdict);
+  }
+  return verdict;
+}
+
 // True when `node` is, or is a call chain rooted at, `Jwts.builder()` or
 // `JWTClaimsSet.Builder()`.
-[[nodiscard]] bool kotlin_builder_chain(TSNode node, std::string_view source) {
-  while (!ts_node_is_null(node)) {
-    const auto type = type_of(node);
+[[nodiscard]] bool kotlin_builder_chain(TSNode node, std::string_view source, ChainRoots& roots) {
+  return chain_verdict(node, roots, [&](TSNode& current) -> std::optional<bool> {
+    const auto type = type_of(current);
     if (type == "call_expression") {
-      const auto call = kotlin_call(node, source);
+      const auto call = kotlin_call(current, source);
       if (!call.ok || ts_node_is_null(call.receiver)) {
         return false;
       }
@@ -291,14 +334,15 @@ struct KotlinCall {
         const auto root = text_of(call.receiver, source);
         return (root == "Jwts" && call.method == "builder") || (root == "JWTClaimsSet" && call.method == "Builder");
       }
-      node = call.receiver;
-    } else if (type == "navigation_expression") {
-      node = named_child(node, 0);
-    } else {
-      return false;
+      current = call.receiver;
+      return std::nullopt;
     }
-  }
-  return false;
+    if (type == "navigation_expression") {
+      current = named_child(current, 0);
+      return std::nullopt;
+    }
+    return false;
+  });
 }
 
 [[nodiscard]] TSNode kotlin_argument(TSNode suffix, std::uint32_t index) {
@@ -335,11 +379,12 @@ void kotlin_bare_claims(TSNode lambda, Emitter& emitter) {
 
 void kotlin_claims(TSNode root, Emitter& emitter) {
   const auto source = emitter.source();
+  ChainRoots roots;
   walk(root, [&](TSNode node) {
     const auto type = type_of(node);
     if (type == "call_expression") {
       const auto call = kotlin_call(node, source);
-      if (call.ok && !ts_node_is_null(call.receiver) && kotlin_builder_chain(call.receiver, source)) {
+      if (call.ok && !ts_node_is_null(call.receiver) && kotlin_builder_chain(call.receiver, source, roots)) {
         const auto scope = emitter.scope_at(line_of(node));
         if (call.method == "claim") {
           if (const auto name = string_value(kotlin_argument(call.suffix, 0), source)) {
@@ -361,7 +406,15 @@ void kotlin_claims(TSNode root, Emitter& emitter) {
     // `Base64...decode(segment)`, `Json.parseToJsonElement(decoded..)`, then
     // `.jsonObject["x"]` on that parsed payload.
     std::unordered_map<std::string, Payload> variables;
+    int level_nesting = 0;
     const std::function<Payload(TSNode)> level = [&](TSNode expression) -> Payload {
+      // A payload decode is a handful of calls. A chain far longer than that
+      // (`a.b().b()...`, generated) is not one, and following it one frame per
+      // call overflowed the stack.
+      const NestingGuard guard(level_nesting);
+      if (guard.too_deep()) {
+        return Payload::None;
+      }
       const auto expression_type = type_of(expression);
       if (expression_type == "parenthesized_expression" || expression_type == "elvis_expression") {
         return level(named_child(expression, 0));
@@ -443,28 +496,29 @@ void kotlin_claims(TSNode root, Emitter& emitter) {
 
 // --- Java --------------------------------------------------------------------
 
-[[nodiscard]] bool java_builder_chain(TSNode node, std::string_view source) {
-  while (!ts_node_is_null(node)) {
-    const auto type = type_of(node);
+[[nodiscard]] bool java_builder_chain(TSNode node, std::string_view source, ChainRoots& roots) {
+  return chain_verdict(node, roots, [&](TSNode& current) -> std::optional<bool> {
+    const auto type = type_of(current);
     if (type == "method_invocation") {
-      const auto object = field_of(node, "object");
+      const auto object = field_of(current, "object");
       if (type_of(object) == "identifier") {
-        return text_of(object, source) == "Jwts" && text_of(field_of(node, "name"), source) == "builder";
+        return text_of(object, source) == "Jwts" && text_of(field_of(current, "name"), source) == "builder";
       }
-      node = object;
-    } else if (type == "object_creation_expression") {
-      return text_of(field_of(node, "type"), source) == "JWTClaimsSet.Builder";
-    } else {
-      return false;
+      current = object;
+      return std::nullopt;
     }
-  }
-  return false;
+    if (type == "object_creation_expression") {
+      return text_of(field_of(current, "type"), source) == "JWTClaimsSet.Builder";
+    }
+    return false;
+  });
 }
 
 void java_claims(TSNode root, Emitter& emitter) {
   const auto source = emitter.source();
+  ChainRoots roots;
   walk(root, [&](TSNode node) {
-    if (type_of(node) != "method_invocation" || !java_builder_chain(field_of(node, "object"), source)) {
+    if (type_of(node) != "method_invocation" || !java_builder_chain(field_of(node, "object"), source, roots)) {
       return true;
     }
     const auto method = text_of(field_of(node, "name"), source);
@@ -1248,7 +1302,13 @@ void js_claims(TSNode root, Emitter& emitter) {
     }
     return nullptr;
   };
+  int callees_nesting = 0;
   const std::function<void(TSNode, std::set<std::string>&)> callees = [&](TSNode value, std::set<std::string>& out) {
+    // `a ?? b ?? c ...` nests once per operator; past any real fallback chain, stop.
+    const NestingGuard guard(callees_nesting);
+    if (guard.too_deep()) {
+      return;
+    }
     value = js_unwrap(value);
     const auto type = type_of(value);
     if (type == "call_expression" && type_of(field_of(value, "function")) == "identifier") {
@@ -1271,7 +1331,25 @@ void js_claims(TSNode root, Emitter& emitter) {
       }
     }
   };
-  const std::function<void(TSNode)> reads = [&](TSNode node) {
+  // Walks the whole file, entering a scope at each function and block binding
+  // and leaving it after that node's children. The nodes still to visit are
+  // kept on the heap with a marker for each scope to leave: this runs on every
+  // file that imports from its own project, and one stack frame per level of
+  // nesting overflowed the stack on generated code.
+  struct Step {
+    TSNode node;
+    std::size_t leave = 0;   // when `leaving`: how many scopes to pop
+    bool leaving = false;
+  };
+  std::vector<Step> pending{Step{.node = root}};
+  while (!pending.empty()) {
+    const auto step = pending.back();
+    pending.pop_back();
+    if (step.leaving) {
+      scopes.resize(scopes.size() - step.leave);
+      continue;
+    }
+    const auto node = step.node;
     const auto type = type_of(node);
     const bool function_like = js_function_like(type);
     // `for (const payload of rows)` and `catch (payload)` bind in their own block.
@@ -1326,17 +1404,13 @@ void js_claims(TSNode root, Emitter& emitter) {
         }
       }
     }
-    for (std::uint32_t index = 0; index < named_count(node); ++index) {
-      reads(ts_node_named_child(node, index));
+    if (function_like || block_binding) {
+      pending.push_back(Step{.node = node, .leave = (function_like ? 1U : 0U) + (block_binding ? 1U : 0U), .leaving = true});
     }
-    if (function_like) {
-      scopes.pop_back();
+    for (auto index = named_count(node); index > 0; --index) {
+      pending.push_back(Step{.node = ts_node_named_child(node, index - 1)});  // reversed, so the first child is next
     }
-    if (block_binding) {
-      scopes.pop_back();
-    }
-  };
-  reads(root);
+  }
 }
 
 // --- Python ------------------------------------------------------------------

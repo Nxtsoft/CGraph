@@ -2,6 +2,7 @@
 
 #include "cgraph/contracts.hpp"
 #include "cgraph/javascript_syntax.hpp"
+#include "cgraph/nesting_guard.hpp"
 #include "cgraph/normalize.hpp"
 
 #include <algorithm>
@@ -890,6 +891,14 @@ constexpr int kMaxUrlInlineDepth = 3;
 
 void collect_url_template(const TSNode& node, const ExtractionContext& context, const UrlScope& scope,
                           UrlTemplate& url, int depth) {
+  thread_local int nesting = 0;
+  const NestingGuard guard(nesting);
+  if (guard.too_deep()) {
+    // A concatenation this long is not a URL anyone wrote. The part given up
+    // on is its start, so what is left must not pass for a whole route.
+    url.resolvable = false;
+    return;
+  }
   const TSNode expression = unwrap_expression(node);
   if (ts_node_is_null(expression)) {
     url.resolvable = false;
