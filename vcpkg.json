@@ -6,6 +6,7 @@
     "curl",
     "igraph",
     "nlohmann-json",
+    "re2",
     "utf8proc"
   ]
 }

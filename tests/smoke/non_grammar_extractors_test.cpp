@@ -1,5 +1,8 @@
 #include "cgraph/non_grammar_extractors.hpp"
 
+#include <string>
+#include <string_view>
+
 int main() {
   const auto msbuild = cgraph::extract_msbuild(cgraph::ExtractionContext{
       .source_file = "app.csproj",
@@ -215,6 +218,47 @@ int main() {
   }
   if (sql7.fragment.edges.size() != 1 || sql7.fragment.edges[0].source != refs->id ||
       sql7.fragment.edges[0].target != users_def->id) {
+    return 1;
+  }
+
+  // Each extractor scans the whole file with patterns whose repetitions can
+  // consume any amount of it. Well under this much inside one repetition used
+  // to overflow the stack and kill the indexer; it must give what the short
+  // form gives.
+  const std::string filler(1 << 17, 'a');
+  const std::string gap(1 << 17, ' ');
+  const auto labelled = [](const cgraph::Fragment& fragment, std::string_view kind, std::string_view label) {
+    for (const auto& node : fragment.nodes) {
+      if (node.kind == kind && node.label == label) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const std::string long_msbuild = "<Project " + filler + "><Target " + filler + " Name =" + gap + "\"Build\"/></Project>";
+  const auto msbuild_long = cgraph::extract_msbuild(
+      cgraph::ExtractionContext{.source_file = "big.csproj", .relative_path = "big.csproj", .source = long_msbuild});
+  if (!labelled(msbuild_long.fragment, "msbuild_element", "Project") || !labelled(msbuild_long.fragment, "target", "Build")) {
+    return 1;
+  }
+  const std::string long_delphi = "object" + gap + "Form1" + gap + ": TForm\nprocedure" + gap + "TForm1.Run" + gap + "(";
+  const auto delphi_long = cgraph::extract_delphi_form(
+      cgraph::ExtractionContext{.source_file = "big.dfm", .relative_path = "big.dfm", .source = long_delphi});
+  if (!labelled(delphi_long.fragment, "form_object", "Form1") || !labelled(delphi_long.fragment, "procedure", "TForm1.Run")) {
+    return 1;
+  }
+  const std::string long_apex = gap + "public" + gap + "class" + gap + "Big {\n  public static void" + gap + "run" + gap + "() {}\n}";
+  const auto apex_long = cgraph::extract_apex(
+      cgraph::ExtractionContext{.source_file = "Big.cls", .relative_path = "Big.cls", .source = long_apex});
+  if (!labelled(apex_long.fragment, "class", "Big") || !labelled(apex_long.fragment, "method", "run")) {
+    return 1;
+  }
+  const std::string long_sql = "CREATE" + gap + "TABLE" + gap + "big (id int);\nCREATE TABLE other (id int);\n"
+                               "ALTER TABLE other ADD FOREIGN KEY (" + filler + ") REFERENCES" + gap + "big(id);";
+  const auto sql_long = cgraph::extract_sql(
+      cgraph::ExtractionContext{.source_file = "big.sql", .relative_path = "big.sql", .source = long_sql});
+  if (!labelled(sql_long.fragment, "sql_table", "big") || !labelled(sql_long.fragment, "sql_table", "other") ||
+      sql_long.fragment.edges.size() != 1) {
     return 1;
   }
 

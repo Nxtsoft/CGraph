@@ -50,6 +50,7 @@ add_library(cgraph_engine STATIC
   package_manifests.cpp
   parser_pool.cpp
   path_ignore.cpp
+  pattern.cpp
   path_classification.cpp
   pipeline.cpp
   platform.cpp
@@ -104,6 +105,7 @@ target_link_libraries(cgraph_engine
   PRIVATE
     CURL::libcurl
     igraph::igraph
+    re2::re2
     utf8proc::utf8proc)
 
 # Winsock (AF_UNIX daemon endpoint) and the security API (owner-only DACL on

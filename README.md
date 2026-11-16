@@ -557,7 +557,7 @@ Use `uname -s` and `uname -m` to select the archive. The quick start installs ve
 - A C++20 compiler (recent Clang or GCC; Apple Clang from Xcode Command Line Tools works)
 - A Fortran compiler (e.g. `gfortran`) — `igraph`'s vcpkg build pulls in `lapack-reference`, which needs one (`sudo apt-get install -y gfortran` / `brew install gcc`)
 - Git
-- vcpkg (a local copy is fine — see step 2). `curl`, `igraph`, `nlohmann-json`, and `utf8proc` are declared in `vcpkg.json` and built on first configure. `tree-sitter` is vendored under `vendor/tree-sitter`.
+- vcpkg (a local copy is fine — see step 2). `curl`, `igraph`, `nlohmann-json`, `re2`, and `utf8proc` are declared in `vcpkg.json` and built on first configure. `tree-sitter` is vendored under `vendor/tree-sitter`.
 
 ### 1. Clone (with submodules)
 

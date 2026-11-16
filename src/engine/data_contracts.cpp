@@ -7,7 +7,6 @@
 #include <cctype>
 #include <filesystem>
 #include <optional>
-#include <regex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -676,14 +675,78 @@ class Scopes {
   return {std::string(qualified), std::move(arguments)};
 }
 
+// The scanners below read annotation arguments, which are source text of any
+// length. They replace std::regex patterns that recursed once per character and
+// overflowed the stack on one long string; each makes a single forward pass.
+
+// The contents of every "..." that holds no backslash, in order. A quote whose
+// string contains a backslash before it closes does not open a literal.
 [[nodiscard]] std::vector<std::string> string_literals(std::string_view text) {
-  static const std::regex kLiteral{R"re("([^"\\]*)")re"};
   std::vector<std::string> out;
-  const std::string owned(text);
-  for (auto it = std::sregex_iterator(owned.begin(), owned.end(), kLiteral); it != std::sregex_iterator(); ++it) {
-    out.push_back((*it)[1].str());
+  for (std::size_t pos = 0;;) {
+    const auto open = text.find('"', pos);
+    if (open == std::string_view::npos) break;
+    const auto stop = text.find_first_of("\"\\", open + 1);
+    if (stop == std::string_view::npos) break;
+    if (text[stop] == '"') {
+      out.emplace_back(text.substr(open + 1, stop - open - 1));
+      pos = stop + 1;
+    } else {
+      pos = open + 1;
+    }
   }
   return out;
+}
+
+[[nodiscard]] std::size_t after_space(std::string_view text, std::size_t pos) {
+  skip_space(text, pos);
+  return pos;
+}
+
+// A non-empty "..." starting exactly at `pos`; its contents.
+[[nodiscard]] std::optional<std::string> quoted_at(std::string_view text, std::size_t pos) {
+  if (pos >= text.size() || text[pos] != '"') return std::nullopt;
+  const auto close = text.find('"', pos + 1);
+  if (close == std::string_view::npos || close == pos + 1) return std::nullopt;
+  return std::string(text.substr(pos + 1, close - pos - 1));
+}
+
+// `type = "X"` or `value = "X"` starting exactly at `pos`; X.
+[[nodiscard]] std::optional<std::string> named_type_at(std::string_view text, std::size_t pos) {
+  for (const std::string_view key : {"type", "value"}) {
+    if (!text.substr(pos).starts_with(key)) continue;
+    const auto equals = after_space(text, pos + key.size());
+    if (equals < text.size() && text[equals] == '=') {
+      return quoted_at(text, after_space(text, equals + 1));
+    }
+  }
+  return std::nullopt;
+}
+
+// The relationship type in @Relationship's arguments: a leading string, a
+// leading `type = "X"` / `value = "X"`, or the first such pair anywhere.
+[[nodiscard]] std::string relationship_type(std::string_view arguments) {
+  const auto first = after_space(arguments, 0);
+  if (auto leading = named_type_at(arguments, first)) return *leading;
+  if (auto leading = quoted_at(arguments, first)) return *leading;
+  for (std::size_t pos = 0; pos < arguments.size(); ++pos) {
+    if (arguments[pos] != 't' && arguments[pos] != 'v') continue;
+    if (auto named = named_type_at(arguments, pos)) return *named;
+  }
+  return {};
+}
+
+// `nativeQuery = true` anywhere in the arguments.
+[[nodiscard]] bool has_native_query(std::string_view arguments) {
+  constexpr std::string_view key = "nativeQuery";
+  for (auto pos = arguments.find(key); pos != std::string_view::npos; pos = arguments.find(key, pos + 1)) {
+    const auto equals = after_space(arguments, pos + key.size());
+    if (equals < arguments.size() && arguments[equals] == '=' &&
+        arguments.substr(after_space(arguments, equals + 1)).starts_with("true")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 [[nodiscard]] bool is_annotation(std::string_view type) {
@@ -804,13 +867,7 @@ void neo4j_entity(const TSNode& declaration, std::string_view source, const Scop
       if (arguments.find("INCOMING") != std::string::npos || arguments.find("UNDIRECTED") != std::string::npos) {
         continue;
       }
-      static const std::regex kType{R"re(^\s*(?:(?:type|value)\s*=\s*)?"([^"]+)")re"};
-      static const std::regex kNamedType{R"re((?:type|value)\s*=\s*"([^"]+)")re"};
-      std::smatch match;
-      std::string relationship;
-      if (std::regex_search(arguments, match, kType) || std::regex_search(arguments, match, kNamedType)) {
-        relationship = match[1].str();
-      }
+      const auto relationship = relationship_type(arguments);
       if (!relationship.empty()) {
         emit.fact(kProvides, class_id, "label", labels.front() + "." + relationship);
       }
@@ -858,8 +915,7 @@ void orm_table_use(const TSNode& call, std::string_view source, const Scopes& sc
     const std::string_view type = ts_node_type(parent);
     if (is_annotation(type)) {
       const auto [name, arguments] = annotation_parts(text_of(parent, source));
-      static const std::regex kNative{R"(nativeQuery\s*=\s*true)"};
-      return (name == "Query" && !std::regex_search(arguments, kNative)) || name == "NamedQuery";
+      return (name == "Query" && !has_native_query(arguments)) || name == "NamedQuery";
     }
     if (type.ends_with("declaration") || type == "class_body" || type == "block" || type == "function_body") {
       return false;

@@ -32,6 +32,7 @@ include(CgraphSanitizers)
 find_package(igraph CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(re2 CONFIG REQUIRED)
 find_package(utf8proc CONFIG REQUIRED)
 
 add_subdirectory(vendor/tree-sitter)
