@@ -456,7 +456,10 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
       if (ec) {
         break;
       }
-      if (entry.path().extension() != ".json") {
+      // A sidecar that is a named pipe (`mkfifo note.json`) would block this
+      // open with the graph lock held, as a pipe named inside one did.
+      std::error_code type_error;
+      if (entry.path().extension() != ".json" || !entry.is_regular_file(type_error) || type_error) {
         continue;
       }
       auto validation = validate_semantic_fragment_file(entry.path());

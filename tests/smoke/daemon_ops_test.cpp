@@ -14,6 +14,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -71,6 +72,13 @@ int main() {
   // Any JSON number may arrive where a whole number is meant. Floats far
   // outside the integer types were converted with a bare cast (undefined
   // behaviour, reported by UBSan); each of these must simply be answered.
+  // A depth past int clamps to INT_MAX, a negative one to 0 (and a bare cast
+  // gave INT_MIN, which then read as 0 too, so check the top end).
+  const auto deep_impact =
+      cgraph::handle_daemon_request(state, cgraph::make_request("impact", {{"id", "alpha"}, {"max_depth", 1e300}}));
+  if (deep_impact["result"].value("max_depth", 0) != std::numeric_limits<int>::max()) {
+    return 1;
+  }
   for (const auto& odd : {
            cgraph::make_request("impact", {{"id", "alpha"}, {"max_depth", 1e300}, {"limit", 1e300}}),
            cgraph::make_request("impact", {{"id", "alpha"}, {"max_depth", -1e300}, {"limit", -1e300}}),
