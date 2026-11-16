@@ -1,28 +1,28 @@
 class Cgraph < Formula
   desc "Code graph and change-context engine for coding agents"
   homepage "https://github.com/Nxtsoft/CGraph"
-  version "0.9.7"
+  version "0.9.8"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.7/cgraph-macos-arm64.tar.gz"
-      sha256 "e12322ce780b45ffa0264758a325bab956aaa57658142d9db801cbecf688e4d4"
+      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.8/cgraph-macos-arm64.tar.gz"
+      sha256 "7a5d1f4311eb93cc6413aa97cae6273e7365479d0662fad194518785c2d7029f"
     end
     on_intel do
-      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.7/cgraph-macos-x64.tar.gz"
-      sha256 "db7cc6c36721f0c5607d714ac7a1471cb894481474002df881d0ddd6ae79b27f"
+      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.8/cgraph-macos-x64.tar.gz"
+      sha256 "3c50135e61754169aae42329992c287b23a9235a0ae934e20a31a5e920db4c59"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.7/cgraph-linux-arm64.tar.gz"
-      sha256 "e640d5966c8c27e691c14f49e7377d34b834ae0c86e4951b4253b112c410accf"
+      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.8/cgraph-linux-arm64.tar.gz"
+      sha256 "5dff84b64c59fe9368068b306b28d6944c75f18ca3d5700eb3b525f384cf6bef"
     end
     on_intel do
-      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.7/cgraph-linux-x64.tar.gz"
-      sha256 "8fd38c25b1d02a6659e55b5fb4a63b841a92cb13d6a5892d8777aea84a2ac924"
+      url "https://github.com/Nxtsoft/CGraph/releases/download/bin-v0.9.8/cgraph-linux-x64.tar.gz"
+      sha256 "a21cc2c6a333d5e5e56acdc2767a952fa7207ae7f3f44d3e8613e51ece115ea4"
     end
   end
 
