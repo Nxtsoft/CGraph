@@ -308,6 +308,33 @@ int test_mirrored_drizzle_schema() {
   return 0;
 }
 
+// Annotation arguments are source text of any length. Each of these used to
+// overflow the stack inside std::regex (one frame per character) and kill the
+// indexer on a single file; the answers must be what the short forms give.
+int test_long_annotation_arguments() {
+  const std::string padding(200000, ' ');
+  const std::string long_label(200000, 'L');
+  const auto graph = build({
+      {"entity/Big.java", "package x;\n"
+                          "@Node(\"" + long_label + "\")\n"
+                          "public class Big {\n"
+                          "  @Relationship(type =" + padding + "\"OWNS\") private Set<Big> owned;\n"
+                          "}\n"},
+      {"entity/Padded.java", "package x;\n"
+                             "@Node(" + padding + "\"Padded\")\n"
+                             "public class Padded {\n"
+                             "  @Relationship(" + padding + "\"HOLDS\") private Set<Padded> held;\n"
+                             "}\n"},
+  });
+  const auto ids = joined(contract_ids(graph));
+  if (ids != "label:local:" + long_label + ",label:local:" + long_label + ".OWNS,"
+             "label:local:Padded,label:local:Padded.HOLDS") {
+    return fail("long annotation arguments: " + std::to_string(ids.size()) + " bytes of ids, starting [" +
+                ids.substr(0, 60) + "]");
+  }
+  return 0;
+}
+
 // Spring Data Neo4j entities provide labels and outgoing relationship types,
 // qualified by the entity's label; a .cypher script and a @Query string use them.
 int test_graph_labels() {
@@ -453,7 +480,8 @@ int test_sql_strings_per_language() {
 
 int main() {
   for (const auto test : {test_sql_text_tables, test_cypher_text_labels, test_test_paths, test_tables_in_one_repo,
-                          test_mirrored_drizzle_schema, test_graph_labels, test_sql_strings_per_language}) {
+                          test_mirrored_drizzle_schema, test_graph_labels, test_long_annotation_arguments,
+                          test_sql_strings_per_language}) {
     if (const int status = test(); status != 0) {
       return status;
     }

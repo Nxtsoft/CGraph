@@ -324,6 +324,15 @@ int main() {
     rejects(bad, "escapes");
     write(bad_diff, "--- a/api.py\n+++ /dev/null\n@@ bad @@\n-x\n");
     rejects(bad, "malformed hunk");
+    write(bad_diff, "--- a/api.py\n+++ /dev/null\n@@ -99999999999999999999999,2 +0,0 @@\n-x\n");
+    rejects(bad, "malformed hunk");  // a line number too large to hold is a bad header, not a crash
+    // Text after the second @@ is free-form and can be any length. A megabyte
+    // of it used to overflow the stack inside std::regex_match; it must parse
+    // to the same change as the short header does.
+    write(bad_diff, "--- a/api.py\n+++ /dev/null\n@@ -1,2 +0,0 @@ " + std::string(1 << 20, 'x') +
+                        "\n-def exported():\n-    return 1\n");
+    require(cgraph::change_context(bad)["changes"] == deletion["changes"],
+            "a long hunk header changed what the diff means");
 
 
     const auto insertion = cgraph::change_context(parameters("insertion"));

@@ -9,10 +9,10 @@
 #include "cgraph/snapshot_source_reader.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <map>
 #include <optional>
-#include <regex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -38,6 +38,42 @@ struct Change {
 
 [[noreturn]] void reject(const std::string& reason) {
   throw std::invalid_argument("change-context: " + reason);
+}
+
+// Reads `@@ -A[,B] +C[,D] @@ anything` into the two ranges; a missing count is 1.
+// Parsed by hand in one pass. This line comes straight from a diff the caller
+// supplies, and std::regex_match recursed once per character of the text after
+// the second `@@`, so one long header line overflowed the stack.
+[[nodiscard]] std::optional<std::pair<Range, Range>> parse_hunk_header(std::string_view line) {
+  const auto eat = [&line](std::string_view literal) {
+    if (!line.starts_with(literal)) return false;
+    line.remove_prefix(literal.size());
+    return true;
+  };
+  const auto number = [&line]() -> std::optional<std::size_t> {
+    std::size_t value = 0;
+    const auto [end, error] = std::from_chars(line.data(), line.data() + line.size(), value);
+    if (error != std::errc{} || end == line.data()) return std::nullopt;  // no digits, or too large
+    line.remove_prefix(static_cast<std::size_t>(end - line.data()));
+    return value;
+  };
+  const auto range = [&]() -> std::optional<Range> {
+    const auto start = number();
+    if (!start) return std::nullopt;
+    if (!eat(",")) return Range{*start, 1};
+    const auto count = number();
+    if (!count) return std::nullopt;
+    return Range{*start, *count};
+  };
+  if (!eat("@@ -")) return std::nullopt;
+  const auto old_range = range();
+  if (!old_range || !eat(" +")) return std::nullopt;
+  const auto new_range = range();
+  if (!new_range || !eat(" @@")) return std::nullopt;
+  // The rest is free text, but still one line: a carriage return (a CRLF diff)
+  // has never been accepted here.
+  if (line.find_first_of("\r\n") != std::string_view::npos) return std::nullopt;
+  return std::pair{*old_range, *new_range};
 }
 
 std::vector<std::string> lines_of(const std::string& text) {
@@ -96,7 +132,6 @@ std::vector<Change> parse_diff(const std::string& text) {
     current = Change{};
     section = false;
   };
-  const std::regex header(R"(^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@.*$)");
   for (std::size_t i = 0; i < lines.size();) {
     const auto& line = lines[i];
     if (line.starts_with("diff --git ")) {
@@ -114,11 +149,11 @@ std::vector<Change> parse_diff(const std::string& text) {
     }
     if (line.starts_with("@@")) {
       if (!current.old_header || !current.new_header) reject("hunk before file headers");
-      std::smatch match;
-      if (!std::regex_match(line, match, header)) reject("malformed hunk header");
+      const auto ranges = parse_hunk_header(line);
+      if (!ranges) reject("malformed hunk header");
       Hunk h;
-      h.old_range = {std::stoull(match[1]), match[2].matched ? std::stoull(match[2]) : 1};
-      h.new_range = {std::stoull(match[3]), match[4].matched ? std::stoull(match[4]) : 1};
+      h.old_range = ranges->first;
+      h.new_range = ranges->second;
       if ((h.old_range.count && !h.old_range.start) || (h.new_range.count && !h.new_range.start))
         reject("nonempty hunk starts at line zero");
       std::size_t old_count = 0, new_count = 0;
