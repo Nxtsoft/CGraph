@@ -259,12 +259,12 @@ std::optional<std::string> parse_report_request(const nlohmann::json& params, Re
     return "unknown group_by '" + grouping_name + "' (expected auto|packages|depth)";
   }
   out.module_grouping = *grouping;
-  const auto budget = params.value("budget", static_cast<long long>(kDefaultReportBudget));
+  const auto budget = cgraph::integer_param(params, "budget", static_cast<long long>(kDefaultReportBudget));
   if (budget < 0) {
     return "budget must be >= 0 (0 disables the budget)";
   }
   out.budget = static_cast<std::size_t>(budget);
-  const auto depth = params.value("depth", kDefaultModuleDepth);
+  const auto depth = cgraph::integer_param(params, "depth", kDefaultModuleDepth);
   if (depth < 1) {
     return "depth must be >= 1";
   }
@@ -278,17 +278,17 @@ std::optional<std::string> parse_report_request(const nlohmann::json& params, Re
   if (!(out.threshold >= 0.0 && out.threshold <= 1.0)) {
     return "threshold must be between 0 and 1";
   }
-  const auto min_tokens = params.value("min_tokens", static_cast<long long>(30));
+  const auto min_tokens = cgraph::integer_param(params, "min_tokens", static_cast<long long>(30));
   if (min_tokens < 0) {
     return "min_tokens must be >= 0";
   }
   out.min_tokens = static_cast<std::size_t>(min_tokens);
-  const auto min_members = params.value("min_members", static_cast<long long>(kDefaultMinMembers));
+  const auto min_members = cgraph::integer_param(params, "min_members", static_cast<long long>(kDefaultMinMembers));
   if (min_members < 1) {
     return "min_members must be >= 1";
   }
   out.min_members = static_cast<std::size_t>(min_members);
-  const auto hops = params.value("hops", kDefaultHops);
+  const auto hops = cgraph::integer_param(params, "hops", kDefaultHops);
   if (hops < 1) {
     return "hops must be >= 1";
   }

@@ -79,7 +79,7 @@ int run(int argc, char** argv) {
       std::cerr << "cross-service needs {\"file\": PATH}\n";
       return 2;
     }
-    request.build_wait = std::chrono::milliseconds(request.params.value("wait_ms", 30000));
+    request.build_wait = std::chrono::milliseconds(cgraph::integer_param(request.params, "wait_ms", 30000));
     std::cout << cgraph::dump_json(cgraph::cross_service_for_file(request, request.params.at("file").get<std::string>()), 2) << '\n';
     return 0;
   }

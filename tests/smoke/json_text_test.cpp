@@ -1,6 +1,7 @@
 #include "cgraph/json_text.hpp"
 
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -121,6 +122,37 @@ int main() {
     refused = true;
   }
   expect(refused, "read_json refuses past the limit");
+
+  // integer_param: a request may carry any JSON number where a whole number is
+  // meant. A float that does not fit the type used to go through a bare cast,
+  // which is undefined; it now lands on the nearest end of the type's range.
+  const auto params = cgraph::parse_json(
+      R"({"n":7,"f":7.9,"neg":-3.2,"huge":1e300,"tiny":-1e300,"big":4294967296,"s":"7","null":null,"zero":0.0})");
+  expect(cgraph::integer_param(params, "absent", 42) == 42, "absent key gives the fallback");
+  expect(cgraph::integer_param(params, "n", 0) == 7 && cgraph::integer_param(params, "n", std::size_t{0}) == 7,
+         "an integer reads as itself");
+  expect(cgraph::integer_param(params, "f", 0) == 7 && cgraph::integer_param(params, "neg", 0) == -3 &&
+             cgraph::integer_param(params, "zero", 5) == 0,
+         "a float is cut to its whole part");
+  expect(cgraph::integer_param(params, "huge", 0) == std::numeric_limits<int>::max() &&
+             cgraph::integer_param(params, "tiny", 0) == std::numeric_limits<int>::min(),
+         "a float outside int lands on int's limits");
+  expect(cgraph::integer_param(params, "huge", 0LL) == std::numeric_limits<long long>::max() &&
+             cgraph::integer_param(params, "tiny", 0LL) == std::numeric_limits<long long>::min(),
+         "a float outside long long lands on its limits");
+  expect(cgraph::integer_param(params, "huge", std::size_t{0}) == std::numeric_limits<std::size_t>::max() &&
+             cgraph::integer_param(params, "neg", std::size_t{9}) == 0 && cgraph::integer_param(params, "tiny", std::size_t{9}) == 0,
+         "an unsigned parameter clamps a negative float to zero");
+  expect(cgraph::integer_param(params, "big", 0LL) == 4294967296LL, "a wide integer keeps its value in a wide type");
+  for (const char* key : {"s", "null"}) {
+    bool threw = false;
+    try {
+      (void)cgraph::integer_param(params, key, 0);
+    } catch (const nlohmann::json::type_error&) {
+      threw = true;
+    }
+    expect(threw, "a value that is not a number is a type error, as before");
+  }
 
   // dump_json: text that is not UTF-8 is written with U+FFFD, valid text as is.
   expect(cgraph::dump_json(nlohmann::json{{"k", "caf\xE9"}}) == "{\"k\":\"caf\xEF\xBF\xBD\"}", "invalid byte replaced");

@@ -468,9 +468,12 @@ int run_daemon_server(const std::filesystem::path& root, DaemonServerOptions opt
         if (node.source_file.empty()) {
           continue;
         }
+        // Only a regular file is hashed. `source_file` is whatever the sidecar
+        // says; a named pipe there blocked this open for ever, with the graph
+        // lock held, so the daemon stayed "building" and could not shut down.
         const auto source_path = std::filesystem::path{node.source_file};
         std::error_code source_error;
-        if (std::filesystem::exists(source_path, source_error) && !source_error) {
+        if (std::filesystem::is_regular_file(source_path, source_error) && !source_error) {
           overlay_hashes[source_path.lexically_normal().generic_string()] = sha256_file_hex(source_path);
         }
       }

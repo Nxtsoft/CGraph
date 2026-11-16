@@ -239,6 +239,52 @@ int main() {
     expect(ok, atomic_rc == 0, "atomic-overlay: daemon exited cleanly");
     fs::remove_all(atomic_root);
   }
+
+  // A memory sidecar names its node's source file, and the daemon hashes it.
+  // When that name was a named pipe the open never returned, with the graph
+  // lock held: the daemon stayed "building" for good and could not be shut
+  // down. Only regular files are hashed, so the build must finish.
+  {
+    const auto pipe_root = fs::temp_directory_path() / "cgraph_daemon_memory_pipe_test";
+    const auto memory_dir = pipe_root / "cgraph-out" / "memory";
+    const auto pipe_source = pipe_root / "source.fifo";
+    const auto pipe_socket = cgraph::unix_socket_path(cgraph::daemon_identity_for(pipe_root));
+    fs::remove_all(pipe_root);
+    fs::remove(pipe_socket);
+    write_file(pipe_root / "src" / "pipe.ts", "export class PipeTarget { value() { return 1; } }\n");
+    fs::create_directories(memory_dir);
+    expect(ok, ::mkfifo(pipe_source.c_str(), 0600) == 0, "memory-pipe: created the named pipe");
+    write_file(memory_dir / "note.json",
+               R"({"nodes":[{"id":"memory:pipe-note","label":"Pipe Note","type":"document","source_file":")" +
+                   pipe_source.generic_string() + R"("}],"edges":[],"hyperedges":[]})");
+
+    cgraph::DaemonServerOptions pipe_options;
+    pipe_options.idle_timeout = std::chrono::seconds(60);
+    pipe_options.build_graph_on_start = true;
+    pipe_options.code_poll_interval = std::chrono::milliseconds(0);
+
+    int pipe_rc = -1;
+    std::thread pipe_server([&] { pipe_rc = cgraph::run_daemon_server(pipe_root, pipe_options); });
+    bool built = false;
+    for (int attempt = 0; attempt < 500 && !built; ++attempt) {
+      built = response_has_label(request_with_retry(pipe_socket, cgraph::make_request("query", {{"q", ""}})), "PipeTarget");
+      if (!built) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    expect(ok, built, "memory-pipe: the build finished with a named pipe as a memory node's source");
+    if (!built) {
+      // Release a daemon that is stuck reading the pipe, so this test can end.
+      if (const int writer = ::open(pipe_source.c_str(), O_WRONLY | O_NONBLOCK); writer >= 0) {
+        ::close(writer);
+      }
+    }
+    const auto pipe_shutdown = request_with_retry(pipe_socket, cgraph::make_request("shutdown"));
+    expect(ok, pipe_shutdown && pipe_shutdown->value("ok", false), "memory-pipe: shutdown accepted");
+    pipe_server.join();
+    expect(ok, pipe_rc == 0, "memory-pipe: daemon exited cleanly");
+    fs::remove_all(pipe_root);
+  }
 #endif
 
   const auto root = fs::temp_directory_path() / "cgraph_daemon_server_test";

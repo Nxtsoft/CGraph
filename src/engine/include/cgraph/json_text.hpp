@@ -2,12 +2,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <istream>
+#include <limits>
 #include <iterator>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace cgraph {
 
@@ -137,6 +140,41 @@ namespace json_detail {
   nlohmann::json value;
   first_value >> value;
   return value;
+}
+
+// A whole-number request parameter (`limit`, `budget`, `max_depth`, ...), or
+// `fallback` when the key is absent.
+//
+// A caller may send any JSON number, so `{"max_depth": 1e300}` has to mean
+// something. `params.value(key, fallback)` converts a float with a bare cast,
+// which is undefined when the value does not fit the integer type. Here a
+// float is cut to its whole part as before, clamped to the type's range first;
+// NaN reads as absent. Integers convert as they always did, and a value that
+// is not a number still throws nlohmann::json::type_error for the caller to
+// report.
+template <typename Integer>
+[[nodiscard]] Integer integer_param(const nlohmann::json& params, const char* key, Integer fallback) {
+  static_assert(std::is_integral_v<Integer>);
+  const auto found = params.find(key);
+  if (found == params.end()) {
+    return fallback;
+  }
+  if (!found->is_number_float()) {
+    return found->template get<Integer>();
+  }
+  const auto value = found->template get<double>();
+  if (std::isnan(value)) {
+    return fallback;
+  }
+  // The limits as doubles round outward (2^63, 2^64), so comparing with >= and
+  // <= keeps every value that reaches the cast inside the type's range.
+  if (value <= static_cast<double>(std::numeric_limits<Integer>::min())) {
+    return std::numeric_limits<Integer>::min();
+  }
+  if (value >= static_cast<double>(std::numeric_limits<Integer>::max())) {
+    return std::numeric_limits<Integer>::max();
+  }
+  return static_cast<Integer>(value);
 }
 
 }  // namespace cgraph

@@ -844,7 +844,7 @@ struct StructuralIntent {
     SnapshotSourceReader& source_reader) {
   const auto needle = params.value("q", params.value("query", std::string{}));
   const auto by_id = index_nodes(graph);
-  const auto limit = params.value("limit", kDefaultQueryLimit);
+  const auto limit = cgraph::integer_param(params, "limit", kDefaultQueryLimit);
   const auto kind = ascii_lower(params.value("kind", std::string{}));
   const auto file = ascii_lower(params.value("file", std::string{}));
 
@@ -1009,8 +1009,8 @@ struct StructuralIntent {
       }
     }
   }
-  const auto max_depth = std::max(0, params.value("max_depth", kDefaultImpactDepth));
-  const auto limit = params.value("limit", kDefaultImpactLimit);
+  const auto max_depth = std::max(0, cgraph::integer_param(params, "max_depth", kDefaultImpactDepth));
+  const auto limit = cgraph::integer_param(params, "limit", kDefaultImpactLimit);
 
   const auto by_id = index_nodes(graph);
   const auto lookup = lookup_node(graph, by_id, id);
@@ -1098,7 +1098,7 @@ struct StructuralIntent {
   // Read signed and clamp: a negative budget must floor at 0 (focal-only,
   // truncated), not wrap to a practically-unbounded unsigned ceiling.
   const auto raw_budget =
-      params.value("budget", static_cast<long long>(kDefaultContextBudget));
+      cgraph::integer_param(params, "budget", static_cast<long long>(kDefaultContextBudget));
   const std::size_t budget = raw_budget > 0 ? static_cast<std::size_t>(raw_budget) : 0;
   // Packing strategy: "greedy" (default ordered full/brief degradation) or
   // "knapsack" (the step-A-validated 0/1 fill). Knapsack gathers a wider ego graph
@@ -1119,7 +1119,7 @@ struct StructuralIntent {
   const double gather_theta = std::clamp(params.value("gather_theta", 0.05), 0.0, 1.0);
   const bool use_knapsack = packing == "knapsack";
   const int default_depth = (use_knapsack || adaptive) ? kKnapsackContextDepth : kDefaultContextDepth;
-  const auto max_depth = std::max(0, params.value("max_depth", default_depth));
+  const auto max_depth = std::max(0, cgraph::integer_param(params, "max_depth", default_depth));
   const auto by_id = index_nodes(graph);
 
   // Resolve the focal node: exact id, then label, then the top-ranked match for
@@ -1659,7 +1659,7 @@ struct StructuralIntent {
   // the same exact match as impact_radius (no case-folding) so the two ops share
   // one filter dialect. find-callers = direction:in + relation:CALLS, etc.
   const auto relation = params.value("relation", std::string{});
-  const auto limit = params.value("limit", kDefaultExplainNeighborLimit);
+  const auto limit = cgraph::integer_param(params, "limit", kDefaultExplainNeighborLimit);
 
   const auto by_id = index_nodes(graph);
   const auto lookup = lookup_node(graph, by_id, id);
@@ -2190,7 +2190,7 @@ constexpr const char* kGoneTouchesProperty = "gone_touches";
     const nlohmann::json& params,
     SnapshotSourceReader& source_reader) {
   const auto query = ascii_lower(params.value("query", params.value("q", std::string{})));
-  const auto limit = params.value("limit", std::size_t{10});
+  const auto limit = cgraph::integer_param(params, "limit", std::size_t{10});
 
   const auto by_id = index_nodes(graph);
   std::vector<const Node*> checkpoints;

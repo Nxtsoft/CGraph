@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/co_change.hpp"
 #include "cgraph/data_contracts.hpp"
 
@@ -122,7 +123,7 @@ struct Candidate {
 
 nlohmann::json co_change(const GraphSnapshot& graph, const nlohmann::json& params) {
   const auto id = params.value("id", std::string{});
-  const auto limit = params.value("limit", kCoChangeDefaultLimit);
+  const auto limit = cgraph::integer_param(params, "limit", kCoChangeDefaultLimit);
   nlohmann::json result{{"id", id}, {"found", false}, {"edited", nlohmann::json::array()},
                         {"files", nlohmann::json::array()}, {"candidates", 0}};
 
