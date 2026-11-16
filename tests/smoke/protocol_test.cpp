@@ -45,5 +45,15 @@ int main() {
     return 1;
   }
 
+  // A reply can carry text that is not valid UTF-8: a label or snippet from a
+  // Latin-1 source file, or a file name. It must still frame and decode (each
+  // bad byte arrives as U+FFFD); throwing here ended the daemon's serve loop.
+  const auto odd = cgraph::encode_frame({{"label", "caf\xE9"}, {"path", "\xFF\xFE.py"}});
+  const auto odd_decoded = cgraph::decode_frame(odd);
+  if (!odd_decoded.has_value() || (*odd_decoded)["label"] != "caf\xEF\xBF\xBD" ||
+      (*odd_decoded)["path"] != "\xEF\xBF\xBD\xEF\xBF\xBD.py") {
+    return 1;
+  }
+
   return 0;
 }

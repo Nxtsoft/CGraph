@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/atomic_write.hpp"
 #include "cgraph/cli_support.hpp"
 #include "cgraph/change_context.hpp"
@@ -142,13 +143,13 @@ int run_change_context(int argc, char** argv) {
         params[arg == "--budget" ? "budget" : "max_depth"] = cgraph::integer_flag<long long>(arg, value);
       } else throw std::invalid_argument("unknown argument: " + arg);
     }
-    std::cout << cgraph::change_context_across_workspace(params, cgraph::ClientRequest{}).dump() << '\n';
+    std::cout << cgraph::dump_json(cgraph::change_context_across_workspace(params, cgraph::ClientRequest{})) << '\n';
     return 0;
   } catch (const cgraph::UsageError& error) {
-    std::cout << nlohmann::json{{"error", error.what()}}.dump() << '\n';
+    std::cout << cgraph::dump_json(nlohmann::json{{"error", error.what()}}) << '\n';
     return 2;
   } catch (const std::exception& error) {
-    std::cout << nlohmann::json{{"error", error.what()}}.dump() << '\n';
+    std::cout << cgraph::dump_json(nlohmann::json{{"error", error.what()}}) << '\n';
     return 1;
   }
 }
@@ -160,7 +161,7 @@ int run_build(const Args& args) {
   // Sidecar stats.json (durable, diffable) deliberately kept out of graph.json
   // so the Graphify node-link parity golden stays byte-identical.
   cgraph::create_output_directories(args.output);
-  cgraph::write_file_atomically(args.output / "stats.json", cgraph::build_stats_json(result.stats).dump(2));
+  cgraph::write_file_atomically(args.output / "stats.json", cgraph::dump_json(cgraph::build_stats_json(result.stats), 2));
 
   std::cerr << "processed " << result.file_count << " files, wrote exports to " << args.output << '\n';
   std::cerr << "build: " << cgraph::build_stats_summary(result.stats) << '\n';
@@ -371,7 +372,7 @@ int run_report(int argc, char** argv) {
   if (payload.contains("rendered")) {
     std::cout << payload["rendered"].get<std::string>();
   } else {
-    std::cout << payload.dump(2) << '\n';
+    std::cout << cgraph::dump_json(payload, 2) << '\n';
   }
   if (payload.contains("hint")) {
     std::cerr << "report: " << payload["hint"].get<std::string>() << '\n';
@@ -381,7 +382,7 @@ int run_report(int argc, char** argv) {
   const auto counts = [](const nlohmann::json& object) {
     std::string out;
     for (auto it = object.begin(); it != object.end(); ++it) {
-      out += (out.empty() ? "" : ", ") + it.key() + " " + it.value().dump();
+      out += (out.empty() ? "" : ", ") + it.key() + " " + cgraph::dump_json(it.value());
     }
     return out;
   };
@@ -446,7 +447,7 @@ int run_seam_gen(int argc, char** argv) {
 
   cgraph::create_output_directories(out_dir);
   const auto out_file = out_dir / "chunk_00.json";
-  cgraph::write_file_atomically(out_file, cgraph::to_json(result.fragment).dump(2) + '\n');
+  cgraph::write_file_atomically(out_file, cgraph::dump_json(cgraph::to_json(result.fragment), 2) + '\n');
   std::cerr << "seam gen: wrote " << out_file << " (" << result.fragment.nodes.size()
             << " nodes, " << result.fragment.edges.size() << " edges)\n";
   return 0;
@@ -505,7 +506,7 @@ int run_workspace_init(int argc, char** argv) {
   }
 
   const auto manifest = workspace.root / std::filesystem::path(std::string(cgraph::kWorkspaceFile));
-  cgraph::write_file_atomically(manifest, cgraph::workspace_manifest_json(workspace).dump(2) + '\n');
+  cgraph::write_file_atomically(manifest, cgraph::dump_json(cgraph::workspace_manifest_json(workspace), 2) + '\n');
   std::cerr << "workspace init: wrote " << manifest << " (" << workspace.repos.size() << " repos)\n";
   for (const auto& repo : workspace.repos) {
     std::cerr << "  " << repo.name << "  " << repo.root.generic_string() << '\n';
@@ -648,7 +649,7 @@ int run_seam_discover(int argc, char** argv) {
   }
   cgraph::create_output_directories(out_dir);
   const auto out_file = out_dir / "chunk_00.json";
-  cgraph::write_file_atomically(out_file, cgraph::to_json(result.fragment).dump(2) + '\n');
+  cgraph::write_file_atomically(out_file, cgraph::dump_json(cgraph::to_json(result.fragment), 2) + '\n');
   std::cerr << "seam discover: wrote " << out_file << " (" << result.fragment.nodes.size() << " nodes, "
             << result.fragment.edges.size() << " edges)\n";
   return 0;
@@ -766,7 +767,7 @@ int run_seam_fuse(int argc, char** argv) {
   }
 
   cgraph::create_output_directories(out_dir);
-  cgraph::write_file_atomically(out_dir / "graph.json", cgraph::to_node_link_json(fused.graph).dump(2) + '\n');
+  cgraph::write_file_atomically(out_dir / "graph.json", cgraph::dump_json(cgraph::to_node_link_json(fused.graph), 2) + '\n');
   cgraph::write_file_atomically(out_dir / "graph.html", cgraph::export_graph_html(fused.graph));
   // Marker: tells graphd to serve this dir as a static read-only seam graph.
   cgraph::write_file_atomically(out_dir / cgraph::kSeamMarkerFile, "cgraph seam fuse output\n");
@@ -814,7 +815,7 @@ int run_seam_query(int argc, char** argv) {
     }
   }
   const auto response = cgraph::handle_daemon_request(state, cgraph::make_request(op, params));
-  std::cout << response.dump(2) << '\n';
+  std::cout << cgraph::dump_json(response, 2) << '\n';
   return response.value("ok", false) ? 0 : 1;
 }
 

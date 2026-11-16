@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/pipeline.hpp"
 
 #include "cgraph/atomic_write.hpp"
@@ -123,12 +124,12 @@ PipelineResult run_one_shot(const std::filesystem::path& root) {
 void write_exports(const GraphSnapshot& graph, const std::filesystem::path& output_dir,
                    const std::filesystem::path& project_root) {
   create_output_directories(output_dir);
-  write_text(output_dir / "graph.json", to_node_link_json(graph).dump(2));
+  write_text(output_dir / "graph.json", cgraph::dump_json(to_node_link_json(graph), 2));
   // A tenth sidecar, deliberately NOT part of graph.json: consumers need to
   // tell "deliberately ignored" from "failed to extract", and graph.json is a
   // Graphify parity surface that must stay byte-identical.
   write_text(output_dir / "paths.json",
-             path_classification_json(classify_project_paths(project_root, graph)).dump(2));
+             cgraph::dump_json(path_classification_json(classify_project_paths(project_root, graph)), 2));
   write_text(output_dir / "graph.html", export_graph_html(graph));
   write_text(output_dir / "graph.svg", export_graph_svg(graph));
   write_text(output_dir / "obsidian.md", export_obsidian_markdown(graph));

@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/cli_support.hpp"
 #include "cgraph/client_runtime.hpp"
 #include "cgraph/engine.hpp"
@@ -79,7 +80,7 @@ int run(int argc, char** argv) {
       return 2;
     }
     request.build_wait = std::chrono::milliseconds(request.params.value("wait_ms", 30000));
-    std::cout << cgraph::cross_service_for_file(request, request.params.at("file").get<std::string>()).dump(2) << '\n';
+    std::cout << cgraph::dump_json(cgraph::cross_service_for_file(request, request.params.at("file").get<std::string>()), 2) << '\n';
     return 0;
   }
 

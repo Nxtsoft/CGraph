@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/daemon_ops.hpp"
 
 #include "cgraph/atomic_write.hpp"
@@ -473,7 +474,7 @@ struct FreeTextMatches {
       entry["snippet_truncated"] = true;
     }
   }
-  return estimate_report_tokens(entry.dump());
+  return estimate_report_tokens(cgraph::dump_json(entry));
 }
 
 [[nodiscard]] std::size_t emitted_entry_tokens(
@@ -483,7 +484,7 @@ struct FreeTextMatches {
   // misses the array's own framing (brackets, separators) and was observed to
   // overshoot a 3000 budget by a token. This is the number reported as
   // tokens_used and tested against the budget in both packing modes.
-  return estimate_report_tokens(focus.dump()) + estimate_report_tokens(included.dump());
+  return estimate_report_tokens(cgraph::dump_json(focus)) + estimate_report_tokens(cgraph::dump_json(included));
 }
 
 // A returned row without a snippet is marked so a caller can tell a failed
@@ -1465,7 +1466,7 @@ struct StructuralIntent {
       const auto* node = chosen[i];
       auto full = with_source(candidate_brief(*node), *node, source_reader);
       annotate_snippet_absence(full, *node);
-      const auto bytes = full.dump().size();
+      const auto bytes = cgraph::dump_json(full).size();
       selected.push_back(Selected{
           std::move(full), bytes, estimate_report_tokens(bytes), value_by_id[node->id], i});
     }
@@ -1476,7 +1477,7 @@ struct StructuralIntent {
     // outlives an expensive marginal one -- shedding by raw value systematically
     // protected snippet-less depth-1 rows over depth-2 code (the four-arm
     // comparison lives in openspec/changes/honest-context-budget).
-    const std::size_t focus_cost = estimate_report_tokens(focus.dump());
+    const std::size_t focus_cost = estimate_report_tokens(cgraph::dump_json(focus));
     const auto density = [](const Selected& item) {
       return item.value / static_cast<double>(std::max<std::size_t>(1, item.cost));
     };
@@ -1570,7 +1571,7 @@ struct StructuralIntent {
 
     // Full snippet overflows: keep a brief-only entry if it still fits.
     brief["snippet_omitted"] = true;
-    const auto brief_cost = estimate_report_tokens(brief.dump());
+    const auto brief_cost = estimate_report_tokens(cgraph::dump_json(brief));
     if (projected_used <= budget && brief_cost <= budget - projected_used) {
       projected_used += brief_cost;
       planned.push_back({node, std::move(brief), false});
@@ -1598,12 +1599,12 @@ struct StructuralIntent {
   // documented cost of keeping greedy's ordering byte-stable. O(n) via prefix
   // byte sums (see the knapsack shed above for the arithmetic).
   {
-    const std::size_t greedy_focus_cost = estimate_report_tokens(focus.dump());
+    const std::size_t greedy_focus_cost = estimate_report_tokens(cgraph::dump_json(focus));
     std::vector<std::size_t> entry_bytes;
     entry_bytes.reserve(included.size());
     std::size_t total_bytes = 0;
     for (const auto& item : included) {
-      entry_bytes.push_back(item.dump().size());
+      entry_bytes.push_back(cgraph::dump_json(item).size());
       total_bytes += entry_bytes.back();
     }
     std::size_t kept = included.size();
@@ -2124,7 +2125,7 @@ constexpr std::size_t kMaxCheckpointBodyChars = 16384;
   // so the checkpoint survives restarts, incremental edits, and full rescans -- the
   // live snapshot node below is only the immediate, in-session copy.
   const auto sidecar = std::filesystem::path(path).replace_extension(".json");
-  const auto sidecar_contents = to_json(fragment).dump(2) + '\n';
+  const auto sidecar_contents = cgraph::dump_json(to_json(fragment), 2) + '\n';
   if (const auto failure = try_write_file_atomically(sidecar, sidecar_contents); !failure.empty()) {
     return error_response("checkpoint sidecar: " + failure);
   }
@@ -2414,7 +2415,7 @@ void mutate_graph_snapshot(DaemonState& state, const std::function<void(GraphSna
 }
 
 std::size_t serialized_context_tokens(const nlohmann::json& value) {
-  return estimate_report_tokens(value.dump());
+  return estimate_report_tokens(cgraph::dump_json(value));
 }
 
 std::unordered_map<std::string, ImpactReach> trace_impact(

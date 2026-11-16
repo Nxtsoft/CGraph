@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/index_persistence.hpp"
 
 #include "cgraph/atomic_write.hpp"
@@ -81,7 +82,7 @@ bool write_index_manifest(const IndexManifest& manifest, const std::filesystem::
     std::filesystem::create_directories(path.parent_path(), error);
     error.clear();
   }
-  if (const auto failure = try_write_file_atomically(path, written.dump(), WriteDurability::Durable); !failure.empty()) {
+  if (const auto failure = try_write_file_atomically(path, cgraph::dump_json(written), WriteDurability::Durable); !failure.empty()) {
     std::cerr << "graphd: " << failure << '\n';
     return false;
   }

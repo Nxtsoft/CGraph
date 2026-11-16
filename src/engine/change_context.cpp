@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/change_context.hpp"
 
 #include "cgraph/contracts.hpp"
@@ -757,7 +758,7 @@ Json change_context(const Json& parameters, const CrossServiceAsk* cross_service
     auto section = cross_service_section(*cross_service, touched);
     cross_rows_total = section["rows"].size();
     const auto cap = budget / 4;
-    const auto section_tokens = [&] { return (section.dump().size() + 3) / 4; };
+    const auto section_tokens = [&] { return (cgraph::dump_json(section).size() + 3) / 4; };
     while (section_tokens() > cap && !section["rows"].empty()) section["rows"].erase(section["rows"].end() - 1);
     while (section_tokens() > cap && !section["contracts"].empty()) {
       section["contracts"].erase(section["contracts"].end() - 1);

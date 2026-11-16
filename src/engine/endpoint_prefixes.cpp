@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/endpoint_prefixes.hpp"
 
 #include "cgraph/contracts.hpp"
@@ -78,7 +79,7 @@ std::vector<EndpointPrefix> parse_endpoint_prefixes(const nlohmann::json& entrie
       return member == entry.end() || member->is_string();
     });
     if (!strings) {
-      errors.push_back("`repo`, `from` and `to` in a `prefixes` entry must be strings: " + entry.dump());
+      errors.push_back("`repo`, `from` and `to` in a `prefixes` entry must be strings: " + cgraph::dump_json(entry));
       continue;
     }
     const auto repo = entry.value("repo", std::string{});

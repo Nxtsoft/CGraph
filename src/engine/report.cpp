@@ -1,3 +1,4 @@
+#include "cgraph/json_text.hpp"
 #include "cgraph/report.hpp"
 
 #include "cgraph/contracts.hpp"
@@ -1574,7 +1575,7 @@ std::string render_types_markdown(const TypesReport& report) {
 std::string render_types_report(const TypesReport& report, ReportFormat format) {
   switch (format) {
     case ReportFormat::Json:
-      return types_report_json(report).dump();
+      return cgraph::dump_json(types_report_json(report));
     case ReportFormat::Mermaid:
     case ReportFormat::Svg:
     case ReportFormat::Markdown:
@@ -1918,7 +1919,7 @@ std::string render_clones_markdown(const ClonesReport& report) {
 std::string render_clones_report(const ClonesReport& report, ReportFormat format) {
   switch (format) {
     case ReportFormat::Json:
-      return clones_report_json(report).dump();
+      return cgraph::dump_json(clones_report_json(report));
     case ReportFormat::Mermaid:
     case ReportFormat::Svg:
     case ReportFormat::Markdown:
@@ -2433,7 +2434,7 @@ std::string render_design_markdown(const DesignReport& report) {
 std::string render_design_report(const DesignReport& report, ReportFormat format) {
   switch (format) {
     case ReportFormat::Json:
-      return design_report_json(report).dump();
+      return cgraph::dump_json(design_report_json(report));
     case ReportFormat::Mermaid:
     case ReportFormat::Svg:
       return render_design_mermaid(report);
@@ -2446,7 +2447,7 @@ std::string render_design_report(const DesignReport& report, ReportFormat format
 std::string render_modules_report(const ModulesReport& report, ReportFormat format) {
   switch (format) {
     case ReportFormat::Json:
-      return modules_report_json(report).dump();
+      return cgraph::dump_json(modules_report_json(report));
     case ReportFormat::Mermaid:
       return render_modules_mermaid(report);
     case ReportFormat::Svg:
