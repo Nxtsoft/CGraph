@@ -49,6 +49,26 @@ int main() {
     return 1;
   }
 
+  // A frame is whatever a local client sent, so a wrong-typed field must come
+  // back as an error frame. Each of these used to throw out of
+  // handle_daemon_request, which ended the serve loop and the daemon with it.
+  for (const auto& bad : {
+           nlohmann::json{{"protocol_version", cgraph::kProtocolVersion}, {"op", 5}},
+           nlohmann::json{{"protocol_version", cgraph::kProtocolVersion}, {"op", nullptr}},
+           nlohmann::json{{"protocol_version", cgraph::kProtocolVersion}, {"op", {"status"}}},
+           nlohmann::json{{"protocol_version", cgraph::kProtocolVersion}},
+           cgraph::make_request("context", {{"id", "alpha"}, {"gather", 7}}),
+           cgraph::make_request("context", {{"id", "alpha"}, {"gather", {{"mode", "adaptive"}}}}),
+       }) {
+    const auto answer = cgraph::handle_daemon_request(state, bad);
+    if (answer.value("ok", true) || !answer.contains("error")) {
+      return 1;
+    }
+  }
+  if (!cgraph::handle_daemon_request(state, cgraph::make_request("status")).value("ok", false)) {
+    return 1;  // and the daemon still answers the next caller
+  }
+
   cgraph::GraphSnapshot graph;
   graph.build_state = cgraph::BuildState::DeterministicReady;
   graph.content_root = cgraph::ContentRoot{
